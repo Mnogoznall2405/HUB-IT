@@ -1,0 +1,74 @@
+[
+  {
+    "id": "FE-0050",
+    "verdict": "refuted",
+    "note": "В текущем коде guard стоит до POST: open() сначала ждёт lookup, затем проверяет cancelled (ChatOpen.jsx:50-51) и только потом вызывает createDirectConversation (:56). В dev-StrictMode cleanup первого прохода выставляет cancelled=true синхронно, до разрешения промиса resolveUser, а второй проход переиспользует тот же промис через lookupRef (:44-47), поэтому POST выполняется один раз. Даже гипотетический дубль безвреден: бэкенд делает get-or-create по direct_key (chat_group_service.py:100-112). Пользовательского дефекта нет.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/ChatOpen.jsx:44-51",
+      "WEB-itinvent/frontend/src/pages/ChatOpen.jsx:56",
+      "WEB-itinvent/frontend/src/pages/ChatOpen.jsx:68",
+      "WEB-itinvent/backend/chat/chat_group_service.py:100-112"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0051",
+    "verdict": "unverifiable",
+    "note": "Механизм подтверждён пробой на реальном swrCache.js: после invalidate отсоединённый in-flight запрос всё равно резолвится старому вызывающему со старыми данными, хотя в кэше уже новые (swrCache.js:119-136,169-170). Однако конкретного потребителя, который применил бы такой ответ к UI после мутации, не найдено: Networks защищён requestSeq/guard (Networks.jsx:797-799,868-875,846-859), Mail и чат используют собственные sequence/scope (useMailListDataController.js:358, useChatConversationsController.js:151, useChatThreadController.js:506). Риск латентный, пользовательский дефект не воспроизведён.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/lib/swrCache.js:63-77",
+      "WEB-itinvent/frontend/src/lib/swrCache.js:119-136",
+      "WEB-itinvent/frontend/src/lib/swrCache.js:169-170",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:797-799",
+      "WEB-itinvent/frontend/src/components/mail/useMailListDataController.js:358"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0150",
+    "verdict": "confirmed",
+    "note": "Проба на реальном swrCache.js воспроизвела дефект: при протухшей записи getOrFetchSWR сразу возвращает старые data (isFresh=false), фоновая ревалидация пишет свежие данные только в кэш, и состояние UI не обновляется (swrCache.js:151-166). Networks.loadBranchContext применяет полученный data один раз и не подписан на кэш (Networks.jsx:756-805); focus/interval-ревалидации на странице нет, SWR_STALE_MS=60с (Networks.jsx:118) при удержании записи 30 минут (swrCache.js:7) делает окно реальным. Пользователь видит устаревшие данные филиала, хотя свежие уже в кэше, до ухода со страницы или ручного обновления; Mail для этого делает отдельный force-дозапрос (useMailListDataController.js:368-387), Networks — нет.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/lib/swrCache.js:151-166",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:118",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:756-805",
+      "WEB-itinvent/frontend/src/components/mail/useMailListDataController.js:368-387"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0258",
+    "verdict": "refuted",
+    "note": "JSON.parse в decodeTgsPayload не обёрнут локально, но вызывается внутри try/catch эффекта загрузки (ChatStickerMedia.jsx:109-138): SyntaxError перехватывается, выставляется loadFailed и рендерится fallback-эмодзи (189-197). Битый TGS не роняет компонент, не даёт unhandled rejection и не ломает экран чата; gzip определяется по сигнатуре байтов (:34). Пользовательского дефекта нет.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/chat/ChatStickerMedia.jsx:31-36",
+      "WEB-itinvent/frontend/src/components/chat/ChatStickerMedia.jsx:109-138",
+      "WEB-itinvent/frontend/src/components/chat/ChatStickerMedia.jsx:189-197"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0303",
+    "verdict": "refuted",
+    "note": "У runGroupAction нет раннего return по busy (ChatContextPanel.jsx:1931-1946), но флаг ставится синхронно до первого await, а все видимые точки запуска получают disabled={groupActionBusy} (2498-2580, 3355-3505) либо закрывают диалог до старта действия (2125-2135). React 18 сбрасывает состояние дискретного клика синхронно до следующего события, поэтому второй клик приходит уже в disabled-контрол; повторный запуск «в одном кадре» через UI не воспроизводится. Единый слот на все групповые действия — сериализация, а не наблюдаемый дефект.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/chat/ChatContextPanel.jsx:1931-1946",
+      "WEB-itinvent/frontend/src/components/chat/ChatContextPanel.jsx:2498-2580",
+      "WEB-itinvent/frontend/src/components/chat/ChatContextPanel.jsx:3355-3505",
+      "WEB-itinvent/frontend/src/components/chat/ChatContextPanel.jsx:4120"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0323",
+    "verdict": "unverifiable",
+    "note": "Функция действительно запрашивает только max(limit*4,500) инцидентов, игнорирует offset и не отдаёт признак усечения, поэтому при подключении список хостов был бы неполным (scanHosts.js:123-131). Но у экспортированного scanHostsAPI.getHosts в текущем дереве нет ни одного продакшн-вызова: client.js лишь отдаёт геттер (1166-1167), а Scan Center использует getHostsTable (ScanCenterPage.jsx:929). Латентный риск не проявляется, прод-дефект не демонстрируется; формулировка «только тесты» верна для внешнего API, хотя сама fallback-функция вызывается из getHosts (:136,147).",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/api/scanHosts.js:123-131",
+      "WEB-itinvent/frontend/src/api/scanHosts.js:133-149",
+      "WEB-itinvent/frontend/src/api/client.js:1166-1167",
+      "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx:929"
+    ],
+    "confidence": "high"
+  }
+]

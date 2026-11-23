@@ -144,8 +144,8 @@ High/Medium подтверждены повторным чтением кода 
 | FE-0010 | Английские MUI-лейблы в русском UI: «Open» у Autocomplete (/database, /scan-center, /company-structure, /warehouse-1c); на /address-book — «Открыть» (непоследовательно); «Loading...» `App.jsx:164–166` | Autocomplete popupIndicator без локализации | Confirmed |
 | FE-0011 | /scan-center: переполнение 12px при 1920 (MuiGrid spacing) → горизонтальный скролл; при 1366/1280 чисто | ScanCenter (Grid «Состояние контура») | Confirmed (замер+скриншот) |
 | FE-0012 | /docflow: дубль идентичных `tasks?scope=inbox` на загрузке (222+195 мс) | Docflow.jsx | Confirmed (сеть) |
-| FE-0015 | Сессия сброшена при смене UA (mobile-эмуляция): /auth/me → 401 → auth-required → logout. После находки FE-0059 более вероятен общий механизм: перезагрузка попала в окно ротации (grace 15 c), UA-пиннинг не подтверждён | AuthContext + backend deps | Suspected (см. FE-0059) |
-| FE-0016 | Транзиентные 5×401 в консоли при rapid-switch вкладок /tasks; при повторе не воспроизведены; возможно, окно разлогина | неизвестный ресурс | Suspected |
+| FE-0015 | Сессия сброшена при смене UA (mobile-эмуляция): /auth/me → 401 → auth-required → logout. После находки FE-0059 более вероятен общий механизм: перезагрузка попала в окно ротации (grace 15 c), UA-пиннинг не подтверждён | AuthContext + backend deps | Rejected (цикл 13: дубль/следствие FE-0059) |
+| FE-0016 | Транзиентные 5×401 в консоли при rapid-switch вкладок /tasks; при повторе не воспроизведены; возможно, окно разлогина | неизвестный ресурс | Rejected (цикл 13: нет воспроизводимого источника) |
 | FE-0017 | ESLint: 1 error (`chatRegressionFlows.test.jsx:426` 'describe' no-undef) + 1143 warnings chat, 735 warnings mail (no-unused-vars) | eslint-конфиг | Confirmed |
 | FE-0018 | /voice: три запроса ~1.2–1.3 c на загрузку (jobs?limit=100, meetings?limit=20, meetings?limit=1) | VoiceVideo; причина — backend | Confirmed (замер) |
 | FE-0019 | /admin: 30 API-вызовов на загрузку, auth/sessions 1.1 c | Admin/UsersTab | Confirmed (замер) |
@@ -163,7 +163,7 @@ High/Medium подтверждены повторным чтением кода 
 | FE-0047 | «Эпоха отказа auth» не сбрасывается входом passkey/trusted-device (окно ≤12 мин) | `src/api/http.js:61–64,281–283` | Confirmed (код), влияние Suspected |
 | FE-0048 | swrCache: force-чтение присоединяется к идущему обычному запросу — «Обновить» не гарантирует fetch | `src/lib/swrCache.js:114–117` | Confirmed |
 | FE-0049 | Computers: loadChangesDeferred без abort/cancelled (setState после unmount) | `Computers.jsx:950–960` | Confirmed |
-| FE-0050 | ChatOpen: createDirectConversation дважды в StrictMode dev | `ChatOpen.jsx:56` | Suspected (dev-only) |
+| FE-0050 | ChatOpen: createDirectConversation дважды в StrictMode dev | `ChatOpen.jsx:56` | Rejected (цикл 13: cancelled-проверка + get-or-create) |
 | FE-0051 | swrCache: потребитель может применить «отсоединённый» ответ без перепроверки | `src/lib/swrCache.js` | Suspected |
 | FE-0052 | Мобильный заголовок /scan-center — «Scan Center», десктоп — «Контроль документов»; остальные страницы русские | `ScanCenterPage.jsx:2028` | Confirmed |
 | FE-0054 | При открытии диалога создания задачи — 2 идентичных GET `/hub/users/controllers` | TasksCreateDialog wiring | Confirmed (сеть) |
@@ -214,10 +214,10 @@ High/Medium подтверждены повторным чтением кода 
 | FE-0069 | Клиентские права — только UX-слой: `alwaysGrantedPermissions` даёт всем роли mail.access/my_files.write/tasks.create и др.; при отсутствии `permissions` от сервера включается `rolePermissionFallback`; `role==='admin'` → hasPermission=true без списка. **Обязательна серверная сверка всех routePermissions/adminOnly-эндпоинтов (включая персональные данные: tickets.personal_data.read, address_book.*)** | `src/contexts/AuthContext.jsx:17–34,132–141,698–707`, `src/App.jsx:108–149` | Info (не уязвимость; требует backend-сверки) | Confirmed |
 | FE-0070 | Нет глобального сбора ошибок (window.onerror/unhandledrejection) — покрываются только chunk-ошибки; «тихие» отказы вне React-дерева не наблюдаемы | `src/main.jsx:44–54` | Low | Confirmed |
 | FE-0071 | Сырые axios-сообщения могут попасть в UI («Request failed with status code 500»; не-HTML не-JSON текст ответа показывается целиком) | `src/components/mail/mailErrorModel.js:16–24,72–74` | Low | Confirmed; needsBackendCheck (формат 5xx) |
-| FE-0072 | 403 приравнен к «сессия отклонена» (isDefinitiveAuthRejection: 401 ИЛИ 403) → лишние logout, если сервер отдаёт 403-из-за-прав на auth-цепочке | `src/api/http.js:186–189`, `AuthContext.jsx:171–174,256–258` | Low | Suspected; needsBackendCheck |
+| FE-0072 | 403 приравнен к «сессия отклонена» (isDefinitiveAuthRejection: 401 ИЛИ 403) → лишние logout, если сервер отдаёт 403-из-за-прав на auth-цепочке | `src/api/http.js:186-189`, `AuthContext.jsx:171-174,256-258` | Low | Rejected (цикл 13: 403 не вызывает logout обычных запросов) |
 | FE-0073 | quill 2.0.2 (точный pin, история XSS) — все входы/выходы обёрнуты DOMPurify-санитайзерами; npm audit не проводился (прод-сервер) | `package.json:42`, `MailRichTextEditor.jsx:161–192` | Info | Confirmed (обвязка) |
 | FE-0074 | MyFiles: window.open same-origin без noopener (все прочие ~20 вызовов — с 'noopener,noreferrer') | `src/pages/MyFiles.jsx:401` | Info | Confirmed |
-| FE-0075 | drawio-мост: при невалидном VITE_DRAWIO_EDITOR_URL origin='' → проверка origin пропускается, ответ postMessage на '*' (event.source-чек остаётся) | `src/components/itObjects/ObjectNetmapTab.jsx:122–135`, `src/lib/drawio.js:72–79` | Info (edge) | Suspected; рекомендация fail-closed |
+| FE-0075 | drawio-мост: при невалидном VITE_DRAWIO_EDITOR_URL origin='' → проверка origin пропускается, ответ postMessage на '*' (event.source-чек остаётся) | `src/components/itObjects/ObjectNetmapTab.jsx:122–135`, `src/lib/drawio.js:72–79` | Info (edge) | Rejected (цикл 13: origin||'*' недостижим) |
 | FE-0076 | AI-письмо: plain-text body отправляется с is_html=true — если сервер не экранирует, пользовательские `<` станут разметкой у получателя | `src/pages/chat/AiMailActionEditDialog.jsx:119–129` | Low | Suspected; needsBackendCheck |
 
 **Проверено агентом E и подтверждённо защищено** (важные отрицательные результаты):
@@ -252,17 +252,19 @@ best-effort, пользовательские ошибки не глотаютс
 
 
 
-## Цикл 9 — карточки новых записей (FE-0078…FE-0138)
 
-> Перенумерация цикла 10: исходные черновые id FE-0077…FE-0137 сдвинуты на +1 —
-> удалённая ветка `audit/frontend-2026-11-22` уже содержала FE-0077
-> (почта: медленное сохранение черновиков). Старые id не тронуты.
+
+## Карточки записей FE-0078…FE-0325 (перепроверка циклов 12–13)
+
+> Карточки перегенерированы из ISSUES.json; исходные утверждения, текущие выводы
+> и история перепроверок хранятся в полях originalClaim/currentConclusion/
+> reverificationHistory каждой записи.
 
 ### FE-0078 — Чат: авто-реотправленное после офлайна сообщение исчезает из ленты отправителя до перезагрузки
-- Категория: Functional/Chat | Серьёзность: High | Статус: Confirmed
+- Категория: Functional/Chat | Серьёзность: High | Статус: Fixed-externally
 - Файл: `WEB-itinvent/frontend/src/lib/chatSocket.js` :657,1107-1186 (offline queue + flushQueue); слияние в ленте — useChatThreadMessageMerge.js
 - Суть/механизм: Авто-реотправка СУЩЕСТВУЕТ: WS outbox (enqueueOfflineMessage/flushQueue, request_id сохраняется, таймаут продлевается) — peer получил сообщение без ручного retry. НО e2e chat-realtime.spec.js:185 падает на :202: после resend в ленте ОТПРАВИТЕЛЯ токен найден 0 раз (ожидалось 1) — оптимистичный failed-пузырь снят, серверная копия не смержена (дедуп по client_message_id ломается). Получатель видит сообщение, отправитель — нет до reload. Первичная формулировка «нет авто-реотправки» по коду была ошибочна — перепроверка рантаймом.
-- Доказательства: E2E_LOCAL=1 playwright chat-realtime.spec.js «sender is offline» → FAIL на :202 (toHaveCount(1) received 0 за 15 c); :194-199 прошли — индикатор ⚠ и авто-доставка peer-у работают; trace/screenshot: test-results/chat-realtime-*reconnect-exactly-once*; [cycle12:confirmed] High, ручная проверка: offline queue + flushQueue (chatSocket.js:657,1107-1186) не восстанавливают сообщение в ленте отправителя; E2E chat-realtime «sender is offline» падает на toHaveCount(1), код чата после 1a94d39a не менялся.
+- Доказательства: E2E_LOCAL=1 playwright chat-realtime.spec.js «sender is offline» → FAIL на :202 (toHaveCount(1) received 0 за 15 c); :194-199 прошли — индикатор ⚠ и авто-доставка peer-у работают; trace/screenshot: test-results/chat-realtime-*reconnect-exactly-once*; [cycle12:confirmed] High, ручная проверка: offline queue + flushQueue (chatSocket.js:657,1107-1186) не восстанавливают сообщение в ленте отправителя; E2E chat-realtime «sender is offline» падает на toHaveCount(1), код чата после 1a94d39a не менялся.; [cycle13:fixed-externally] Live E2E cycle 13: chat-realtime.spec.js «sender is offline» прошёл на 8462d971 (3/3, 1.9m), включая sender count=1 после reconnect и reload.
 
 ### FE-0079 — Чат: loadingOlder залипает true при смене диалога — дозагрузка истории мёртва
 - Категория: State/Chat | Серьёзность: Medium | Статус: Confirmed
@@ -291,27 +293,27 @@ best-effort, пользовательские ошибки не глотаютс
 
 ### FE-0083 — Межвкладочная гонка refresh → отзыв token family → разлогин ВСЕХ вкладок
 - Категория: Auth/Concurrency | Серьёзность: High | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/api/http.js`
+- Файл: `WEB-itinvent/frontend/src/api/http.js` :54,66-76
 - Суть/механизм: Триггер в реальности: silent refresh на каждый visibilitychange (AuthContext.jsx:471-508) — пробуждение ноутбука с N вкладок → гонка внутри grace-окна → массовый logout. Потеря несохранённых черновиков — да (принудительный logout). Grace/MAX_HITS не трогать (auth-политика).
-- Доказательства: probe_refresh_race.mjs (local stack): 3 параллельных POST /auth/refresh с одной кукой → [200,200,401]; далее /auth/me → 401 и во ВТОРОЙ вкладке (тот же cookie jar) → 401 — family отозвана, обе вкладки разлогинены; код: http.js:54,66-76 — refreshInFlight только внутри вкладки; navigator.locks/BroadcastChannel отсутствуют; backend auth.py:135 (_REFRESH_GRACE_MAX_HITS=1), 1648-1676 (grace 15 c → revoke family); [cycle12:confirmed] High, ручная проверка: refreshInFlight только внутри вкладки (http.js:54,66-76), navigator.locks/BroadcastChannel нет; backend grace max 1 -> 3 параллельных refresh дают [200,200,401] и отзыв family (probe_refresh_race.mjs).
+- Доказательства: probe_refresh_race.mjs (local stack): 3 параллельных POST /auth/refresh с одной кукой → [200,200,401]; далее /auth/me → 401 и во ВТОРОЙ вкладке (тот же cookie jar) → 401 — family отозвана, обе вкладки разлогинены; код: http.js:54,66-76 — refreshInFlight только внутри вкладки; navigator.locks/BroadcastChannel отсутствуют; backend auth.py:135 (_REFRESH_GRACE_MAX_HITS=1), 1648-1676 (grace 15 c → revoke family); [cycle12:confirmed] High, ручная проверка: refreshInFlight только внутри вкладки (http.js:54,66-76), navigator.locks/BroadcastChannel нет; backend grace max 1 -> 3 параллельных refresh дают [200,200,401] и отзыв family (probe_refresh_race.mjs).; [cycle13:confirmed] Live cycle 13: 3 параллельных POST /auth/refresh с одной кукой дали [401,200,200], затем /auth/me 401 — family отозвана, вкладки разлогинены.
 - Связано: FE-0059
 
 ### FE-0084 — Service Worker обновляется только полной перезагрузкой приложения; уведомление об обновлении — только в Settings
 - Категория: PWA/Reliability | Серьёзность: Medium | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/main.jsx`
+- Файл: `WEB-itinvent/frontend/src/main.jsx` :66-84
 - Суть/механизм: нет периодического registration.update() и prompt на обновление виден лишь в карточке настроек — пользователи с долгоживущими сессиями работают на устаревшем бандле (объясняет часть «странных» репортов типа FE-0004).
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] SW регистрируется и проверяет update на load (main.jsx:66-84), но skipWaiting не автоматический; applyPwaUpdate доступен только в HubItPwaSettingsCard (grep: других вхождений нет).
 - Связано: FE-0004
 
 ### FE-0085 — После применения SW-обновления соседние вкладки остаются на старом бандле
 - Категория: PWA/State | Серьёзность: Low | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/lib/pwaInstall.js`
+- Файл: `WEB-itinvent/frontend/src/lib/pwaInstall.js` :184-192,266-276
 - Суть/механизм: controllerchange обрабатывается только во вкладке-инициаторе; остальные вкладки не уведомляются.
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] После skipWaiting новая SW обслуживает новые запросы, но уже открытые вкладки остаются на старом бандле до перезагрузки; механизма broadcast/reload в pwaInstall.js нет.
 
 ### FE-0086 — Поздний suppressed-401 всё равно стирает localStorage.user → вкладки расходятся в auth-состоянии
 - Категория: Auth/State | Серьёзность: Low | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/api/http.js`
+- Файл: `WEB-itinvent/frontend/src/api/http.js` :316-371
 - Суть/механизм: removeItem(user) безусловен даже когда auth-required подавлён: одна вкладка «выходит» локально, другие считают сессию живой.
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] http.js:370 удаляет localStorage.user при 401 независимо от suppressAuthRequired; поздний ответ подавленного запроса расходится с состоянием вкладки.
 
@@ -372,19 +374,19 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Состояние ошибки — только Alert без кнопки повтора (SharedFolder.jsx:137-139).
 
 ### FE-0098 — SharedFolder: полный список файлов рендерится без ограничений (лимит сервера неизвестен)
-- Категория: Performance | Серьёзность: Low | Статус: Suspected
+- Категория: Performance | Серьёзность: Low | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/SharedFolder.jsx` :93,207
-- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] items берётся из payload и рендерится полным map без лимита/пагинации (SharedFolder.jsx:93,207); серверный лимит не документирован.
+- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] items берётся из payload и рендерится полным map без лимита/пагинации (SharedFolder.jsx:93,207); серверный лимит не документирован.; [cycle13:confirmed] get_public_folder выбирает все готовые AppMyFile поддерева без LIMIT (my_files_service.py:4300-4309) и возвращает полный items (4341-4345), а клиент рендерит items.map без окна, пагинации или виртуализации (SharedFolder.jsx:207-259). На папке с тысячами файлов это один длинный синхронный рендер и десятки тысяч MUI-узлов, причём «Файлов: N» (SharedFolder.jsx:171) показывает полный размер и не сигнализирует о тяжести. Ограничения на число файлов в шаре нет — формулировка «лимит сервера неизвестен» уточняется как «лимита нет». Фактический объём папок не измерялся, но неограниченный рендер подтверждён по коду.
 
 ### FE-0099 — Почта: двойной GET /mail/bootstrap на свежей вкладке (scope pending → resolved → повторная выборка)
 - Категория: Performance/Mail | Серьёзность: Low | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/pages/Mail.jsx`
+- Файл: `WEB-itinvent/frontend/src/pages/Mail.jsx` :455-457,1062-1064
 - Суть/механизм: закрывает открытый вопрос PERFORMANCE.md о дубле bootstrap.
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Mail.jsx повторно грузит bootstrap при переходе scope pending→resolved; код Mail.jsx после 1a94d39a не менялся, прежний network-захват 2× GET /mail/bootstrap остаётся в силе.
 
 ### FE-0100 — Почта: ссылки без target уводят внешний сайт ВНУТРИ sandbox-iframe чтения
 - Категория: Security/Mail | Серьёзность: Medium | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/components/mail/mailHtmlContent.js`
+- Файл: `WEB-itinvent/frontend/src/components/mail/mailHtmlContent.js` :36-63
 - Суть/механизм: навигация происходит в самом фрейме: фишинговая ссылка открывается «внутри» письма под хромом приложения. Нужен base target=_blank или перехват навигации.
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] buildMailSandboxSrcDoc не добавляет base target=_blank и не переписывает ссылки (mailHtmlSandboxDocument.js:36-63); ссылка без target навигирует сам sandbox-iframe, уводя внешний сайт внутрь панели чтения.
 
@@ -395,7 +397,7 @@ best-effort, пользовательские ошибки не глотаютс
 
 ### FE-0102 — Почта: optimistic-откат mark-read опирается только на refetch — при его сбое счётчики расходятся
 - Категория: State/Mail | Серьёзность: Low | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/components/mail/useMailReadMutations.js`
+- Файл: `WEB-itinvent/frontend/src/components/mail/useMailReadMutations.js` :300-319
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Optimistic mark-read откатывается только через refetch; при его сбое счётчики остаются рассинхронизированными (useMailReadMutations.js).
 
 ### FE-0103 — Почта: «Сохранить черновик?» спрашивается даже при синхронизированном состоянии → дубль upsert
@@ -405,7 +407,7 @@ best-effort, пользовательские ошибки не глотаютс
 
 ### FE-0104 — Почта: черновик быстрого ответа теряется при переключении писем
 - Категория: UX/Mail | Серьёзность: Low | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/components/mail/MailQuickReplyDraftField.jsx`
+- Файл: `WEB-itinvent/frontend/src/components/mail/MailQuickReplyDraftField.jsx` :26-30
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Черновик быстрого ответа хранится в состоянии поля и теряется при переключении письма; отдельного per-message хранилища нет (MailQuickReplyDraftField.jsx).
 
 ### FE-0105 — Почта: автосохранение черновика multipart без AbortSignal и индикации прогресса
@@ -415,24 +417,24 @@ best-effort, пользовательские ошибки не глотаютс
 
 ### FE-0106 — /my-files/edit/:fileId без hubBare: портальный хром + рабочая область 100dvh уходит под фолд
 - Категория: UI/Editor | Серьёзность: Medium | Статус: Rejected
-- Файл: `WEB-itinvent/frontend/src/App.jsx`
+- Файл: `WEB-itinvent/frontend/src/App.jsx` :594-602
 - Суть/механизм: в HUB_BARE_PATTERNS маршрут отсутствует — поверх шапки/сайдбара и padding вьюпорт редактора обрезается снизу; часть контента недоступна без прокрутки.
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:not-a-defect] Запись уже опровергнута перепроверкой (статус в реестре): /my-files/edit/:fileId обслуживается отдельным MyFilesEditor и не наследует портальный chrome; текущий App.jsx:600-602 это подтверждает.
 
 ### FE-0107 — Повторный ?compare= молча игнорируется для уже открытого документа
 - Категория: Functional/Editor | Серьёзность: Medium | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/components/myFiles/MyFilesEditorWorkspace.jsx`
+- Файл: `WEB-itinvent/frontend/src/components/myFiles/MyFilesEditorWorkspace.jsx` :183-186,459
 - Суть/механизм: дедупликация открытого документа срабатывает до диспатча compare; startCompare не проброшен через imperative handle — повторный запрос сравнения теряется.
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] compareVersion передаётся только активному документу (MyFilesEditorWorkspace.jsx:173), а workspace создаёт документ один раз (25-28); повторный ?compare= для уже открытого fileId не переинициализирует сравнение.
 
 ### FE-0108 — Desktop: isValidWorkspaceEditorRoute отклоняет ?compare= → деградация до in-window диалога
 - Категория: Desktop/Editor | Серьёзность: Medium | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/lib/desktopBridge.js`
+- Файл: `WEB-itinvent/frontend/src/lib/desktopBridge.js` :540-542
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] isValidWorkspaceEditorRoute требует точный путь /my-files/edit/<id> без query (desktopBridge.js:540-542), поэтому route с ?compare= отклоняется и редактор деградирует до in-window диалога.
 
 ### FE-0109 — Desktop: нативная лента вкладок отклоняется целиком при >16 документов или заголовке >128 символов
 - Категория: Desktop/Editor | Серьёзность: Medium | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/lib/desktopBridge.js`
+- Файл: `WEB-itinvent/frontend/src/lib/desktopBridge.js` :46-47,551,561
 - Суть/механизм: payload выбрасывается молча — вкладки «замирают» без диагностики.
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Лимиты MAXIMUM_WORKSPACE_DOCUMENTS=16 и MAXIMUM_WORKSPACE_DOCUMENT_TITLE_LENGTH=128 (desktopBridge.js:46-47) отбрасывают всю нативную ленту при превышении.
 
@@ -440,11 +442,11 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: Editor/Reliability | Серьёзность: Medium | Статус: Suspected
 - Файл: `WEB-itinvent/frontend/src/components/myFiles/useMyFilesEditorSession.js` :436-440
 - Суть/механизм: требуется рантайм-проверка с убитым renderer процессом.
-- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] close() вызывает editor.requestClose() без таймаута/fallback (useMyFilesEditorSession.js:436-440); если iframe DocSpace не отвечает, закрытие зависает. Статус остаётся Suspected.
+- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] close() вызывает editor.requestClose() без таймаута/fallback (useMyFilesEditorSession.js:436-440); если iframe DocSpace не отвечает, закрытие зависает. Статус остаётся Suspected.; [cycle13:unverifiable] Код действительно не имеет таймаута или fallback: close() при frameReady вызывает editor.requestClose() и ждёт события onRequestClose, которое остаётся единственным путём к onClose (useMyFilesEditorSession.js:209,436-440). Даже аварийный крестик, показываемый в phase error/loading, вызывает тот же handleClose → requestClose (MyFilesEditorShell.jsx:46-47,61-65,172-177), а MUI Dialog onClose делегирует туда же (MyFilesOfficeEditorDialog.jsx:10-16). Сценарий «iframe убит после frameReady» в этой среде не воспроизводим: живого Document Server и убитого renderer нет, поэтому user-visible зависание не подтверждено.
 
 ### FE-0111 — Восстановление версии при открытом редакторе — живой сеанс может перезаписать восстановленную версию
 - Категория: Editor/Data | Серьёзность: Medium | Статус: Rejected
-- Файл: `WEB-itinvent/frontend/src/components/myfiles/MyFilesVersionHistory.jsx`
+- Файл: `WEB-itinvent/frontend/src/components/myfiles/MyFilesVersionHistory.jsx` :795,844
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:not-a-defect] Факт не подтверждён: бэкенд после restore чистит office_session_key (my_files_collab_service.py:844) и отклоняет save старой сессии как stale (199-211,512-514), поэтому живой сеанс не может перезаписать восстановленную версию.
 
 ### FE-0112 — Устаревший DocsAPI SDK переиспользуется при смене settings.public_path
@@ -459,14 +461,14 @@ best-effort, пользовательские ошибки не глотаютс
 
 ### FE-0114 — Почтовый office-просмотр не передаёт ui_theme — превью игнорирует тёмную тему
 - Категория: Mail/Editor | Серьёзность: Low | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/components/mail/useMailMessageFileActions.js`
+- Файл: `WEB-itinvent/frontend/src/components/mail/useMailMessageFileActions.js` :19,34-38
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] В useMailMessageFileActions.js нет передачи ui_theme/theme в office-view конфиг — превью не учитывает тёмную тему.
 
-### FE-0115 — Синхронный revokeObjectURL сразу после click — хрупко на iOS Safari (5 мест)
+### FE-0115 — Синхронный revokeObjectURL сразу после click — хрупко на iOS Safari
 - Категория: Files/Compat | Серьёзность: Low | Статус: Suspected
-- Файл: `WEB-itinvent/frontend/src/components/mail/useMailMessageFileActions.js`
+- Файл: `WEB-itinvent/frontend/src/components/mail/mailMessageFileActions.js` :337-360
 - Суть/механизм:  Ещё 2 точки: networksHelpers.js:75-84, ObjectNetmapTab.jsx:402-413 (в Networks.jsx:1237 для оригинала сделан setTimeout — несогласованность). +MyFiles.jsx:handleExportPdf (~:676) — тот же паттерн revoke сразу после click().
-- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:wrong-evidence] Синхронный revoke после click находится не в useMailMessageFileActions.js, а в downloadBlobFile: link.click(); URL.revokeObjectURL(url) сразу (mailMessageFileActions.js:357-359); для popup-ветки там же стоит задержка 60 с.
+- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:wrong-evidence] Синхронный revoke после click находится не в useMailMessageFileActions.js, а в downloadBlobFile: link.click(); URL.revokeObjectURL(url) сразу (mailMessageFileActions.js:357-359); для popup-ветки там же стоит задержка 60 с.; [cycle13:unverifiable] Ссылка на useMailMessageFileActions.js была ошибочной: синхронный revoke находится в downloadBlobFile (mailMessageFileActions.js:354-359), и в якорной ветке для iOS Safari вне standalone-режима он сохраняется; 60-секундная задержка включена только для popup-ветки iOS standalone с безопасными типами (343-352). Тот же паттерн остаётся в networksHelpers.js:75-84, MyFiles.jsx:674-681, Statistics.jsx:324-331, useTasksPageController.jsx:457-464 и ObjectNetmapTab.jsx:402-413, тогда как KnowledgeBase.jsx:308-309 уже отложил revoke на 60 с из-за обрыва загрузки в Safari/Firefox. Проверить фактическое поведение iOS Safari здесь нечем (нет устройства и WebKit), поэтому пользовательский обрыв загрузки не подтверждён.
 
 ### FE-0116 — block() не снимает readyTimer → устаревшее предупреждение «редактор грузится долго»
 - Категория: Editor/State | Серьёзность: Low | Статус: Rejected
@@ -475,7 +477,7 @@ best-effort, пользовательские ошибки не глотаютс
 
 ### FE-0117 — Почтовый office-view: цепочка fetch без AbortSignal (контроллер страницы абортит, путь почты — нет)
 - Категория: Mail/Async | Серьёзность: Low | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/components/mail/useMailMessageFileActions.js`
+- Файл: `WEB-itinvent/frontend/src/components/mail/useMailMessageFileActions.js` :291-299,319-328
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Цепочка mail office-view в useMailMessageFileActions.js не принимает AbortSignal; отмена ограничена previewGenerationRef, сетевой запрос продолжается.
 
 ### FE-0118 — MyFilesVersionHistory: async-действия без защиты от unmount
@@ -490,7 +492,7 @@ best-effort, пользовательские ошибки не глотаютс
 
 ### FE-0120 — Мёртвый код: MailOfficeAttachmentInlinePreview + buildOfficeInlinePreviewState не используются
 - Категория: Architecture | Серьёзность: Info | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/components/mail/MailOfficeAttachmentInlinePreview.jsx`
+- Файл: `WEB-itinvent/frontend/src/components/mail/MailOfficeAttachmentInlinePreview.jsx` :12
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] MailOfficeAttachmentInlinePreview и buildOfficeInlinePreviewState определены, но нигде не импортируются/вызываются (поиск по components/mail и Mail.jsx — только определения).
 
 ### FE-0121 — History-view: проверка аккаунта строже, чем у сессии — user без id всегда «invalid»
@@ -505,20 +507,20 @@ best-effort, пользовательские ошибки не глотаютс
 
 ### FE-0123 — MyFiles: drop файлов на строку папки во время активной загрузки запускает параллельную очередь
 - Категория: Functional/MyFiles | Серьёзность: Medium | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/pages/MyFiles.jsx`
+- Файл: `WEB-itinvent/frontend/src/pages/MyFiles.jsx` :1007-1039
 - Суть/механизм: guard активной загрузки обходится: stopPropagation на строке не даёт сработать глобальному guard — две очереди аплоада конкурируют.
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Drop на строку папки не проверяет активную загрузку и запускает собственную очередь (MyFiles.jsx, обработчик drop папки); параллельная очередь с основной загрузкой.
 
 ### FE-0124 — MyFiles: выделение не сбрасывается при смене библиотеки — действия применяются к невидимым файлам
-- Категория: State/MyFiles | Серьёзность: Low | Статус: Suspected
+- Категория: State/MyFiles | Серьёзность: Low | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/MyFiles.jsx` :1097-1099,1153-1155
 - Суть/механизм: перепроверка: clearSelection-эффект зависит от [currentFolderId, viewParam, searchQuery, typeFilter, dateFilter] — если переключение библиотеки меняет viewParam, выделение сбрасывается корректно; дефект есть только если библиотека переключается без смены viewParam — требует рантайм-пробы.
-- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Эффект очистки выделения зависит от currentFolderId/view/search/type/date (MyFiles.jsx:1097-1099), но не от libraryId; при смене библиотеки без смены folder выделение сохраняется.
+- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Эффект очистки выделения зависит от currentFolderId/view/search/type/date (MyFiles.jsx:1097-1099), но не от libraryId; при смене библиотеки без смены folder выделение сохраняется.; [cycle13:confirmed] Эффект очистки не зависит от libraryId (MyFiles.jsx:1097-1099), а navigateToLibrary меняет только library/view и не трогает folder (594-596), поэтому при переходе между корнями библиотек currentFolderId остаётся null и выделение сохраняется. Действия при этом не применяются к скрытым файлам: selectedFiles и selectedFolders фильтруются по текущим visibleItems/visibleFolders (1196-1203), поэтому bulk-delete с count=0 просто выходит, а bulk-move с count=0 показывает ложный успех «Выбранные объекты перемещены» (1343-1397). Реальный дефект — залипший счётчик «Выбрано: N» (1954-1972) и ложный успех перемещения, а не операции над файлами старой библиотеки.
 
 ### FE-0125 — MyFiles: deep-link на удалённую/чужую папку — только тост; ?folder= остаётся → повторные ошибки
-- Категория: Functional/MyFiles | Серьёзность: Low | Статус: Suspected
+- Категория: Functional/MyFiles | Серьёзность: Low | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/MyFiles.jsx` :320-322
-- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] При невалидном ?folder= catch 320-322 только показывает toast (notifyApiError); параметр не удаляется (currentFolderId читается из searchParams, MyFiles.jsx:163), поэтому reload/повторные действия снова дают ошибку.
+- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] При невалидном ?folder= catch 320-322 только показывает toast (notifyApiError); параметр не удаляется (currentFolderId читается из searchParams, MyFiles.jsx:163), поэтому reload/повторные действия снова дают ошибку.; [cycle13:confirmed] При удалённой или чужой папке бэкенд отдаёт 404: _folder_row_locked требует совпадения owner и deleted_at is None (my_files_service.py:1864-1871), а list_my_files маппит MyFilesNotFoundError в 404 (my_files.py:278-297,120-124). Фронтенд в catch только показывает notifyApiError и не чистит searchParams (MyFiles.jsx:320-322), а currentFolderId продолжает читаться из ?folder= (163); после reload запрос повторяется и снова падает, при этом список остаётся пустым или старым. Параметр остаётся в URL, и по коду повторная ошибка воспроизводится при каждом открытии ссылки.
 
 ### FE-0126 — MyFiles: массовые delete/move — по запросу на элемент, последовательно, без прогресса
 - Категория: Performance/MyFiles | Серьёзность: Low | Статус: Confirmed
@@ -533,7 +535,7 @@ best-effort, пользовательские ошибки не глотаютс
 
 ### FE-0128 — Tasks: чекбокс чек-листа без optimistic-отклика; мёртвый проп updatingItemId
 - Категория: UX/Tasks | Серьёзность: Low | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/components/hub/TaskChecklist.jsx`
+- Файл: `WEB-itinvent/frontend/src/components/hub/TaskChecklist.jsx` :6-7,39-40
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] TaskDetailChecklist не прокидывает updatingItemId (TaskDetailChecklist.jsx:3-15), поэтому условие disabled в TaskChecklist.jsx:39 никогда не истинно; чекбокс управляется только данными задачи (38), optimistic-отклика нет.
 
 ### FE-0129 — Tasks: ensureTaskDiscussion с устаревшим completion → переход к ранее активной задаче
@@ -552,9 +554,9 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] openTaskDetails читает visibleTaskItems (329), но в deps useCallback только [taskDiscussionChatEnabled, updateSearch] (353) — возможен показ устаревшей строки списка.
 
 ### FE-0132 — Tasks: несохранённые изменения canvas теряются при unmount во время in-flight save
-- Категория: Tasks/State | Серьёзность: Low | Статус: Suspected
+- Категория: Tasks/State | Серьёзность: Low | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx` :332-340
-- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Unmount-cleanup (332-340) при savingRef.current === true выходит без flush (334), поэтому правки из pendingSceneRef, накопленные во время in-flight save, теряются.
+- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Unmount-cleanup (332-340) при savingRef.current === true выходит без flush (334), поэтому правки из pendingSceneRef, накопленные во время in-flight save, теряются.; [cycle13:refuted] Unmount-cleanup действительно выходит без flush при savingRef.current === true (332-340), но это не теряет правки: savePending в finally после успешного ответа сам планирует таймер, если pendingSceneRef непуст (308-320), а savePendingRef после размонтирования не обнуляется (324-326). Поэтому сценарий «правки, накопленные во время in-flight save» сохраняется отложенным вызовом; потеря возможна только при отказе самой save-операции, что не является заявленным механизмом.
 
 ### FE-0133 — Tasks: handleDeleteTask без busy-guard → двойной confirm даёт ложный тост ошибки; ref мутируется в render
 - Категория: Tasks/UX | Серьёзность: Low | Статус: Confirmed
@@ -562,30 +564,30 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] handleDeleteTask (163-176) без busy-guard, а selectedTaskRef мутируется в теле рендера (158-161); повторный confirm даёт второй DELETE и ложный тост ошибки.
 
 ### FE-0134 — Tasks: переключение вкладок деталей задачи пушит записи в history — Back циклит по вкладкам
-- Категория: Navigation | Серьёзность: Low | Статус: Suspected
+- Категория: Navigation | Серьёзность: Low | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskDetails.jsx` :373-378
-- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] setTaskDetailTab вызывает updateSearch с { replace: false } (375-377), а updateSearch делает navigate push (121-124) — Back возвращает по вкладкам.
+- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] setTaskDetailTab вызывает updateSearch с { replace: false } (375-377), а updateSearch делает navigate push (121-124) — Back возвращает по вкладкам.; [cycle13:confirmed] setTaskDetailTab вызывает updateSearch с replace: false (373-378), а updateSearch делает navigate с replace:false (115-125), то есть каждое переключение вкладки деталей добавляет запись в history. Пользователь нажимает Back и возвращается на предыдущую вкладку вместо выхода из карточки; цикл повторяется по числу переключений.
 
 ### FE-0135 — Statistics: текст ошибки blob-ответа нечитаем в тосте экспорта
-- Категория: UX/Statistics | Серьёзность: Low | Статус: Suspected
+- Категория: UX/Statistics | Серьёзность: Low | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/Statistics.jsx` :333-335
-- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Экспорт запрашивается с responseType: 'blob' (json_client.js:255), а catch передаёт ошибку в notifyApiError (Statistics.jsx:335); extractApiDetail ищет строковый detail/message и не читает Blob (NotificationContext.jsx:92-109).
+- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Экспорт запрашивается с responseType: 'blob' (json_client.js:255), а catch передаёт ошибку в notifyApiError (Statistics.jsx:335); extractApiDetail ищет строковый detail/message и не читает Blob (NotificationContext.jsx:92-109).; [cycle13:confirmed] Подтверждается: экспорт запрашивается с responseType:'blob' (json_client.js:252-255), а catch передаёт ошибку в notifyApiError (Statistics.jsx:333-335). extractApiDetail (NotificationContext.jsx:92-110) читает только строковые detail/message/error и не разбирает Blob, поэтому серверный detail (json_operations.py:743-747) теряется. В тосте остаётся техническое «Request failed with status code N» на английском вместо причины отказа — это не дамп «[object Blob]», но пользователь причины не видит; в проекте уже есть образец разбора через blob.text() (EquipmentDetailPhotosPanel.jsx:54-65).
 
 ### FE-0136 — E2E auth-guards: ожидание редиректа оператора из /admin устарело — техдолг теста, не дефект приложения
 - Категория: Tests/Debt | Серьёзность: Low | Статус: Rejected
-- Файл: `WEB-itinvent/frontend/e2e/auth-guards.spec.js`
+- Файл: `WEB-itinvent/frontend/e2e/auth-guards.spec.js` :59-76
 - Суть/механизм: поведение приложения корректно по текущей политике прав (operator + scan.tasks ∈ ADMIN_AREA_PERMISSIONS); падение спеки — устаревшее ожидание, красный набор маскирует регрессии. Не дефект продукта.
 - Доказательства: E2E_LOCAL=1 auth-guards: 5/6 pass; «non-admin is redirected out of the admin area» FAIL — /admin доступен operator легитимно (scan.tasks в ADMIN_AREA_PERMISSIONS); [cycle12:not-a-defect] Поведение приложения корректно: operator имеет scan.tasks (authorization_service.py:138) в ADMIN_AREA_PERMISSIONS (components/account/accountNavigationConfig.jsx:28), и AdminAreaRoute его пускает (App.jsx:285-288). Техдолг остаётся в спеке: auth-guards.spec.js:74-76 всё ещё безусловно ждёт уход с /admin.
 
 ### FE-0137 — Маршрутизация доверяет кэшированному localStorage.user до валидации сессии — вспышка чужого экрана
 - Категория: Auth/UX | Серьёзность: Info | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/contexts/AuthContext.jsx`
+- Файл: `WEB-itinvent/frontend/src/contexts/AuthContext.jsx` :270-296
 - Суть/механизм: offline-session tradeoff: /login мгновенно уводит на landing/about по устаревшему user, затем 401-валидация возвращает; наблюдалось в probe при сохранившейся сессии e2e_fresh.
 - Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] Кэшированный user применяется из localStorage до валидации сессии (AuthContext.jsx:270-288), после чего LoginRoute сразу редиректит по isAuthenticated (App.jsx:237-249); комментарий 281-282 подтверждает намеренную offline-политику.
 
 ### FE-0138 — Попытка запуска hubit:// протокола при браузерном входе — console-ошибка «scheme does not have a registered handler»
 - Категория: Desktop/UX | Серьёзность: Info | Статус: Confirmed
-- Файл: `WEB-itinvent/frontend/src/lib/desktopProtocolHandoff.js`
+- Файл: `WEB-itinvent/frontend/src/lib/desktopProtocolHandoff.js` :240-276
 - Суть/механизм: механизм handoff ожидаем, но ошибка засоряет консоль и путает диагностику.
 - Доказательства: console capture cycle9: "Failed to launch hubit://open/dashboard …" на веб-логине; [cycle12:confirmed] DesktopProtocolHandoff авто-запускает hubit:// при загрузке страницы (DesktopProtocolHandoff.jsx:67-70) через anchor.click (desktopProtocolHandoff.js:270-275) без проверки регистрации схемы — console-ошибка в браузере остаётся.
 
@@ -656,10 +658,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] openEditBranchDialog выставляет branchEditId и грузит getBranchDbMapping без seq/abort-guard (1737-1752); ответ по филиалу A перезаписывает branchEditDbId уже открытого B (1746).
 
 ### FE-0150 — Networks/SWR: протухшие данные показываются бессрочно — фоновая ревалидация не доходит до UI
-- Категория: Cache/Networks | Серьёзность: Medium | Статус: Suspected
+- Категория: Cache/Networks | Серьёзность: Medium | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/lib/swrCache.js` :151-165: stale-запись → фоновой fetch пишет только в кэш; loadBranchContext применяет только синхронный data
 - Суть/механизм: повторный заход показывает устаревший снапшот до полного перезахода
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] getOrFetchSWR на stale-записи запускает фоновый fetch и сразу возвращает старый data (swrCache.js:151-165), а loadBranchContext применяет только этот синхронный data (756-805) — обновление из кэша до UI не доходит.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] getOrFetchSWR на stale-записи запускает фоновый fetch и сразу возвращает старый data (swrCache.js:151-165), а loadBranchContext применяет только этот синхронный data (756-805) — обновление из кэша до UI не доходит.; [cycle13:confirmed] На протухшей записи getOrFetchSWR запускает runDedupedFetch и сразу возвращает старый entry.data (swrCache.js:151-165), а setCacheEntry (79-85) не имеет подписчиков — обновлённый кэш некому применить к UI. loadBranchContext применяет только синхронный data (Networks.jsx:756-805), эффект перезапускается лишь при смене branchIdNum (972-993), а SWR_STALE_MS=60 с при retention 30 мин и отсутствии focus/visibility-ревалидации делает окно реальным. Собственная проба на реальном swrCache.js воспроизвела сценарий: вызов вернул v1 (isFresh=false), фоновая выборка прошла один раз и через 120 мс в кэше был v2, а вызывающий остался с v1. Итог: после возврата на филиал через минуту UI держит старый снапшот до смены филиала или мутации (refreshBranchContext вызывается только после мутаций, 898-906).
 
 ### FE-0151 — Networks: панорама карты не ограничена — карту можно утащить за экран
 - Категория: Zoom/Maps | Серьёзность: Medium | Статус: Confirmed
@@ -668,10 +670,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] handlePointerMove пишет offset без ограничений (274-277), zoomBy клампит только scale (161); сброс offset только по кнопке (424) — карту можно утащить за экран.
 
 ### FE-0152 — Networks: виртуализация — stale scrollTop после размонтирования контейнера → «пустая» таблица
-- Категория: Virtualization/Networks | Серьёзность: Medium | Статус: Suspected
+- Категория: Virtualization/Networks | Серьёзность: Medium | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/components/networks/useVirtualizedTableWindow.js` :41-67 + EquipmentTab.jsx:339-344: state scrollTop переживает размонтирование TableContainer
 - Суть/механизм: после поиска — гигантский topSpacer + пустая таблица до первого scroll
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] scrollTop живёт в state и не сбрасывается при размонтировании (useVirtualizedTableWindow.js:33-35); при перемонтировании без изменения itemCount эффект [enabled,itemCount] (48-59) не ресинхронизирует его с новым узлом — пустая таблица до scroll. При обычном поиске смена числа строк маскирует дефект.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] scrollTop живёт в state и не сбрасывается при размонтировании (useVirtualizedTableWindow.js:33-35); при перемонтировании без изменения itemCount эффект [enabled,itemCount] (48-59) не ресинхронизирует его с новым узлом — пустая таблица до scroll. При обычном поиске смена числа строк маскирует дефект.; [cycle13:confirmed] scrollTop хранится в state хука (33-35), а эффект [enabled, itemCount] при перемонтировании таблицы с теми же deps не перезапускается (46-67). В SocketsTab/EquipmentTab TableContainer рендерится только на desktop (220, 308), поэтому после перехода mobile→desktop контейнер новый со scrollTop=0, но окно виртуализации считается по старому scrollTop: сверху остаётся большой spacer, таблица выглядит пустой до первого скролла.
 
 ### FE-0153 — Networks: удаление точки карты и устройства без подтверждения
 - Категория: UX/Networks | Серьёзность: Medium | Статус: Confirmed
@@ -698,10 +700,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] Маркеры и кластеры — <Box onClick> без role/tabIndex/onKeyDown (516-565, 644-695); Tooltip здесь с React-node title, так что фокусируемого имени у маркера нет.
 
 ### FE-0157 — Networks: клик после перетаскивания точки может «просочиться» на canvas
-- Категория: Pointer/Maps | Серьёзность: Low | Статус: Suspected
+- Категория: Pointer/Maps | Серьёзность: Low | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx` :530-544 (pointDragRef.moved но не dragRef.moved),310-329 (handleCanvasClick проверяет только dragRef)
 - Суть/механизм: спорадические лишние точки/деселект после drag — зависит от click-target после pointer capture
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:unverifiable] Маркер гасит click (stopPropagation, 559-565), а handleCanvasClick отбрасывает цели [data-map-point=1] (317-319), но не проверяет pointDragRef.moved; протечка возможна только если браузер доставит click контейнеру после pointer capture — статически не решается.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:unverifiable] Маркер гасит click (stopPropagation, 559-565), а handleCanvasClick отбрасывает цели [data-map-point=1] (317-319), но не проверяет pointDragRef.moved; протечка возможна только если браузер доставит click контейнеру после pointer capture — статически не решается.; [cycle13:refuted] Клик по маркеру гасится stopPropagation в onClick (559-565), а handleCanvasClick дополнительно отбрасывает цель внутри [data-map-point=1] (317-319). pointDragRef при перетаскивании ставит pointer capture на маркер (522-528), поэтому pointerup и производный click остаются на маркере; достижимого пути, где click доходит до контейнера после drag, в поддерживаемых браузерах нет.
 
 ### FE-0158 — Networks: openMapDialogCreate игнорирует default_site_code филиала
 - Категория: Data/Networks | Серьёзность: Low | Статус: Confirmed
@@ -725,13 +727,13 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: Data/Networks | Серьёзность: Low | Статус: Suspected
 - Файл: `WEB-itinvent/frontend/src/pages/Networks.jsx` :765 (sockets limit 10000),871 (ports limit 10000),1059/2030 (поиск limit 5000) — UI не сигнализирует о неполноте
 - Суть/механизм: для крупных филиалов — тихая потеря части данных во всех производных
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] Запросы ограничены limit 10000/5000 (765, 871, 1059, 2030) без индикатора усечения — при превышении UI молча теряет часть портов/розеток.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] Запросы ограничены limit 10000/5000 (765, 871, 1059, 2030) без индикатора усечения — при превышении UI молча теряет часть портов/розеток.; [cycle13:unverifiable] Лимиты 10000/5000 действительно жёстко заданы на клиенте (765, 871, 1059, 2030), бэкенд принимает не больше 10000 (313, 330), а признака усечения/общего total в ответе нет. При этом вкладка показывает длину загруженного списка (SocketsTab.jsx:185), тогда как обзорный блок показывает истинный sockets_count из metrics (Networks.jsx:2723-2727), то есть расхождение возможно. Но достижимость требует филиала с более 10000 розеток/портов, а таких данных в репозитории нет, поэтому пользовательский эффект не подтверждён.
 
 ### FE-0162 — Networks: мелкие хронометражи — setTimeout(0) без очистки, expectedRef безусловный, setPointerCapture без try, ключ AuditTab
-- Категория: Async/Networks | Серьёзность: Low | Статус: Suspected
+- Категория: Async/Networks | Серьёзность: Low | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/pages/Networks.jsx` :1467-1468; ObjectNetmapTab.jsx:72 (expectedVersion безусловно → lost-update); InteractiveMapCanvas.jsx:528,657; AuditTab.jsx:84
 - Суть/механизм: совокупность узких edge-кейсов
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] setTimeout(0) в startSocketPointCreation не сохраняется и не очищается (1467-1468), expectedRef.current безусловно перезаписывается из version (ObjectNetmapTab.jsx:72), setPointerCapture без try (InteractiveMapCanvas.jsx:528, 657), ключ строки аудита включает index (AuditTab.jsx:84).
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] setTimeout(0) в startSocketPointCreation не сохраняется и не очищается (1467-1468), expectedRef.current безусловно перезаписывается из version (ObjectNetmapTab.jsx:72), setPointerCapture без try (InteractiveMapCanvas.jsx:528, 657), ключ строки аудита включает index (AuditTab.jsx:84).; [cycle13:refuted] Все четыре пункта — защитные мелочи без наблюдаемого состояния: setTimeout(0) вызывает applySocketPointDraft, который лишь применяет уже сохранённый черновик (1467-1468), expectedRef синхронизируется с версией того же map-объекта, которую родитель обновляет после сохранения (ObjectNetmapTab.jsx:72, 87-88), setPointerCapture на pointerdown поддерживается браузерами, а ключ AuditTab использует index только как fallback при отсутствии id (AuditTab.jsx:84), при этом бэкенд всегда отдаёт id. Воспроизводимого пользовательского дефекта нет.
 
 ### FE-0163 — KnowledgeBase: клик по элементу списка перезагружает весь список и дублирует загрузку детали
 - Категория: Perf/KB | Серьёзность: Medium | Статус: Confirmed
@@ -806,10 +808,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:not-a-defect] request_ref формируется как UUID из 36 символов (warehouse_1c_it_requests.py:131-144), слэшей и спецсимволов не бывает; navigate на 910/946 безопасен.
 
 ### FE-0175 — Docflow: dangling previewObjectUrl.current после отозванного URL
-- Категория: ResourceLeak/Docflow | Серьёзность: Low | Статус: Suspected
+- Категория: ResourceLeak/Docflow | Серьёзность: Low | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/pages/Docflow.jsx` :1749+1757-1758
 - Суть/механизм: после устаревшей последовательности .current указывает на мёртвый URL
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] В createObjectUrl (1745-1750) пишется previewObjectUrl.current, а в stale-ветке (1755-1758) URL отзывается без очистки .current; затем close/следующий preview отзывает мёртвый URL, а URL актуального превью может остаться неотозванным.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] В createObjectUrl (1745-1750) пишется previewObjectUrl.current, а в stale-ветке (1755-1758) URL отзывается без очистки .current; затем close/следующий preview отзывает мёртвый URL, а URL актуального превью может остаться неотозванным.; [cycle13:refuted] Гонка достижима только при двух перекрывающихся openAttachmentPreview (закрыть превью во время загрузки и открыть другое): stale-ветка пишет previewObjectUrl.current = objectUrl (1749), затем отзывает его (1755-1759), оставляя в ref мёртвый URL. Однако следующий close/open отзывает именно мёртвый URL, а актуальный URL остаётся живым, то есть превью показывается корректно; последствие — утечка blob-URL (память), а не потеря/подмена превью.
 
 ### FE-0176 — Voice: единый actionBusyKey затирается параллельными действиями → двойной сабмит
 - Категория: BusyGuards/Voice | Серьёзность: Medium | Статус: Confirmed
@@ -847,11 +849,11 @@ best-effort, пользовательские ошибки не глотаютс
 - Суть/механизм: системная отмена жеста оставляет drag/pressRef — ложный seek при следующем касании
 - Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] На Box (143-148) есть только onPointerDown/Move/Up (81-114), onPointerCancel отсутствует; pressRef и drag не сбрасываются при системной отмене жеста.
 
-### FE-0182 — Voice: navigator.clipboard?.writeText().then — TypeError без Clipboard API
-- Категория: ErrorHandling/Voice | Серьёзность: Low | Статус: Suspected
-- Файл: `WEB-itinvent/frontend/src/pages/voice-video/VoiceLogViewer.jsx` :166-171: ?. защищает только доступ к методу; undefined.then падает; setTimeout не очищается
+### FE-0182 — Voice: unhandled rejection при отказе clipboard.writeText и неочищаемый setTimeout
+- Категория: ErrorHandling/Voice | Серьёзность: Low | Статус: Confirmed
+- Файл: `WEB-itinvent/frontend/src/pages/voice-video/VoiceLogViewer.jsx` :166-171
 - Суть/механизм: кнопка «Копировать» молча падает на http/старом браузере
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:wrong-evidence] Факт неверен: navigator.clipboard?.writeText(...).then(...) при отсутствии clipboard не падает — опциональная цепочка короткозамыкает всё выражение (проверено в node). Реальный дефект рядом: у промиса writeText нет .catch (отказ на http/при запрете) и setTimeout на 169 не очищается.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:wrong-evidence] Факт неверен: navigator.clipboard?.writeText(...).then(...) при отсутствии clipboard не падает — опциональная цепочка короткозамыкает всё выражение (проверено в node). Реальный дефект рядом: у промиса writeText нет .catch (отказ на http/при запрете) и setTimeout на 169 не очищается.; [cycle13:confirmed] Подтверждается с исправленной формулировкой: старого TypeError нет — при отсутствии navigator.clipboard опциональная цепочка короткозамыкает всё выражение вместе с .then (проверено в node), поэтому «undefined.then» невозможен. Реальный дефект — отсутствие .catch и fallback: при отказе Clipboard API (нет разрешения, документ не в фокусе, ограничение политики или встроенного браузера) клик «Копировать всё» молча ничего не делает, copied не выставляется, а отклонение уходит в unhandledrejection. Общий helper lib/clipboard.js:1-12 с textarea-fallback здесь не используется; setTimeout на VoiceLogViewer.jsx:169 также не очищается, поэтому повторное копирование и закрытие диалога оставляют висящий таймер.
 
 ### FE-0183 — Voice: getSummary .then без проверки abort → чужая сводка при смене встречи
 - Категория: Race/Voice | Серьёзность: Medium | Статус: Confirmed
@@ -923,7 +925,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: ErrorHandling/Monitoring | Серьёзность: Low | Статус: Suspected
 - Файл: `WEB-itinvent/frontend/src/pages/monitoring/MonitoringDeviceGrid.jsx` :34: displayTargetName защищает, но прямой вызов split — нет
 - Суть/механизм: белый экран списка устройств при неполной записи
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] На 34 target.name.split без защиты, хотя displayTargetName (monitoringFormat.js:28) использует ?. и fallback. name в БД NOT NULL (monitoring_models.py:29), но Monitoring.jsx:113 при отсутствии id добавляет частичный {id, summary} из patchTarget (198), и такая запись роняет сетку.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] На 34 target.name.split без защиты, хотя displayTargetName (monitoringFormat.js:28) использует ?. и fallback. name в БД NOT NULL (monitoring_models.py:29), но Monitoring.jsx:113 при отсутствии id добавляет частичный {id, summary} из patchTarget (198), и такая запись роняет сетку.; [cycle13:confirmed] Подтверждается как незащищённое обращение, а не как частый пользовательский сценарий: MonitoringDeviceGrid.jsx:34 вызывает target.name.split без ?., хотя displayTargetName рядом использует ?. и fallback. В БД name NOT NULL (monitoring_models.py:29), поэтому нормальный ответ API имя содержит; путь к записи без name даёт только частичный patchTarget({id, summary}) при сохранении интерфейса (Monitoring.jsx:198), если цели уже нет в списке (рассинхронизация списка и детали), после чего при возврате к сетке рендер падает. Падение ловит RouteErrorBoundary (App.jsx:308-338) — пользователь увидит экран ошибки маршрута, а не «белый экран»; сценарий редкий, поэтому Low оправдана, но guard в строке 34 нужен.
 
 ### FE-0195 — Monitoring: диалог устройств — loadFree/change без mounted-флага
 - Категория: Leaks/Monitoring | Серьёзность: Low | Статус: Confirmed
@@ -941,13 +943,13 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: Auth/UX | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/Login.jsx` :1505-1521 (submitTwoFactorSetup→verifyTwoFactorSetup→applyAuthenticatedPayload→setUser, AuthContext.jsx:557-568) → LoginRoute (App.jsx:237-239) отдаёт PostAuthNavigate → Login unmount ДО setStep(setup_complete); renderSetupCompleteStep — мёртвый код в проде
 - Суть/механизм: пользователь не видит backup-коды при обязательной 2FA — риск блокировки при потере TOTP-устройства; тест Login.test.jsx:503 маскирует дефект (рендерит без LoginRoute)
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] verifyTwoFactorSetup ставит user (AuthContext.jsx:557-568) до setStep('setup_complete') (Login.jsx:1514-1520); LoginRoute при isAuthenticated отдаёт PostAuthNavigate (App.jsx:237-253), Login размонтируется и renderSetupCompleteStep (2190-2219) не показывается.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] verifyTwoFactorSetup ставит user (AuthContext.jsx:557-568) до setStep('setup_complete') (Login.jsx:1514-1520); LoginRoute при isAuthenticated отдаёт PostAuthNavigate (App.jsx:237-253), Login размонтируется и renderSetupCompleteStep (2190-2219) не показывается.; [cycle13:confirmed] Live cycle 13 (route-mocked 2FA на изолированном стенде): после verify-2fa URL сразу /dashboard, экран backup-кодов не появился ни через 0.25/0.8/2/4 c.
 
 ### FE-0198 — Login: обязательная привязка trusted-device (remember-device sheet) недостижима — тот же routing race
 - Категория: Auth/UX | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/Login.jsx` :1394-1415,1137-1153,1170-1181,2342-2399: setRememberDeviceOpen(true) при уже установленном user → sheet не рендерится
 - Суть/механизм: required-enrollment молча пропускается — фича фактически отключена
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] completeAuthenticatedRedirect (1404-1415) после установки user вызывает openRememberDevicePrompt → setRememberDeviceOpen(true) (1170-1181), но LoginRoute уже размонтировал Login (App.jsx:237-253), и sheet на 2342-2399 не рендерится — обязательная привязка пропускается.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] completeAuthenticatedRedirect (1404-1415) после установки user вызывает openRememberDevicePrompt → setRememberDeviceOpen(true) (1170-1181), но LoginRoute уже размонтировал Login (App.jsx:237-253), и sheet на 2342-2399 не рендерится — обязательная привязка пропускается.; [cycle13:confirmed] Live cycle 13 (route-mocked 2FA на изолированном стенде): после verify-2fa-login URL сразу /dashboard, remember-device sheet не появился ни через 0.25/0.8/2/4 c.
 
 ### FE-0199 — Login: кастомный диалог «Запомнить устройство» без управления фокусом/Escape/inert
 - Категория: A11y/Login | Серьёзность: Medium | Статус: Confirmed
@@ -1010,10 +1012,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] Мутация chatSerialQueueRef выполняется внутри setState-апдейтера (NotificationContext.jsx:347-380); в StrictMode апдейтер может вызываться дважды, очередь меняется повторно.
 
 ### FE-0209 — Notifications: seen-маркеры не синхронизируются между вкладками → дубли уведомлений
-- Категория: MultiTab/Notifications | Серьёзность: Low | Статус: Suspected
+- Категория: MultiTab/Notifications | Серьёзность: Low | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/contexts/NotificationContext.jsx` :194-196,433-449: чтение один раз, без storage-слушателя; windowsNotifications.js read-then-write без lock
 - Суть/механизм: дублирующиеся тосты/системные уведомления в мультитабе
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] Seen-маркеры читаются один раз (NotificationContext.jsx:194-196,433-449), storage-слушателя нет; запись read-then-write без lock — две вкладки дают дубли.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] Seen-маркеры читаются один раз (NotificationContext.jsx:194-196,433-449), storage-слушателя нет; запись read-then-write без lock — две вкладки дают дубли.; [cycle13:confirmed] Seen-ids читаются из localStorage один раз при монтировании (NotificationContext.jsx:56-65,194) и дальше живут в state каждой вкладки; storage-слушателя для itinvent_hub_seen_ids нет, есть только запись (76-83,222-226). Два окна с visibilityState=visible независимо опрашивают /hub/notifications/poll и обе показывают toast, потому что проверка идёт по локальному ref (MainLayout.jsx:1479,1504-1513), а dedupeMode:'recent' работает только внутри вкладки. Системные уведомления уже дедуплицируются через общий localStorage в systemNotificationRouter (45-82), поэтому остаётся дубль именно in-app тостов.
 
 ### FE-0210 — Смена selected_database в одной вкладке молча меняет контекст остальных
 - Категория: MultiTab/State | Серьёзность: Low | Статус: Rejected
@@ -1034,10 +1036,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:not-a-defect] alwaysGrantedPermissions гарантирует dashboard.read и другие базовые права (AuthContext.jsx:17-34), поэтому resolveFirstAccessiblePath не может вернуть пустой набор у аутентифицированного пользователя.
 
 ### FE-0213 — Login: преждевременный авто-submit backup-кода при length>=6 (формат 8-9 символов)
-- Категория: Auth/UX | Серьёзность: Low | Статус: Suspected
+- Категория: Auth/UX | Серьёзность: Low | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/Login.jsx` :82-88,1579-1603: isCompleteBackupInput принимает >=6
 - Суть/механизм: ложная ошибка «неверный код» при медленном вводе
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] isCompleteBackupInput возвращает true для любой строки длиной >=6 (Login.jsx:82-88), авто-submit срабатывает через 650 мс (1584-1601), хотя backup-код 8-9 символов — часть кода уходит на проверку.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] isCompleteBackupInput возвращает true для любой строки длиной >=6 (Login.jsx:82-88), авто-submit срабатывает через 650 мс (1584-1601), хотя backup-код 8-9 символов — часть кода уходит на проверку.; [cycle13:confirmed] isCompleteBackupInput возвращает true для любой строки длиной >=6 (Login.jsx:82-88), и effect на compact-viewport отправляет форму через 650 мс (1584-1601), тогда как коды генерируются 9-символьными XXXX-XXXX (twofa_service.py:149-160). При паузе после шестого символа на проверку уходит часть кода, пользователь видит ложную ошибку, а бэкенд списывает попытку в лимите 3 за 60 c (auth.py:1446-1453). Несколько таких пауз приводят к 429, поэтому дефект воспроизводим на мобильной ширине.
 
 ### FE-0214 — Layout: маркер «соединение восстановлено» теряется при StrictMode-двойном init
 - Категория: React/Dev | Серьёзность: Info | Статус: Confirmed
@@ -1049,13 +1051,13 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: DataLoss/Mail | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx` :524-539 + MailRichTextEditor.jsx:151-157,228-242 + mailComposeHtml.js:138-145: после saveDraftMultipart blob: отозван, DOM Quill не переписан (эффект выходит по nextValue===valueRef), buildPortableComposeHtml удаляет img как не-cid
 - Суть/механизм: вставленная картинка молча выпадает при следующем autosave/отправке
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] После autosave blob-URL inline-превью отзываются (MailComposeHost.jsx:524-539), DOM Quill не переписывается (эффект выходит по nextValue===valueRef, MailRichTextEditor.jsx:228-242), а buildPortableComposeHtml удаляет img с не-cid src (mailComposeHtml.js:138-145).
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] После autosave blob-URL inline-превью отзываются (MailComposeHost.jsx:524-539), DOM Quill не переписывается (эффект выходит по nextValue===valueRef, MailRichTextEditor.jsx:228-242), а buildPortableComposeHtml удаляет img с не-cid src (mailComposeHtml.js:138-145).; [cycle13:confirmed] Static remains confirmed; live mail check not possible: isolated stack runs MAIL_MODULE_ENABLED=0 and has no mailbox.
 
 ### FE-0216 — Почта: редактор стрипает inline-превью с data:/абсолютным URL при синхронизации значения
-- Категория: DataLoss/Mail | Серьёзность: Medium | Статус: Suspected
+- Категория: DataLoss/Mail | Серьёзность: Medium | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/components/mail/MailRichTextEditor.jsx` :45-58 + mailComposeHtml.js:50-54 (REMOTE_RESOURCE_RE https?:|data:)
 - Суть/механизм: если бэкенд отдаёт абсолютный inline_src/data: — восстановленные картинки исчезают
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] REMOTE_RESOURCE_RE включает https?: и data: (mailComposeHtml.js:50-54), синхронизация значения вычищает такие img (MailRichTextEditor.jsx:45-58) — inline-превью с data:/абсолютным URL стрипается.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] REMOTE_RESOURCE_RE включает https?: и data: (mailComposeHtml.js:50-54), синхронизация значения вычищает такие img (MailRichTextEditor.jsx:45-58) — inline-превью с data:/абсолютным URL стрипается.; [cycle13:refuted] Текущий бэкенд отдаёт для inline-вложений относительный inline_src (/api/v1/mail/...), а не data: или https: (mail_reference_codec.py:333-340; mail_message_serializer.py:436-440), и compose-контекст берёт inline_src в приоритете (MailComposeHost.jsx:281-294). Синхронизация значения вычищает http(s):/data:-источники (mailComposeHtml.js:50-63,70-77), но относительный inline_src и blob:-превью переживают setQuillHtml; data: остаётся только как fallback inline_data_url, когда inline_src не построен. Удаление remote/data-картинок — намеренная защита от трекинга, закреплённая тестом (mailComposeHtml.test.js:18-26), а не потеря восстановленных превью.
 
 ### FE-0217 — Почта: localDraftDirtyRef засоряется служебными патчами → межвкладочная синхронизация черновика мертва
 - Категория: MultiTab/Mail | Серьёзность: Medium | Статус: Confirmed
@@ -1139,7 +1141,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: React/Hooks | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/account/settings/notifications/ChatNotificationsSettingsCard.jsx` :36 (if(isNativeShellRuntime()) return null до хуков 38-117); ChatNotificationsSettingsCard.jsx:30; platform.js:14-16; desktopBridge.js:905-907 (bridgeReady асинхронный)
 - Суть/механизм: при готовности моста WebView2 карточка возвращает null до хуков → React crash страницы настроек в HUB Desktop; вспышка PWA-карточки в десктопе
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] High, ручная проверка: isNativeShellRuntime() возвращает null до хуков (HubItPwaSettingsCard.jsx:36-38; ChatNotificationsSettingsCard.jsx:30-32, файл переехал в pages/account/settings/notifications/). Флаг зависит от асинхронного desktopBridgeReady (platform.js:14-16), поэтому смена false→true меняет число хуков и роняет рендер.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] High, ручная проверка: isNativeShellRuntime() возвращает null до хуков (HubItPwaSettingsCard.jsx:36-38; ChatNotificationsSettingsCard.jsx:30-32, файл переехал в pages/account/settings/notifications/). Флаг зависит от асинхронного desktopBridgeReady (platform.js:14-16), поэтому смена false→true меняет число хуков и роняет рендер.; [cycle13:confirmed] Static remains confirmed; live simulation with a late desktop.hostReady on the isolated stand did not reproduce a hooks error (card subtree unmounted on re-render), so live reproduction is inconclusive.
 
 ### FE-0231 — Аккаунт: isAdmin в useAccountSectionData без toLowerCase → пустые admin-разделы при роли «Admin»
 - Категория: Permissions/Admin | Серьёзность: Medium | Статус: Rejected
@@ -1151,7 +1153,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: DataLoss/Admin | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js` :244-251 (catch→merge с items:[] + console.error),637-644 (updateTaskDelegates из черновика); accountUserModel.js:27-39
 - Суть/механизм: временный сбой одного эндпоинта → при любом сохранении карточки связи удаляются на сервере без предупреждения
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] High, ручная проверка: при ошибке bulk-загрузки делегатов users остаются с task_delegate_links=[] (useAccountSectionData.js:244-251, accountUserModel.js:27-39); сохранение пользователя отправляет этот пустой список в updateTaskDelegates (637-644) и стирает связи.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] High, ручная проверка: при ошибке bulk-загрузки делегатов users остаются с task_delegate_links=[] (useAccountSectionData.js:244-251, accountUserModel.js:27-39); сохранение пользователя отправляет этот пустой список в updateTaskDelegates (637-644) и стирает связи.; [cycle13:confirmed] Static remains confirmed; live account-admin race not executed in cycle 13 (no test-data mutation outside throwaway stack).
 
 ### FE-0233 — Аккаунт: частичный успех create/update пользователя показывается как полный провал
 - Категория: ErrorHandling/Admin | Серьёзность: Medium | Статус: Confirmed
@@ -1193,7 +1195,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: DataLoss/Admin | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/account/admin/DepartmentsTab.jsx` :58-89 (loadMembers без seq-guard),129-142 (handleSaveManagers шлёт draftManagerIds в selectedDepartmentId)
 - Суть/механизм: быстрый A→B → ответ по A перезаписывает memberships/draftManagerIds → роли отдела A уходят в отдел B
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] High, ручная проверка: loadMembers без seq-guard (DepartmentsTab.jsx:58-89) может применить ответ старого отдела; handleSaveManagers отправляет draftManagerIds в текущий selectedDepartmentId (129-142).
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] High, ручная проверка: loadMembers без seq-guard (DepartmentsTab.jsx:58-89) может применить ответ старого отдела; handleSaveManagers отправляет draftManagerIds в текущий selectedDepartmentId (129-142).; [cycle13:confirmed] Static remains confirmed; live department-manager race not executed in cycle 13.
 
 ### FE-0240 — Аккаунт: loadLookups без seq-защиты → устаревшие справочники под новой базой
 - Категория: Race/Admin | Серьёзность: Medium | Статус: Confirmed
@@ -1255,11 +1257,11 @@ best-effort, пользовательские ошибки не глотаютс
 - Суть/механизм: непреднамеренное удаление подключённого ящика
 - Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] Confirm удаления ящика говорит «Отключить ящик» (ProfileTab.jsx:311), но вызывает mailAPI.deleteMailbox (313); рядом есть отдельное действие «Отключить» (469).
 
-### FE-0250 — Аккаунт: мёртвая конфигурация adminOnlyFallback + test-only resolveAvailableSettingsTabs
-- Категория: Architecture/DeadCode | Серьёзность: Low | Статус: Suspected
-- Файл: `WEB-itinvent/frontend/src/components/account/accountNavigationConfig.jsx` :93,122,179-180; accountConstants.jsx:32
+### FE-0250 — Аккаунт: test-only resolveAvailableSettingsTabs и избыточный adminOnlyFallback
+- Категория: Architecture/DeadCode | Серьёзность: Info | Статус: Confirmed
+- Файл: `WEB-itinvent/frontend/src/pages/account/accountConstants.jsx` :32-40
 - Суть/механизм: ложная сложность конфигурации
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:wrong-evidence] adminOnlyFallback не мёртв: он используется в getAvailableAdminSections (accountNavigationConfig.jsx:179). Подтверждается только вторая часть — resolveAvailableSettingsTabs встречается лишь в тесте SettingsAiBots.test.jsx.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:wrong-evidence] adminOnlyFallback не мёртв: он используется в getAvailableAdminSections (accountNavigationConfig.jsx:179). Подтверждается только вторая часть — resolveAvailableSettingsTabs встречается лишь в тесте SettingsAiBots.test.jsx.; [cycle13:confirmed] Подтверждается вторая половина: resolveAvailableSettingsTabs (accountConstants.jsx:32-40) вместе со всем SETTINGS_TABS используется только тестом SettingsAiBots.test.jsx:26-57 и в рантайме не вызывается. adminOnlyFallback формально не мёртв — он читается в accountNavigationConfig.jsx:179, — но эффекта не даёт: для admin строка 180 всё равно вернёт true, а для ad-users срабатывает ветка permissions (176-178); флаг можно удалить без изменения поведения. Пользовательского дефекта здесь нет, это мёртвый код и лишняя конфигурация, поэтому severity следует понизить с Low до Info и отдельно решить судьбу теста мёртвой функции.
 
 ### FE-0251 — Аккаунт: пакет пропусков подтверждений/гардов (avatar delete, mailbox busy, AiBalance threshold wipe, Enter-during-saving, syncFromAD, shared savingBotId, NaN fontScale)
 - Категория: Guards/Admin | Серьёзность: Low | Статус: Confirmed
@@ -1277,7 +1279,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: Perf/Memory | Серьёзность: Medium | Статус: Suspected
 - Файл: `WEB-itinvent/frontend/src` :роутинг
 - Суть/механизм: CDP usedJSHeapSize после каждого раунда goto×8: +58MB на 3-м раунде; возможна легитимная инерция кэша чанков — нужен более длинный прогон/GC-профиль
-- Доказательства: runtime-замер локального стека (цикл 11); [cycle12:unverifiable] Замер 85→85→143MB не контролирует GC и не воспроизводился повторно; утечка конкретного слушателя/кэша не локализована.
+- Доказательства: runtime-замер локального стека (цикл 11); [cycle12:unverifiable] Замер 85→85→143MB не контролирует GC и не воспроизводился повторно; утечка конкретного слушателя/кэша не локализована.; [cycle13:unverifiable] Замер probe_wave3.mjs:24-31 шёл hard-goto по 8 маршрутам, читал performance.memory.usedJSHeapSize сразу после 1.2 с ожидания и ни разу не вызывал HeapProfiler.collectGarbage, поэтому +58 МБ на третьем раунде неотличимы от отложенной сборки мусора и кэша скомпилированного кода. Hard-навигация уничтожает JS-realm, так что React-состояние, листенеры и модульные кэши между раундами копиться не могут, а общие кэши в коде ограничены (swrCache — 80 записей, ChatLinkPreview — 300, chatHelpers — 4000 с очисткой). Решает прогон 10+ раундов с HeapProfiler.collectGarbage перед каждым чтением: плоский post-GC тренд означает GC-шум, монотонный рост — утечку, а heap snapshot diff с retainer-путями локализует объект. Пока такого замера нет, утечка не доказана, но и не исключена: исходный тест SPA-переходы вообще не проверял.
 
 ### FE-0254 — hubit://open/dashboard protocol launch вызывает console-ошибку в обычном браузере
 - Категория: UX/Desktop | Серьёзность: Info | Статус: Confirmed
@@ -1292,40 +1294,40 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, ручная); [cycle12:confirmed] void revealMessage().then(...) без .catch (useChatActiveConversationLifecycleEffects.js:129) — ошибка поиска сообщения даёт unhandled rejection.
 
 ### FE-0256 — Voice: loadMeetings().then без .catch в эффекте фильтров
-- Категория: ErrorHandling/Voice | Серьёзность: Low | Статус: Suspected
+- Категория: ErrorHandling/Voice | Серьёзность: Low | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/pages/voice-video/VoiceVideoPage.jsx` :495: .then((ok)=>{if(ok===true)loadExportCount()}) без catch
 - Суть/механизм: если loadMeetings бросит (не вернёт ok) → unhandled rejection
-- Доказательства: статическая проверка по file:line (цикл 11, ручная); [cycle12:confirmed] loadMeetings().then(...) в эффекте фильтров без .catch (VoiceVideoPage.jsx:495); loadExportCount тоже не обрабатывает отказ.
+- Доказательства: статическая проверка по file:line (цикл 11, ручная); [cycle12:confirmed] loadMeetings().then(...) в эффекте фильтров без .catch (VoiceVideoPage.jsx:495); loadExportCount тоже не обрабатывает отказ.; [cycle13:refuted] loadMeetings не бросает: весь запрос обёрнут в try/catch, ошибка кладётся в errors.meetings и возвращается false (170-206), поэтому .then без .catch в эффекте фильтров (495-497) не создаёт unhandled rejection. loadExportCount также сам ловит ошибку, выставляет exportCountError и возвращает false (208-229), после чего флаг передаётся в дочерний компонент (805-806); описанной необработанной ошибки нет.
 
 ### FE-0257 — mobileOfflineCache: JSON.parse расшифрованного payload без обработки повреждённой записи
-- Категория: ErrorHandling/Cache | Серьёзность: Low | Статус: Suspected
+- Категория: ErrorHandling/Cache | Серьёзность: Low | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/lib/mobileOfflineCache.js` :192: decryptPayload → JSON.parse без try
 - Суть/механизм: битая запись в IndexedDB → reject во всех потребителях кэша
-- Доказательства: статическая проверка по file:line (цикл 11, ручная); [cycle12:confirmed] JSON.parse расшифрованного payload без try/catch (mobileOfflineCache.js:192) — повреждённая запись роняет чтение кэша.
+- Доказательства: статическая проверка по file:line (цикл 11, ручная); [cycle12:confirmed] JSON.parse расшифрованного payload без try/catch (mobileOfflineCache.js:192) — повреждённая запись роняет чтение кэша.; [cycle13:refuted] JSON.parse находится в decryptPayload (mobileOfflineCache.js:185-193), но его единственный вызов — внутри getCachedMobileGetResponse, где decrypt и parse обёрнуты в try/catch с возвратом null при любой ошибке (337-369). Повреждённая или нерасшифровываемая запись превращается в cache miss, а не в reject у потребителей; inventory записи не расшифровывает (407-440). Описанного падения чтения кэша в текущем коде нет.
 
 ### FE-0258 — Чат: decodeTgsPayload JSON.parse без fallback — битый TGS-стикер
-- Категория: ErrorHandling/Chat | Серьёзность: Low | Статус: Suspected
+- Категория: ErrorHandling/Chat | Серьёзность: Low | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/components/chat/ChatStickerMedia.jsx` :35: JSON.parse(strFromU8(jsonBytes))
 - Суть/механизм: невалидный/gzip-TGS → reject; поведение зависит от catch вызывающего
-- Доказательства: статическая проверка по file:line (цикл 11, ручная); [cycle12:confirmed] decodeTgsPayload делает JSON.parse(strFromU8(jsonBytes)) без fallback (ChatStickerMedia.jsx:35); битый TGS даёт исключение.
+- Доказательства: статическая проверка по file:line (цикл 11, ручная); [cycle12:confirmed] decodeTgsPayload делает JSON.parse(strFromU8(jsonBytes)) без fallback (ChatStickerMedia.jsx:35); битый TGS даёт исключение.; [cycle13:refuted] JSON.parse в decodeTgsPayload не обёрнут локально, но вызывается внутри try/catch эффекта загрузки (ChatStickerMedia.jsx:109-138): SyntaxError перехватывается, выставляется loadFailed и рендерится fallback-эмодзи (189-197). Битый TGS не роняет компонент, не даёт unhandled rejection и не ломает экран чата; gzip определяется по сигнатуре байтов (:34). Пользовательского дефекта нет.
 
 ### FE-0259 — Construction-workspace: нет beforeunload — черновики недельной сводки теряются при F5/закрытии
 - Категория: DataLoss/Construction | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.jsx` :dirty/useConstructionWorkLeaveGuard(dirty||saving) без beforeunload; в Panel.jsx:163-168 и TaskCanvasWorkspace.jsx:342-350 он есть
 - Суть/механизм: потеря несохранённой сводки/плана/посещаемости молча
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] High, ручная проверка: ConstructionWorkWorkspace использует только SPA-guard useConstructionWorkLeaveGuard (строка 41), beforeunload нет; в ConstructionWorkPanel.jsx:165-167 и TaskCanvasWorkspace.jsx:348-349 он есть. F5/закрытие теряет черновик.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] High, ручная проверка: ConstructionWorkWorkspace использует только SPA-guard useConstructionWorkLeaveGuard (строка 41), beforeunload нет; в ConstructionWorkPanel.jsx:165-167 и TaskCanvasWorkspace.jsx:348-349 он есть. F5/закрытие теряет черновик.; [cycle13:confirmed] Static remains confirmed; live construction-workspace check blocked: local stack has no 1C/SQL construction data.
 
 ### FE-0260 — Construction: data.items.find(id).version без fallback → TypeError при числовом id/исчезнувшем item
-- Категория: ErrorHandling/Construction | Серьёзность: Medium | Статус: Suspected
+- Категория: ErrorHandling/Construction | Серьёзность: Medium | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/components/construction/ConstructionWorkPanel.jsx` :193-195; аналог в save workspace
 - Суть/механизм: Object.entries(draft) ключи — строки; числовой i.id → undefined.version → generic-ошибка, черновик «залипает»
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] data.items.find(i => i.id === id).version без optional chain (ConstructionWorkWorkspace.jsx:76); при числовом id или исчезнувшем item — TypeError. Аналогично в save workspace.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] data.items.find(i => i.id === id).version без optional chain (ConstructionWorkWorkspace.jsx:76); при числовом id или исчезнувшем item — TypeError. Аналогично в save workspace.; [cycle13:refuted] ID работ — UUID-строки (appdb/models.py:117, construction_work_service.py:188-196), а daily/attendance наполняются ключами из тех же data.items (69, 182-188), поэтому строгое сравнение i.id === id совпадает. data не перезагружается, пока есть dirty (44), а «Обновить» и смена режима заблокированы при dirty (110-114); исчезнувшая работа приводит к 409 от сервера, а не к TypeError. Числовой id и пропавший item в текущем контракте недостижимы.
 
 ### FE-0261 — Construction-panel: эффект перезагрузки при смене scope не проверяет dirty → осиротевшие ключи черновика
-- Категория: State/Construction | Серьёзность: Medium | Статус: Suspected
+- Категория: State/Construction | Серьёзность: Medium | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/components/construction/ConstructionWorkPanel.jsx` :157-160 (нет if(dirty) return в отличие от workspace)
 - Суть/механизм: setData(null)+load() при живом draft → stale-черновик поверх нового scope
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] Эффект перезагрузки при смене scope в ConstructionWorkPanel.jsx:157-160 не проверяет dirty, в отличие от workspace (44) — осиротевшие ключи черновика.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] Эффект перезагрузки при смене scope в ConstructionWorkPanel.jsx:157-160 не проверяет dirty, в отличие от workspace (44) — осиротевшие ключи черновика.; [cycle13:refuted] Дата учёта в панели заблокирована при dirty || saving (239), а objectId/groupRef меняются только через страницу, где workspace принудительно перемонтируется ключом key={`${objectId}:${groupRef}`} (ConstructionDirectionDetail.jsx:724). Поэтому эффект 157-160 не может сменить scope при непустом черновике; сценарий осиротевших ключей в текущем UI недостижим.
 
 ### FE-0262 — Tasks: закрытие диалога создания молча стирает выбранные файлы и чек-лист (несогласованно с createData)
 - Категория: DataLoss/Tasks | Серьёзность: Medium | Статус: Confirmed
@@ -1334,10 +1336,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] handleCloseCreateDialog очищает createFiles и createChecklistItems (useTaskCreateForm.js:343-357); Escape/backdrop/X вызывают его без подтверждения.
 
 ### FE-0263 — Tasks: workflow-конфликт по задаче B перебивает открытую деталь задачи A (detailsTask=B)
-- Категория: State/Tasks | Серьёзность: Medium | Статус: Suspected
+- Категория: State/Tasks | Серьёзность: Medium | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskWorkflowActions.js` :43-55 → useTaskDetails.jsx:187-200: handleWorkflowConflict зовёт loadTaskDetails для любой конфликтной задачи
 - Суть/механизм: панель и URL/выделение расходятся — детали показывают чужую задачу
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] handleWorkflowConflict вызывает loadTaskDetails для конфликтной задачи (useTaskWorkflowActions.js:43-55 → useTaskDetails.jsx:187-200), подменяя открытую деталь задачи A на B.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] handleWorkflowConflict вызывает loadTaskDetails для конфликтной задачи (useTaskWorkflowActions.js:43-55 → useTaskDetails.jsx:187-200), подменяя открытую деталь задачи A на B.; [cycle13:refuted] При открытой детали задачи список полностью скрыт display:none (Tasks.jsx:72-83), поэтому действия над другой задачей B в этот момент недоступны: меню действий живёт только в TasksListLayout (135) и открывает диалоги для выбранной задачи. Конфликт обрабатывается для id текущей задачи (useTaskWorkflowActions.js:43-55), и loadTaskDetails перезагружает ту же карточку, а не подменяет A на B.
 
 ### FE-0264 — Tasks: loadTaskActivity глотает ошибку пустым catch — лента активности молча пуста
 - Категория: ErrorHandling/Tasks | Серьёзность: Medium | Статус: Confirmed
@@ -1349,19 +1351,19 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: React/Tasks | Серьёзность: Low | Статус: Suspected
 - Файл: `WEB-itinvent/frontend/src/pages/tasks/TasksDialogsLayer.jsx` :28
 - Суть/механизм: suspend любого lazy-диалога размонтирует остальные → потеря transient-состояния пикеров
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] Один Suspense fallback=null на весь dialogs-слой (TasksDialogsLayer.jsx:28); suspend любого ленивого диалога размонтирует соседние открытые.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] Один Suspense fallback=null на весь dialogs-слой (TasksDialogsLayer.jsx:28); suspend любого ленивого диалога размонтирует соседние открытые.; [cycle13:unverifiable] Единый Suspense fallback=null действительно охватывает весь слой (28-341), и suspend любого lazy-диалога снимет с экрана соседние. Но почти все lazy-диалоги смонтированы безусловно (162, 260, 305-339) и грузятся при монтировании слоя; условно монтируется только TasksCreateDialog (30-83, 214-258), а штатные сценарии не открывают два диалога одновременно. Теоретический путь через глобальный шорткат 'n' (useTasksPageController.jsx:683-686) поверх открытого review-диалога с потерей локального comment (TaskActionDialogs.jsx:640) есть, но его пользовательская достижимость не подтверждена.
 
 ### FE-0266 — CompanyStructure: loadTree без seq/abort-guard — устаревшее дерево побеждает и делает replaceState
-- Категория: Race/Company | Серьёзность: Medium | Статус: Suspected
+- Категория: Race/Company | Серьёзность: Medium | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/CompanyStructure.jsx` :144-178: параллельные вызовы применяются в порядке resolve
 - Суть/механизм: старший ответ перезаписывает дерево и выбор
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] loadTree без seq/abort-guard (CompanyStructure.jsx:144-178): параллельные вызовы применяются в порядке resolve, устаревшее дерево может победить.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] loadTree без seq/abort-guard (CompanyStructure.jsx:144-178): параллельные вызовы применяются в порядке resolve, устаревшее дерево может победить.; [cycle13:confirmed] loadTree не имеет ни sequence, ни AbortController: два параллельных GET применяются в порядке resolve через setTree и updateUrlState (144-178). Параллельность достижима: background-загрузка после админ-изменения не выставляет loading (535, 144-145), поэтому кнопка «Обновить», заблокированная только по loading (332-333), остаётся активной, и ответ старого запроса может перезаписать более свежее дерево и URL.
 
 ### FE-0267 — CompanyStructure: updateUrlState через сырой history.pushState мимо роутера — ломаный back-стек
-- Категория: Routing/Company | Серьёзность: Medium | Статус: Suspected
+- Категория: Routing/Company | Серьёзность: Medium | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/pages/CompanyStructure.jsx` :117-125: pushState + window.history.state со старым idx
 - Суть/механизм: router-location устаревает; idx-ориентированные гарды неверно считают delta
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] updateUrlState использует сырой history.pushState и старый history.state (CompanyStructure.jsx:117-125) мимо роутера — back-стек ломается.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] updateUrlState использует сырой history.pushState и старый history.state (CompanyStructure.jsx:117-125) мимо роутера — back-стек ломается.; [cycle13:refuted] updateUrlState действительно использует сырой history.pushState/replaceState со старым state (117-125), но страница нигде не читает location роутера: состояние берётся из window.location.search (76-85) и popstate (184-200). React Router 7 (package.json:61) на каждый popstate вызывает listener и обновляет location даже при delta=0, поэтому Back/Forward восстанавливают URL и выбранный узел; ломаного back-стека в текущем коде нет, каждый клик по узлу просто добавляет запись.
 
 ### FE-0268 — CompanyStructureOverview: ошибка layout/импорта ELK → перманентно пустой граф без ошибки и retry
 - Категория: ErrorHandling/Company | Серьёзность: Medium | Статус: Confirmed
@@ -1376,10 +1378,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] Ошибка getNodePeople приводит к setPeople([]) (CompanyStructure.jsx:228-231) — UI показывает «нет сотрудников» вместо ошибки.
 
 ### FE-0270 — CompanyStructure: автокомплит — isOptionEqualToValue по kind+title, key без node_id → коллизия тёзок
-- Категория: Data/Company | Серьёзность: Low | Статус: Suspected
+- Категория: Data/Company | Серьёзность: Low | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/pages/CompanyStructure.jsx` :348,370
 - Суть/механизм: выбор/подсветка чужой записи при одинаковых именах
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] Автокомплит сравнивает по kind+title и использует key без node_id (CompanyStructure.jsx:348,370) — тёзки в одном kind коллизируют.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] Автокомплит сравнивает по kind+title и использует key без node_id (CompanyStructure.jsx:348,370) — тёзки в одном kind коллизируют.; [cycle13:refuted] У Autocomplete нет prop value (340-352), поэтому isOptionEqualToValue не участвует в выборе: сравнение применяется только к контролируемому value, а здесь компонент неконтролируемый. Ключ опции уже включает node_id (370), так что утверждение о ключе без node_id устарело; коллизия тёзок не даёт пользовательского эффекта.
 
 ### FE-0271 — Construction-workspace: Escape/backdrop молча сбрасывает форму бригады (при этом входит в dirty)
 - Категория: DataLoss/Construction | Серьёзность: Medium | Статус: Confirmed
@@ -1394,10 +1396,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] Рендер истории читает entry.after.targets.length без optional chain (ConstructionWorkWorkspace.jsx:164), а entry.before — с ?. — TypeError на битой записи.
 
 ### FE-0273 — Construction-panel: data?.items.length===0 при необязательном data.items; entry.after.date без guard
-- Категория: ErrorHandling/Construction | Серьёзность: Low | Статус: Suspected
+- Категория: ErrorHandling/Construction | Серьёзность: Low | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/components/construction/ConstructionWorkPanel.jsx` :101,110
 - Суть/механизм: TypeError на неполном ответе API
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] ConstructionWorkPanel.jsx:101,110: data?.items.length===0 и entry.after.date без guard при необязательных полях — падение на неполном ответе.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] ConstructionWorkPanel.jsx:101,110: data?.items.length===0 и entry.after.date без guard при необязательных полях — падение на неполном ответе.; [cycle13:refuted] data?.items.length безопасен: при data=null optional chain обрывает всю цепочку, а при непустом data контракт read всегда содержит items (construction_work_service.py:168-174). Для day-записей before/after формируются сервисом как {date, values} (construction_work_service.py:219), поэтому entry.after.date определён; неполный ответ, на котором эти строки падали бы, текущим API не выдаётся.
 
 ### FE-0274 — AddressBook: onComposeEmail продублирован в JSX — dev-предупреждение о дубле prop
 - Категория: Architecture/DeadCode | Серьёзность: Info | Статус: Confirmed
@@ -1412,10 +1414,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] В ConstructionWorkWorkspace editDay/setAttendance не ограничивают batch 300 записями, тогда как в Panel.jsx:184-187 лимит и сообщение есть.
 
 ### FE-0276 — useConstructionWorkLeaveGuard: activePopGuard — модульный синглтон → гард достаётся последнему подписчику
-- Категория: Architecture/Guards | Серьёзность: Medium | Статус: Suspected
+- Категория: Architecture/Guards | Серьёзность: Medium | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/components/construction/useConstructionWorkLeaveGuard.js` :14,129: push/replace/go мультиплексируются через Set, а popstate-гарда — только последний
 - Суть/механизм: Back уходит мимо гарда первого dirty-редактора при двух смонтированных
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] useConstructionWorkLeaveGuard хранит activePopGuard как модульный синглтон (строка 14,129): push/replace/go мультиплексируются Set, а popstate-гард достаётся последнему подписчику.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] useConstructionWorkLeaveGuard хранит activePopGuard как модульный синглтон (строка 14,129): push/replace/go мультиплексируются Set, а popstate-гард достаётся последнему подписчику.; [cycle13:refuted] activePopGuard действительно модульный синглтон (4, 8, 129-133), но в текущих маршрутах одновременно не монтируются два dirty-гарда: workspace и его details-панель взаимоисключающи по dirty (Workspace.jsx:41-44, 110, 116), а ConstructionObjectSettingsDialog живёт на другой странице (ConstructionObjectDetail.jsx:340). Навигационный патч мультиплексирует подписчиков через Set (16-54), и тест на двух редакторов проходит; пользовательского сценария «гард достался последнему» в текущем UI нет.
 
 ### FE-0277 — TaskCanvas: disabled читает pendingSceneRef.current в рендере — нереактивный ref
 - Категория: React/Tasks | Серьёзность: Info | Статус: Confirmed
@@ -1424,22 +1426,22 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] TaskCanvasWorkspace.jsx:764: disabled={!pendingSceneRef.current} читает ref в рендере; работает только благодаря парному setSaveState, реактивности нет.
 
 ### FE-0278 — TaskCanvas: forbidden/error выставляет can_edit=false, но pendingSceneRef не чистится → вечный dirty
-- Категория: State/Tasks | Серьёзность: Low | Статус: Suspected
+- Категория: State/Tasks | Серьёзность: Low | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx` :545-549
 - Суть/механизм: «Есть несохранённые изменения» навсегда + бесконечный beforeunload у заблокированного
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] Ветка forbidden/error выставляет can_edit=false (TaskCanvasWorkspace.jsx:545-549), но pendingSceneRef не очищается — вечный dirty.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] Ветка forbidden/error выставляет can_edit=false (TaskCanvasWorkspace.jsx:545-549), но pendingSceneRef не очищается — вечный dirty.; [cycle13:confirmed] При task_canvas.error с code=forbidden выставляется can_edit=false (545-549), но pendingSceneRef не очищается и saveState не сбрасывается. Кнопка сохранения исчезает из-за canvas.can_edit (759), unmount-flush пропускает правки из-за canEditRef=false (332-340), а statusLabel при saveState='dirty' продолжает показывать «Есть несохранённые изменения» и beforeunload предупреждает (342-350). Сценарий достижим при отзыве прав/закрытии задачи во время редактирования (WS перепроверяет доступ каждые 5 c, task_canvas_ws.py:32, 221-235).
 
 ### FE-0279 — TaskCanvas: inert выставляется один раз — поздние порталы остаются фокусируемыми вне aria-modal
-- Категория: A11y/Tasks | Серьёзность: Low | Статус: Suspected
+- Категория: A11y/Tasks | Серьёзность: Low | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx` :367-398
 - Суть/механизм: утечка фокуса из pseudo-fullscreen в Snackbars/Dialogs
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] inert выставляется один раз при открытии (TaskCanvasWorkspace.jsx:367-398); порталы, смонтированные позже, остаются фокусируемыми вне aria-modal.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] inert выставляется один раз при открытии (TaskCanvasWorkspace.jsx:367-398); порталы, смонтированные позже, остаются фокусируемыми вне aria-modal.; [cycle13:refuted] Как пользовательский дефект не подтверждается, хотя зазор в реализации есть: inert действительно снимается один раз (TaskCanvasWorkspace.jsx:366-398). Оба примера из описания не работают: ToastViewport рендерится инлайново (ToastViewport.jsx:235-258) внутри стека NotificationContext.jsx:471-521, который является сиблингом ветки воркспейса и потому сам получает inert, а MUI Snackbar в этом пути не порталится. Портируемые MUI Dialog-ы (Modal.js:188) в pseudo-fullscreen на странице задач открыть нечем: канвас не вызывает ни useConfirmDialog, ни Dialog, а глобальные диалоги срабатывают только по действию пользователя, недоступному за пределами инертного слоя. Остаётся теоретический риск для будущих порталов, но демонстрируемого ухода фокуса в текущем коде нет.
 
 ### FE-0280 — AddressBook: scope-ключ request-guard конкатенирует cityFilter+listMode без разделителя
-- Категория: Architecture/Guards | Серьёзность: Info | Статус: Suspected
+- Категория: Architecture/Guards | Серьёзность: Info | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/pages/AddressBook.jsx` :213-214
 - Суть/механизм: теоретическая коллизия контекста → гард пропустит чужой ответ
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] Scope-ключ request-guard конкатенирует cityFilter и listMode без разделителя (AddressBook.jsx:213-214) — возможны коллизии ключей.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] Scope-ключ request-guard конкатенирует cityFilter и listMode без разделителя (AddressBook.jsx:213-214) — возможны коллизии ключей.; [cycle13:refuted] Scope-ключ действительно склеивает cityFilter и listMode без разделителя (213-214), но listMode принимает только фиксированные all/favorites/recent, а cityFilter — значение из списка городов, а не произвольный текст. Коллизия потребовала бы город, оканчивающийся на 'all'/'recent'/'favorites', либо подмену режима; в текущем UI такая пара состояний недостижима, поэтому устаревший ответ не может быть принят за актуальный.
 
 ### FE-0281 — Computers: незащищённые localStorage.getItem в инициализаторах useState → крах страницы при заблокированном storage
 - Категория: Reliability/Storage | Серьёзность: Medium | Статус: Confirmed
@@ -1559,13 +1561,13 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: Data/DLP | Серьёзность: Low | Статус: Suspected
 - Файл: `WEB-itinvent/frontend/src/pages/FileEgress.jsx` :220-235
 - Суть/механизм: >200 диалогов → хвост молча невидим
-- Доказательства: статическая проверка по file:line (цикл 11, агент Computers/Transfer/DLP); [cycle12:confirmed] Список telegram/max-чатов запрашивается с limit=200 (FileEgress.jsx:220-235) без индикатора усечения.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Computers/Transfer/DLP); [cycle12:confirmed] Список telegram/max-чатов запрашивается с limit=200 (FileEgress.jsx:220-235) без индикатора усечения.; [cycle13:confirmed] Чаты запрашиваются с limit=200 на хост (FileEgress.jsx:220-223), бэкенд режет SQL LIMIT (le=500) и сортирует по updated_at desc без total/hasMore (fs_egress.py:401-409, file_egress_store.py:869-872). Панель Telegram/MAX не показывает признак усечения, а заголовки вкладок берут tgChats.length/maxChats.length (FileEgress.jsx:302-303) — при >200 диалогов счётчик «200» выглядит как полный, а более старые диалоги невидимы. Для сравнения, BrowserVisitsPanel явно пишет «Показаны последние N из total» (BrowserVisitsPanel.jsx:796), то есть паттерн в проекте есть, но здесь не применён. Требуется >200 диалогов на хост; механизм подтверждён по коду.
 
 ### FE-0301 — Database: поиск получателя/сотрудника без AbortController + устаревшие options при ошибке
-- Категория: Race/Transfer | Серьёзность: Low | Статус: Suspected
+- Категория: Race/Transfer | Серьёзность: Low | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/database/useTransferEmail.js` :50-58 + useTransferFormState.js:129-144
 - Суть/механизм: старый запрос грузит сеть; ошибка → только console.error, options устаревают
-- Доказательства: статическая проверка по file:line (цикл 11, агент Computers/Transfer/DLP); [cycle12:confirmed] Поиск получателя/сотрудника идёт без AbortController (useTransferEmail.js:50-58, useTransferFormState.js:129-144); при ошибке остаются устаревшие options.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Computers/Transfer/DLP); [cycle12:confirmed] Поиск получателя/сотрудника идёт без AbortController (useTransferEmail.js:50-58, useTransferFormState.js:129-144); при ошибке остаются устаревшие options.; [cycle13:confirmed] Cancelled-флаг защищает от применения устаревшего ответа (48-58, 127-143), поэтому отсутствие AbortController само по себе не портит состояние — отменяется только таймер, а запрос доигрывается вхолостую. Но при reject поиска catch лишь логирует (54-56, 139-141) и не очищает transferRecipientOptions/transferEmployeeOptions: под новым запросом остаются варианты предыдущего поиска, и получателя можно выбрать по неверному списку. Ошибка при этом пользователю не показывается.
 
 ### FE-0302 — Database: экспорт оборудования без листа перемещений при падении prefetch — только console.warn
 - Категория: ErrorHandling/Transfer | Серьёзность: Low | Статус: Confirmed
@@ -1574,10 +1576,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: статическая проверка по file:line (цикл 11, агент Computers/Transfer/DLP); [cycle12:confirmed] При падении prefetch перемещений экспорт оборудования продолжается без листа перемещений, только console.warn (useEmployeeEquipmentExport.js:41-53).
 
 ### FE-0303 — Чат: groupActionBusy — единый слот на все действия группы; повторный запуск в одном кадре проходит
-- Категория: BusyGuards/Chat | Серьёзность: Low | Статус: Suspected
+- Категория: BusyGuards/Chat | Серьёзность: Low | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src/components/chat/ChatContextPanel.jsx` :1660,1931-1944: runGroupAction не проверяет busy перед стартом; кнопки disabled в UI, но два вызова до ре-рендера возможны
 - Суть/механизм: finally первого обнуляет флаг до конца второго — то же окно, что FE-0180
-- Доказательства: статическая проверка по file:line (цикл 11, ручная); [cycle12:confirmed] runGroupAction проверяет groupActionBusy только в UI (ChatContextPanel.jsx:1660,1931-1944); два вызова до ре-рендера проходят, слот один.
+- Доказательства: статическая проверка по file:line (цикл 11, ручная); [cycle12:confirmed] runGroupAction проверяет groupActionBusy только в UI (ChatContextPanel.jsx:1660,1931-1944); два вызова до ре-рендера проходят, слот один.; [cycle13:refuted] У runGroupAction нет раннего return по busy (ChatContextPanel.jsx:1931-1946), но флаг ставится синхронно до первого await, а все видимые точки запуска получают disabled={groupActionBusy} (2498-2580, 3355-3505) либо закрывают диалог до старта действия (2125-2135). React 18 сбрасывает состояние дискретного клика синхронно до следующего события, поэтому второй клик приходит уже в disabled-контрол; повторный запуск «в одном кадре» через UI не воспроизводится. Единый слот на все групповые действия — сериализация, а не наблюдаемый дефект.
 
 ### FE-0304 — Чат: loadAddMembersUsers без seq-guard — устаревшие результаты поиска при быстром вводе
 - Категория: Race/Chat | Серьёзность: Low | Статус: Confirmed
@@ -1697,25 +1699,32 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: Data/Scan | Серьёзность: Low | Статус: Suspected
 - Файл: `WEB-itinvent/frontend/src/api/scanHosts.js` :123-148: метод в проде не вызывается (только тесты) — латентный риск подключения
 - Суть/механизм: если метод подключат — неполный список хостов без индикации
-- Доказательства: статическая проверка по file:line (цикл 11, агент Scan/Database); [cycle12:unverifiable] getHostsFallbackFromIncidents в проде не вызывается (только тесты, scanHosts.js:123-148); это латентный риск, а не текущий дефект.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Scan/Database); [cycle12:unverifiable] getHostsFallbackFromIncidents в проде не вызывается (только тесты, scanHosts.js:123-148); это латентный риск, а не текущий дефект.; [cycle13:unverifiable] Функция действительно запрашивает только max(limit*4,500) инцидентов, игнорирует offset и не отдаёт признак усечения, поэтому при подключении список хостов был бы неполным (scanHosts.js:123-131). Но у экспортированного scanHostsAPI.getHosts в текущем дереве нет ни одного продакшн-вызова: client.js лишь отдаёт геттер (1166-1167), а Scan Center использует getHostsTable (ScanCenterPage.jsx:929). Латентный риск не проявляется, прод-дефект не демонстрируется; формулировка «только тесты» верна для внешнего API, хотя сама fallback-функция вызывается из getHosts (:136,147).
 
 ### FE-0324 — Database: справочники departments/movements с limit 500/1000 — переполнение зависит от данных
 - Категория: Data/Database | Серьёзность: Low | Статус: Suspected
 - Файл: `WEB-itinvent/frontend/src/pages/database/useDatabaseLookups.js` :28-39 + useTransferFormState.js
 - Суть/механизм: при справочнике >лимита хвост молча недоступен в форме
-- Доказательства: статическая проверка по file:line (цикл 11, агент Scan/Database); [cycle12:unverifiable] Лимиты справочников departments/movements 500/1000 (useDatabaseLookups.js:28-39) могут усечь данные только при превышении объёма; фактическое переполнение не проверено.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Scan/Database); [cycle12:unverifiable] Лимиты справочников departments/movements 500/1000 (useDatabaseLookups.js:28-39) могут усечь данные только при превышении объёма; фактическое переполнение не проверено.; [cycle13:confirmed] API не может вернуть больше запрошенного: FastAPI ограничивает limit 2000 (equipment.py:1982), SQL — TOP с клампом (queries.py:3595-3602), а ответ — голый {"departments": [...]} без total/hasMore. Форма перевода в режиме MOVE с ручным сотрудником запрашивает 1000 (useTransferFormState.js:172) и рендерит обязательный Select (TransferActionContent.jsx:210-233): при >1000 отделов хвост по алфавиту недоступен и выбрать его нельзя, индикатора усечения нет; 500 — дефолт хука и API (useDatabaseLookups.js:29), в этом пути не используется. Для movements экспорт запрашивает 500 (useEmployeeEquipmentExport.js:43-49), хотя API отдаёт meta с truncated/hasMore (warehouse1c.js:76-85) — экспорт читает только items и meta игнорирует. Фактическое переполнение не измерялось (прод-БД не запрашивалась), поэтому дефект латентный, но механизм тихого усечения подтверждён.
 
-## Счётчики (цикл 12, после перепроверки всех записей)
+### FE-0325 — PWA offline: холодная перезагрузка зависает на «Загружаем раздел…» — AuthContext бесконечно ретраит refresh
+- Категория: Reliability/PWA | Серьёзность: Medium | Статус: Confirmed
+- Страница: все маршруты (проверено /login)
+- Файл: `WEB-itinvent/frontend/src/contexts/AuthContext.jsx` :310-339
+- Доказательства: live local E2E (cycle 13): built app served by vite preview :5221, SW active and controls the page, app-shell/assets cached; offline reload /login stays on «Загружаем раздел… | Подготавливаем интерфейс HUB-IT» at 10/30/55/65 s.; AuthContext verifySession: error with HTTP status 0 (offline) is not a definitive 401/403, so scheduleRetry repeats forever with max 30 s delay; setLoading(false) is never called on this path (AuthContext.jsx:310-339).; SW itself serves the shell offline (200), so the hang is in auth recovery, not in the service worker navigation fallback.
+- Связано: FE-0084, FE-0085, FE-0070
+
+## Счётчики (цикл 13, после runtime-верификации и перепроверки Suspected)
 
 | Серьёзность | Кол-во |
 |---|---|
 | Critical | 0 |
 | High | 12 (FE-0022, FE-0023, FE-0059, FE-0078, FE-0083, FE-0197, FE-0198, FE-0215, FE-0230, FE-0232, FE-0239, FE-0259) |
-| Medium | 122 |
-| Low | 174 |
-| Info | 14 |
-| Confirmed | 254 |
-| Suspected (подмножество) | 50 |
-| Fixed-externally | 1 |
-| Rejected | 17 |
-| **Всего записей** | **322** |
+| Medium | 123 |
+| Low | 173 |
+| Info | 15 |
+| Confirmed | 269 |
+| Suspected (подмножество) | 12 |
+| Fixed-externally | 2 |
+| Rejected | 40 |
+| **Всего записей** | **323** |

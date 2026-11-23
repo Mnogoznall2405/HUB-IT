@@ -1,0 +1,95 @@
+[
+  {
+    "id": "FE-0098",
+    "verdict": "confirmed",
+    "note": "Серверного лимита нет: get_public_folder выбирает все файлы поддерева без limit и пагинации (my_files_service.py:4294-4345), а PublicMyFolderResponse — обычный список (models/my_files.py:158-161). Клиент кладёт payload.items в состояние и рендерит каждый файл отдельным MUI-Stack без «показать ещё» (SharedFolder.jsx:93,202-207); в личном MyFiles для сравнения список режется чанками по 200 (MyFiles.jsx:97,1152-1163). Квота 50 ГБ допускает сотни и тысячи мелких файлов, поэтому большая папка даёт полный JSON и полный DOM-проход; замер на реальной большой папке не проводился.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/SharedFolder.jsx:93",
+      "WEB-itinvent/frontend/src/pages/SharedFolder.jsx:202-207",
+      "WEB-itinvent/backend/services/my_files_service.py:4294-4345",
+      "WEB-itinvent/backend/models/my_files.py:158-161",
+      "WEB-itinvent/frontend/src/pages/MyFiles.jsx:1152-1163"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0110",
+    "verdict": "unverifiable",
+    "note": "Код действительно не имеет таймаута или fallback: close() при frameReady вызывает editor.requestClose() и ждёт события onRequestClose, которое остаётся единственным путём к onClose (useMyFilesEditorSession.js:209,436-440). Даже аварийный крестик, показываемый в phase error/loading, вызывает тот же handleClose → requestClose (MyFilesEditorShell.jsx:46-47,61-65,172-177), а MUI Dialog onClose делегирует туда же (MyFilesOfficeEditorDialog.jsx:10-16). Сценарий «iframe убит после frameReady» в этой среде не воспроизводим: живого Document Server и убитого renderer нет, поэтому user-visible зависание не подтверждено.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/myFiles/useMyFilesEditorSession.js:209",
+      "WEB-itinvent/frontend/src/components/myFiles/useMyFilesEditorSession.js:436-440",
+      "WEB-itinvent/frontend/src/components/myFiles/MyFilesEditorShell.jsx:61-65",
+      "WEB-itinvent/frontend/src/components/myFiles/MyFilesEditorShell.jsx:172-177",
+      "WEB-itinvent/frontend/src/components/myFiles/MyFilesOfficeEditorDialog.jsx:10-16"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0115",
+    "verdict": "unverifiable",
+    "note": "Ссылка на useMailMessageFileActions.js была ошибочной: синхронный revoke находится в downloadBlobFile (mailMessageFileActions.js:354-359), и в якорной ветке для iOS Safari вне standalone-режима он сохраняется; 60-секундная задержка включена только для popup-ветки iOS standalone с безопасными типами (343-352). Тот же паттерн остаётся в networksHelpers.js:75-84, MyFiles.jsx:674-681, Statistics.jsx:324-331, useTasksPageController.jsx:457-464 и ObjectNetmapTab.jsx:402-413, тогда как KnowledgeBase.jsx:308-309 уже отложил revoke на 60 с из-за обрыва загрузки в Safari/Firefox. Проверить фактическое поведение iOS Safari здесь нечем (нет устройства и WebKit), поэтому пользовательский обрыв загрузки не подтверждён.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/mail/mailMessageFileActions.js:343-359",
+      "WEB-itinvent/frontend/src/lib/networksHelpers.js:75-84",
+      "WEB-itinvent/frontend/src/pages/MyFiles.jsx:674-681",
+      "WEB-itinvent/frontend/src/pages/Statistics.jsx:324-331",
+      "WEB-itinvent/frontend/src/pages/tasks/useTasksPageController.jsx:457-464",
+      "WEB-itinvent/frontend/src/pages/KnowledgeBase.jsx:308-309"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0124",
+    "verdict": "confirmed",
+    "note": "Эффект очистки не зависит от libraryId (MyFiles.jsx:1097-1099), а navigateToLibrary меняет только library/view и не трогает folder (594-596), поэтому при переходе между корнями библиотек currentFolderId остаётся null и выделение сохраняется. Действия при этом не применяются к скрытым файлам: selectedFiles и selectedFolders фильтруются по текущим visibleItems/visibleFolders (1196-1203), поэтому bulk-delete с count=0 просто выходит, а bulk-move с count=0 показывает ложный успех «Выбранные объекты перемещены» (1343-1397). Реальный дефект — залипший счётчик «Выбрано: N» (1954-1972) и ложный успех перемещения, а не операции над файлами старой библиотеки.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/MyFiles.jsx:594-596",
+      "WEB-itinvent/frontend/src/pages/MyFiles.jsx:1097-1099",
+      "WEB-itinvent/frontend/src/pages/MyFiles.jsx:1196-1203",
+      "WEB-itinvent/frontend/src/pages/MyFiles.jsx:1343-1397",
+      "WEB-itinvent/frontend/src/pages/MyFiles.jsx:1954-1972"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0125",
+    "verdict": "confirmed",
+    "note": "При удалённой или чужой папке бэкенд отдаёт 404: _folder_row_locked требует совпадения owner и deleted_at is None (my_files_service.py:1864-1871), а list_my_files маппит MyFilesNotFoundError в 404 (my_files.py:278-297,120-124). Фронтенд в catch только показывает notifyApiError и не чистит searchParams (MyFiles.jsx:320-322), а currentFolderId продолжает читаться из ?folder= (163); после reload запрос повторяется и снова падает, при этом список остаётся пустым или старым. Параметр остаётся в URL, и по коду повторная ошибка воспроизводится при каждом открытии ссылки.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/MyFiles.jsx:163",
+      "WEB-itinvent/frontend/src/pages/MyFiles.jsx:320-322",
+      "WEB-itinvent/backend/services/my_files_service.py:1864-1871",
+      "WEB-itinvent/backend/api/v1/my_files.py:278-297",
+      "WEB-itinvent/backend/api/v1/my_files.py:120-124"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0216",
+    "verdict": "refuted",
+    "note": "Текущий бэкенд отдаёт для inline-вложений относительный inline_src (/api/v1/mail/...), а не data: или https: (mail_reference_codec.py:333-340; mail_message_serializer.py:436-440), и compose-контекст берёт inline_src в приоритете (MailComposeHost.jsx:281-294). Синхронизация значения вычищает http(s):/data:-источники (mailComposeHtml.js:50-63,70-77), но относительный inline_src и blob:-превью переживают setQuillHtml; data: остаётся только как fallback inline_data_url, когда inline_src не построен. Удаление remote/data-картинок — намеренная защита от трекинга, закреплённая тестом (mailComposeHtml.test.js:18-26), а не потеря восстановленных превью.",
+    "codeRefs": [
+      "WEB-itinvent/backend/services/mail_reference_codec.py:333-340",
+      "WEB-itinvent/backend/services/mail_message_serializer.py:436-440",
+      "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx:281-294",
+      "WEB-itinvent/frontend/src/components/mail/mailComposeHtml.js:50-63",
+      "WEB-itinvent/frontend/src/components/mail/mailComposeHtml.test.js:18-26"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0300",
+    "verdict": "confirmed",
+    "note": "Фронтенд запрашивает чаты на выбранный хост с limit: 200 (FileEgress.jsx:214-235), в табах показывает длину загруженного массива, а в панели — число чатов с сообщениями (302-303; TelegramDialogPanel.jsx:639-653,754-756), поэтому при большем числе диалогов «200» выглядит как полное количество; в BrowserVisitsPanel для аналогичного случая есть явное «Показаны последние N из total» (BrowserVisitsPanel.jsx:794-797). Бэкенд принимает limit до 500, но не возвращает ни total, ни has_more (fs_egress.py:401-409; file_egress_store.py:867-893), поэтому хвост списка невидим и подгрузить его из UI нельзя. Дефект проявляется только на хосте с более чем 200 диалогов; подтвердить наличие такого хоста в этой среде не удалось.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/FileEgress.jsx:214-235",
+      "WEB-itinvent/frontend/src/pages/FileEgress.jsx:302-303",
+      "WEB-itinvent/frontend/src/components/dlp/TelegramDialogPanel.jsx:754-756",
+      "WEB-itinvent/frontend/src/components/dlp/BrowserVisitsPanel.jsx:794-797",
+      "WEB-itinvent/backend/api/v1/fs_egress.py:401-409",
+      "WEB-itinvent/backend/appdb/file_egress_store.py:867-893"
+    ],
+    "confidence": "medium"
+  }
+]

@@ -1,0 +1,114 @@
+[
+  {
+    "id": "FE-0253",
+    "verdict": "unverifiable",
+    "note": "Замер probe_wave3.mjs:24-31 шёл hard-goto по 8 маршрутам, читал performance.memory.usedJSHeapSize сразу после 1.2 с ожидания и ни разу не вызывал HeapProfiler.collectGarbage, поэтому +58 МБ на третьем раунде неотличимы от отложенной сборки мусора и кэша скомпилированного кода. Hard-навигация уничтожает JS-realm, так что React-состояние, листенеры и модульные кэши между раундами копиться не могут, а общие кэши в коде ограничены (swrCache — 80 записей, ChatLinkPreview — 300, chatHelpers — 4000 с очисткой). Решает прогон 10+ раундов с HeapProfiler.collectGarbage перед каждым чтением: плоский post-GC тренд означает GC-шум, монотонный рост — утечку, а heap snapshot diff с retainer-путями локализует объект. Пока такого замера нет, утечка не доказана, но и не исключена: исходный тест SPA-переходы вообще не проверял.",
+    "codeRefs": [
+      "audit/frontend/evidence/cycle10/probe_wave3.mjs:22-31",
+      "WEB-itinvent/frontend/src/lib/swrCache.js:6",
+      "WEB-itinvent/frontend/src/lib/swrCache.js:43-61",
+      "WEB-itinvent/frontend/src/components/chat/ChatLinkPreview.jsx:25-37",
+      "WEB-itinvent/frontend/src/components/chat/chatHelpers.js:208-221"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0324",
+    "verdict": "confirmed",
+    "note": "API не может вернуть больше запрошенного: FastAPI ограничивает limit 2000 (equipment.py:1982), SQL — TOP с клампом (queries.py:3595-3602), а ответ — голый {\"departments\": [...]} без total/hasMore. Форма перевода в режиме MOVE с ручным сотрудником запрашивает 1000 (useTransferFormState.js:172) и рендерит обязательный Select (TransferActionContent.jsx:210-233): при >1000 отделов хвост по алфавиту недоступен и выбрать его нельзя, индикатора усечения нет; 500 — дефолт хука и API (useDatabaseLookups.js:29), в этом пути не используется. Для movements экспорт запрашивает 500 (useEmployeeEquipmentExport.js:43-49), хотя API отдаёт meta с truncated/hasMore (warehouse1c.js:76-85) — экспорт читает только items и meta игнорирует. Фактическое переполнение не измерялось (прод-БД не запрашивалась), поэтому дефект латентный, но механизм тихого усечения подтверждён.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/database/useDatabaseLookups.js:28-39",
+      "WEB-itinvent/frontend/src/pages/database/useTransferFormState.js:164-194",
+      "WEB-itinvent/frontend/src/pages/database/TransferActionContent.jsx:210-233",
+      "WEB-itinvent/backend/api/v1/equipment.py:1980-1989",
+      "WEB-itinvent/backend/database/queries.py:3595-3602",
+      "WEB-itinvent/frontend/src/pages/database/useEmployeeEquipmentExport.js:41-53",
+      "WEB-itinvent/frontend/src/api/warehouse1c.js:76-85"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0098",
+    "verdict": "confirmed",
+    "note": "get_public_folder выбирает все готовые AppMyFile поддерева без LIMIT (my_files_service.py:4300-4309) и возвращает полный items (4341-4345), а клиент рендерит items.map без окна, пагинации или виртуализации (SharedFolder.jsx:207-259). На папке с тысячами файлов это один длинный синхронный рендер и десятки тысяч MUI-узлов, причём «Файлов: N» (SharedFolder.jsx:171) показывает полный размер и не сигнализирует о тяжести. Ограничения на число файлов в шаре нет — формулировка «лимит сервера неизвестен» уточняется как «лимита нет». Фактический объём папок не измерялся, но неограниченный рендер подтверждён по коду.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/SharedFolder.jsx:93",
+      "WEB-itinvent/frontend/src/pages/SharedFolder.jsx:171",
+      "WEB-itinvent/frontend/src/pages/SharedFolder.jsx:207-259",
+      "WEB-itinvent/backend/services/my_files_service.py:4300-4309",
+      "WEB-itinvent/backend/services/my_files_service.py:4341-4345"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0150",
+    "verdict": "confirmed",
+    "note": "На протухшей записи getOrFetchSWR запускает runDedupedFetch и сразу возвращает старый entry.data (swrCache.js:151-165), а setCacheEntry (79-85) не имеет подписчиков — обновлённый кэш некому применить к UI. loadBranchContext применяет только синхронный data (Networks.jsx:756-805), эффект перезапускается лишь при смене branchIdNum (972-993), а SWR_STALE_MS=60 с при retention 30 мин и отсутствии focus/visibility-ревалидации делает окно реальным. Собственная проба на реальном swrCache.js воспроизвела сценарий: вызов вернул v1 (isFresh=false), фоновая выборка прошла один раз и через 120 мс в кэше был v2, а вызывающий остался с v1. Итог: после возврата на филиал через минуту UI держит старый снапшот до смены филиала или мутации (refreshBranchContext вызывается только после мутаций, 898-906).",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/lib/swrCache.js:79-85",
+      "WEB-itinvent/frontend/src/lib/swrCache.js:151-165",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:118",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:756-805",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:898-906",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:972-993"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0152",
+    "verdict": "confirmed",
+    "note": "scrollTop живёт в useState (useVirtualizedTableWindow.js:33-35), а эффект синхронизации зависит только от [enabled, itemCount] (46-67); при переключении isMobile TableContainer размонтируется, а EquipmentTab и хук остаются смонтированными (EquipmentTab.jsx:211-215, 351, 437). Новый узел приходит со scrollTop=0, но state сохраняет, например, 5000 px, поэтому startIndex/topSpacer считаются по старому offset (86-98) и таблица показывает пустоту до первого scroll-события. Обычный поиск маскирует дефект, потому что меняет itemCount и перезапускает эффект; триггер — resize/поворот через breakpoint md при том же числе строк. Подтверждено по коду; браузерного воспроизведения в этом цикле не было.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/networks/useVirtualizedTableWindow.js:33-35",
+      "WEB-itinvent/frontend/src/components/networks/useVirtualizedTableWindow.js:46-67",
+      "WEB-itinvent/frontend/src/components/networks/useVirtualizedTableWindow.js:86-98",
+      "WEB-itinvent/frontend/src/components/networks/EquipmentTab.jsx:211-215",
+      "WEB-itinvent/frontend/src/components/networks/EquipmentTab.jsx:351",
+      "WEB-itinvent/frontend/src/components/networks/EquipmentTab.jsx:437-449"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0161",
+    "verdict": "confirmed",
+    "note": "Фронтенд запрашивает порты/розетки филиала с limit 10000, поиск — 5000 (Networks.jsx:765,871,1059,2030), а бэкенд отдаёт голые {\"ports\": [...]}/{\"sockets\": [...]} без total/hasMore и режет SQL LIMIT (networks.py:306-337, network_service.py:2857-2862). Счётчики в UI берутся из длины массивов (например, socketsCount, Networks.jsx:672), поэтому при >10000 портов/розеток или >5000 совпадений поиска пользователь видит усечённый набор как полный. Потолок 10000 задан Query(le=10000), для sockets — ещё и кламп в сервисе (1648), но фактический объём филиалов не измерялся. Механизм тихой потери данных подтверждён.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:672",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:765",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:871",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:1059",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:2030",
+      "WEB-itinvent/backend/api/v1/networks.py:306-337",
+      "WEB-itinvent/backend/services/network_service.py:2857-2862"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0162",
+    "verdict": "confirmed",
+    "note": "setTimeout(0) в startSocketPointCreation не сохраняется и не очищается (Networks.jsx:1465-1471): отложенный applySocketPointDraft может сработать после ухода с вкладки или размонтирования и перезаписать более новый черновик. expectedRef.current безусловно перезаписывается из version (ObjectNetmapTab.jsx:58,72) и затем из saved.version (88), поэтому при обновлении prop version во время правки 409 не будет — окно lost-update узкое, но механизм есть. setPointerCapture вызывается без try/catch (InteractiveMapCanvas.jsx:528,657), а ключ строки аудита включает index (AuditTab.jsx:83-84), что даёт лишние remount при сдвиге списка. Все перечисленные места в текущем коде подтверждены; это совокупность узких дефектов, а не один воспроизводимый сценарий.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:1465-1471",
+      "WEB-itinvent/frontend/src/components/itObjects/ObjectNetmapTab.jsx:58",
+      "WEB-itinvent/frontend/src/components/itObjects/ObjectNetmapTab.jsx:72",
+      "WEB-itinvent/frontend/src/components/itObjects/ObjectNetmapTab.jsx:87-88",
+      "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx:528",
+      "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx:657",
+      "WEB-itinvent/frontend/src/components/networks/AuditTab.jsx:83-84"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0300",
+    "verdict": "confirmed",
+    "note": "Чаты запрашиваются с limit=200 на хост (FileEgress.jsx:220-223), бэкенд режет SQL LIMIT (le=500) и сортирует по updated_at desc без total/hasMore (fs_egress.py:401-409, file_egress_store.py:869-872). Панель Telegram/MAX не показывает признак усечения, а заголовки вкладок берут tgChats.length/maxChats.length (FileEgress.jsx:302-303) — при >200 диалогов счётчик «200» выглядит как полный, а более старые диалоги невидимы. Для сравнения, BrowserVisitsPanel явно пишет «Показаны последние N из total» (BrowserVisitsPanel.jsx:796), то есть паттерн в проекте есть, но здесь не применён. Требуется >200 диалогов на хост; механизм подтверждён по коду.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/FileEgress.jsx:220-223",
+      "WEB-itinvent/frontend/src/pages/FileEgress.jsx:302-303",
+      "WEB-itinvent/frontend/src/components/dlp/BrowserVisitsPanel.jsx:796",
+      "WEB-itinvent/backend/api/v1/fs_egress.py:401-409",
+      "WEB-itinvent/backend/appdb/file_egress_store.py:869-872"
+    ],
+    "confidence": "high"
+  }
+]

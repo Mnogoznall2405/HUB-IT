@@ -1,0 +1,231 @@
+[
+  {
+    "id": "FE-0132",
+    "verdict": "refuted",
+    "note": "Unmount-cleanup действительно выходит без flush при savingRef.current === true (332-340), но это не теряет правки: savePending в finally после успешного ответа сам планирует таймер, если pendingSceneRef непуст (308-320), а savePendingRef после размонтирования не обнуляется (324-326). Поэтому сценарий «правки, накопленные во время in-flight save» сохраняется отложенным вызовом; потеря возможна только при отказе самой save-операции, что не является заявленным механизмом.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx:332-340",
+      "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx:308-320",
+      "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx:324-326"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0134",
+    "verdict": "confirmed",
+    "note": "setTaskDetailTab вызывает updateSearch с replace: false (373-378), а updateSearch делает navigate с replace:false (115-125), то есть каждое переключение вкладки деталей добавляет запись в history. Пользователь нажимает Back и возвращается на предыдущую вкладку вместо выхода из карточки; цикл повторяется по числу переключений.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskDetails.jsx:373-378",
+      "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskDetails.jsx:115-125"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0152",
+    "verdict": "confirmed",
+    "note": "scrollTop хранится в state хука (33-35), а эффект [enabled, itemCount] при перемонтировании таблицы с теми же deps не перезапускается (46-67). В SocketsTab/EquipmentTab TableContainer рендерится только на desktop (220, 308), поэтому после перехода mobile→desktop контейнер новый со scrollTop=0, но окно виртуализации считается по старому scrollTop: сверху остаётся большой spacer, таблица выглядит пустой до первого скролла.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/networks/useVirtualizedTableWindow.js:33-35",
+      "WEB-itinvent/frontend/src/components/networks/useVirtualizedTableWindow.js:46-67",
+      "WEB-itinvent/frontend/src/components/networks/SocketsTab.jsx:140-154",
+      "WEB-itinvent/frontend/src/components/networks/SocketsTab.jsx:220-310"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0157",
+    "verdict": "refuted",
+    "note": "Клик по маркеру гасится stopPropagation в onClick (559-565), а handleCanvasClick дополнительно отбрасывает цель внутри [data-map-point=1] (317-319). pointDragRef при перетаскивании ставит pointer capture на маркер (522-528), поэтому pointerup и производный click остаются на маркере; достижимого пути, где click доходит до контейнера после drag, в поддерживаемых браузерах нет.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx:559-565",
+      "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx:310-319",
+      "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx:518-528"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0161",
+    "verdict": "unverifiable",
+    "note": "Лимиты 10000/5000 действительно жёстко заданы на клиенте (765, 871, 1059, 2030), бэкенд принимает не больше 10000 (313, 330), а признака усечения/общего total в ответе нет. При этом вкладка показывает длину загруженного списка (SocketsTab.jsx:185), тогда как обзорный блок показывает истинный sockets_count из metrics (Networks.jsx:2723-2727), то есть расхождение возможно. Но достижимость требует филиала с более 10000 розеток/портов, а таких данных в репозитории нет, поэтому пользовательский эффект не подтверждён.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:765",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:871",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:1059",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:2030",
+      "WEB-itinvent/backend/api/v1/networks.py:313-330",
+      "WEB-itinvent/frontend/src/components/networks/SocketsTab.jsx:185"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0162",
+    "verdict": "refuted",
+    "note": "Все четыре пункта — защитные мелочи без наблюдаемого состояния: setTimeout(0) вызывает applySocketPointDraft, который лишь применяет уже сохранённый черновик (1467-1468), expectedRef синхронизируется с версией того же map-объекта, которую родитель обновляет после сохранения (ObjectNetmapTab.jsx:72, 87-88), setPointerCapture на pointerdown поддерживается браузерами, а ключ AuditTab использует index только как fallback при отсутствии id (AuditTab.jsx:84), при этом бэкенд всегда отдаёт id. Воспроизводимого пользовательского дефекта нет.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/Networks.jsx:1467-1468",
+      "WEB-itinvent/frontend/src/components/itObjects/ObjectNetmapTab.jsx:72",
+      "WEB-itinvent/frontend/src/components/itObjects/ObjectNetmapTab.jsx:87-88",
+      "WEB-itinvent/frontend/src/components/networks/AuditTab.jsx:84"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0175",
+    "verdict": "refuted",
+    "note": "Гонка достижима только при двух перекрывающихся openAttachmentPreview (закрыть превью во время загрузки и открыть другое): stale-ветка пишет previewObjectUrl.current = objectUrl (1749), затем отзывает его (1755-1759), оставляя в ref мёртвый URL. Однако следующий close/open отзывает именно мёртвый URL, а актуальный URL остаётся живым, то есть превью показывается корректно; последствие — утечка blob-URL (память), а не потеря/подмена превью.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/Docflow.jsx:1745-1759",
+      "WEB-itinvent/frontend/src/pages/Docflow.jsx:1665-1676"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0256",
+    "verdict": "refuted",
+    "note": "loadMeetings не бросает: весь запрос обёрнут в try/catch, ошибка кладётся в errors.meetings и возвращается false (170-206), поэтому .then без .catch в эффекте фильтров (495-497) не создаёт unhandled rejection. loadExportCount также сам ловит ошибку, выставляет exportCountError и возвращает false (208-229), после чего флаг передаётся в дочерний компонент (805-806); описанной необработанной ошибки нет.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceVideoPage.jsx:170-206",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceVideoPage.jsx:208-229",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceVideoPage.jsx:495-497"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0260",
+    "verdict": "refuted",
+    "note": "ID работ — UUID-строки (appdb/models.py:117, construction_work_service.py:188-196), а daily/attendance наполняются ключами из тех же data.items (69, 182-188), поэтому строгое сравнение i.id === id совпадает. data не перезагружается, пока есть dirty (44), а «Обновить» и смена режима заблокированы при dirty (110-114); исчезнувшая работа приводит к 409 от сервера, а не к TypeError. Числовой id и пропавший item в текущем контракте недостижимы.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.jsx:76",
+      "WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.jsx:44",
+      "WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.jsx:69",
+      "WEB-itinvent/frontend/src/components/construction/ConstructionWorkPanel.jsx:194"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0261",
+    "verdict": "refuted",
+    "note": "Дата учёта в панели заблокирована при dirty || saving (239), а objectId/groupRef меняются только через страницу, где workspace принудительно перемонтируется ключом key={`${objectId}:${groupRef}`} (ConstructionDirectionDetail.jsx:724). Поэтому эффект 157-160 не может сменить scope при непустом черновике; сценарий осиротевших ключей в текущем UI недостижим.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/construction/ConstructionWorkPanel.jsx:157-160",
+      "WEB-itinvent/frontend/src/components/construction/ConstructionWorkPanel.jsx:239",
+      "WEB-itinvent/frontend/src/pages/ConstructionDirectionDetail.jsx:724"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0263",
+    "verdict": "refuted",
+    "note": "При открытой детали задачи список полностью скрыт display:none (Tasks.jsx:72-83), поэтому действия над другой задачей B в этот момент недоступны: меню действий живёт только в TasksListLayout (135) и открывает диалоги для выбранной задачи. Конфликт обрабатывается для id текущей задачи (useTaskWorkflowActions.js:43-55), и loadTaskDetails перезагружает ту же карточку, а не подменяет A на B.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/Tasks.jsx:72-83",
+      "WEB-itinvent/frontend/src/pages/tasks/TasksListLayout.jsx:135",
+      "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskWorkflowActions.js:43-55"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0265",
+    "verdict": "unverifiable",
+    "note": "Единый Suspense fallback=null действительно охватывает весь слой (28-341), и suspend любого lazy-диалога снимет с экрана соседние. Но почти все lazy-диалоги смонтированы безусловно (162, 260, 305-339) и грузятся при монтировании слоя; условно монтируется только TasksCreateDialog (30-83, 214-258), а штатные сценарии не открывают два диалога одновременно. Теоретический путь через глобальный шорткат 'n' (useTasksPageController.jsx:683-686) поверх открытого review-диалога с потерей локального comment (TaskActionDialogs.jsx:640) есть, но его пользовательская достижимость не подтверждена.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/tasks/TasksDialogsLayer.jsx:28",
+      "WEB-itinvent/frontend/src/pages/tasks/TasksDialogsLayer.jsx:30-83",
+      "WEB-itinvent/frontend/src/pages/tasks/TasksDialogsLayer.jsx:260-339",
+      "WEB-itinvent/frontend/src/pages/tasks/useTasksPageController.jsx:683-686",
+      "WEB-itinvent/frontend/src/components/hub/TaskActionDialogs.jsx:640"
+    ],
+    "confidence": "low"
+  },
+  {
+    "id": "FE-0266",
+    "verdict": "confirmed",
+    "note": "loadTree не имеет ни sequence, ни AbortController: два параллельных GET применяются в порядке resolve через setTree и updateUrlState (144-178). Параллельность достижима: background-загрузка после админ-изменения не выставляет loading (535, 144-145), поэтому кнопка «Обновить», заблокированная только по loading (332-333), остаётся активной, и ответ старого запроса может перезаписать более свежее дерево и URL.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx:144-178",
+      "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx:332-333",
+      "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx:534-536"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0267",
+    "verdict": "refuted",
+    "note": "updateUrlState действительно использует сырой history.pushState/replaceState со старым state (117-125), но страница нигде не читает location роутера: состояние берётся из window.location.search (76-85) и popstate (184-200). React Router 7 (package.json:61) на каждый popstate вызывает listener и обновляет location даже при delta=0, поэтому Back/Forward восстанавливают URL и выбранный узел; ломаного back-стека в текущем коде нет, каждый клик по узлу просто добавляет запись.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx:117-125",
+      "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx:76-85",
+      "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx:184-200",
+      "WEB-itinvent/frontend/package.json:61"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0270",
+    "verdict": "refuted",
+    "note": "У Autocomplete нет prop value (340-352), поэтому isOptionEqualToValue не участвует в выборе: сравнение применяется только к контролируемому value, а здесь компонент неконтролируемый. Ключ опции уже включает node_id (370), так что утверждение о ключе без node_id устарело; коллизия тёзок не даёт пользовательского эффекта.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx:340-352",
+      "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx:369-370"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0273",
+    "verdict": "refuted",
+    "note": "data?.items.length безопасен: при data=null optional chain обрывает всю цепочку, а при непустом data контракт read всегда содержит items (construction_work_service.py:168-174). Для day-записей before/after формируются сервисом как {date, values} (construction_work_service.py:219), поэтому entry.after.date определён; неполный ответ, на котором эти строки падали бы, текущим API не выдаётся.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/construction/ConstructionWorkPanel.jsx:101",
+      "WEB-itinvent/frontend/src/components/construction/ConstructionWorkPanel.jsx:110",
+      "WEB-itinvent/backend/services/construction_work_service.py:168-174",
+      "WEB-itinvent/backend/services/construction_work_service.py:219"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0276",
+    "verdict": "refuted",
+    "note": "activePopGuard действительно модульный синглтон (4, 8, 129-133), но в текущих маршрутах одновременно не монтируются два dirty-гарда: workspace и его details-панель взаимоисключающи по dirty (Workspace.jsx:41-44, 110, 116), а ConstructionObjectSettingsDialog живёт на другой странице (ConstructionObjectDetail.jsx:340). Навигационный патч мультиплексирует подписчиков через Set (16-54), и тест на двух редакторов проходит; пользовательского сценария «гард достался последнему» в текущем UI нет.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/construction/useConstructionWorkLeaveGuard.js:4",
+      "WEB-itinvent/frontend/src/components/construction/useConstructionWorkLeaveGuard.js:16-54",
+      "WEB-itinvent/frontend/src/components/construction/useConstructionWorkLeaveGuard.js:129-133",
+      "WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.jsx:41-44",
+      "WEB-itinvent/frontend/src/pages/ConstructionObjectDetail.jsx:340"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0278",
+    "verdict": "confirmed",
+    "note": "При task_canvas.error с code=forbidden выставляется can_edit=false (545-549), но pendingSceneRef не очищается и saveState не сбрасывается. Кнопка сохранения исчезает из-за canvas.can_edit (759), unmount-flush пропускает правки из-за canEditRef=false (332-340), а statusLabel при saveState='dirty' продолжает показывать «Есть несохранённые изменения» и beforeunload предупреждает (342-350). Сценарий достижим при отзыве прав/закрытии задачи во время редактирования (WS перепроверяет доступ каждые 5 c, task_canvas_ws.py:32, 221-235).",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx:545-552",
+      "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx:332-340",
+      "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx:659-667",
+      "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx:759-770",
+      "WEB-itinvent/backend/api/v1/chat/task_canvas_ws.py:221-235"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0280",
+    "verdict": "refuted",
+    "note": "Scope-ключ действительно склеивает cityFilter и listMode без разделителя (213-214), но listMode принимает только фиксированные all/favorites/recent, а cityFilter — значение из списка городов, а не произвольный текст. Коллизия потребовала бы город, оканчивающийся на 'all'/'recent'/'favorites', либо подмену режима; в текущем UI такая пара состояний недостижима, поэтому устаревший ответ не может быть принят за актуальный.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/AddressBook.jsx:213-214",
+      "WEB-itinvent/frontend/src/pages/AddressBook.jsx:439-447"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0301",
+    "verdict": "confirmed",
+    "note": "Cancelled-флаг защищает от применения устаревшего ответа (48-58, 127-143), поэтому отсутствие AbortController само по себе не портит состояние — отменяется только таймер, а запрос доигрывается вхолостую. Но при reject поиска catch лишь логирует (54-56, 139-141) и не очищает transferRecipientOptions/transferEmployeeOptions: под новым запросом остаются варианты предыдущего поиска, и получателя можно выбрать по неверному списку. Ошибка при этом пользователю не показывается.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/database/useTransferEmail.js:48-58",
+      "WEB-itinvent/frontend/src/pages/database/useTransferFormState.js:127-143"
+    ],
+    "confidence": "low"
+  }
+]

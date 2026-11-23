@@ -28,7 +28,7 @@ const issuesPath = resolve(scriptDir, 'ISSUES.json');
 const SEVERITIES = new Set(['Critical', 'High', 'Medium', 'Low', 'Info']);
 const STATUSES = new Set(['Confirmed', 'Suspected', 'Fixed-externally', 'Rejected']);
 const VERIFICATION_PREFIXES = ['static', 'live-production', 'tooling'];
-const VERIFICATION_EXACT = new Set(['перепроверено (цикл 12)']);
+const VERIFICATION_EXACT = new Set(['перепроверено (цикл 12)', 'перепроверено (цикл 13)']);
 const ID_PATTERN = /^FE-\d{4}$/;
 const REQUIRED_FIELDS = ['id', 'title', 'category', 'severity', 'status', 'evidence', 'verification'];
 

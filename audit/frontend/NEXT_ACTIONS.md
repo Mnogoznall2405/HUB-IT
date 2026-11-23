@@ -139,3 +139,21 @@
    на локальном стеке (E2E уже фиксировал падения).
 7. 50 Suspected: приоритетно FE-0110 (ONLYOFFICE close-hang), FE-0051,
    FE-0075/FE-0076 (security-edge), FE-0182, FE-0253 (heap).
+
+## Цикл 13 — итог и очередь (2026-11-23)
+
+- 323 записи: Confirmed 269, Suspected 12, Fixed-externally 2, Rejected 40.
+- Новый дефект: FE-0325 (PWA offline cold reload >65 c).
+- FE-0078 закрыт live E2E; FE-0197/0198/0083 подтверждены live.
+- Оставшиеся Suspected: FE-0004, FE-0051, FE-0076, FE-0110, FE-0115,
+  FE-0161, FE-0194, FE-0253, FE-0265, FE-0300, FE-0323, FE-0324.
+
+### Приоритет следующего цикла
+1. FE-0325: исправить offline recovery (status=0, navigator.onLine, таймаут) и
+   добавить E2E offline cold reload; проверить PWA/Desktop.
+2. FE-0110/FE-0112/FE-0113/FE-0119: реальный ONLYOFFICE Document Server.
+3. FE-0215/FE-0216: реальный mailbox + inline-изображения (autosave/restore).
+4. FE-0230: реальный WebView2 с поздним bridgeReady.
+5. FE-0098/FE-0161/FE-0300/FE-0324: искусственные большие объёмы на стенде.
+6. FE-0259/FE-0260/FE-0261: 1C/SQL-данные construction.
+7. 429/500 UI и полный multi-tab UI-сценарий refresh.

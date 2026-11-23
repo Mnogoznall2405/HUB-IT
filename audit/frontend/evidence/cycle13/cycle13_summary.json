@@ -1,0 +1,48 @@
+{
+  "generatedAt": "2026-11-23T05:46:36.191Z",
+  "verdictFiles": [
+    "verdicts_auth.json",
+    "verdicts_chat.json",
+    "verdicts_mail_office.json",
+    "verdicts_perf.json",
+    "verdicts_state_race.json",
+    "verdicts_ui.json"
+  ],
+  "verdicts": {
+    "confirmed": 27,
+    "refuted": 23,
+    "unverifiable": 9,
+    "fixed-externally": 1
+  },
+  "statuses": {
+    "Confirmed": 269,
+    "Suspected": 12,
+    "Fixed-externally": 2,
+    "Rejected": 40
+  },
+  "severity": {
+    "Critical": 0,
+    "High": 12,
+    "Medium": 123,
+    "Low": 173,
+    "Info": 15
+  },
+  "total": 323,
+  "newFindings": [
+    "FE-0325"
+  ],
+  "statusModel": {
+    "confirmedVerdicts": 290,
+    "confirmedStatus": 254,
+    "difference": 36,
+    "explanation": "36 записей получили confirmed-вердикт, но остались Suspected: их утверждение подтверждалось кодом, однако пользовательский эффект зависел от dev-only/среды/объёма. Остальные 32 записи: 17 Rejected, 10 unverifiable, 4 wrong-evidence, 1 fixed-externally."
+  },
+  "liveChecks": [
+    "FE-0197",
+    "FE-0198",
+    "FE-0078",
+    "FE-0083",
+    "FE-0253",
+    "FE-0325"
+  ]
+}

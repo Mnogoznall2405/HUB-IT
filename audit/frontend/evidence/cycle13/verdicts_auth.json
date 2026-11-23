@@ -1,0 +1,112 @@
+[
+  {
+    "id": "FE-0004",
+    "verdict": "unverifiable",
+    "note": "Маршрут /shared-folders/:token объявлен вне ProtectedRoute (App.jsx:427-428), экран сам ловит ошибку и показывает «Папка недоступна» (SharedFolder.jsx:47-57), а публичные запросы идут с suppressAuthRequired (myFiles.js:352-373); бэкенд на невалидный токен отдаёт 404 (my_files.py:436-450). Файлы маршрута не менялись с 11.11 (git log), а в чистом профиле 23.11 ошибка корректна, поэтому текущий код не может показать форму логина на этом URL. Наблюдение осталось только в одном долгоживущем профиле и объясняется устаревшим app-shell (FE-0084), отдельный дефект не доказан.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/App.jsx:427-428",
+      "WEB-itinvent/frontend/src/pages/SharedFolder.jsx:47-57",
+      "WEB-itinvent/frontend/src/api/myFiles.js:352-355",
+      "WEB-itinvent/backend/api/v1/my_files.py:436-450"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0015",
+    "verdict": "refuted",
+    "note": "Сброс после emulate(mobile UA) укладывается в подтверждённый FE-0059: первый refresh попадает в grace, а повторная подача старого jti закрывает family (auth.py:1648-1687); UA-пиннинга нет, refresh проверяет JWT, сессию и device-cookie (auth.py:1589-1603, deps.py:97-142). В AuthContext нет отдельной ветки «смена UA»: любой 401 идёт через общий interceptor и refresh-цепочку (http.js:311-379). Воспроизводимого сценария, отличного от FE-0059, в записи нет, поэтому самостоятельный дефект не подтверждён.",
+    "codeRefs": [
+      "WEB-itinvent/backend/api/v1/auth.py:1589-1603",
+      "WEB-itinvent/backend/api/v1/auth.py:1648-1687",
+      "WEB-itinvent/backend/api/deps.py:97-142",
+      "WEB-itinvent/frontend/src/api/http.js:311-379",
+      "WEB-itinvent/frontend/src/contexts/AuthContext.jsx:171-174"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0016",
+    "verdict": "refuted",
+    "note": "URL пяти 401 не сохранились, а повторная проба с полным захватом console и network не дала ни одного 4xx/5xx, поэтому привязка к конкретному запросу невозможна (это же зафиксировано в fileNote записи). Транзиентные 401 в окне разлогина объясняются FE-0059: при отказе refresh interceptor удаляет user и рассылает auth-required (http.js:354-379, AuthContext.jsx:371-379). Отдельного воспроизводимого дефекта запись не содержит.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/api/http.js:354-379",
+      "WEB-itinvent/frontend/src/contexts/AuthContext.jsx:371-379"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0072",
+    "verdict": "refuted",
+    "note": "isDefinitiveAuthRejection (401 или 403) применяется только к ошибке /auth/refresh (http.js:354), а refresh-эндпоинт все отказы сессии отдаёт как 401 (auth.py:1589-1603,1759), 403 в нём нет. Обычные бизнес-403 не запускают logout: response-interceptor обрабатывает только status===401 (http.js:311-380). Второй чек 401/403 в AuthContext относится к /auth/me (AuthContext.jsx:171-174,256-258), где единственный 403 — admin-IP allowlist (deps.py:51-72), то есть отказ по политике, а не лишний logout.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/api/http.js:186-189",
+      "WEB-itinvent/frontend/src/api/http.js:311-380",
+      "WEB-itinvent/backend/api/v1/auth.py:1589-1603",
+      "WEB-itinvent/frontend/src/contexts/AuthContext.jsx:171-174",
+      "WEB-itinvent/frontend/src/contexts/AuthContext.jsx:256-258",
+      "WEB-itinvent/backend/api/deps.py:51-72"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0075",
+    "verdict": "refuted",
+    "note": "Обработчик принимает сообщения только от iframe (event.source === iframe.contentWindow, ObjectNetmapTab.jsx:124) и при непустом origin проверяет его (125). Ветка `origin || '*'` недостижима: origin и editorUrl строятся из одного VITE_DRAWIO_EDITOR_URL, а невалидный URL бросает исключение в drawioEditorUrl (drawio.js:57-58) ещё в effect до появления iframe (ObjectNetmapTab.jsx:73-80); при валидном URL origin всегда непустой. Сценария с fail-open ответом на '*' в текущем коде нет.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/itObjects/ObjectNetmapTab.jsx:73-80",
+      "WEB-itinvent/frontend/src/components/itObjects/ObjectNetmapTab.jsx:122-135",
+      "WEB-itinvent/frontend/src/lib/drawio.js:57-58",
+      "WEB-itinvent/frontend/src/lib/drawio.js:72-78"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0076",
+    "verdict": "unverifiable",
+    "note": "Диалог отправляет текст обычного multiline TextField (AiMailActionEditDialog.jsx:162) с is_html:true (119-129), и бэкенд действительно кладёт body в HTMLBody без экранирования (mail_send_pipeline.py:141). Но это штатный HTML-режим compose (mailCompose.js:42,107), а не XSS в приложении: разметка исполняется в почтовом клиенте получателя, вне origin HUB-IT, и не даёт доступа к сессии или данным портала. Доказанного вреда без действия пользователя, который видит и подтверждает черновик, не представлено.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/chat/AiMailActionEditDialog.jsx:119-129",
+      "WEB-itinvent/frontend/src/pages/chat/AiMailActionEditDialog.jsx:162",
+      "WEB-itinvent/backend/services/mail_send_pipeline.py:141",
+      "WEB-itinvent/frontend/src/api/mailCompose.js:42"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0209",
+    "verdict": "confirmed",
+    "note": "Seen-ids читаются из localStorage один раз при монтировании (NotificationContext.jsx:56-65,194) и дальше живут в state каждой вкладки; storage-слушателя для itinvent_hub_seen_ids нет, есть только запись (76-83,222-226). Два окна с visibilityState=visible независимо опрашивают /hub/notifications/poll и обе показывают toast, потому что проверка идёт по локальному ref (MainLayout.jsx:1479,1504-1513), а dedupeMode:'recent' работает только внутри вкладки. Системные уведомления уже дедуплицируются через общий localStorage в systemNotificationRouter (45-82), поэтому остаётся дубль именно in-app тостов.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/contexts/NotificationContext.jsx:56-65",
+      "WEB-itinvent/frontend/src/contexts/NotificationContext.jsx:194",
+      "WEB-itinvent/frontend/src/contexts/NotificationContext.jsx:222-226",
+      "WEB-itinvent/frontend/src/contexts/NotificationContext.jsx:433-449",
+      "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx:1479-1513",
+      "WEB-itinvent/frontend/src/lib/systemNotificationRouter.js:45-82"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0213",
+    "verdict": "confirmed",
+    "note": "isCompleteBackupInput возвращает true для любой строки длиной >=6 (Login.jsx:82-88), и effect на compact-viewport отправляет форму через 650 мс (1584-1601), тогда как коды генерируются 9-символьными XXXX-XXXX (twofa_service.py:149-160). При паузе после шестого символа на проверку уходит часть кода, пользователь видит ложную ошибку, а бэкенд списывает попытку в лимите 3 за 60 c (auth.py:1446-1453). Несколько таких пауз приводят к 429, поэтому дефект воспроизводим на мобильной ширине.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/Login.jsx:82-88",
+      "WEB-itinvent/frontend/src/pages/Login.jsx:1584-1601",
+      "WEB-itinvent/backend/services/twofa_service.py:149-160",
+      "WEB-itinvent/backend/api/v1/auth.py:1443-1453"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0257",
+    "verdict": "refuted",
+    "note": "JSON.parse находится в decryptPayload (mobileOfflineCache.js:185-193), но его единственный вызов — внутри getCachedMobileGetResponse, где decrypt и parse обёрнуты в try/catch с возвратом null при любой ошибке (337-369). Повреждённая или нерасшифровываемая запись превращается в cache miss, а не в reject у потребителей; inventory записи не расшифровывает (407-440). Описанного падения чтения кэша в текущем коде нет.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/lib/mobileOfflineCache.js:185-193",
+      "WEB-itinvent/frontend/src/lib/mobileOfflineCache.js:337-369",
+      "WEB-itinvent/frontend/src/lib/mobileOfflineCache.js:407-440"
+    ],
+    "confidence": "high"
+  }
+]

@@ -1,0 +1,81 @@
+[
+  {
+    "id": "FE-0034",
+    "verdict": "confirmed",
+    "note": "Подтверждается, но не в перечисленных местах. SharedFolder.jsx:231/248, Vcs.jsx:685-686 и 701-702, Passwords.jsx:900, PasswordFiltersPanel.jsx:39 и VoiceLogViewer.jsx:229/234 обёрнуты Tooltip со строковым title, и MUI вешает aria-label на сам IconButton (Tooltip.js:459), поэтому это ложные срабатывания. Реально без доступного имени остаются UsersTab.jsx:321 (кнопка закрытия редактора без Tooltip и aria-label) и случаи Tooltip → span → IconButton: Mfu.jsx:988-990, MailTemplatesDialog.jsx:183/190, SocketsTab.jsx:285/381, EquipmentTab.jsx:313 — там aria-label попадает на span, а не на кнопку. Иконки MUI по умолчанию aria-hidden (SvgIcon.js:104), поэтому скринридер объявляет кнопку без назначения; на UsersTab.jsx:321 и Mfu.jsx:990 кнопки обычно ещё и доступны с клавиатуры.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/account/admin/UsersTab.jsx:321",
+      "WEB-itinvent/frontend/src/pages/Mfu.jsx:988-990",
+      "WEB-itinvent/frontend/src/components/mail/MailTemplatesDialog.jsx:183",
+      "WEB-itinvent/frontend/src/components/networks/SocketsTab.jsx:285",
+      "WEB-itinvent/frontend/node_modules/@mui/material/Tooltip/Tooltip.js:459",
+      "WEB-itinvent/frontend/node_modules/@mui/material/SvgIcon/SvgIcon.js:104",
+      "WEB-itinvent/frontend/src/pages/Vcs.jsx:685-686"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0135",
+    "verdict": "confirmed",
+    "note": "Подтверждается: экспорт запрашивается с responseType:'blob' (json_client.js:252-255), а catch передаёт ошибку в notifyApiError (Statistics.jsx:333-335). extractApiDetail (NotificationContext.jsx:92-110) читает только строковые detail/message/error и не разбирает Blob, поэтому серверный detail (json_operations.py:743-747) теряется. В тосте остаётся техническое «Request failed with status code N» на английском вместо причины отказа — это не дамп «[object Blob]», но пользователь причины не видит; в проекте уже есть образец разбора через blob.text() (EquipmentDetailPhotosPanel.jsx:54-65).",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/Statistics.jsx:317",
+      "WEB-itinvent/frontend/src/pages/Statistics.jsx:333-335",
+      "WEB-itinvent/frontend/src/api/json_client.js:252-255",
+      "WEB-itinvent/frontend/src/contexts/NotificationContext.jsx:92-110",
+      "WEB-itinvent/backend/api/v1/json_operations.py:743-747",
+      "WEB-itinvent/frontend/src/pages/database/EquipmentDetailPhotosPanel.jsx:54-65"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0182",
+    "verdict": "confirmed",
+    "note": "Подтверждается с исправленной формулировкой: старого TypeError нет — при отсутствии navigator.clipboard опциональная цепочка короткозамыкает всё выражение вместе с .then (проверено в node), поэтому «undefined.then» невозможен. Реальный дефект — отсутствие .catch и fallback: при отказе Clipboard API (нет разрешения, документ не в фокусе, ограничение политики или встроенного браузера) клик «Копировать всё» молча ничего не делает, copied не выставляется, а отклонение уходит в unhandledrejection. Общий helper lib/clipboard.js:1-12 с textarea-fallback здесь не используется; setTimeout на VoiceLogViewer.jsx:169 также не очищается, поэтому повторное копирование и закрытие диалога оставляют висящий таймер.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceLogViewer.jsx:166-171",
+      "WEB-itinvent/frontend/src/lib/clipboard.js:1-12"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0194",
+    "verdict": "confirmed",
+    "note": "Подтверждается как незащищённое обращение, а не как частый пользовательский сценарий: MonitoringDeviceGrid.jsx:34 вызывает target.name.split без ?., хотя displayTargetName рядом использует ?. и fallback. В БД name NOT NULL (monitoring_models.py:29), поэтому нормальный ответ API имя содержит; путь к записи без name даёт только частичный patchTarget({id, summary}) при сохранении интерфейса (Monitoring.jsx:198), если цели уже нет в списке (рассинхронизация списка и детали), после чего при возврате к сетке рендер падает. Падение ловит RouteErrorBoundary (App.jsx:308-338) — пользователь увидит экран ошибки маршрута, а не «белый экран»; сценарий редкий, поэтому Low оправдана, но guard в строке 34 нужен.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/pages/monitoring/MonitoringDeviceGrid.jsx:34",
+      "WEB-itinvent/frontend/src/pages/Monitoring.jsx:111-113",
+      "WEB-itinvent/frontend/src/pages/Monitoring.jsx:198",
+      "WEB-itinvent/backend/appdb/monitoring_models.py:29",
+      "WEB-itinvent/frontend/src/App.jsx:308-338"
+    ],
+    "confidence": "medium"
+  },
+  {
+    "id": "FE-0250",
+    "verdict": "confirmed",
+    "note": "Подтверждается вторая половина: resolveAvailableSettingsTabs (accountConstants.jsx:32-40) вместе со всем SETTINGS_TABS используется только тестом SettingsAiBots.test.jsx:26-57 и в рантайме не вызывается. adminOnlyFallback формально не мёртв — он читается в accountNavigationConfig.jsx:179, — но эффекта не даёт: для admin строка 180 всё равно вернёт true, а для ad-users срабатывает ветка permissions (176-178); флаг можно удалить без изменения поведения. Пользовательского дефекта здесь нет, это мёртвый код и лишняя конфигурация, поэтому severity следует понизить с Low до Info и отдельно решить судьбу теста мёртвой функции.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/account/accountNavigationConfig.jsx:93",
+      "WEB-itinvent/frontend/src/components/account/accountNavigationConfig.jsx:122",
+      "WEB-itinvent/frontend/src/components/account/accountNavigationConfig.jsx:171-181",
+      "WEB-itinvent/frontend/src/pages/account/accountConstants.jsx:32-40",
+      "WEB-itinvent/frontend/src/pages/SettingsAiBots.test.jsx:6",
+      "WEB-itinvent/frontend/src/pages/SettingsAiBots.test.jsx:26-57"
+    ],
+    "confidence": "high"
+  },
+  {
+    "id": "FE-0279",
+    "verdict": "refuted",
+    "note": "Как пользовательский дефект не подтверждается, хотя зазор в реализации есть: inert действительно снимается один раз (TaskCanvasWorkspace.jsx:366-398). Оба примера из описания не работают: ToastViewport рендерится инлайново (ToastViewport.jsx:235-258) внутри стека NotificationContext.jsx:471-521, который является сиблингом ветки воркспейса и потому сам получает inert, а MUI Snackbar в этом пути не порталится. Портируемые MUI Dialog-ы (Modal.js:188) в pseudo-fullscreen на странице задач открыть нечем: канвас не вызывает ни useConfirmDialog, ни Dialog, а глобальные диалоги срабатывают только по действию пользователя, недоступному за пределами инертного слоя. Остаётся теоретический риск для будущих порталов, но демонстрируемого ухода фокуса в текущем коде нет.",
+    "codeRefs": [
+      "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx:366-398",
+      "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx:708-710",
+      "WEB-itinvent/frontend/src/contexts/NotificationContext.jsx:471-521",
+      "WEB-itinvent/frontend/src/components/feedback/ToastViewport.jsx:235-258",
+      "WEB-itinvent/frontend/node_modules/@mui/material/Modal/Modal.js:188"
+    ],
+    "confidence": "medium"
+  }
+]
