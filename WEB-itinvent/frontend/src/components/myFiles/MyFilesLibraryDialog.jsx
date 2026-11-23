@@ -41,7 +41,9 @@ const GIB = 1024 ** 3;
 // и текущее значение сравниваются после одной и той же нормализации.
 export const quotaBytesToGbInput = (bytes) => {
   const value = Number(bytes || 0);
-  return value > 0 ? String(Math.round((value / GIB) * 100) / 100) : '';
+  // До 4 значащих цифр: 1 МиБ отображается как «0.0009766», а не «0»;
+  // точные байты при этом всё равно хранятся на сервере и не переотправляются.
+  return value > 0 ? String(Number((value / GIB).toPrecision(4))) : '';
 };
 
 export const parseQuotaGbInput = (raw) => {
@@ -353,19 +355,56 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
     setError('');
     setNameError('');
     setQuotaError('');
-    try {
-      if (!membersOnly && settingsDirty) {
-        await myFilesLibrariesAPI.update(current.id, { name: name.trim(), quotaBytes: quotaParsed.bytes });
+    // PATCH содержит только фактически изменённые поля: переименование
+    // не перезаписывает quota_bytes (включая округление ввода в ГБ).
+    const patch = {};
+    if (!membersOnly && nameDirty) patch.name = name.trim();
+    if (!membersOnly && quotaDirty) patch.quotaBytes = quotaParsed.bytes;
+    let settingsFailed = null;
+    let membersFailed = null;
+    if (Object.keys(patch).length) {
+      try {
+        const updated = await myFilesLibrariesAPI.update(current.id, patch);
+        // Подтверждённый сервером результат становится новым базисом:
+        // повторное «Сохранить» не отправит эти поля ещё раз.
+        const confirmedName = String(updated?.name ?? patch.name ?? baseline.name).trim();
+        const confirmedQuota = quotaDirty
+          ? quotaBytesToGbInput(updated?.quota_bytes ?? quotaParsed.bytes)
+          : baseline.quotaGb;
+        setCurrent((prev) => ({ ...(prev || {}), ...(updated || {}), name: confirmedName }));
+        setBaseline((prev) => ({
+          name: patch.name !== undefined ? confirmedName : prev.name,
+          quotaGb: quotaDirty ? confirmedQuota : prev.quotaGb,
+        }));
+        if (patch.name !== undefined) setName(confirmedName);
+        if (quotaDirty) setQuotaGb(confirmedQuota);
+        setChanged(true);
+      } catch (err) {
+        settingsFailed = err;
       }
-      if (membersDirty) {
-        await myFilesLibrariesAPI.setMembers(current.id, members);
-      }
-      onClose?.(true);
-    } catch (err) {
-      applySaveError(err, 'Не удалось сохранить');
-    } finally {
-      setSaving(false);
     }
+    if (membersDirty) {
+      try {
+        await myFilesLibrariesAPI.setMembers(current.id, members);
+        setInitialMembers(members);
+        setChanged(true);
+      } catch (err) {
+        membersFailed = err;
+      }
+    }
+    setSaving(false);
+    if (!settingsFailed && !membersFailed) {
+      onClose?.(true);
+      return;
+    }
+    if (settingsFailed && membersFailed) {
+      applySaveError(settingsFailed, 'Не удалось сохранить');
+      return;
+    }
+    const failed = settingsFailed || membersFailed;
+    const savedPart = settingsFailed ? 'Список участников обновлён' : 'Настройки сохранены';
+    const pendingPart = settingsFailed ? 'настройки' : 'список участников';
+    setError(`${savedPart}, но не удалось обновить ${pendingPart}: ${errorMessage(failed, 'ошибка сервера')}. Нажмите «Сохранить» ещё раз — отправятся только оставшиеся изменения.`);
   };
 
   const remove = async () => {

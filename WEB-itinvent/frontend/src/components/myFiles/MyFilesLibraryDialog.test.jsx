@@ -47,8 +47,19 @@ const GIB = 1024 ** 3;
 describe('quota helpers', () => {
   it('derives a GB string from bytes without losing the limit', () => {
     expect(quotaBytesToGbInput(0)).toBe('');
+    expect(quotaBytesToGbInput(null)).toBe('');
     expect(quotaBytesToGbInput(10 * GIB + 17)).toBe('10');
     expect(quotaBytesToGbInput(1.5 * GIB)).toBe('1.5');
+  });
+
+  it('keeps a small non-zero limit visible instead of collapsing to 0 GB', () => {
+    const mib = quotaBytesToGbInput(1024 ** 2);
+    expect(mib).not.toBe('0');
+    expect(mib).not.toBe('');
+    expect(Number(mib)).toBeGreaterThan(0);
+    // Строка снова парсится в ненулевой лимит — «без лимита» только у пустого поля.
+    expect(parseQuotaGbInput(mib).bytes).toBeGreaterThan(0);
+    expect(parseQuotaGbInput(mib).bytes).toBeLessThan(2 * 1024 ** 2);
   });
 
   it('parses empty input as unlimited and rejects non-numbers', () => {
@@ -144,8 +155,120 @@ describe('MyFilesLibraryDialog', () => {
     await waitFor(() => expect(saveButton).toBeEnabled());
     fireEvent.click(saveButton);
 
-    await waitFor(() => expect(mockUpdate).toHaveBeenCalledWith('lib-5', { name: 'Отчёты 2026', quotaBytes: 10 * GIB }));
+    // PATCH несёт только изменённое поле: квота не переотправляется и не
+    // теряет точности даже на один байт (см. кейс 10 ГиБ + 17 байт ниже).
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledWith('lib-5', { name: 'Отчёты 2026' }));
+    expect(mockUpdate.mock.calls[0][1]).not.toHaveProperty('quotaBytes');
     expect(mockSetMembers).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledWith(true);
+  });
+
+  it('does not touch quota_bytes on rename even when the real limit has byte tail', async () => {
+    mockListMembers.mockResolvedValue({ items: [] });
+    mockUpdate.mockResolvedValue({ id: 'lib-5b', name: 'Отчёты+', quota_bytes: 10 * GIB + 17 });
+    const onClose = vi.fn();
+
+    render(<MyFilesLibraryDialog open library={{ id: 'lib-5b', name: 'Отчёты', quota_bytes: 10 * GIB + 17 }} onClose={onClose} />);
+
+    await screen.findByRole('dialog');
+    expect(screen.getByTestId('my-files-library-quota')).toHaveValue('10');
+    fireEvent.change(screen.getByTestId('my-files-library-name'), { target: { value: 'Отчёты+' } });
+    fireEvent.click(screen.getByTestId('my-files-library-save'));
+
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate).toHaveBeenCalledWith('lib-5b', { name: 'Отчёты+' });
+    expect(mockUpdate.mock.calls[0][1]).not.toHaveProperty('quotaBytes');
+    expect(mockSetMembers).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledWith(true);
+  });
+
+  it('sends only quotaBytes when just the limit changed, and accepts fractional GB', async () => {
+    mockListMembers.mockResolvedValue({ items: [] });
+    mockUpdate.mockResolvedValue({ id: 'lib-5c', name: 'Архив', quota_bytes: Math.round(1.5 * GIB) });
+    const onClose = vi.fn();
+
+    render(<MyFilesLibraryDialog open library={{ id: 'lib-5c', name: 'Архив', quota_bytes: 10 * GIB }} onClose={onClose} />);
+
+    await screen.findByRole('dialog');
+    fireEvent.change(screen.getByTestId('my-files-library-quota'), { target: { value: '1,5' } });
+    fireEvent.click(screen.getByTestId('my-files-library-save'));
+
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledWith('lib-5c', { quotaBytes: Math.round(1.5 * GIB) }));
+    expect(mockUpdate.mock.calls[0][1]).not.toHaveProperty('name');
+    expect(mockSetMembers).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledWith(true);
+  });
+
+  it('sends settings before members and reports a partial failure without losing the committed part', async () => {
+    const order = [];
+    mockListMembers.mockResolvedValue({
+      items: [{ principal_type: 'user', principal_id: '1', name: 'Админ', role: 'manage', members_count: 0 }],
+    });
+    mockUpdate.mockImplementation(() => { order.push('update'); return Promise.resolve({ id: 'lib-8', name: 'Новое имя', quota_bytes: 10 * GIB }); });
+    mockSetMembers.mockImplementation(() => { order.push('members'); return Promise.reject({ response: { data: { detail: 'members write blocked' } } }); });
+    const onClose = vi.fn();
+
+    render(<MyFilesLibraryDialog open library={{ id: 'lib-8', name: 'Старое имя', quota_bytes: 10 * GIB }} onClose={onClose} />);
+
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByTestId('my-files-library-tab-access'));
+    const members = await within(dialog).findByTestId('my-files-library-members');
+    await within(members).findByText('Админ');
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Роль: Админ' }));
+    fireEvent.click(await screen.findByRole('option', { name: /^Просмотр/ }));
+    fireEvent.click(within(dialog).getByTestId('my-files-library-tab-main'));
+    fireEvent.change(screen.getByTestId('my-files-library-name'), { target: { value: 'Новое имя' } });
+    fireEvent.click(screen.getByTestId('my-files-library-save'));
+
+    await waitFor(() => expect(order).toEqual(['update', 'members']));
+    // Частичный итог: настройки подтверждены, участники — нет. Диалог остаётся
+    // открытым с понятным сообщением, а не молчаливым «всё пропало».
+    expect(await screen.findByText(/Настройки сохранены, но не удалось обновить список участников/)).toBeInTheDocument();
+    expect(screen.getByText(/members write blocked/)).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    // Грязным остался только список участников — подтверждённое имя уже базис.
+    expect(screen.getByTestId('my-files-library-unsaved')).toHaveTextContent(/^Несохранённые изменения: 1$/);
+
+    mockSetMembers.mockImplementation(() => Promise.resolve({ items: [] }));
+    fireEvent.click(screen.getByTestId('my-files-library-save'));
+
+    // Повторная попытка отправляет только оставшееся: update больше не вызывается.
+    await waitFor(() => expect(mockSetMembers).toHaveBeenCalledTimes(2));
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith(true);
+  });
+
+  it('keeps saved members when settings update fails, and retries only settings', async () => {
+    mockListMembers.mockResolvedValue({
+      items: [{ principal_type: 'user', principal_id: '1', name: 'Админ', role: 'manage', members_count: 0 }],
+    });
+    mockUpdate.mockRejectedValue({ response: { data: { detail: 'quota below usage' } } });
+    mockSetMembers.mockResolvedValue({ items: [] });
+    const onClose = vi.fn();
+
+    render(<MyFilesLibraryDialog open library={{ id: 'lib-8b', name: 'Старое имя', quota_bytes: 10 * GIB }} onClose={onClose} />);
+
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByTestId('my-files-library-tab-access'));
+    const members = await within(dialog).findByTestId('my-files-library-members');
+    await within(members).findByText('Админ');
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Роль: Админ' }));
+    fireEvent.click(await screen.findByRole('option', { name: /^Просмотр/ }));
+    fireEvent.click(within(dialog).getByTestId('my-files-library-tab-main'));
+    fireEvent.change(screen.getByTestId('my-files-library-quota'), { target: { value: '5' } });
+    fireEvent.click(screen.getByTestId('my-files-library-save'));
+
+    expect(await screen.findByText(/Список участников обновлён, но не удалось обновить настройки/)).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId('my-files-library-unsaved')).toHaveTextContent(/^Несохранённые изменения: 1$/);
+
+    mockUpdate.mockResolvedValue({ id: 'lib-8b', name: 'Старое имя', quota_bytes: 5 * GIB });
+    fireEvent.click(screen.getByTestId('my-files-library-save'));
+
+    // Осталось только settings-изменение: повторно уходит один PATCH с квотой.
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledTimes(2));
+    expect(mockUpdate).toHaveBeenLastCalledWith('lib-8b', { quotaBytes: 5 * GIB });
+    expect(mockSetMembers).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledWith(true);
   });
 
