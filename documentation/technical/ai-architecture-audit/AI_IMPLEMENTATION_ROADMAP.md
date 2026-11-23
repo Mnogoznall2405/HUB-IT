@@ -5,18 +5,18 @@
 ## Этап A — Быстрые улучшения (1–2 недели, без новых зависимостей)
 
 ### A1. Таймауты и живучесть воркера (P0-1)
-- **Задачи**: per-run deadline в `_execute_run` (env `AI_RUN_TIMEOUT_SEC`, ~300с); `conn.timeout`/query timeout для pyodbc; `connect_timeout`/`receive_timeout` для ldap3; `AI_RUN_WATCHDOG_ENABLED=1` сначала в dry-run.
+- **Задачи**: таймауты **на уровне драйверов** — `conn.timeout`/query timeout для pyodbc, `connect_timeout`/`receive_timeout` для ldap3, `timeout` у subprocess-вызовов; per-run deadline в `_execute_run` (env `AI_RUN_TIMEOUT_SEC`, ~300с) — маркирует run failed и будит алерт, но **не освобождает занятый поток**: `wait_for`/`asyncio`-deadline на блокирующий sync-вызов не действует, поток разблокируют только driver-таймауты или рестарт; `AI_RUN_WATCHDOG_ENABLED=1` сначала в dry-run.
 - **Компоненты**: `service.py`, `backend/database/connection.py`, `services/ldap_security.py`, `start_ai_chat_worker.py`.
-- **Риски**: ложные срабатывания watchdog на длинных doc_convert — отдельный лимит.
-- **Тесты**: расширить `test_ai_run_watchdog.py`; юнит на deadline; e2e «зависший инструмент → run failed за N сек, воркер жив».
-- **Приёмка**: `kill -STOP`-симуляция зависшего tool → run завершается failed, остальные 3 потока работают.
+- **Риски**: ложные срабатывания watchdog на длинных doc_convert — отдельный лимит; слишком короткий pyodbc timeout может резать легитимные тяжёлые отчёты — начать с 30–60с.
+- **Тесты**: расширить `test_ai_run_watchdog.py`; юнит на deadline; e2e «зависший инструмент → run помечен failed за N сек».
+- **Приёмка**: симуляция зависшего tool (заглушка с sleep) → run завершается failed по driver-таймауту, поток освобождается, остальные потоки работают.
 - **Откат**: env-флаги, код обратим.
 
 ### A2. FTS-фиксы (P1-1, P1-2, P1-3)
 - **Задачи**: запрос → индексное выражение `COALESCE(title,'') || ' ' || COALESCE(content,'')`; конфиг `'russian'` (запрос + новая миграция индекса); OR-fallback при пустом AND-результате (пересбор запроса через `to_tsquery` с `|`); ACL-фильтр в SQL до LIMIT; `pg_trgm` similarity для опечаток (расширение уже доступно в PG16).
 - **Компоненты**: `retrieval_interface.py`, новая миграция `alembic/versions/`, `retrieval.py` (fallback кэш).
 - **Риски**: `'russian'` меняет ранжирование существующих запросов — A/B на `eval_questions.json`.
-- **Тесты**: расширить эксперимент `experiments/kb_search_quality.py` — цель Hit@3 ≥ 14/15 на синтетике; EXPLAIN на test-PG — bitmap index scan вместо seq scan.
+- **Тесты**: расширить эксперимент `experiments/kb_search_quality.py` — цель Hit@3 ≥ 16/17 на синтетике при сохранении ложных срабатываний ≤ 1/4 на отрицательных; EXPLAIN на test-PG — index scan вместо seq scan.
 - **Приёмка**: пример «не могу войти → разблокировка учётной записи» попадает в top-3 (после 'russian' + OR-fallback — хотя бы частично; полное закрытие — задача этапа B).
 - **Откат**: откат миграции + revert запроса; индекс добавочный, старый можно оставить.
 
@@ -27,10 +27,14 @@
 - **Приёмка**: injection-набор не вызывает draft-черновиков вне разрешённых.
 - **Откат**: только промпт/валидация — revert.
 
-### A4. Серилизация run на диалог (P0-3)
-- **Задачи**: `NOT EXISTS(running run того же conversation)` в claim; перепостановка вытесненного run.
-- **Тесты**: e2e «2 быстрых сообщения → ответы в порядке сообщений».
-- **Откат**: revert claim-условия.
+### A4. Атомарная сериализация run на диалог (P0-3)
+- **Задачи**: один `running` run на `conversation_id` должна гарантировать БД, а не проверка `NOT EXISTS` — под конкурентными claim'ами две транзакции видят одинаковый снапшот и обе проходят. Варианты атомарности:
+  - частичный уникальный индекс: `CREATE UNIQUE INDEX ux_ai_bot_runs_one_running_per_conv ON app.ai_bot_runs(conversation_id) WHERE status='running' AND conversation_id IS NOT NULL` — второй claim атомарно упадёт на UPDATE → перевести run обратно в queued/requeue;
+  - либо `pg_advisory_xact_lock(hashtext(conversation_id::text))` в claim-транзакции до проверки running — вторая транзакция ждёт и видит уже running;
+  - либо сериализация на enqueue (доп. `conversation_running`-флаг в `chat_conversations` с условным UPDATE … WHERE flag=0).
+- **Компоненты**: `service.py` (`_enqueue_run`/claim), миграция для индекса.
+- **Тесты**: e2e «2 быстрых сообщения → ответы в порядке сообщений» + конкурентный тест двух claim (две сессии/потоки → ровно один running).
+- **Откат**: revert + drop index (индекс частичный, безопасен).
 
 ### A5. Мелкие фиксы пакетом (P1-4, P1-9, P1-10, P2-9, P2-10, P2-4)
 - env-имя лимита → одно; `allowed_kb_scope` в `kb.articles.*`; коэффициент токенов для кириллицы ~2.8; убрать/чинить `status/location_change_draft`; `tasks.write` в confirm; инструмент «прочитать вложение письма» через существующий документ-пайплайн.

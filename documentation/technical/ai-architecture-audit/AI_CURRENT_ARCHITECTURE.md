@@ -90,7 +90,7 @@
 - Три слоя прав: `bot.enabled_tools_json` → `tool_permissions` (exact→longest-prefix→fallback `chat.ai.use`) → повторная проверка в `registry.execute` (`registry.py:56-70`). Admin-only: `itinvent.equipment.search_multi_db`.
 - Серверная идентичность: `me.*` без аргументов «кто»; scope БД — `effective_database_id`; почта/задачи — только `context.user_id`.
 - Изменения: только draft-карточки; confirm — владелец + атомарный claim + повтор прав; mail — `idempotency_key` + запрет повтора при unknown-исходе.
-- `ai_sandbox`: выключен по умолчанию (fail-closed), rootless Podman, internal-only network, digest-pinned image — самая защищённая часть системы.
+- `ai_sandbox`: выключен по умолчанию (fail-closed), rootless Podman, internal-only network, digest-pinned image — по дизайну наиболее изолированная часть системы; фактические сетевые ACL на проде не проверялись.
 - **Слабые места** (детали в AI_GAPS_AND_PROBLEMS.md): нет маркировки недоверенного контента в основном промпте (вложения/KB/письма — prompt-injection поверхность); PII уходит в RouterAI без redaction (redaction есть только у mail-фичи); сетевые инструменты принимают произвольный host/port.
 
 ## 8. Ограничения и env-флаги (проверено по коду)
@@ -113,4 +113,4 @@
 
 ## 9. Тестовая база
 
-~189 AI-тестов пройдено при аудите (kb_retrieval 22, tool_permissions 10, tool_routing 34, run_retry 11, smart_memory 20, memory_migration 2, tool_validation 8, doc_extractors 6, chat_runtime 74) + десятки sandbox/office/mail-тестов. `eval_questions.json` — 53 вопроса с `expected_groups`/`requires_permission`, ручной раннер `compare_ai_models.py`; в CI не подключён.
+При аудите прогнано 191 AI-тест — три команды: kb_retrieval+tool_permissions+tool_routing+run_retry (77), memory_migration+smart_memory_migration+e2e_smart_memory+tool_validation_diagnostic+chat_document_extractors (40), chat_runtime (74); все PASS. Плюс в репозитории десятки sandbox/office/mail-тестов (не прогонялись). `eval_questions.json` — 53 вопроса с `expected_groups`/`requires_permission`, ручной раннер `compare_ai_models.py`; в CI не подключён.

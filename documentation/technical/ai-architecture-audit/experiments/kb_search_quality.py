@@ -64,6 +64,9 @@ DOCS = [
      "сеть GUEST-WIFI не даёт доступа к внутренним ресурсам."),
     ("d12", "Порядок действий при утере корпоративного телефона",
      "Немедленно сообщите в ИТ для блокировки SIM и удалённого стирания данных."),
+    ("d13", "Инвентарные номера и маркировка оборудования",
+     "Каждой единице оборудования присваивается номер вида ИНВ-XXXX, "
+     "например ИНВ-0042. Номер наносится на корпус и указывается в акте."),
 ]
 
 # (запрос, ожидаемый doc_id или None, категория проверки)
@@ -86,12 +89,20 @@ QUERIES = [
     # смешанный RU/EN
     ("vpn не подключается", "d5", "mixed_lang"),
     ("wifi пароль гостевой", "d11", "mixed_lang"),
-    # инвентарный номер / точные идентификаторы
-    ("ИНВ-0042", None, "inventory_id"),
+    # точные идентификаторы (инвентарный номер есть в корпусе)
+    ("ИНВ-0042", "d13", "exact_id"),
+    ("инвентарный номер оборудования", "d13", "exact_id"),
     # подразделение/организация
     ("заявка руководителя на ноутбук", "d8", "department"),
     # ё/е варианты
     ("учетная запись заблокирована", "d1", "ye_variant"),
+    # отрицательные запросы: релевантного документа в корпусе НЕТ.
+    # Скорер без порога релевантности: любая общая подстрока (>=3 симв.)
+    # возвращает документ — проверяем, где возникают ложные срабатывания.
+    ("инструкция по установке photoshop", None, "negative"),
+    ("замена термопасты на сервере", None, "negative"),
+    ("подключение гарнитуры к телефону", None, "negative"),
+    ("ремонт кофемашины на кухне", None, "negative"),
 ]
 
 
@@ -109,7 +120,8 @@ def main() -> int:
         session.commit()
 
     svc = AiKbRetrievalService()
-    hit1 = hit3 = misses = 0
+    hit1 = hit3 = misses = false_hits = empty_hits = 0
+    per_cat: dict[str, list[int]] = {}
     print(f"{'запрос':<52} {'ожид.':<6} {'top1':<6} {'top3':<6} категория")
     for query, expected, category in QUERIES:
         results = svc.retrieve(query=query, limit=5, current_user=None)
@@ -119,17 +131,32 @@ def main() -> int:
             if rank == 1:
                 hit1 += 1
                 hit3 += 1
+                per_cat.setdefault(category, [0, 0, 0])[0] += 1
             elif rank and rank <= 3:
                 hit3 += 1
+                per_cat.setdefault(category, [0, 0, 0])[1] += 1
             else:
                 misses += 1
+                per_cat.setdefault(category, [0, 0, 0])[2] += 1
+        else:
+            # отрицательный запрос: любая выдача — ложное срабатывание
+            if found:
+                false_hits += 1
+            else:
+                empty_hits += 1
         print(f"{query:<52} {expected or '-':<6} {str(rank == 1):<6} "
               f"{str(bool(rank and rank <= 3)):<6} {category}  found={found[:3]}")
 
     expected_total = sum(1 for _, e, _ in QUERIES if e)
+    negative_total = sum(1 for _, e, _ in QUERIES if not e)
     print()
     print(f"Hit@1: {hit1}/{expected_total}  Hit@3: {hit3}/{expected_total}  "
           f"Miss: {misses}/{expected_total}")
+    print(f"Negative: false_hits={false_hits}/{negative_total}  "
+          f"empty={empty_hits}/{negative_total}")
+    print("По категориям (hit@1 / hit@3-only / miss):")
+    for category, (h1, h3, m) in sorted(per_cat.items()):
+        print(f"  {category:<18} {h1} / {h3} / {m}")
     return 0
 
 
