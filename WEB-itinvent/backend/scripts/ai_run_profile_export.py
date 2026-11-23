@@ -178,13 +178,13 @@ def main() -> int:
                 parse_errors += 1
                 continue
             rid = kv.get("run_id", "-")
+            if len(kv) < 3:
+                # A profile line with a lone run_id is damaged — count it,
+                # never turn it into a phantom run (complete or incomplete).
+                parse_errors += 1
+                continue
             if not m.group(1):
                 run(rid)["profile"] = kv
-                continue
-            if len(kv) < 3:
-                # A final profile with a lone run_id is a damaged line —
-                # count it, never turn it into a phantom completed run.
-                parse_errors += 1
                 continue
             run(rid)["final"] = {
                 "outcome": kv.get("outcome") or "completed",
