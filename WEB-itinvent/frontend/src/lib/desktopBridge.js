@@ -13,6 +13,8 @@ const CLEAR_NOTIFICATION_GROUP_MESSAGE_TYPE = 'notification.clearGroup';
 const SHELL_STATUS_MESSAGE_TYPE = 'shell.status';
 const QUICK_ROUTES_MESSAGE_TYPE = 'shell.quickRoutes';
 const PRINT_CURRENT_DOCUMENT_MESSAGE_TYPE = 'document.printCurrent';
+const DOCUMENT_PRINT_MESSAGE_TYPE = 'document.print';
+const DOCUMENT_PRINT_RESULT_MESSAGE_TYPE = 'document.printResult';
 const EQUIPMENT_QR_PRINT_MESSAGE_TYPE = 'equipmentQr.print';
 const EQUIPMENT_QR_PRINT_RESULT_MESSAGE_TYPE = 'equipmentQr.printResult';
 const OPEN_DOWNLOADS_MESSAGE_TYPE = 'desktop.openDownloads';
@@ -92,6 +94,7 @@ let pendingOpenDownloadedFileRequest = null;
 let pendingPreparedDownloadRequest = null;
 let pendingVncPreflightRequest = null;
 let pendingEquipmentQrPrintRequest = null;
+let pendingDocumentPrintRequest = null;
 let pendingMailComposeWindowRequest = null;
 let pendingWorkspaceWindowRequest = null;
 let pendingMicrophoneDiagnosisRequest = null;
@@ -453,6 +456,21 @@ const isValidEquipmentQrPrintResultMessage = (message) => {
     && ['succeeded', 'dialog-opened', 'failed'].includes(message.status);
 };
 
+const isValidDocumentPrintResultMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 4
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('requestId')
+    && keys.includes('status')
+    && message.type === DOCUMENT_PRINT_RESULT_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidBoundedText(message.requestId, 64)
+    && MAIL_COMPOSE_REQUEST_ID_PATTERN.test(message.requestId)
+    && ['dialog-opened', 'external-opened', 'failed', 'too-large', 'unavailable'].includes(message.status);
+};
+
 const isValidVncPreflightResultMessage = (message) => {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
   const keys = Object.keys(message);
@@ -798,6 +816,19 @@ export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_
           window.clearTimeout(pending.timeoutId);
           pending.resolve({
             accepted: message.status === 'succeeded' || message.status === 'dialog-opened',
+            status: message.status,
+          });
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidDocumentPrintResultMessage(message)) {
+        const pending = pendingDocumentPrintRequest;
+        if (pending && pending.requestId === message.requestId) {
+          pendingDocumentPrintRequest = null;
+          window.clearTimeout(pending.timeoutId);
+          pending.resolve({
+            accepted: message.status === 'dialog-opened' || message.status === 'external-opened',
             status: message.status,
           });
         }
@@ -1197,6 +1228,68 @@ export function requestDesktopPrintCurrent() {
   } catch {
     return false;
   }
+}
+
+const DOCUMENT_PRINT_RESULT_TIMEOUT_MS = 120000;
+const DOCUMENT_PRINT_KINDS = new Set(['pdf', 'html']);
+const MAXIMUM_DOCUMENT_PRINT_URL_LENGTH = 2048;
+const MAXIMUM_DOCUMENT_PRINT_TITLE_LENGTH = 256;
+const DOCUMENT_PRINT_URL_PATTERN = /^blob:[a-zA-Z][a-zA-Z0-9+.-]*:\S+$/u;
+
+/**
+ * Ask HUB Desktop to print a specific document (never the portal DOM).
+ * kind 'pdf'  — `url` must be a same-origin blob: object URL; the host either
+ *               prints it in a dedicated WebView2 or opens it in the system
+ *               PDF viewer.
+ * kind 'html' — the full print document is read from
+ *               `window.__hubPendingPrintHtml` (set it before calling) so the
+ *               payload stays inside the bridge message size limit.
+ */
+export function requestDesktopPrintDocument({ kind, url = '', title = '' } = {}) {
+  if (!isDesktopCapabilityAvailable('print-document')
+    || !DOCUMENT_PRINT_KINDS.has(kind)) {
+    return Promise.resolve({ accepted: false, status: 'unavailable' });
+  }
+  if (kind === 'pdf'
+    && (typeof url !== 'string'
+      || url.length > MAXIMUM_DOCUMENT_PRINT_URL_LENGTH
+      || !DOCUMENT_PRINT_URL_PATTERN.test(url))) {
+    return Promise.resolve({ accepted: false, status: 'invalid-source' });
+  }
+  if (pendingDocumentPrintRequest) {
+    return Promise.resolve({ accepted: false, status: 'busy' });
+  }
+
+  return new Promise((resolve) => {
+    const requestId = globalThis.crypto?.randomUUID?.() || `doc-print-${Date.now()}`;
+    try {
+      const transport = getWebViewTransport();
+      if (!transport) {
+        resolve({ accepted: false, status: 'unavailable' });
+        return;
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        if (pendingDocumentPrintRequest?.requestId !== requestId) return;
+        pendingDocumentPrintRequest = null;
+        resolve({ accepted: false, status: 'timeout' });
+      }, DOCUMENT_PRINT_RESULT_TIMEOUT_MS);
+      pendingDocumentPrintRequest = { requestId, resolve, timeoutId };
+      transport.postMessage({
+        type: DOCUMENT_PRINT_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+        requestId,
+        kind,
+        url: String(url || '').slice(0, MAXIMUM_DOCUMENT_PRINT_URL_LENGTH),
+        title: String(title || '').slice(0, MAXIMUM_DOCUMENT_PRINT_TITLE_LENGTH),
+      });
+    } catch {
+      const pending = pendingDocumentPrintRequest;
+      pendingDocumentPrintRequest = null;
+      if (pending) window.clearTimeout(pending.timeoutId);
+      resolve({ accepted: false, status: 'unavailable' });
+    }
+  });
 }
 
 export function requestDesktopEquipmentQrPrint(mode) {

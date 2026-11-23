@@ -1379,6 +1379,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _desktopBridge.ShellStatusChanged += DesktopBridge_ShellStatusChanged;
         _desktopBridge.QuickRoutesChanged += DesktopBridge_QuickRoutesChanged;
         _desktopBridge.PrintCurrentDocumentRequested += DesktopBridge_PrintCurrentDocumentRequested;
+        _desktopBridge.DocumentPrintRequested += DesktopBridge_DocumentPrintRequested;
         _desktopBridge.EquipmentQrPrintRequested += DesktopBridge_EquipmentQrPrintRequested;
         _desktopBridge.OpenDownloadsRequested += DesktopBridge_OpenDownloadsRequested;
         _desktopBridge.OpenDiagnosticsRequested += DesktopBridge_OpenDiagnosticsRequested;
@@ -1715,6 +1716,14 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
 
     private void DesktopBridge_PrintCurrentDocumentRequested(object? sender, EventArgs e) =>
         PrintCurrentPage();
+
+    private void DesktopBridge_DocumentPrintRequested(
+        object? sender,
+        DesktopDocumentPrintRequestedEventArgs e) =>
+        e.Completion = _printing.PrintDocumentAsync(
+            _webView?.CoreWebView2,
+            _options.BaseUri,
+            e.Command);
 
     private void DesktopBridge_EquipmentQrPrintRequested(
         object? sender,
@@ -2308,6 +2317,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _desktopBridge.ShellStatusChanged -= DesktopBridge_ShellStatusChanged;
         _desktopBridge.QuickRoutesChanged -= DesktopBridge_QuickRoutesChanged;
         _desktopBridge.PrintCurrentDocumentRequested -= DesktopBridge_PrintCurrentDocumentRequested;
+        _desktopBridge.DocumentPrintRequested -= DesktopBridge_DocumentPrintRequested;
         _desktopBridge.EquipmentQrPrintRequested -= DesktopBridge_EquipmentQrPrintRequested;
         _desktopBridge.OpenDownloadsRequested -= DesktopBridge_OpenDownloadsRequested;
         _desktopBridge.OpenDiagnosticsRequested -= DesktopBridge_OpenDiagnosticsRequested;

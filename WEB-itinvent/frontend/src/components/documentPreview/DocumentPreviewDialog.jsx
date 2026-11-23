@@ -28,15 +28,18 @@ import RotateLeftRoundedIcon from '@mui/icons-material/RotateLeftRounded';
 import RotateRightRoundedIcon from '@mui/icons-material/RotateRightRounded';
 import {
   requestDesktopDownloadedFileAction,
-  requestDesktopPrintCurrent,
+  requestDesktopPrintDocument,
+  isDesktopCapabilityAvailable,
 } from '../../lib/desktopBridge';
 import { isNativeShellRuntime } from '../../lib/platform';
 import {
+  buildPrintDocumentHtml,
   buildSheetsPrintBodyHtml,
   buildTextPrintBodyHtml,
   escapeHtml,
   printHtmlDocument,
   printPdfDocument,
+  sheetsPrintLosesRows,
 } from '../../lib/documentPrint';
 import { getDesktopOfficeOpenLabel, openOriginalWithDesktopApplication } from './desktopOfficeOpen';
 
@@ -96,6 +99,8 @@ export default function DocumentPreviewDialog({
   const [rotation, setRotation] = useState(0);
   const [requestingDesktopOpen, setRequestingDesktopOpen] = useState(false);
   const [desktopOpenMessage, setDesktopOpenMessage] = useState('');
+  const [printError, setPrintError] = useState('');
+  const [sheetsPrintConfirm, setSheetsPrintConfirm] = useState(false);
 
   useEffect(() => {
     if (open) setMode(preferredMode);
@@ -108,6 +113,8 @@ export default function DocumentPreviewDialog({
   useEffect(() => {
     setRequestingDesktopOpen(false);
     setDesktopOpenMessage('');
+    setPrintError('');
+    setSheetsPrintConfirm(false);
   }, [open, title]);
 
   const openOriginalInDesktopApplication = useCallback(async () => {
@@ -140,50 +147,51 @@ export default function DocumentPreviewDialog({
   const heading = title || 'Документ';
   const subheading = subtitle || (hasOfficeView ? 'Просмотр (только чтение)' : hasMarkdownPreview ? 'Markdown' : hasTextPreview ? 'Текст' : kind === 'csv' ? 'CSV-таблица' : isExcel ? 'Excel' : kind === 'office_pdf' ? 'PDF-предпросмотр' : 'PDF');
 
-  const printPreview = useCallback(async () => {
-    if (requestDesktopPrintCurrent()) return;
-    try {
-      // PDF/office_pdf: print the original PDF bytes through the browser's
-      // own PDF viewer (hidden blob iframe). window.print() on the app DOM
-      // would rasterize the preview canvas inside an A4 page and lose pages.
-      if (objectUrl && (hasPdfPreview || kind === 'pdf' || kind === 'office_pdf')
-        && resolvedMode !== 'table') {
-        await printPdfDocument({ url: objectUrl, title: heading });
-        return;
-      }
-      if (hasMarkdownPreview && textPreview) {
-        const { buildMarkdownPrintBodyHtml } = await import('../../lib/markdownPrint');
-        await printHtmlDocument({
-          title: heading,
-          bodyHtml: buildMarkdownPrintBodyHtml(textPreview.text, { truncated: textPreview.truncated }),
-        });
-        return;
-      }
-      if (hasTextPreview && textPreview) {
-        await printHtmlDocument({
-          title: heading,
-          bodyHtml: buildTextPrintBodyHtml({ text: textPreview.text, truncated: textPreview.truncated }),
-        });
-        return;
-      }
-      if (hasImagePreview && objectUrl) {
-        await printHtmlDocument({
-          title: heading,
-          bodyHtml: `<img src="${escapeHtml(objectUrl)}" alt="${escapeHtml(heading)}" style="max-width:100%;height:auto">`,
-        });
-        return;
-      }
-      if (resolvedMode === 'table' && hasExcelTable) {
-        await printHtmlDocument({
-          title: heading,
-          bodyHtml: buildSheetsPrintBodyHtml({ sheets: excelWorkbook?.sheets }),
-        });
-        return;
-      }
-    } catch {
-      // Fall through to the legacy path below.
+  const openOriginalExternally = useCallback(() => {
+    if (canOpenInDesktopApplication) {
+      openOriginalInDesktopApplication();
+      return;
     }
-    window.print();
+    if (objectUrl) {
+      window.open(objectUrl, '_blank', 'noopener');
+    }
+  }, [canOpenInDesktopApplication, objectUrl, openOriginalInDesktopApplication]);
+
+  // Resolve what to print BEFORE dispatching. There is deliberately no
+  // window.print() fallback: printing the app DOM rasterizes the preview
+  // canvas and drops pages — a failure must surface an error + download
+  // actions instead.
+  const resolvePrintJob = useCallback(async ({ skipSheetsConfirm = false } = {}) => {
+    if (objectUrl && (hasPdfPreview || kind === 'pdf' || kind === 'office_pdf')
+      && resolvedMode !== 'table') {
+      return { type: 'pdf', url: objectUrl };
+    }
+    if (hasMarkdownPreview && textPreview) {
+      const { buildMarkdownPrintBodyHtml } = await import('../../lib/markdownPrint');
+      return {
+        type: 'html',
+        bodyHtml: buildMarkdownPrintBodyHtml(textPreview.text, { truncated: textPreview.truncated }),
+      };
+    }
+    if (hasTextPreview && textPreview) {
+      return {
+        type: 'html',
+        bodyHtml: buildTextPrintBodyHtml({ text: textPreview.text, truncated: textPreview.truncated }),
+      };
+    }
+    if (hasImagePreview && objectUrl) {
+      return {
+        type: 'html',
+        bodyHtml: `<img src="${escapeHtml(objectUrl)}" alt="${escapeHtml(heading)}" style="max-width:100%;height:auto">`,
+      };
+    }
+    if (resolvedMode === 'table' && hasExcelTable) {
+      if (!skipSheetsConfirm && sheetsPrintLosesRows({ sheets: excelWorkbook?.sheets })) {
+        return { type: 'sheets-confirm' };
+      }
+      return { type: 'html', bodyHtml: buildSheetsPrintBodyHtml({ sheets: excelWorkbook?.sheets }) };
+    }
+    return null;
   }, [
     excelWorkbook,
     hasExcelTable,
@@ -196,6 +204,65 @@ export default function DocumentPreviewDialog({
     objectUrl,
     resolvedMode,
     textPreview,
+  ]);
+
+  const printPreview = useCallback(async (options) => {
+    setPrintError('');
+    setSheetsPrintConfirm(false);
+    const job = await resolvePrintJob(options);
+    if (job?.type === 'sheets-confirm') {
+      setSheetsPrintConfirm(true);
+      return;
+    }
+    if (!job) {
+      setPrintError('no-source');
+      return;
+    }
+
+    if (isDesktopCapabilityAvailable('print-document')) {
+      try {
+        if (job.type === 'html') {
+          window.__hubPendingPrintHtml = buildPrintDocumentHtml({
+            title: heading,
+            bodyHtml: job.bodyHtml,
+          });
+        }
+        const result = await requestDesktopPrintDocument({
+          kind: job.type,
+          url: job.url || '',
+          title: heading,
+        });
+        if (!result.accepted) {
+          setPrintError(result.status === 'too-large' ? 'too-large' : 'failed');
+        }
+      } catch {
+        setPrintError('failed');
+      } finally {
+        try { delete window.__hubPendingPrintHtml; } catch { /* noop */ }
+      }
+      return;
+    }
+
+    // Desktop without the print-document capability cannot print the document
+    // — an in-page iframe print inside WebView2 targets the portal DOM.
+    if (isNativeShellRuntime()) {
+      setPrintError('desktop-unsupported');
+      return;
+    }
+
+    try {
+      if (job.type === 'pdf') {
+        // Original PDF bytes → the browser's own PDF viewer (hidden blob iframe).
+        await printPdfDocument({ url: job.url, title: heading });
+      } else {
+        await printHtmlDocument({ title: heading, bodyHtml: job.bodyHtml });
+      }
+    } catch {
+      setPrintError('failed');
+    }
+  }, [
+    heading,
+    resolvePrintJob,
   ]);
 
   const body = useMemo(() => {
@@ -437,7 +504,7 @@ export default function DocumentPreviewDialog({
             ) : null}
             {(hasPdfPreview || hasExcelTable || hasMarkdownPreview || hasTextPreview || hasImagePreview) && !loading ? (
               <Tooltip title="Печать">
-                <IconButton onClick={printPreview} aria-label="Печать">
+                <IconButton onClick={() => { void printPreview(); }} aria-label="Печать">
                   <PrintRoundedIcon />
                 </IconButton>
               </Tooltip>
@@ -487,6 +554,75 @@ export default function DocumentPreviewDialog({
           sx={{ borderRadius: 0 }}
         >
           {desktopOpenMessage}
+        </Alert>
+      ) : null}
+
+      {printError ? (
+        <Alert
+          severity="error"
+          role="alert"
+          sx={{ borderRadius: 0 }}
+          action={(
+            <Stack direction="row" spacing={1}>
+              {objectUrl || canOpenInDesktopApplication ? (
+                <Button
+                  size="small"
+                  color="inherit"
+                  onClick={openOriginalExternally}
+                  sx={{ textTransform: 'none', fontWeight: 700 }}
+                >
+                  Открыть оригинал
+                </Button>
+              ) : null}
+              {onDownloadOriginal && canDownloadOriginal ? (
+                <Button
+                  size="small"
+                  color="inherit"
+                  onClick={onDownloadOriginal}
+                  sx={{ textTransform: 'none', fontWeight: 700 }}
+                >
+                  Скачать оригинал
+                </Button>
+              ) : null}
+            </Stack>
+          )}
+          onClose={() => setPrintError('')}
+        >
+          {printError === 'too-large'
+            ? 'Файл слишком велик для печати из предпросмотра.'
+            : 'Не удалось распечатать документ. Откройте или скачайте оригинал и распечатайте его в приложении.'}
+        </Alert>
+      ) : null}
+
+      {sheetsPrintConfirm ? (
+        <Alert
+          severity="warning"
+          role="alert"
+          sx={{ borderRadius: 0 }}
+          action={(
+            <Stack direction="row" spacing={1}>
+              <Button
+                size="small"
+                color="inherit"
+                onClick={() => { void printPreview({ skipSheetsConfirm: true }); }}
+                sx={{ textTransform: 'none', fontWeight: 700 }}
+              >
+                Печатать показанное
+              </Button>
+              <Button
+                size="small"
+                color="inherit"
+                onClick={() => setSheetsPrintConfirm(false)}
+                sx={{ textTransform: 'none', fontWeight: 700 }}
+              >
+                Отмена
+              </Button>
+            </Stack>
+          )}
+          onClose={() => setSheetsPrintConfirm(false)}
+        >
+          Предпросмотр ограничен: в печать попадут только показанные строки.
+          Для полной печати откройте документ в редакторе.
         </Alert>
       ) : null}
 

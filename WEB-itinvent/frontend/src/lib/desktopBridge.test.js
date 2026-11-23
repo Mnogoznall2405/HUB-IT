@@ -305,6 +305,66 @@ describe('desktopBridge', () => {
     await expect(request).resolves.toEqual({ accepted: true, status: 'dialog-opened' });
   });
 
+  it('sends a strict document print request and resolves the host result', async () => {
+    const transport = installTransport();
+    const {
+      initializeDesktopBridge,
+      requestDesktopPrintDocument,
+    } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({
+      type: 'desktop.hostReady',
+      version: 1,
+      capabilities: { notifications: true },
+    });
+    await initialization;
+
+    // Without the capability the request never reaches the host.
+    await expect(requestDesktopPrintDocument({ kind: 'pdf', url: 'blob:https://h/x' }))
+      .resolves.toEqual({ accepted: false, status: 'unavailable' });
+
+    transport.emit({
+      type: 'desktop.capabilities',
+      version: 1,
+      capabilities: ['print-document'],
+    });
+
+    // Only blob: object URLs are accepted for PDF printing.
+    await expect(requestDesktopPrintDocument({ kind: 'pdf', url: 'https://evil/x.pdf' }))
+      .resolves.toEqual({ accepted: false, status: 'invalid-source' });
+
+    const request = requestDesktopPrintDocument({
+      kind: 'pdf',
+      url: 'blob:https://hub.local/doc-1',
+      title: 'Отчёт',
+    });
+    const message = transport.postMessage.mock.calls
+      .map(([value]) => value)
+      .find((value) => value.type === 'document.print');
+    expect(message).toMatchObject({
+      version: 1,
+      kind: 'pdf',
+      url: 'blob:https://hub.local/doc-1',
+      title: 'Отчёт',
+    });
+    expect(Object.keys(message).sort()).toEqual(['kind', 'requestId', 'title', 'type', 'url', 'version']);
+
+    // A malformed result must not resolve the request.
+    transport.emit({
+      type: 'document.printResult',
+      version: 1,
+      requestId: message.requestId,
+      status: 'printed-everything',
+    });
+    transport.emit({
+      type: 'document.printResult',
+      version: 1,
+      requestId: message.requestId,
+      status: 'dialog-opened',
+    });
+    await expect(request).resolves.toEqual({ accepted: true, status: 'dialog-opened' });
+  });
+
   it('dispatches palette requests and sends only closed Desktop action commands', async () => {
     const transport = installTransport();
     const openPalette = vi.fn();

@@ -159,6 +159,18 @@ const PRINT_DOC_CSS = `
 `;
 
 /**
+ * Build the standalone print document (already sanitized/escaped body).
+ * `bodyHtml` is inserted verbatim — callers must escape/sanitize.
+ */
+export const buildPrintDocumentHtml = ({
+  title = 'Документ',
+  bodyHtml = '',
+  css = PRINT_DOC_CSS,
+} = {}) => `<!doctype html><html lang="ru"><head><meta charset="utf-8">`
+  + `<title>${escapeHtml(title)}</title><style>${css}</style></head>`
+  + `<body>${bodyHtml}</body></html>`;
+
+/**
  * Print a standalone HTML document (already sanitized/escaped) via a hidden
  * iframe. `bodyHtml` is inserted verbatim — callers must escape/sanitize.
  */
@@ -167,9 +179,7 @@ export const printHtmlDocument = async ({
   bodyHtml = '',
   css = PRINT_DOC_CSS,
 } = {}) => {
-  const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8">`
-    + `<title>${escapeHtml(title)}</title><style>${css}</style></head>`
-    + `<body>${bodyHtml}</body></html>`;
+  const html = buildPrintDocumentHtml({ title, bodyHtml, css });
   const frame = mountPrintFrame({ srcdoc: html, title });
   await runIframePrint(frame);
 };
@@ -182,8 +192,23 @@ export const buildTextPrintBodyHtml = ({ text = '', truncated = false } = {}) =>
   return `${note}<pre class="text">${escapeHtml(text)}</pre>`;
 };
 
+export const SHEETS_PRINT_MAX_ROWS = 500;
+
+/**
+ * True when printing the preview would drop rows: either the loaded rows
+ * exceed the print cap, or the preview itself loaded fewer rows than the
+ * sheet actually contains (`totalRows` is set by excelPreview).
+ */
+export const sheetsPrintLosesRows = ({ sheets = [], maxRows = SHEETS_PRINT_MAX_ROWS } = {}) => (
+  Array.isArray(sheets) ? sheets : []
+).some((sheet) => {
+  const loaded = Array.isArray(sheet?.rows) ? sheet.rows.length : 0;
+  const total = Number.isFinite(sheet?.totalRows) ? sheet.totalRows : loaded;
+  return loaded > maxRows || total > Math.min(loaded, maxRows);
+});
+
 /** Bounded workbook → print <table> HTML (cells are escaped). */
-export const buildSheetsPrintBodyHtml = ({ sheets = [], maxRows = 500 } = {}) => {
+export const buildSheetsPrintBodyHtml = ({ sheets = [], maxRows = SHEETS_PRINT_MAX_ROWS } = {}) => {
   const parts = [];
   for (const sheet of Array.isArray(sheets) ? sheets : []) {
     const rows = Array.isArray(sheet?.rows) ? sheet.rows.slice(0, maxRows) : [];
@@ -196,8 +221,11 @@ export const buildSheetsPrintBodyHtml = ({ sheets = [], maxRows = 500 } = {}) =>
       return `<tr>${cells}</tr>`;
     }).join('');
     const sheetTitle = sheet?.name ? `<h2>${escapeHtml(sheet.name)}</h2>` : '';
-    const clipped = sheet.rows.length > maxRows
-      ? `<p class="doc-note">Показаны первые ${maxRows} строк из ${sheet.rows.length}.</p>`
+    const totalRows = Number.isFinite(sheet?.totalRows)
+      ? Math.max(sheet.totalRows, sheet.rows.length)
+      : sheet.rows.length;
+    const clipped = rows.length < totalRows
+      ? `<p class="doc-note">Показаны первые ${rows.length} строк из ${totalRows}. Полный лист — в исходном файле.</p>`
       : '';
     parts.push(`${sheetTitle}${clipped}<table>${body}</table>`);
   }

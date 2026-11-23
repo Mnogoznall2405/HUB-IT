@@ -53,36 +53,37 @@ const readBlobArrayBuffer = async (blob) => {
   throw new Error('Excel preview blob cannot be read.');
 };
 
-const clampSheetRange = (XLSX, worksheet) => {
-  const range = worksheet?.['!ref']
-    ? XLSX.utils.decode_range(worksheet['!ref'])
-    : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
-  return {
-    s: { r: range.s.r, c: range.s.c },
-    e: {
-      r: Math.min(range.e.r, range.s.r + EXCEL_PREVIEW_MAX_ROWS_PER_SHEET - 1),
-      c: Math.min(range.e.c, range.s.c + EXCEL_PREVIEW_MAX_COLS_PER_SHEET - 1),
-    },
-  };
-};
+const decodeSheetRange = (XLSX, worksheet) => (worksheet?.['!ref']
+  ? XLSX.utils.decode_range(worksheet['!ref'])
+  : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } });
+
+const clampSheetRange = (range) => ({
+  s: { r: range.s.r, c: range.s.c },
+  e: {
+    r: Math.min(range.e.r, range.s.r + EXCEL_PREVIEW_MAX_ROWS_PER_SHEET - 1),
+    c: Math.min(range.e.c, range.s.c + EXCEL_PREVIEW_MAX_COLS_PER_SHEET - 1),
+  },
+});
 
 const workbookToPreview = (XLSX, workbook) => {
   const allSheetNames = Array.isArray(workbook.SheetNames) ? workbook.SheetNames : [];
   const sheetNames = allSheetNames.slice(0, EXCEL_PREVIEW_MAX_SHEETS);
   const sheets = sheetNames.map((name, index) => {
     const worksheet = workbook.Sheets[name];
+    const sheetRange = decodeSheetRange(XLSX, worksheet);
     const rows = worksheet
       ? XLSX.utils.sheet_to_json(worksheet, {
           header: 1,
           defval: '',
           raw: false,
-          range: clampSheetRange(XLSX, worksheet),
+          range: clampSheetRange(sheetRange),
         })
       : [];
     return {
       index,
       name: String(name || `Лист${index + 1}`),
       rows: Array.isArray(rows) ? rows : [],
+      totalRows: sheetRange.e.r - sheetRange.s.r + 1,
     };
   });
   if (!sheets.length) {

@@ -324,6 +324,7 @@ public sealed class DesktopBridgeProtocolTests
                 "file-actions-v2",
                 "mail-compose-window",
                 "microphone-diagnostics",
+                "print-document",
                 "print",
                 "quick-routes",
                 "shell-status",
@@ -518,6 +519,65 @@ public sealed class DesktopBridgeProtocolTests
     public void RejectsExpandedOrUnsupportedPrintCommands(string json)
     {
         Assert.False(DesktopBridgeProtocol.TryParseInbound(json, out _));
+    }
+
+    [Fact]
+    public void ParsesStrictDocumentPrintPdfAndCreatesResult()
+    {
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"document.print","version":1,"requestId":"doc-1","kind":"pdf","url":"blob:https://hub.local/abc","title":"Отчёт"}""",
+            out var message));
+        Assert.Equal(DesktopInboundMessageType.PrintDocument, message.Type);
+        Assert.Equal("doc-1", message.DocumentPrint?.RequestId);
+        Assert.Equal("pdf", message.DocumentPrint?.Kind);
+        Assert.Equal("blob:https://hub.local/abc", message.DocumentPrint?.Url);
+        Assert.Equal("Отчёт", message.DocumentPrint?.Title);
+
+        using var result = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateDocumentPrintResultMessage("doc-1", "dialog-opened"));
+        Assert.Equal("document.printResult", result.RootElement.GetProperty("type").GetString());
+        Assert.Equal("dialog-opened", result.RootElement.GetProperty("status").GetString());
+        Assert.Equal(4, result.RootElement.EnumerateObject().Count());
+    }
+
+    [Fact]
+    public void ParsesDocumentPrintHtmlWithEmptyUrl()
+    {
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"document.print","version":1,"requestId":"doc-2","kind":"html","url":"","title":"readme.md"}""",
+            out var message));
+        Assert.Equal(DesktopInboundMessageType.PrintDocument, message.Type);
+        Assert.Equal("html", message.DocumentPrint?.Kind);
+        Assert.Equal(string.Empty, message.DocumentPrint?.Url);
+    }
+
+    [Theory]
+    // kind вне whitelist
+    [InlineData("{\"type\":\"document.print\",\"version\":1,\"requestId\":\"d\",\"kind\":\"page\",\"url\":\"\",\"title\":\"t\"}")]
+    // pdf без blob: схемы — нельзя печатать произвольные URL
+    [InlineData("{\"type\":\"document.print\",\"version\":1,\"requestId\":\"d\",\"kind\":\"pdf\",\"url\":\"https://evil.example/x.pdf\",\"title\":\"t\"}")]
+    [InlineData("{\"type\":\"document.print\",\"version\":1,\"requestId\":\"d\",\"kind\":\"pdf\",\"url\":\"\",\"title\":\"t\"}")]
+    // html не несёт url
+    [InlineData("{\"type\":\"document.print\",\"version\":1,\"requestId\":\"d\",\"kind\":\"html\",\"url\":\"blob:https://hub.local/x\",\"title\":\"t\"}")]
+    // некорректный requestId / лишнее свойство / неверная версия
+    [InlineData("{\"type\":\"document.print\",\"version\":1,\"requestId\":\"bad id\",\"kind\":\"pdf\",\"url\":\"blob:https://h/x\",\"title\":\"t\"}")]
+    [InlineData("{\"type\":\"document.print\",\"version\":1,\"requestId\":\"d\",\"kind\":\"pdf\",\"url\":\"blob:https://h/x\",\"title\":\"t\",\"html\":\"<p>\"}")]
+    [InlineData("{\"type\":\"document.print\",\"version\":2,\"requestId\":\"d\",\"kind\":\"pdf\",\"url\":\"blob:https://h/x\",\"title\":\"t\"}")]
+    public void RejectsMalformedDocumentPrintCommands(string json)
+    {
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(json, out _));
+    }
+
+    [Fact]
+    public void AdvertisesDocumentPrintCapability()
+    {
+        using var document = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateCapabilitiesMessage(false));
+        var capabilities = document.RootElement.GetProperty("capabilities")
+            .EnumerateArray()
+            .Select(element => element.GetString())
+            .ToList();
+        Assert.Contains(DesktopBridgeProtocol.DocumentPrintCapability, capabilities);
     }
 
     [Fact]
