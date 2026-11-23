@@ -72,7 +72,7 @@ function CollapsedFolderRail({ items }) {
     <div
       role="tablist"
       aria-label="Папки чатов"
-      className="chat-scroll-hidden flex max-h-[38vh] flex-col items-center gap-1 overflow-y-auto py-0.5"
+      className="chat-scroll-hidden flex max-h-[200px] flex-col items-center gap-1 overflow-y-auto py-0.5"
     >
       {items.map((item) => (
         <button
@@ -200,12 +200,20 @@ export default function ChatSidebarDesktopHeader({
             ? <span className="min-w-0 flex-1 font-semibold text-[color:var(--chat-text-strong)]">Чаты</span>
             : <span className="min-w-0 flex-1" />
         )}
-        {shellActions && shell.showNotificationsButton && !compact ? action('Уведомления', shell.openNotifications,
+        {!compact && shellActions && shell.showNotificationsButton ? action('Уведомления', shell.openNotifications,
           <Badge badgeContent={shell.notificationsBadgeValue} color="error" max={99}><NotificationsOutlinedIcon fontSize="small" /></Badge>) : null}
-        {setMode && compact ? action('Развернуть список чатов', () => setMode('expanded'), <OpenInFullRoundedIcon fontSize="small" />) : null}
         {setMode && !compact ? action('Компактный список чатов', () => setMode('compact'), <ViewCompactAltRoundedIcon fontSize="small" />) : null}
-        {setCollapsed ? action('Свернуть список чатов', onCollapse, <ChevronLeftRoundedIcon fontSize="small" />) : null}
+        {!compact && setCollapsed ? action('Свернуть список чатов', onCollapse, <ChevronLeftRoundedIcon fontSize="small" />) : null}
       </div>
+      {/* Compact 176px: действия уходят во вторую строку — поиск не теснится. */}
+      {compact ? (
+        <div className="mt-1 flex items-center justify-end gap-1">
+          {shellActions && shell.showNotificationsButton ? action('Уведомления', shell.openNotifications,
+            <Badge badgeContent={shell.notificationsBadgeValue} color="error" max={99}><NotificationsOutlinedIcon fontSize="small" /></Badge>) : null}
+          {setMode ? action('Развернуть список чатов', () => setMode('expanded'), <OpenInFullRoundedIcon fontSize="small" />) : null}
+          {setCollapsed ? action('Свернуть список чатов', onCollapse, <ChevronLeftRoundedIcon fontSize="small" />) : null}
+        </div>
+      ) : null}
       {showAiSection ? (
         <WorkspaceTabs
           workspace={workspace}

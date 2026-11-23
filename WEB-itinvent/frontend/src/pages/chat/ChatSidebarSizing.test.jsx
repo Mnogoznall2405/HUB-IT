@@ -121,6 +121,49 @@ describe('resizable chat sidebar', () => {
     expect(screen.queryByRole('button', { name: 'Развернуть список чатов' })).not.toBeInTheDocument();
   });
 
+  it('pointer drag reaches compact below min and expands back', () => {
+    const previewHidden = () => screen.getByText('Вы: Проверить компоновку').closest('[hidden]') !== null;
+    // jsdom не знает PointerEvent — шлём MouseEvent нужного типа: хэндлеры те же.
+    const pointer = (el, type, init = {}) =>
+      fireEvent(el, new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init }));
+    render(<Harness />);
+    const separator = screen.getByRole('separator');
+    // 420 + (150 - 400) = 170 < 260 → compact, превью прячется.
+    pointer(separator, 'pointerdown', { clientX: 400 });
+    pointer(separator, 'pointermove', { clientX: 150 });
+    pointer(separator, 'pointerup');
+    expect(previewHidden()).toBe(true);
+    // Ручка жива в compact: обратный драг 176 + (400 - 200) = 376 → expanded.
+    const sep2 = screen.getByRole('separator');
+    pointer(sep2, 'pointerdown', { clientX: 200 });
+    pointer(sep2, 'pointermove', { clientX: 400 });
+    pointer(sep2, 'pointerup');
+    expect(previewHidden()).toBe(false);
+  });
+
+  it('keyboard: ArrowLeft below min enters compact, again collapses to rail, ArrowRight restores', () => {
+    render(<Harness />);
+    const previewHidden = () => screen.getByText('Вы: Проверить компоновку').closest('[hidden]') !== null;
+    const separator = screen.getByRole('separator');
+    fireEvent.keyDown(separator, { key: 'Home' });
+    expect(separator).toHaveAttribute('aria-valuenow', '260');
+    // 260 - 16 = 244 < min → compact; ещё ArrowLeft в compact → rail.
+    fireEvent.keyDown(separator, { key: 'ArrowLeft' });
+    expect(previewHidden()).toBe(true);
+    fireEvent.keyDown(screen.getByRole('separator'), { key: 'ArrowLeft' });
+    expect(screen.queryByRole('separator')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Развернуть список чатов' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Развернуть список чатов' }));
+    const sep2 = screen.getByRole('separator');
+    fireEvent.keyDown(sep2, { key: 'Home' });
+    fireEvent.keyDown(sep2, { key: 'ArrowLeft' });
+    expect(previewHidden()).toBe(true);
+    // compact → ArrowRight стартует expanded с минимальной ширины.
+    fireEvent.keyDown(screen.getByRole('separator'), { key: 'ArrowRight' });
+    expect(previewHidden()).toBe(false);
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '260');
+  });
+
   it('compact mode keeps avatar+name rows, hides preview and persists across remount', () => {
     const first = render(<Harness />);
     fireEvent.click(screen.getByRole('button', { name: 'Компактный список чатов' }));
