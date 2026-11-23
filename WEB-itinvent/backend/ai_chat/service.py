@@ -1189,6 +1189,44 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
     },
 }
 
+# A5: intent-mode questions piggybacked on the SAME jev_client.decide call —
+# no extra network round trip. Answered about the user request itself, never
+# about tool results. act has precedence over chat when both score high.
+_JEV_MODE_QUESTIONS: dict[str, dict[str, str]] = {
+    "m_mode_act": {
+        "question": (
+            "Просит ли пользователь ЯВНО выполнить действие: отправить, создать, изменить, "
+            "подготовить черновик сообщения/письма/заявки/перемещения, сгенерировать файл-отчёт?"
+        ),
+        "true_label": (
+            "да — «напиши Ивану в чат»; «ответь на письмо»; «создай задачу»; "
+            "«подготовь перемещение»; «выгрузи это в Excel»; «составь черновик письма»"
+        ),
+        "false_label": (
+            "нет — «найди компьютер Иванова»; «покажи мои письма»; «сколько картриджей на складе»; "
+            "«объясни, как работает почта»; «привет»"
+        ),
+    },
+    "m_mode_chat": {
+        "question": (
+            "Нужен ли только разговорный ответ БЕЗ реальных корпоративных данных и без действий: "
+            "приветствие, вопрос-объяснение, генерация текста/перевода, обсуждение?"
+        ),
+        "true_label": (
+            "да — «привет»; «объясни, как работает PostgreSQL»; «расскажи, как устроена корпоративная почта»; "
+            "«придумай поздравление коллеге»; «переведи текст»; «какие бывают принтеры»"
+        ),
+        "false_label": (
+            "нет — «покажи мою почту»; «проверь наш принтер»; «найди компьютер Иванова»; "
+            "«напиши Ивану сообщение»; «какие задачи у меня сегодня»"
+        ),
+    },
+}
+
+JEV_INTENT_CHAT = "chat"
+JEV_INTENT_READ = "read"
+JEV_INTENT_ACT = "act"
+
 
 def _jev_routing_enabled() -> bool:
     return str(os.environ.get("AI_JEV_ROUTING", "0") or "0").strip().lower() in {
@@ -1279,7 +1317,7 @@ def _has_jev_dialog_context(
 # available_groups so entries can never leak a group across users.
 _JEV_ROUTING_CACHE_TTL_SEC = float(os.environ.get("AI_JEV_ROUTING_CACHE_TTL_SEC", "300") or 300)
 _JEV_ROUTING_CACHE_MAX = max(50, min(5000, int(os.environ.get("AI_JEV_ROUTING_CACHE_MAX", "500") or 500)))
-_jev_routing_cache: dict[str, tuple[float, frozenset[str]]] = {}
+_jev_routing_cache: dict[str, tuple[float, tuple[frozenset[str], str | None]]] = {}
 _jev_routing_cache_lock = threading.Lock()
 
 
@@ -1309,7 +1347,7 @@ def _jev_routing_cache_key(
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-def _jev_routing_cache_get(key: str) -> frozenset[str] | None:
+def _jev_routing_cache_get(key: str) -> tuple[frozenset[str], str | None] | None:
     now = time.monotonic()
     with _jev_routing_cache_lock:
         entry = _jev_routing_cache.get(key)
@@ -1322,9 +1360,12 @@ def _jev_routing_cache_get(key: str) -> frozenset[str] | None:
         return routed
 
 
-def _jev_routing_cache_set(key: str, routed: set[str]) -> None:
+def _jev_routing_cache_set(key: str, routed: set[str], intent_mode: str | None = None) -> None:
     with _jev_routing_cache_lock:
-        _jev_routing_cache[key] = (time.monotonic() + _JEV_ROUTING_CACHE_TTL_SEC, frozenset(routed))
+        _jev_routing_cache[key] = (
+            time.monotonic() + _JEV_ROUTING_CACHE_TTL_SEC,
+            (frozenset(routed), intent_mode),
+        )
         while len(_jev_routing_cache) > _JEV_ROUTING_CACHE_MAX:
             oldest = min(_jev_routing_cache, key=lambda item: _jev_routing_cache[item][0])
             _jev_routing_cache.pop(oldest, None)
@@ -1372,6 +1413,16 @@ def _build_jev_state(
     }
 
 
+class JevRoutingResult(set):
+    """Routed tool groups carrying the A5 intent mode decided in the same
+    JEV call. Behaves exactly like a plain ``set`` so existing callers and
+    tests keep working; ``intent_mode`` is chat/read/act or ``None``."""
+
+    def __init__(self, iterable=(), intent_mode: str | None = None):
+        super().__init__(iterable)
+        self.intent_mode = intent_mode
+
+
 def _route_tool_groups_jev(
     *,
     trigger_text: str,
@@ -1380,13 +1431,18 @@ def _route_tool_groups_jev(
     recent_messages: list[str] | None = None,
     has_attachment: bool = False,
 ) -> set[str] | None:
-    """Jev System One group routing.
+    """Jev System One group routing + A5 intent mode.
 
     Returns ``None`` when routing is off — callers then keep every available
-    group (production default while the flag is disabled). An empty set means
-    "no tools needed" (J9 smalltalk or JEV confidently refused everything).
-    On any JEV failure a deterministic permission-safe fallback is returned —
-    never the full set (J5).
+    group (production default while the flag is disabled). Otherwise returns
+    a :class:`JevRoutingResult` — a set of groups whose ``.intent_mode`` is
+    chat/read/act, or ``None`` when JEV could not classify the request. An
+    empty set means "no tools needed" (J9 smalltalk or JEV confidently
+    refused everything). On any JEV failure a deterministic permission-safe
+    fallback is returned — never the full set (J5).
+
+    The mode is derived from answers about the USER REQUEST only: tool results
+    can never upgrade a run to a more privileged mode.
     """
     if not _jev_routing_enabled() or len(available_groups) <= 1:
         return None
@@ -1397,13 +1453,15 @@ def _route_tool_groups_jev(
         has_dialog_context=_has_jev_dialog_context(recent_messages=recent_messages, sticky_groups=sticky),
         has_attachment=has_attachment,
     ):
-        return set()
+        return JevRoutingResult(intent_mode=JEV_INTENT_CHAT)
     if not jev_client.is_configured():
         logger.warning("ai_jev_routing enabled but JEV is not configured; using fallback groups")
-        return _jev_fallback_groups(
-            trigger_text=normalized,
-            available_groups=available_groups,
-            sticky_groups=sticky,
+        return JevRoutingResult(
+            _jev_fallback_groups(
+                trigger_text=normalized,
+                available_groups=available_groups,
+                sticky_groups=sticky,
+            )
         )
     cache_key = _jev_routing_cache_key(
         mode="group",
@@ -1415,10 +1473,10 @@ def _route_tool_groups_jev(
     )
     cached = _jev_routing_cache_get(cache_key)
     if cached is not None:
-        logger.info("ai_jev_routing_cache hit mode=groups routed=%s", sorted(cached))
-        return set(cached)
+        logger.info("ai_jev_routing_cache hit mode=groups routed=%s", sorted(cached[0]))
+        return JevRoutingResult(cached[0], intent_mode=cached[1])
     logger.info("ai_jev_routing_cache miss mode=groups")
-    questions = {
+    group_questions = {
         f"g_{group}": jev_noul(
             spec.get("question", ""),
             true_label=spec.get("true_label", ""),
@@ -1427,11 +1485,21 @@ def _route_tool_groups_jev(
         for group, spec in _JEV_GROUP_QUESTIONS.items()
         if group in available_groups
     }
-    if not questions:
-        return _jev_fallback_groups(
-            trigger_text=normalized,
-            available_groups=available_groups,
-            sticky_groups=sticky,
+    if not group_questions:
+        return JevRoutingResult(
+            _jev_fallback_groups(
+                trigger_text=normalized,
+                available_groups=available_groups,
+                sticky_groups=sticky,
+            )
+        )
+    # A5: same decide() call — mode questions cost no extra network round trip.
+    questions = dict(group_questions)
+    for key, spec in _JEV_MODE_QUESTIONS.items():
+        questions[key] = jev_noul(
+            spec.get("question", ""),
+            true_label=spec.get("true_label", ""),
+            false_label=spec.get("false_label", ""),
         )
     try:
         started_at = time.perf_counter()
@@ -1450,10 +1518,12 @@ def _route_tool_groups_jev(
     except Exception as exc:
         logger.warning("ai_jev_routing failed; using deterministic fallback: %s", exc)
         # Not cached: a transient JEV error must not pin the fallback for the TTL.
-        return _jev_fallback_groups(
-            trigger_text=normalized,
-            available_groups=available_groups,
-            sticky_groups=sticky,
+        return JevRoutingResult(
+            _jev_fallback_groups(
+                trigger_text=normalized,
+                available_groups=available_groups,
+                sticky_groups=sticky,
+            )
         )
     threshold = _jev_routing_threshold()
     probs: dict[str, float] = {}
@@ -1464,18 +1534,37 @@ def _route_tool_groups_jev(
         probs[group] = round(probability, 3)
         if probability >= threshold:
             routed.add(group)
-    if AI_TOOL_GROUP_OTHER in available_groups:
+    # A5: mode precedence act > chat > read. A confident CHAT drops every
+    # routed group INCLUDING the keyword/other safety-net groups — a plain
+    # conversation must not silently become a corporate search (§4.1/§4.2).
+    act_prob = float(getattr(decision.answers.get("m_mode_act"), "probability", 0.0) or 0.0)
+    chat_prob = float(getattr(decision.answers.get("m_mode_chat"), "probability", 0.0) or 0.0)
+    if act_prob >= threshold:
+        intent_mode = JEV_INTENT_ACT
+    elif chat_prob >= threshold:
+        intent_mode = JEV_INTENT_CHAT
+        routed = set()
+    elif routed:
+        intent_mode = JEV_INTENT_READ
+    else:
+        # Nothing routed and no confident label: undecided. Keeping ``None``
+        # preserves the legacy recovery path (request_tool_group offer)
+        # instead of silently stranding the request.
+        intent_mode = None
+    if intent_mode != JEV_INTENT_CHAT and AI_TOOL_GROUP_OTHER in available_groups:
         routed.add(AI_TOOL_GROUP_OTHER)
     logger.info(
-        "ai_jev_routing probs=%s routed=%s sticky=%s latency_ms=%.0f model=%s",
+        "ai_jev_routing probs=%s routed=%s sticky=%s intent=%s probs_mode=%s latency_ms=%.0f model=%s",
         probs,
         sorted(routed),
         sorted(sticky),
+        intent_mode or "-",
+        {"chat": round(chat_prob, 3), "act": round(act_prob, 3)},
         (time.perf_counter() - started_at) * 1000,
         decision.model,
     )
-    _jev_routing_cache_set(cache_key, routed)
-    return routed
+    _jev_routing_cache_set(cache_key, routed, intent_mode)
+    return JevRoutingResult(routed, intent_mode=intent_mode)
 
 
 # Resolver/utility tools that must stay available when Jev picks concrete tools:
@@ -1551,8 +1640,8 @@ def _route_tools_jev(
     )
     cached = _jev_routing_cache_get(cache_key)
     if cached is not None:
-        logger.info("ai_jev_routing_cache hit mode=tool selected=%s", len(cached))
-        return set(cached)
+        logger.info("ai_jev_routing_cache hit mode=tool selected=%s", len(cached[0]))
+        return set(cached[0])
     logger.info("ai_jev_routing_cache miss mode=tool")
     questions: dict[str, dict[str, Any]] = {}
     key_to_tool: dict[str, str] = {}
@@ -1651,9 +1740,22 @@ def _handle_tool_group_expansion(
         if get_tool_group((spec or {}).get("tool_id")) == requested_group
         and _normalize_text((spec or {}).get("tool_id")) not in existing_ids
     ]
+    # A5 (§4.3): group widening can never exceed the per-run ceiling —
+    # a READ run expanding into a group still offers only its read tools,
+    # a CHAT run gets nothing at all.
+    run_allowed = getattr(tool_context, "run_allowed_tools", None)
+    if run_allowed is not None:
+        missing_specs = [
+            spec
+            for spec in missing_specs
+            if _normalize_text((spec or {}).get("tool_id")) in run_allowed
+        ]
     if requested_group not in set(AI_TOOL_GROUPS_ALL):
         code = "unknown_group"
         message = f"Неизвестная группа инструментов '{requested_group or '-'}'."
+    elif run_allowed is not None and not run_allowed:
+        code = "mode_denied"
+        message = "Текущий режим ответа не использует инструменты — ответь в диалоге."
     elif requested_group not in set(available_groups):
         # Never expose a group the employee is not allowed to use.
         code = "forbidden_group"
@@ -5400,6 +5502,10 @@ class AiChatService:
                                 "my_files_delivered": my_files_delivered,
                                 "tool_traces": tool_traces,
                                 "routed_groups": list(routed_groups or []),
+                                # A5 run profile: JEV intent ceiling + calls the
+                                # run-mode check refused at execute time.
+                                "intent_mode": (extracted_context or {}).get("intent_mode"),
+                                "mode_denied_calls": int((extracted_context or {}).get("mode_denied_calls") or 0),
                                 # J10: actual tool usage + J2 expansions for the
                                 # "selected vs really used" metric.
                                 "used_tools": sorted(
@@ -5947,6 +6053,160 @@ class AiChatService:
                 return sticky
         return set()
 
+    def _fetch_routing_inputs(
+        self,
+        *,
+        conversation_id: str,
+        trigger_message_id: str,
+        user_id: int,
+    ) -> dict[str, Any] | None:
+        """A5 light context: the cheap reads JEV needs before the heavy
+        context build — trigger text, attachment flag, dialog tail.
+
+        Returns ``None`` on any failure; the caller then keeps the legacy
+        post-context routing path.
+        """
+        try:
+            normalized_conversation_id = _normalize_text(conversation_id)
+            with chat_session() as session:
+                trigger = session.get(ChatMessage, _normalize_text(trigger_message_id))
+                if trigger is None or _normalize_text(trigger.conversation_id) != normalized_conversation_id:
+                    return None
+                if int(trigger.sender_user_id or 0) != int(user_id or 0) or trigger.is_deleted:
+                    return None
+                has_attachment = (
+                    session.execute(
+                        select(ChatMessageAttachment.id)
+                        .where(ChatMessageAttachment.message_id == trigger.id)
+                        .limit(1)
+                    ).first()
+                    is not None
+                )
+                trigger_seq = int(trigger.conversation_seq or 0)
+                rows = list(
+                    session.execute(
+                        select(ChatMessage.body)
+                        .where(
+                            ChatMessage.conversation_id == normalized_conversation_id,
+                            ChatMessage.conversation_seq <= trigger_seq,
+                            ChatMessage.is_deleted.is_(False),
+                        )
+                        .order_by(ChatMessage.conversation_seq.desc())
+                        .limit(5)
+                    ).scalars()
+                )
+            recent_messages = [
+                text
+                for text in (_normalize_text(body) for body in reversed(rows))
+                if text
+            ]
+            return {
+                "trigger_text": _normalize_text(trigger.body),
+                "has_attachment": has_attachment,
+                "recent_messages": recent_messages,
+            }
+        except Exception as exc:
+            logger.warning("ai_routing_inputs fetch failed; routing falls back to post-context path: %s", exc)
+            return None
+
+    def _route_for_run(
+        self,
+        *,
+        trigger_text: str,
+        all_tool_specs: list[dict[str, Any]],
+        available_groups: set[str],
+        conversation_id: str,
+        recent_messages: list[str],
+        has_attachment: bool,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """A5: one routing decision per run — J9 smalltalk bypass, JEV
+        tool/group selection and the intent mode (chat/read/act).
+
+        The intent mode is a server-side ceiling, never an authorization
+        source: it can only REMOVE tools from this run.
+        """
+        routing_started_at = time.perf_counter()
+        # J1: sticky groups from the previous completed run give JEV enough
+        # context for follow-ups ("а теперь перемести его", "то же в Excel").
+        sticky_groups = (
+            self._sticky_tool_groups(conversation_id=conversation_id, exclude_run_id=run_id)
+            if _jev_routing_enabled()
+            else set()
+        )
+        # J9: greetings/thanks/empty replicas never reach JEV and get no tools.
+        smalltalk_bypass = _jev_routing_enabled() and _is_short_smalltalk(
+            trigger_text,
+            has_dialog_context=_has_jev_dialog_context(
+                recent_messages=recent_messages,
+                sticky_groups=sticky_groups,
+            ),
+            has_attachment=has_attachment,
+        )
+        routed_groups = set(available_groups)
+        intent_mode: str | None = None
+        if smalltalk_bypass:
+            jev_selected_tools: set[str] | None = set()
+            jev_routed: set[str] | None = set()
+            intent_mode = JEV_INTENT_CHAT
+        else:
+            jev_selected_tools = _route_tools_jev(
+                trigger_text=trigger_text,
+                tool_specs=all_tool_specs,
+                available_groups=available_groups,
+                sticky_groups=sticky_groups,
+                recent_messages=recent_messages,
+                has_attachment=has_attachment,
+            )
+            if jev_selected_tools is not None:
+                jev_routed = None
+                # tool-mode: JEV picked no tools at all -> conversational run.
+                if not jev_selected_tools:
+                    intent_mode = JEV_INTENT_CHAT
+            else:
+                jev_routed = _route_tool_groups_jev(
+                    trigger_text=trigger_text,
+                    available_groups=available_groups,
+                    sticky_groups=sticky_groups,
+                    recent_messages=recent_messages,
+                    has_attachment=has_attachment,
+                )
+                intent_mode = getattr(jev_routed, "intent_mode", None)
+        # §4.1: a confident CHAT keeps keywords from resurrecting corporate
+        # tools — "расскажи, какие бывают принтеры" must not search ITinvent.
+        keyword_groups = (
+            (
+                _keyword_routed_groups(trigger_text, available_groups=available_groups)
+                or set()
+            )
+            if (
+                not smalltalk_bypass
+                and intent_mode != JEV_INTENT_CHAT
+                and (jev_selected_tools is not None or jev_routed is not None)
+            )
+            else set()
+        )
+        if jev_routed is not None:
+            routed_groups = jev_routed | keyword_groups
+        _log_ai_run_timing("tool_routing", routing_started_at, run_id=run_id)
+        logger.info(
+            "ai_tool_routing run_id=%s available=%s routed=%s sticky=%s intent=%s",
+            run_id,
+            sorted(available_groups),
+            sorted(routed_groups),
+            sorted(sticky_groups),
+            intent_mode or "-",
+        )
+        return {
+            "jev_selected_tools": jev_selected_tools,
+            "routed_groups": routed_groups,
+            "intent_mode": intent_mode,
+            "smalltalk_bypass": smalltalk_bypass,
+            "sticky_groups": sticky_groups,
+            "keyword_groups": keyword_groups,
+            "has_attachment": has_attachment,
+        }
+
     def _execute_run(
         self,
         *,
@@ -5977,6 +6237,35 @@ class AiChatService:
         if fast_path is not None:
             return fast_path
         context_started_at = time.perf_counter()
+        # A5 (§6): light routing inputs BEFORE the heavy context build. JEV only
+        # needs the trigger text, dialog tail and the attachment flag — all of
+        # which are cheap indexed reads. A confident CHAT decision can then
+        # suppress the KB retrieval stage entirely. When the light fetch fails
+        # or routing is off, the legacy post-context routing block runs.
+        all_tool_specs = ai_tool_registry.list_specs(tool_ids=tool_context.enabled_tools)
+        available_tool_groups = get_enabled_tool_groups(tool_context.enabled_tools)
+        routing: dict[str, Any] | None = None
+        if _jev_routing_enabled():
+            routing_inputs = self._fetch_routing_inputs(
+                conversation_id=run_payload["conversation_id"],
+                trigger_message_id=run_payload["trigger_message_id"],
+                user_id=int(user_payload.get("id") or 0),
+            )
+            if routing_inputs is not None:
+                routing = self._route_for_run(
+                    trigger_text=routing_inputs["trigger_text"],
+                    all_tool_specs=all_tool_specs,
+                    available_groups=available_tool_groups,
+                    conversation_id=run_payload["conversation_id"],
+                    recent_messages=routing_inputs["recent_messages"],
+                    has_attachment=routing_inputs["has_attachment"],
+                    run_id=run_id,
+                )
+        suppress_kb = bool(
+            routing
+            and routing["intent_mode"] == JEV_INTENT_CHAT
+            and not routing["has_attachment"]
+        )
         extracted_context = self._build_conversation_context(
             conversation_id=run_payload["conversation_id"],
             trigger_message_id=run_payload["trigger_message_id"],
@@ -5988,6 +6277,7 @@ class AiChatService:
             allowed_kb_scope=_json_loads(bot.allowed_kb_scope_json, []),
             allow_kb_document_delivery=bool(getattr(bot, "allow_kb_document_delivery", False)),
             report_stage=report_stage,
+            suppress_kb=suppress_kb,
         )
         _log_ai_run_timing("context", context_started_at, run_id=run_id)
         policy = AiDraftPolicy(
@@ -6083,83 +6373,44 @@ class AiChatService:
             ]
         ) or "No template candidates."
         template_delivery_allowed = bool(extracted_context.get("template_delivery_allowed"))
-        all_tool_specs = ai_tool_registry.list_specs(tool_ids=tool_context.enabled_tools)
-        available_tool_groups = get_enabled_tool_groups(tool_context.enabled_tools)
         trigger_text_for_routing = _normalize_text(extracted_context.get("trigger_text"))
         report_file_intent = _has_report_file_intent(trigger_text_for_routing)
         requested_report_format = _detect_requested_report_format(trigger_text_for_routing)
-        routing_started_at = time.perf_counter()
         # Variant A (default, routing flag off): pass ALL enabled tools to the
         # LLM. With ~50 tools modern models handle this well.
         # When AI_JEV_ROUTING=1 JEV narrows the set AFTER the AG-2 permission
         # filter — only groups/tools the employee is allowed to use are
         # candidates, and a JEV failure falls back to a narrow deterministic set.
-        jev_routing_active = _jev_routing_enabled()
-        # J1: sticky groups from the previous completed run + trimmed recent
-        # messages + attachment flag give JEV enough context for follow-ups
-        # ("а теперь перемести его", "то же самое в Excel").
-        sticky_groups = (
-            self._sticky_tool_groups(
-                conversation_id=run_payload["conversation_id"],
-                exclude_run_id=run_id,
-            )
-            if jev_routing_active
-            else set()
-        )
-        recent_messages = list(extracted_context.get("recent_messages") or [])
-        has_attachment = bool(extracted_context.get("has_attachment"))
-        # J9: greetings/thanks/empty replicas never reach JEV and get no tools.
-        smalltalk_bypass = jev_routing_active and _is_short_smalltalk(
-            trigger_text_for_routing,
-            has_dialog_context=_has_jev_dialog_context(
-                recent_messages=recent_messages,
-                sticky_groups=sticky_groups,
-            ),
-            has_attachment=has_attachment,
-        )
-        routed_groups = set(available_tool_groups)
-        if smalltalk_bypass:
-            jev_selected_tools = set()
-            jev_routed = set()
-        else:
-            jev_selected_tools = _route_tools_jev(
+        # A5: the routing may already be computed pre-context (light inputs);
+        # only the legacy path resolves it here from the built context.
+        if routing is None:
+            routing = self._route_for_run(
                 trigger_text=trigger_text_for_routing,
-                tool_specs=all_tool_specs,
+                all_tool_specs=all_tool_specs,
                 available_groups=available_tool_groups,
-                sticky_groups=sticky_groups,
-                recent_messages=recent_messages,
-                has_attachment=has_attachment,
+                conversation_id=run_payload["conversation_id"],
+                recent_messages=list(extracted_context.get("recent_messages") or []),
+                has_attachment=bool(extracted_context.get("has_attachment")),
+                run_id=run_id,
             )
-            jev_routed = (
-                None
-                if jev_selected_tools is not None
-                else _route_tool_groups_jev(
-                    trigger_text=trigger_text_for_routing,
-                    available_groups=available_tool_groups,
-                    sticky_groups=sticky_groups,
-                    recent_messages=recent_messages,
-                    has_attachment=has_attachment,
-                )
+        jev_selected_tools = routing["jev_selected_tools"]
+        routed_groups = routing["routed_groups"]
+        intent_mode = routing["intent_mode"]
+        smalltalk_bypass = routing["smalltalk_bypass"]
+        keyword_groups = routing["keyword_groups"]
+        # A5 (§5): server-side per-run tool ceiling. JEV decides the route, the
+        # server owns the ceiling — mode never grants anything beyond the
+        # AG-2 permission-filtered enabled_tools.
+        tool_context.intent_mode = intent_mode
+        if intent_mode == JEV_INTENT_CHAT:
+            tool_context.run_allowed_tools = frozenset()
+        elif intent_mode == JEV_INTENT_READ:
+            tool_context.run_allowed_tools = frozenset(
+                tool_id
+                for tool_id in tool_context.enabled_tools
+                if ".action." not in _normalize_text(tool_id)
             )
-        keyword_groups = (
-            _keyword_routed_groups(
-                trigger_text_for_routing,
-                available_groups=available_tool_groups,
-            )
-            or set()
-            if (not smalltalk_bypass and (jev_selected_tools is not None or jev_routed is not None))
-            else set()
-        )
-        if jev_routed is not None:
-            routed_groups = jev_routed | keyword_groups
-        _log_ai_run_timing("tool_routing", routing_started_at, run_id=run_id)
-        logger.info(
-            "ai_tool_routing run_id=%s available=%s routed=%s sticky=%s",
-            run_id,
-            sorted(available_tool_groups),
-            sorted(routed_groups),
-            sorted(sticky_groups),
-        )
+        extracted_context["intent_mode"] = intent_mode
         if jev_selected_tools is not None:
             keep_tool_ids = set(jev_selected_tools) | {
                 _normalize_text(item.get("tool_id"))
@@ -6195,7 +6446,9 @@ class AiChatService:
             and _normalize_text((item or {}).get("tool_id")) != AI_TOOL_REQUEST_GROUP
             for item in all_tool_specs
         )
-        if group_request_spec is not None and not smalltalk_bypass and has_unoffered_tools:
+        # A5 (§4.3): a confident CHAT run gets no group-expansion escape hatch —
+        # the model must answer conversationally instead of widening tools.
+        if group_request_spec is not None and not smalltalk_bypass and has_unoffered_tools and intent_mode != JEV_INTENT_CHAT:
             tool_specs.append(group_request_spec)
         expanded_groups: set[str] = set()
         if len(tool_specs) > AI_TOOL_SPECS_WARN_LIMIT:
@@ -7110,6 +7363,7 @@ class AiChatService:
                 else "Личная память выключена." if extracted_context.get("memory_status") == "disabled"
                 else "Память не изменена: сейчас не удалось безопасно сохранить этот запрос.")
         final_usage = _merge_usage(extracted_context.get("memory_usage") or {}, final_usage)
+        extracted_context["mode_denied_calls"] = int(getattr(tool_context, "mode_denied_calls", 0) or 0)
         return answer_markdown, artifacts, kb_attachment_send, final_usage, extracted_context, tool_traces, generated_file_specs, sorted(routed_groups)
 
     def _build_conversation_context(
@@ -7125,6 +7379,7 @@ class AiChatService:
         allowed_kb_scope: list[str],
         allow_kb_document_delivery: bool,
         report_stage=None,
+        suppress_kb: bool = False,
     ) -> dict[str, Any]:
         normalized_conversation_id = _normalize_text(conversation_id)
         _lap_state = {"t": time.perf_counter()}
@@ -7292,7 +7547,9 @@ class AiChatService:
                 trigger_text,
                 "\n".join(file_context_parts),
             ] if part)
-            if can_read_kb and kb_query:
+            # A5 (§6): a confident CHAT run skips KB retrieval — the employee
+            # asked a conversational question, not a corporate-data lookup.
+            if can_read_kb and kb_query and not suppress_kb:
                 if callable(report_stage):
                     report_stage(AI_RUN_STAGE_RETRIEVING_KB)
                 ai_kb_retrieval_service.ensure_index_fresh(image_extractor=openrouter_client.extract_image_text)

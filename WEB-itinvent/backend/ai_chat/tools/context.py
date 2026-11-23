@@ -384,6 +384,16 @@ class AiToolExecutionContext:
     allow_kb_document_delivery: bool = False
     # Server-owned state; never populated from model arguments.
     draft_policy: Any = None
+    # A5: per-run tool ceiling derived from the JEV intent mode.
+    # ``None`` keeps the legacy ceiling (``enabled_tools``); an empty set
+    # (CHAT mode) forbids every registry execution for this run, including
+    # auto-pagination and group-expansion follow-ups. The field is set by
+    # the orchestrator only — never from model output or tool results.
+    run_allowed_tools: frozenset[str] | None = None
+    # JEV intent mode for this run: "chat" | "read" | "act" | None.
+    intent_mode: str | None = None
+    # Counted in the run profile: model tool_calls refused by run_allowed_tools.
+    mode_denied_calls: int = 0
 
     @property
     def is_admin(self) -> bool:
