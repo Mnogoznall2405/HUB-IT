@@ -63,15 +63,30 @@ def _ctx(*, enabled_tools, run_allowed_tools=None):
 
 
 def test_mode_chat_drops_routed_and_other(monkeypatch):
-    """Confident CHAT: every routed group incl. 'other' safety-net is dropped."""
+    """Confident CHAT (no group selection): every routed group incl. 'other'
+    safety-net is dropped."""
     _enable_jev(monkeypatch, lambda **kw: _jev_decision(
-        {"g_itinvent": 0.9, "g_office": 0.7, "m_mode_chat": 0.95, "m_mode_act": 0.05}))
+        {"g_itinvent": 0.1, "g_office": 0.1, "m_mode_chat": 0.95, "m_mode_act": 0.05}))
     result = service_module._route_tool_groups_jev(
         trigger_text="расскажи, какие бывают принтеры",
         available_groups={"itinvent", "office", "other"},
     )
     assert result == set()
     assert result.intent_mode == "chat"
+
+
+def test_mode_chat_label_with_routed_group_is_read_not_chat(monkeypatch):
+    """A5.1: m_mode_chat>=threshold AND a routed group is a contradiction —
+    conflicting signals must not become a confident CHAT (same rule as
+    tool-mode): the group selection wins under a READ ceiling."""
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_office": 0.9, "g_itinvent": 0.1, "m_mode_chat": 0.9, "m_mode_act": 0.05}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="ну и про почту расскажи раз уж",
+        available_groups={"itinvent", "office", "other"},
+    )
+    assert result.intent_mode == "read"
+    assert "office" in result  # group selection kept, not dropped to chat
 
 
 def test_mode_act_has_precedence_over_chat(monkeypatch):
@@ -162,7 +177,9 @@ def _route_env(monkeypatch, probs):
 def test_route_for_run_chat_suppresses_keyword_groups(monkeypatch):
     """§4.1: 'расскажи, какие бывают принтеры' — keyword 'принтер' must not
     turn a confident CHAT into a corporate ITinvent search."""
-    svc = _route_env(monkeypatch, {"g_itinvent": 0.8, "m_mode_chat": 0.95, "m_mode_act": 0.05})
+    # g_itinvent stays BELOW threshold: JEV picked no group, so the chat
+    # label is unambiguous and the keyword 'принтер' must not resurrect tools.
+    svc = _route_env(monkeypatch, {"g_itinvent": 0.2, "m_mode_chat": 0.95, "m_mode_act": 0.05})
     routing = svc._route_for_run(
         trigger_text="расскажи, какие бывают принтеры",
         all_tool_specs=[],
@@ -553,6 +570,43 @@ def test_tool_mode_act_label_keeps_resolver_tools(monkeypatch):
     result = service_module._route_tools_jev(
         trigger_text="перемести ноутбук Иванова", tool_specs=specs)
     assert "itinvent.equipment.search" in result
+    assert getattr(result, "intent_mode", None) == "act"
+
+
+# ---------- A5.1: contradictory probabilities ----------
+
+
+def test_tool_mode_chat_label_with_core_tool_is_not_confident_chat(monkeypatch):
+    """chat_p>=threshold AND a picked core tool is a contradiction — the tool
+    selection wins under a READ ceiling, never a confident CHAT."""
+    _tool_mode(monkeypatch, lambda **kw: _jev_decision({"t00": 0.9, "m_mode_chat": 0.9}))
+    specs = [
+        {"tool_id": "itinvent.equipment.search", "description": "поиск"},
+        {"tool_id": "itinvent.entity.resolve", "description": "resolver"},
+    ]
+    result = service_module._route_tools_jev(
+        trigger_text="ну найди ноутбук если что", tool_specs=specs)
+    assert getattr(result, "intent_mode", None) != "chat"
+    assert getattr(result, "intent_mode", None) == "read"
+    assert "itinvent.equipment.search" in result
+
+
+def test_tool_mode_chat_label_with_empty_core_is_confident_chat(monkeypatch):
+    """Confident CHAT requires BOTH the label AND an empty core selection."""
+    _tool_mode(monkeypatch, lambda **kw: _jev_decision({"m_mode_chat": 0.9}))
+    specs = [{"tool_id": "itinvent.equipment.search", "description": "поиск"}]
+    result = service_module._route_tools_jev(
+        trigger_text="расскажи анекдот", tool_specs=specs)
+    assert result == set()
+    assert getattr(result, "intent_mode", None) == "chat"
+
+
+def test_tool_mode_act_beats_conflicting_chat(monkeypatch):
+    """act_p >= threshold wins over chat_p even with a conflicting chat label."""
+    _tool_mode(monkeypatch, lambda **kw: _jev_decision({"t00": 0.9, "m_mode_chat": 0.9, "m_mode_act": 0.9}))
+    specs = [{"tool_id": "itinvent.equipment.search", "description": "поиск"}]
+    result = service_module._route_tools_jev(
+        trigger_text="перемести ноутбук", tool_specs=specs)
     assert getattr(result, "intent_mode", None) == "act"
 
 

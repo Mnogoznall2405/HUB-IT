@@ -6,10 +6,39 @@ the LLM transport and external services are faked.
 """
 from __future__ import annotations
 
+import contextlib
+import io
+import json
+import logging
+import sys
 from types import SimpleNamespace
 
 from test_e2e_ai_draft_reliability import agent, actions  # noqa: F401 - fixture reuse
 from backend.ai_chat import service as ai_module
+from backend.scripts import ai_run_profile_export as _export_mod
+
+
+def _export_caplog(caplog) -> dict:
+    """Feed captured worker-log lines through the real exporter code path."""
+    lines = "\n".join(r.getMessage() for r in caplog.records)
+    old_argv, old_stdin = sys.argv, sys.stdin
+    try:
+        sys.argv = ["export", "--log", "-"]
+        sys.stdin = io.StringIO(lines)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _export_mod.main()
+        return json.loads(buf.getvalue())
+    finally:
+        sys.argv, sys.stdin = old_argv, old_stdin
+
+
+def _final_profile(caplog) -> dict:
+    for record in reversed(caplog.records):
+        message = record.getMessage()
+        if "ai_run_profile_final" in message:
+            return _export_mod._parse_profile_fields(message.split("ai_run_profile_final", 1)[1])
+    return {}
 
 
 def _decision(**probs):
@@ -110,6 +139,78 @@ def test_tool_mode_read_executes_search_but_strips_artifacts(agent, monkeypatch)
     assert result["intent_mode"] == "read"
     assert searched, "read mode must allow a real read tool"
     assert result.get("artifacts_count", 0) == 0
+
+
+def _read_tool_mode(monkeypatch):
+    def decide(**kw):
+        probs = {
+            key: 0.9 if key.startswith("t") else 0.02
+            for key in (kw.get("questions") or {})
+        }
+        return _decision(**probs)
+
+    monkeypatch.setenv("AI_JEV_ROUTING_MODE", "tool")
+    _enable_jev(monkeypatch, decide)
+    monkeypatch.setattr(
+        "backend.services.address_book_service.address_book_service.search",
+        lambda *a, **k: {"items": [{"full_name": "Смирнова А.А."}], "total": 1},
+        raising=False,
+    )
+
+
+def test_read_run_profile_final_records_executed_tool(agent, monkeypatch, caplog):
+    _read_tool_mode(monkeypatch)
+    agent.steps.extend([
+        _reply("", tool_calls=[_call("directory.people.search", query="Смирнова")]),
+        _reply("Телефон найден"),
+    ])
+    with caplog.at_level(logging.INFO):
+        result = agent.request("Найди рабочий телефон Смирновой")
+    assert result["intent_mode"] == "read"
+    final = _final_profile(caplog)
+    assert _export_mod._parse_list(final.get("used_tools")) == ["directory.people.search"]
+    assert float(final.get("server_total_ms") or 0) >= float(final.get("processing_ms") or 0) >= 0
+
+
+def test_read_run_profile_final_two_tools_exported(agent, monkeypatch, caplog):
+    """Full path AiChatService -> log -> exporter: both executed tools must
+    survive into the exported JSON (P1 regression guard)."""
+    _read_tool_mode(monkeypatch)
+    agent.steps.extend([
+        _reply("", tool_calls=[
+            _call("directory.people.search", query="Смирнова"),
+            _call("office.mail.contacts.resolve", q="Антонова"),
+        ]),
+        _reply("Контакты найдены"),
+    ])
+    with caplog.at_level(logging.INFO):
+        result = agent.request("Найди телефон Смирновой и почту Антоновой")
+    assert result["intent_mode"] == "read"
+    used = _export_mod._parse_list(_final_profile(caplog).get("used_tools"))
+    assert {"directory.people.search", "office.mail.contacts.resolve"} <= set(used)
+    exported = _export_caplog(caplog)
+    assert exported["tools"]["executed_calls"] >= 2
+
+
+def test_read_run_profile_ok_and_error_tools(agent, monkeypatch, caplog):
+    """One executed + one validation-error call -> both buckets populated."""
+    _read_tool_mode(monkeypatch)
+    agent.steps.extend([
+        _reply("", tool_calls=[
+            _call("directory.people.search", query="Смирнова"),
+            _call("office.mail.contacts.resolve"),  # missing q -> validation error
+        ]),
+        _reply("Частично выполнено"),
+    ])
+    with caplog.at_level(logging.INFO):
+        result = agent.request("Найди телефон Смирновой и контакты")
+    assert result["intent_mode"] == "read"
+    final = _final_profile(caplog)
+    assert "directory.people.search" in _export_mod._parse_list(final.get("used_tools"))
+    assert "office.mail.contacts.resolve" in _export_mod._parse_list(final.get("error_tools"))
+    exported = _export_caplog(caplog)
+    assert exported["tools"]["executed_calls"] >= 1
+    assert exported["tools"]["error_calls"] >= 1
 
 
 def test_tool_mode_jev_timeout_is_not_confident_chat(agent, monkeypatch):

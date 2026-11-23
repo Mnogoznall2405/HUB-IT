@@ -1443,6 +1443,7 @@ def _route_tool_groups_jev(
     sticky_groups: set[str] | None = None,
     recent_messages: list[str] | None = None,
     has_attachment: bool = False,
+    run_id: str | None = None,
 ) -> set[str] | None:
     """Jev System One group routing + A5 intent mode.
 
@@ -1486,9 +1487,9 @@ def _route_tool_groups_jev(
     )
     cached = _jev_routing_cache_get(cache_key)
     if cached is not None:
-        logger.info("ai_jev_routing_cache hit mode=groups routed=%s", sorted(cached[0]))
+        logger.info("ai_jev_routing_cache hit mode=groups routed=%s run_id=%s", sorted(cached[0]), run_id or "-")
         return JevRoutingResult(cached[0], intent_mode=cached[1])
-    logger.info("ai_jev_routing_cache miss mode=groups")
+    logger.info("ai_jev_routing_cache miss mode=groups run_id=%s", run_id or "-")
     group_questions = (
         {
             f"g_{group}": jev_noul(
@@ -1542,20 +1543,25 @@ def _route_tool_groups_jev(
     # With no group questions the group set is trivially the available one —
     # JEV was still consulted for the intent mode alone.
     routed: set[str] = set() if group_questions else set(available_groups)
+    jev_selected = False
     for group in available_groups:
         answer = decision.answers.get(f"g_{group}")
         probability = float(getattr(answer, "probability", 0.0) or 0.0)
         probs[group] = round(probability, 3)
         if probability >= threshold:
             routed.add(group)
+            jev_selected = True
     # A5: mode precedence act > chat > read. A confident CHAT drops every
     # routed group INCLUDING the keyword/other safety-net groups — a plain
     # conversation must not silently become a corporate search (§4.1/§4.2).
+    # A5.1: confident CHAT requires BOTH the label AND no JEV group selection;
+    # chat_p>=threshold WITH a routed group is a contradiction that resolves
+    # to the group selection under a READ ceiling — same rule as tool-mode.
     act_prob = float(getattr(decision.answers.get("m_mode_act"), "probability", 0.0) or 0.0)
     chat_prob = float(getattr(decision.answers.get("m_mode_chat"), "probability", 0.0) or 0.0)
     if act_prob >= threshold:
         intent_mode = JEV_INTENT_ACT
-    elif chat_prob >= threshold:
+    elif chat_prob >= threshold and not jev_selected:
         intent_mode = JEV_INTENT_CHAT
         routed = set()
     elif routed:
@@ -1568,7 +1574,7 @@ def _route_tool_groups_jev(
     if intent_mode != JEV_INTENT_CHAT and AI_TOOL_GROUP_OTHER in available_groups:
         routed.add(AI_TOOL_GROUP_OTHER)
     logger.info(
-        "ai_jev_routing probs=%s routed=%s sticky=%s intent=%s probs_mode=%s latency_ms=%.0f model=%s",
+        "ai_jev_routing probs=%s routed=%s sticky=%s intent=%s probs_mode=%s latency_ms=%.0f model=%s run_id=%s",
         probs,
         sorted(routed),
         sorted(sticky),
@@ -1576,6 +1582,7 @@ def _route_tool_groups_jev(
         {"chat": round(chat_prob, 3), "act": round(act_prob, 3)},
         (time.perf_counter() - started_at) * 1000,
         decision.model,
+        run_id or "-",
     )
     _jev_routing_cache_set(cache_key, routed, intent_mode)
     return JevRoutingResult(routed, intent_mode=intent_mode)
@@ -1599,6 +1606,7 @@ def _route_tools_jev(
     sticky_groups: set[str] | None = None,
     recent_messages: list[str] | None = None,
     has_attachment: bool = False,
+    run_id: str | None = None,
 ) -> set[str] | None:
     """Return Jev-selected tool ids for AI_JEV_ROUTING_MODE=tool.
 
@@ -1654,9 +1662,9 @@ def _route_tools_jev(
     )
     cached = _jev_routing_cache_get(cache_key)
     if cached is not None:
-        logger.info("ai_jev_routing_cache hit mode=tool selected=%s", len(cached[0]))
+        logger.info("ai_jev_routing_cache hit mode=tool selected=%s run_id=%s", len(cached[0]), run_id or "-")
         return JevRoutingResult(cached[0], intent_mode=cached[1])
-    logger.info("ai_jev_routing_cache miss mode=tool")
+    logger.info("ai_jev_routing_cache miss mode=tool run_id=%s", run_id or "-")
     questions: dict[str, dict[str, Any]] = {}
     key_to_tool: dict[str, str] = {}
     for index, spec in enumerate(specs):
@@ -1706,9 +1714,13 @@ def _route_tools_jev(
     chat_prob = float(getattr(decision.answers.get("m_mode_chat"), "probability", 0.0) or 0.0)
     if act_prob >= threshold:
         intent_mode = JEV_INTENT_ACT
-    elif chat_prob >= threshold:
+    elif chat_prob >= threshold and not core_selected:
         intent_mode = JEV_INTENT_CHAT
     elif core_selected:
+        # A5.1: contradictory labels (confident chat AND picked core tools)
+        # resolve to the tool selection under a READ ceiling — a confident
+        # CHAT needs BOTH the label and an empty core, never one without the
+        # other.
         intent_mode = JEV_INTENT_READ
     else:
         # Low tool probabilities without a confident label is UNDECIDED —
@@ -1716,16 +1728,17 @@ def _route_tools_jev(
         intent_mode = None
     if intent_mode == JEV_INTENT_CHAT:
         _jev_routing_cache_set(cache_key, set(), JEV_INTENT_CHAT)
-        logger.info("ai_jev_routing(mode=tool) empty core -> chat latency_ms=%.0f", (time.perf_counter() - started_at) * 1000)
+        logger.info("ai_jev_routing(mode=tool) empty core -> chat latency_ms=%.0f run_id=%s", (time.perf_counter() - started_at) * 1000, run_id or "-")
         return JevRoutingResult(intent_mode=JEV_INTENT_CHAT)
     selected = core_selected | (_JEV_ALWAYS_KEEP_TOOLS & enabled_ids)
     logger.info(
-        "ai_jev_routing(mode=tool) selected=%s/%s intent=%s latency_ms=%.0f model=%s",
+        "ai_jev_routing(mode=tool) selected=%s/%s intent=%s latency_ms=%.0f model=%s run_id=%s",
         len(selected),
         len(enabled_ids),
         intent_mode or "-",
         (time.perf_counter() - started_at) * 1000,
         decision.model,
+        run_id or "-",
     )
     _jev_routing_cache_set(cache_key, selected, intent_mode)
     return JevRoutingResult(selected, intent_mode=intent_mode)
@@ -5212,6 +5225,15 @@ class AiChatService:
             run.updated_at = started_at
             session.flush()
             request_context = _json_loads(getattr(run, "request_json", "{}"), {})
+        # A5.1: queue wait = enqueue -> claim, correlated by the real run_id.
+        try:
+            queue_wait_ms = max(
+                0.0, (_as_utc(started_at) - _as_utc(run.created_at)).total_seconds() * 1000.0
+            )
+        except Exception:
+            queue_wait_ms = 0.0
+        logger.info("ai_chat.run.queue_wait duration_ms=%.1f run_id=%s", queue_wait_ms, run.id)
+        run_profile_ctx: dict[str, Any] = {"queue_wait_ms": queue_wait_ms, "outcome": "completed"}
         run_payload = self._set_run_progress(
             run_id=run.id,
             conversation_id=run.conversation_id,
@@ -5310,6 +5332,34 @@ class AiChatService:
                 run_payload=run_payload,
                 request_context=request_context,
                 report_stage=report_stage,
+            )
+            # A5.1: keep run-level fields for the final unified profile line
+            # (emitted in `finally`, after delivery + DB finalization). Traces
+            # use status="ok"/"error" (audit_row), some ad-hoc ones carry "ok".
+            executed_tools: list[str] = []
+            error_tools: list[str] = []
+            meta_calls = 0
+            for trace in tool_traces or []:
+                tid = _normalize_text((trace or {}).get("tool_id"))
+                if not tid:
+                    continue
+                if tid == AI_TOOL_REQUEST_GROUP:
+                    meta_calls += 1
+                    continue
+                ok = (
+                    _normalize_text((trace or {}).get("status")).lower() == "ok"
+                    or bool((trace or {}).get("ok"))
+                )
+                (executed_tools if ok else error_tools).append(tid)
+            run_profile_ctx.update(
+                intent=(extracted_context or {}).get("intent_mode"),
+                mode_denied=int((extracted_context or {}).get("mode_denied_calls") or 0),
+                used_tools=executed_tools,
+                error_tools=error_tools,
+                meta_calls=meta_calls,
+                prompt_tokens=(usage or {}).get("prompt_tokens"),
+                completion_tokens=(usage or {}).get("output_tokens") or (usage or {}).get("completion_tokens"),
+                total_tokens=(usage or {}).get("total_tokens"),
             )
             self._raise_if_run_cancelled(run.id)
             _log_ai_run_timing("execute", execute_started_at, run_id=run.id)
@@ -5605,6 +5655,7 @@ class AiChatService:
                     updated_at=_iso(completed_at),
                 )
         except AiRunCancelled:
+            run_profile_ctx["outcome"] = "cancelled"
             with app_session() as session:
                 session.execute(update(AppAiBotRun).where(
                     AppAiBotRun.id == run.id,
@@ -5613,6 +5664,7 @@ class AiChatService:
                          completed_at=_utc_now(), updated_at=_utc_now()))
             logger.info("AI run cancelled: run_id=%s", run.id)
         except Exception as exc:
+            run_profile_ctx["outcome"] = "failed"
             error_text = _friendly_run_error_text(exc)
             logger.exception("AI run failed: run_id=%s", run.id)
             if _is_insufficient_funds_error(exc):
@@ -5652,6 +5704,32 @@ class AiChatService:
                 )
         finally:
             _AI_LAST_RUN_DURATION_MS = (time.perf_counter() - run_started_perf) * 1000.0
+            # A5.1: end-of-processing unified profile — the true wall-clock
+            # total (queue->claim->execute->deliver->finalize), not a nested sum.
+            # A5.1: queue wait and processing are separate numbers; server_total
+            # is their sum — server-side only, NOT client TTFT/end-to-end.
+            queue_wait_ms = float(run_profile_ctx.get("queue_wait_ms") or 0.0)
+            processing_ms = _AI_LAST_RUN_DURATION_MS
+            logger.info(
+                "ai_run_profile_final run_id=%s outcome=%s queue_wait_ms=%.1f processing_ms=%.1f "
+                "server_total_ms=%.1f elapsed_ms=%.1f "
+                "intent=%s mode_denied=%s used_tools=%s error_tools=%s meta_calls=%s "
+                "prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+                run.id,
+                run_profile_ctx.get("outcome") or "completed",
+                queue_wait_ms,
+                processing_ms,
+                queue_wait_ms + processing_ms,
+                processing_ms,
+                run_profile_ctx.get("intent") or "-",
+                int(run_profile_ctx.get("mode_denied") or 0),
+                run_profile_ctx.get("used_tools") or [],
+                run_profile_ctx.get("error_tools") or [],
+                int(run_profile_ctx.get("meta_calls") or 0),
+                run_profile_ctx.get("prompt_tokens"),
+                run_profile_ctx.get("completion_tokens"),
+                run_profile_ctx.get("total_tokens"),
+            )
             _AI_LAST_RUN_COMPLETED_AT = _utc_now()
             self._enqueue_typing_event(
                 conversation_id=run.conversation_id,
@@ -6227,6 +6305,7 @@ class AiChatService:
                 sticky_groups=sticky_groups,
                 recent_messages=recent_messages,
                 has_attachment=has_attachment,
+                run_id=run_id,
             )
             if jev_selected_tools is not None:
                 jev_routed = None
@@ -6240,6 +6319,7 @@ class AiChatService:
                     sticky_groups=sticky_groups,
                     recent_messages=recent_messages,
                     has_attachment=has_attachment,
+                    run_id=run_id,
                 )
                 intent_mode = getattr(jev_routed, "intent_mode", None)
         # §4.1: a confident CHAT keeps keywords from resurrecting corporate
@@ -6349,6 +6429,7 @@ class AiChatService:
             allow_kb_document_delivery=bool(getattr(bot, "allow_kb_document_delivery", False)),
             report_stage=report_stage,
             suppress_kb=suppress_kb,
+            run_id=run_id,
         )
         _log_ai_run_timing("context", context_started_at, run_id=run_id)
         policy = AiDraftPolicy(
@@ -7502,12 +7583,16 @@ class AiChatService:
         allow_kb_document_delivery: bool,
         report_stage=None,
         suppress_kb: bool = False,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         normalized_conversation_id = _normalize_text(conversation_id)
+        # A5.1: laps correlate by the real run_id (previously trigger_message_id
+        # leaked in as the id, breaking per-run profile joins).
+        lap_run_id = _normalize_text(run_id)
         _lap_state = {"t": time.perf_counter()}
 
         def _lap(stage: str) -> None:
-            _log_ai_run_timing(stage, _lap_state["t"], run_id=_normalize_text(trigger_message_id))
+            _log_ai_run_timing(stage, _lap_state["t"], run_id=lap_run_id)
             _lap_state["t"] = time.perf_counter()
 
         with chat_session() as initial_chat_db:
@@ -7709,7 +7794,7 @@ class AiChatService:
             personal_memory, memory_hits = memory_result["text"], memory_result["hits"]
             memory_status, memory_changed = memory_result["status"], memory_result["changed"]
             memory_usage = memory_result["usage"]
-            _log_ai_run_timing("memory", memory_started_at, run_id=_normalize_text(trigger_message_id))
+            _log_ai_run_timing("memory", memory_started_at, run_id=lap_run_id)
         _lap("ctx_memory")
         if summary_append_lines:
             fallback_summary = _compact_head_tail(
