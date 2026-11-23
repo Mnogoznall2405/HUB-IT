@@ -8,6 +8,7 @@ import EditNoteRoundedIcon from '@mui/icons-material/EditNoteRounded';
 import FileCopyOutlinedIcon from '@mui/icons-material/FileCopyOutlined';
 import GroupAddOutlinedIcon from '@mui/icons-material/GroupAddOutlined';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import RestoreRoundedIcon from '@mui/icons-material/RestoreRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded';
@@ -65,6 +66,7 @@ export default function FileActionsContextMenu({
   busy = false,
   paperSx = null,
   onClose,
+  onDetails,
   onPreview,
   onEditOnline,
   editOnlineLabel = 'Редактировать онлайн',
@@ -148,6 +150,17 @@ export default function FileActionsContextMenu({
         },
       }}
     >
+      {typeof onDetails === 'function' ? (
+        <MenuItem
+          data-testid="file-action-details"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onDetails)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><InfoOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Сведения</ListItemText>
+        </MenuItem>
+      ) : null}
       {typeof onPreview === 'function' ? (
         <MenuItem
           data-testid="file-action-preview"

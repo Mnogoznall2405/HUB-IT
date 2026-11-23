@@ -22,7 +22,9 @@ import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
+import PeopleAltOutlinedIcon from '@mui/icons-material/PeopleAltOutlined';
 import RestoreOutlinedIcon from '@mui/icons-material/RestoreOutlined';
+import ScheduleOutlinedIcon from '@mui/icons-material/ScheduleOutlined';
 import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
 import StarOutlineRoundedIcon from '@mui/icons-material/StarOutlineRounded';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
@@ -41,7 +43,7 @@ import {
   VIRTUALIZED_ROW_SX,
 } from './myFilesVisual';
 
-const ROLE_CHIP_LABELS = { edit: 'правка', comment: 'комментарии', view: 'просмотр' };
+export const ROLE_CHIP_LABELS = { edit: 'правка', comment: 'комментарии', view: 'просмотр' };
 
 export const sharedOpenLabel = (item) => (
   item?.my_role === 'view' ? 'Открыть' : item?.my_role === 'comment' ? 'Комментировать' : 'Редактировать'
@@ -105,6 +107,87 @@ const getRetentionTitle = (item) => {
   if (Number(item?.retention_days) === 0) return 'Хранится бессрочно, пока не удалите';
   return `Загружен на ${item?.retention_days} дн. · хранится до ${formatDateTime(item?.expires_at)}`;
 };
+
+const VISUALLY_HIDDEN_SX = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  p: 0,
+  m: -1,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+};
+
+// Компактные значки статуса после имени заменили подписной ряд чипов; скрытые
+// подписи сохраняют смысл для скринридеров и старых data-testid.
+function StatusMark({ testId, title, hiddenText, color = 'text.secondary', children }) {
+  return (
+    <Tooltip title={title}>
+      <Box
+        component="span"
+        data-testid={testId}
+        sx={{ position: 'relative', display: 'inline-flex', alignItems: 'center', color, flex: '0 0 auto' }}
+      >
+        {children}
+        {hiddenText ? <Box component="span" sx={VISUALLY_HIDDEN_SX}>{hiddenText}</Box> : null}
+      </Box>
+    </Tooltip>
+  );
+}
+
+const retentionDaysLeft = (item) => {
+  if (!(Number(item?.retention_days) > 0)) return null;
+  const target = new Date(String(item?.expires_at || '')).getTime();
+  if (!Number.isFinite(target)) return null;
+  return Math.ceil((target - Date.now()) / 86400000);
+};
+
+function RowStatusIcons({ entry, kind }) {
+  const marks = [];
+  if (hasCoEditing(entry)) {
+    marks.push(
+      <StatusMark
+        key="coedit"
+        testId={`my-files-coedit-${entry.id}`}
+        title={coEditTitle(entry)}
+        hiddenText={entry.shared_with_me ? (ROLE_CHIP_LABELS[entry.my_role] || ROLE_CHIP_LABELS.edit) : 'совместно'}
+      >
+        <PeopleAltOutlinedIcon sx={{ fontSize: 16 }} />
+      </StatusMark>,
+    );
+  }
+  if (entry.is_shared && !entry.shared_with_me) {
+    marks.push(
+      <StatusMark key="link" title="Открыта публичная ссылка" hiddenText="ссылка">
+        <LinkOutlinedIcon sx={{ fontSize: 16 }} />
+      </StatusMark>,
+    );
+  }
+  if (kind === 'file') {
+    const daysLeft = retentionDaysLeft(entry);
+    if (daysLeft !== null && daysLeft <= 7) {
+      marks.push(
+        <StatusMark
+          key="retention"
+          testId={`my-files-retention-${entry.id}`}
+          title={getRetentionTitle(entry)}
+          hiddenText={getRetentionLabel(entry)}
+          color={daysLeft <= 3 ? 'error.main' : 'warning.main'}
+        >
+          <ScheduleOutlinedIcon sx={{ fontSize: 16 }} />
+        </StatusMark>,
+      );
+    }
+  }
+  if (!marks.length) return null;
+  return (
+    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flex: '0 0 auto' }}>
+      {marks.slice(0, 3)}
+    </Stack>
+  );
+}
 // One grid for the header and every row: checkbox, name, owner, modified, size, actions (the trash drops the owner).
 export const rowGridColumns = (isTrashView) => (isTrashView
   ? { xs: 'minmax(0,1fr) auto', md: 'minmax(0,1fr) 170px 110px 176px' }
@@ -219,15 +302,17 @@ export const FolderRow = memo(function FolderRow({
         >
           <FolderOutlinedIcon sx={{ fontSize: 20 }} />
         </Box>
-        <Typography
-          variant="body2"
-          title={folder.name}
-          sx={{ fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-        >
-          {folder.name}
-        </Typography>
-        {folder.is_favorite ? <StarRoundedIcon sx={{ fontSize: 15, color: 'warning.main', flex: '0 0 auto' }} /> : null}
-        <CoEditChip item={folder} />
+        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
+          <Typography
+            variant="body2"
+            title={folder.name}
+            sx={{ fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {folder.name}
+          </Typography>
+          {folder.is_favorite ? <StarRoundedIcon sx={{ fontSize: 15, color: 'warning.main', flex: '0 0 auto' }} /> : null}
+          <RowStatusIcons entry={folder} kind="folder" />
+        </Stack>
       </Stack>
       {isTrashView ? null : <OwnerCell entry={folder} currentUsername={currentUsername} />}
       <Typography variant="body2" color="text.secondary" sx={{ display: { xs: 'none', md: 'block' } }}>
@@ -475,40 +560,19 @@ export const FileRow = memo(function FileRow({
         >
           <Icon sx={{ fontSize: 20 }} />
         </Box>
-        <Box sx={{ minWidth: 0 }}>
-          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
-            <Typography
-              variant="body2"
-              title={fileName}
-              sx={{ fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-            >
-              {fileName}
-            </Typography>
-            {item.is_favorite ? <StarRoundedIcon sx={{ fontSize: 15, color: 'warning.main', flex: '0 0 auto' }} /> : null}
-          </Stack>
-          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.25 }}>
-            {String(item.status || '').toLowerCase() !== 'ready' ? (
-              <Chip size="small" label={chip.label} color={chip.color} sx={{ height: 18, fontSize: '0.68rem' }} />
-            ) : null}
-            <CoEditChip item={item} />
-            {item.is_shared && !sharedWithMe ? (
-              <Chip size="small" icon={<LinkOutlinedIcon sx={{ fontSize: 12 }} />} label="ссылка" variant="outlined" sx={{ height: 18, fontSize: '0.68rem' }} />
-            ) : null}
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              title={getRetentionTitle(item)}
-              data-testid={`my-files-retention-${item.id}`}
-              sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '0 0 auto' }}
-            >
-              {getRetentionLabel(item)}
-            </Typography>
-            {item.folder_name ? (
-              <Typography variant="caption" color="text.secondary" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {item.folder_name}
-              </Typography>
-            ) : null}
-          </Stack>
+        <Box sx={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <Typography
+            variant="body2"
+            title={fileName}
+            sx={{ fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {fileName}
+          </Typography>
+          {item.is_favorite ? <StarRoundedIcon sx={{ fontSize: 15, color: 'warning.main', flex: '0 0 auto' }} /> : null}
+          {String(item.status || '').toLowerCase() !== 'ready' ? (
+            <Chip size="small" label={chip.label} color={chip.color} sx={{ height: 18, fontSize: '0.68rem', flex: '0 0 auto' }} />
+          ) : null}
+          <RowStatusIcons entry={item} kind="file" />
         </Box>
       </Stack>
       {isTrashView ? null : <OwnerCell entry={item} currentUsername={currentUsername} />}

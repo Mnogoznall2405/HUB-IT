@@ -126,15 +126,22 @@ class TestRouteToolGroups:
         _, _, _route_tool_groups_jev, _ = _get_routing_fns()
         service_module = _enable_jev(monkeypatch)
         calls = []
-        monkeypatch.setattr(service_module.jev_client, "decide", lambda **kw: calls.append(kw))
+        monkeypatch.setattr(
+            service_module.jev_client,
+            "decide",
+            lambda **kw: calls.append(kw) or _jev_decision({}),
+        )
+        # A5/P1-2: with a single group the group choice is trivial — but JEV
+        # still classifies the intent mode (chat/read/act) in the same call.
         result = _route_tool_groups_jev(
             trigger_text="покажи оборудование",
             available_groups={"itinvent"},
         )
-        # None means "keep every available group" — with a single group no
-        # routing decision is needed.
-        assert result is None
-        assert calls == []
+        assert result is not None
+        assert "itinvent" in result
+        assert len(calls) == 1
+        # Only mode questions were asked — no group question needed.
+        assert all(key.startswith("m_mode_") for key in calls[0]["questions"])
 
     def test_successful_routing_returns_subset(self, monkeypatch):
         """JEV is called when the trigger matches no hardcoded keyword."""

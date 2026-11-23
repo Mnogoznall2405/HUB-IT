@@ -1,0 +1,187 @@
+# A5 — JEV Smart Routing (CHAT/READ/ACT) + per-run tool ceiling
+
+База: `f84e1565` (main после слияния A3 PR #20). Ветка: `perf/ai-jev-smart-routing-a5`.
+
+## 1. Архитектура до изменений
+
+- `_build_conversation_context()` выполнялся **до** JEV-маршрутизации: история, файлы, KB (`ensure_index_fresh`+`retrieve`), память, rolling summary — для каждого рана, включая «привет».
+- JEV решал только «какие группы инструментов» (`_route_tool_groups_jev` → set). Режимов не было.
+- Защита от исполнения = только то, что модель *видит* (tool_specs) + `enabled_tools` (AG-2). Между «спеки в промпте» и `execute_bounded` отдельного per-run потолка не было — любой tool_id из `enabled_tools` исполнялся бы, даже если модель его не видела.
+- `_keyword_routed_groups` и force-add `AI_TOOL_GROUP_OTHER` всегда подмешивались в routed — упоминание «принтера» в разговорном вопросе превращало CHAT в корпоративный поиск.
+
+## 2. Найденные ошибки маршрутизации (доказано кодом)
+
+1. **Keyword override в CHAT** — «расскажи, какие бывают принтеры» → keyword `принтер` → группа `itinvent` в routed → корпоративный поиск на разговорный вопрос.
+2. **`other` безусловно добавлялась** даже при уверенном «инструменты не нужны».
+3. **«Пустой» routed сохранял `ai.request_tool_group`** — приветствие могло расширить набор инструментов через мета-инструмент.
+4. **Нет серверного потолка на исполнение** — модель, галлюцинирующая tool_id вне specs, прошла бы `execute_bounded`, если id входил в `enabled_tools` и права позволяли.
+5. **KB-retrieval на каждом ране** — `ensure_index_fresh`+`retrieve` выполнялись и для чистого smalltalk.
+
+## 3. Дизайн CHAT/READ/ACT
+
+JEV остаётся единственным маршрутизатором. В тот же `jev_client.decide()` добавлены 2 вопроса (`m_mode_chat`, `m_mode_act`) — **без дополнительного сетевого вызова**.
+
+Приоритет: `act > chat > read > undecided`.
+
+| Режим | Условие | Потолок исполнения | Спеки в промпте | request_tool_group | KB |
+|---|---|---|---|---|---|
+| `chat` | chat_p ≥ threshold (act_p < threshold) | `∅` — ни один вызов не исполняется | `∅` | не предлагается / `mode_denied` | пропускается (если нет вложения) |
+| `read` | есть routed-группы, act/chat не уверены | `enabled − *.action.*` | routed ∪ keyword | разрешён, спеки фильтруются по потолку | да |
+| `act` | act_p ≥ threshold | `None` (legacy) | routed ∪ keyword | разрешён | да |
+| `None` | JEV не уверен / fallback / routing off | `None` (legacy) | routed ∪ keyword | разрешён (recovery) | да |
+
+Fail-safe: неопределённый JEV → режим `None` = прежняя семантика (действия всё равно требуют draft+confirm — «молча» не выполняются). Tool-mode (`AI_JEV_ROUTING_MODE=tool`): пустой выбор JEV → `chat`; непустой → `None`.
+
+## 4. Серверные ограничения
+
+- `AiToolExecutionContext.run_allowed_tools` (`frozenset|None`) + `intent_mode` + `mode_denied_calls` — устанавливаются оркестратором, не из модели.
+- Проверка в `AiToolRegistry.execute_bounded` — единственная точка исполнения (покрывает прямые вызовы, autopagination, повторные раунды): отказ `tool_mode_denied` **до** занятия слота capacity, счётчик `mode_denied_calls`.
+- `_handle_tool_group_expansion`: `mode_denied` при пустом потолке; `missing_specs` фильтруются по потолку (READ не выдаёт action-спеки даже при расширении).
+- JEV **не** источник полномочий: потолок только сужает `enabled_tools`, никогда не расширяет. Tool-results/память/документы не участвуют в вопросах режима — повысить режим нельзя.
+
+## 5. Схема исполнения рана (после)
+
+```
+claim → tool_context(AG-2 enabled) → fast_path
+      → _fetch_routing_inputs (trigger+attachment+last5 msgs, ~1-2 idx запроса)
+      → _route_for_run: smalltalk? → JEV decide(groups+mode, 1 вызов) → chat/read/act
+      → _build_conversation_context(suppress_kb=chat&!attachment)
+      → specs = enabled ∩ routed (∩ keyword, кроме chat)
+      → LLM loop → _execute_tool_calls → execute_bounded[mode_denied?] → ответ
+      → result_json: routed_groups, intent_mode, mode_denied_calls
+```
+
+## 6-9. Замеры (синтетика, fake `jev_client.decide` — НЕ сетевая задержка)
+
+| Метрика | До | После |
+|---|---|---|
+| CPU `_route_tool_groups_jev` (весь путь, 2000 повт.) | ~42 мкс | **43 мкс** (+2 вопроса в том же вызове) |
+| Сетевых вызовов JEV на ран | 1 | 1 (cache hit — 0) |
+| Tool-specs в промпте при CHAT | все routed (тип. 5–50+) + request_tool_group | **0** |
+| KB retrieve+index при CHAT (без вложений) | выполнялся | **пропускается** |
+| Исполнение tool_id вне specs при CHAT | возможно (enabled∩права) | **запрещено** |
+| `.action.*` при READ | исполнялись | **запрещены** |
+
+Реальный выигрыш — сетевой/IO: меньше токенов промпта (0 спеков в CHAT → быстрее первый LLM-ответ), отсутствие KB-поиска. Точные ms/токены требуют прод-JEV+LLM — не измерялись (вне изолированной среды). Fake-decide замеры не выдаются за сетевую задержку.
+
+## 10-11. Тесты
+
+- `tests/test_ai_jev_intent_modes.py` — **35/35 PASS**: приоритеты режимов, сброс routed+other при chat, кэш с режимом, fallback, подавление keyword, `execute_bounded`-отказы, фильтрация спеков при расширении, матрица 19 размеченных сценариев (chat/read/act/ambiguous).
+- `tests/test_ai_jev_routing.py` — **51/51 PASS** (1 тест обновлён под +2 mode-вопроса).
+- Смежная регрессия — **285/285 PASS**: jev_routing, intent_modes, tool_routing, tool_permissions, prompt_injection (A3), run_conversation_serialization (A4), run_stability (A1), mail_draft_lifecycle.
+
+## 12. Сохранение A1/A3/A4
+
+A1: `execute_bounded` capacity/timeout/admission не тронуты — проверка стоит до слота. A3: draft_policy/grounding/intent не менялись; READ-потолок добавляет ограничение, ACT не снимает ни одной проверки A3. A4: сериализация run не затронута (миграций нет). Подтверждено общей регрессией выше.
+
+## 13. Остаточные ограничения
+
+1. `intent_mode` — решение JEV-модели: неверная классификация CHAT может скрыть нужный инструмент (смягчено: ошибка видна в `mode_denied_calls`/`intent_mode` в result_json; при неуверенности режим `None` сохраняет recovery).
+2. Suppress KB при chat+вложение не применяется (вложение может требовать KB) — консервативно.
+3. Tool-mode (`AI_JEV_ROUTING_MODE=tool`) не задаёт read/act — только chat при пустом выборе.
+4. Точность JEV на реальной модели не измерялась — матрица тестирует plumbing с фиксированными вероятностями, не качество модели.
+5. `_fetch_routing_inputs` — 2 лёгких запроса (trigger+attachments+5 сообщений) только при `AI_JEV_ROUTING=1`.
+
+## 14. Рекомендации дальше
+
+- Замерить p50/p95 TTFT и токены промпта на проде при включённом флаге (поля `intent_mode`/`mode_denied_calls` в result_json уже готовы).
+- При хорошей точности JEV расширить light-context: отложить memory/summary до post-JEV решения.
+- Рассмотреть read/act для tool-mode и калибровку `AI_JEV_ROUTING_THRESHOLD` по режимным вопросам.
+
+---
+
+## Цикл 2 — ревью исправлений (HEAD после `0d118110`)
+
+### Воспроизведённые дефекты и исправления
+
+| # | Дефект (подтверждён кодом) | Исправление |
+|---|---|---|
+| P1-1 | `".action." not in id` не ловил `helpdesk.request_draft`, `ai.files.*`, `kb.attachments.send`, `me.files.attach` | Централизованная `tool_effect()` в `tools/context.py`: read/artifact/delivery/action/meta/**unknown**. Аудит всех 100 инструментов реестра — тест гарантирует 0 unknown; новые инструменты по умолчанию `unknown` ≠ read |
+| P1-2 | `len(available_groups) <= 1` → `return None` без классификации режима | Ранний выход оставлен только для выключенного флага; при ≤1 группе group-вопросы пропускаются, но mode-вопросы всё равно идут в JEV тем же `decide()` |
+| P1-3 | CHAT оставлял побочные эффекты вне tool loop | `artifacts`/`kb_attachment_send` обнуляются на выходе `_execute_run`; draft-retry/reuse-блок пропускается при chat; `ai.request_tool_group` → `mode_denied` |
+| P2-1 | READ-модель видела action-спеки в промпте | `tool_specs` фильтруются по `run_allowed_tools` до промпта; расширение отвечает честным `no_allowed_specs` вместо `already_enabled` |
+| P2-2 | Первый LLM-вызов всегда брал схему с `tool_calls` | Новая `AI_CHAT_RESPONSE_SCHEMA_CHAT` (без tool_calls/artifacts/kb_attachment_send) на обоих call-site при `intent_mode=="chat"` |
+| P2-3 | `_fetch_routing_inputs` не видел вложение reply-цели | `has_attachment` теперь покрывает `reply_to_message_id`; добавлен `routing_inputs` lap в телеметрию |
+
+### Повторная проверка
+
+- `test_ai_jev_intent_modes.py`: **58/58 PASS** (+23: классификация эффектов, аудит реестра, 0/1/много групп, no_allowed_specs, read-отказы helpdesk/files).
+- `test_ai_tool_routing.py` + `test_ai_jev_routing.py`: **85/85 PASS** (1 тест обновлён: одиночная группа теперь вызывает JEV только для режима).
+- Полная смежная регрессия: **354/356 PASS** — единственные фейлы это `test_claude_transport_keeps_recipient_arguments_through_http_worker` (pre-existing, воспроизводится на `2fdb29bc`, вне A5) и `test_single_group_skips_jev_call` (обновлён под новую семантику P1-2, после фикса 143/143 зелёно).
+
+### Измерения цикла 2 (fake decide — CPU/объёмы, НЕ сетевая задержка)
+
+- routing-вызов CPU: ~43 мкс — не изменился (режимные вопросы в том же `decide()`).
+- Новый лап `routing_inputs` в `ai_chat.run.*` телеметрии для раздельного замера light-inputs.
+- **Блокер**: доступа к реальным JEV/LLM нет — p50/p95 сетевых замеров не выполнялись, результаты не выдуманы. Benchmark воспроизводим командой из цикла 1.
+
+### Остаточные ограничения
+
+- E2E-прогон через реальный оркестратор для всех 9 сценариев ревью покрыт unit-уровнем (ceiling/режимы/expansion), кроме части сценариев, требующих живой JEV — документировано как блокер.
+- READ-режим по-прежнему допускает `ai.files.*` только через режим ACT — «выгрузи в Excel» следует за `m_mode_act` или sticky-группами.
+
+---
+
+## Цикл 3 — fail-closed классификация, единый контроль эффектов, телеметрия
+
+### Исправления (все воспроизведены тестами)
+
+| # | Дефект | Исправление |
+|---|---|---|
+| P1-1 | `_TOOL_READ_PREFIXES` — широкие префиксы: `office.mail.delete` мог стать `read` | Точный allowlist `_TOOL_READ_TOOLS` (аудит всех 100 id реестра); неизвестный id под любым префиксом → `unknown` (fail-closed). Тест на каждый id + негативные prefix-кейсы |
+| P1-2 | READ допускал `artifacts`/`kb_attachment_send` из ответа модели (обход `execute_bounded`) | Единый post-processing контроль: `artifacts`/`kb_attachment_send` обнуляются для CHAT **и** READ в `_execute_run`; ACT сохраняет генерацию файлов |
+| P2-1 | tool-mode: `_JEV_ALWAYS_KEEP_TOOLS` маскировал пустой выбор | CHAT определяется по core-выбору до добавления resolver-tools; JEV-фейл → fallback без chat; кэш хранит режим |
+| P2-2 | `routing_inputs` писал `trigger_message_id` под именем `run_id` | Передаётся настоящий `run_id`; единая строка `ai_run_profile` (intent, routed, expanded, specs, allowed, used, mode_denied) — без двойного суммирования (уровень run, не сумма вложенных этапов) |
+
+### Тесты: 322/322 PASS
+
+- `test_ai_jev_intent_modes.py`: **72/72** (+14: fail-closed prefix-кейсы, аудит per-id, tool-mode core/resolver/timeout).
+- Полный focused suite (routing, permissions, A3 injection, A4 serialization, A1 stability, mail lifecycle): **322/322**.
+
+### Проверки, которые не удалось выполнить (честно)
+
+- Реальные p50/p95 JEV/LLM и e2e через живой оркестратор: нет доступа к прод-моделям — не выдумываем. Готовность измерений обеспечена `ai_run_profile` + laps (`routing_inputs`, `tool_routing`, `context`, `tools`, LLM-стадии) — воспроизводимый staging-прогон требует только синтетические данные и включённый флаг.
+- Доказано тестами: классификация fail-closed, mode-only при ≤1 группе, отказ исполнения action/artifact/delivery в READ, подавление keyword/expansion в CHAT, tool-mode chat. Доказано статически: стрип `artifacts`/`kb_attachment_send` в CHAT+READ (интеграционный прогон — residual).
+
+---
+
+## Цикл 4 (финал) — ложный CHAT при timeout, e2e через оркестратор, единый профиль
+
+### Исправления
+
+| # | Дефект | Исправление |
+|---|---|---|
+| 1 | `_route_tools_jev` — пустой fallback при JEV timeout → `intent_mode=CHAT` (ошибка маршрутизации выдавалась за намерение пользователя) | Mode-вопросы (`m_mode_chat`/`m_mode_act`) добавлены в tool-mode тем же `decide()` — 0 доп. сетевых вызовов. Режим: `act>chat`, `read` при выбранных core-инструментах, `None` при низких вероятностях. `_route_for_run` читает `intent_mode` из решения JEV — пустой выбор/пустой fallback сам по себе CHAT не даёт |
+| 2 | «Отсутствие выбранных инструментов» = «подтверждённый CHAT» | Пустой core + `chat_p >= threshold` → CHAT (без resolver-tools). Пустой core + неуверенность → `None` (recovery через `ai.request_tool_group` сохранён). JEV timeout/failure → fallback `intent_mode=None`, не CHAT |
+| 3 | CHAT мог завершиться без видимого ответа | Пустой `answer_markdown` в CHAT/READ → текстовый fallback «Не удалось сформировать ответ...» — без инструментов и файлов |
+| 4 | Разрозненные таймеры | `ai_run_profile` дополнен `suppress_kb`, `elapsed_ms` (wall-clock от начала рана), `tokens` из `final_usage`; рядом существующие laps `ai_chat.run.*` (queue_wait, routing_inputs, context, llm_first, tool rounds) — суммарный профиль без двойного учёта вложенных стадий |
+
+### Доказано e2e (`tests/test_e2e_ai_intent_modes.py`, 8/8 PASS — реальный AiChatService + queue + SQLite, фейк только JEV/LLM/внешние сервисы)
+
+| Сценарий | Результат |
+|---|---|
+| CHAT — обычный ответ | `intent_mode=chat`, 0 tool_traces, 0 files |
+| CHAT + hallucinated `directory.people.search` | вызов не дошёл до исполнения (0 спеков → цикл пропущен), 0 used_tools, ответ доставлен |
+| CHAT + model `artifacts` | `artifacts_count=0` |
+| CHAT + пустой `answer_markdown` | текстовый fallback доставлен пользователю |
+| READ (tool-mode) + search + artifacts | search исполнен, `artifacts_count=0`, `intent_mode=read` |
+| Tool-mode + JEV timeout | `intent_mode != chat` — fallback без ложного CHAT, run завершён ответом |
+| CHAT → READ → ACT → CHAT в одном диалоге | chat/read/act/chat; ACT создал ровно 1 карточку `office.mail.*` (через contacts.resolve → draft, проверки A3); CHAT-раны — 0 карточек |
+| Бот с тривиальным набором групп | mode-классификация работает, `intent_mode=chat` |
+
+### Метрики
+
+- Поля профиля (`intent_mode`, `mode_denied_calls`, `used_tools`, `artifacts_count`, cache hit/miss, elapsed_ms, tokens) коррелируются по настоящему `run_id` и проверены e2e.
+- **NOT MEASURED**: реальные сетевые p50/p95/токены — нет доступа к прод-JEV/LLM. Staging-прогон: `AI_JEV_ROUTING=1` + синтетические диалоги → парсинг `ai_chat.run.*` + `ai_run_profile` из логов worker'а.
+
+### Реестр проверок (честный статус)
+
+- **Воспроизведены тестами**: fail-closed `tool_effect`, пустой fallback ≠ CHAT, mode при 0/1/N группах, strip artifacts/kb_send в CHAT+READ, блокировка hallucinated calls, fallback пустого ответа, переходы режимов, draft через A3, tool-mode read/timeout.
+- **Статически**: потолок `execute_bounded` покрывает autopagination; `kb_attachment_send` strip симметричен artifacts.
+- **Не выполнено**: реальная точность JEV и сетевые p50/p95 (блокер — нет моделей); прочие e2e-ветви (`kb_attachment_send` с реальным кандидатом шаблона, `me.files.attach`) покрыты unit-уровнем.
+
+### Итоговый прогон (этот HEAD)
+
+- Полный suite (A1 stability, A3 injection, A4 serialization, routing, permissions, mail lifecycle, e2e draft reliability, e2e intent modes): **379/380 PASS, 1 FAIL** — только `test_claude_transport_keeps_recipient_arguments_through_http_worker` (pre-existing, воспроизводится на `2fdb29bc` до A5, вне scope).
+- `test_e2e_ai_intent_modes.py`: **8/8 PASS** через реальный оркестратор.
+- `test_ai_jev_intent_modes.py`: **74/74** (+2 новых: empty-core без уверенной метки ≠ chat; act-метка с resolver-tools).

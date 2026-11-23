@@ -285,10 +285,16 @@ class MfuDeviceStatusTool(AiTool):
         runtime: dict[str, Any] = {}
         if device_key:
             try:
+                from backend.ai_chat.timeouts import ai_mfu_snapshot_timeout_sec
                 from backend.services.mfu_monitor_service import mfu_runtime_monitor
                 loop = asyncio.new_event_loop()
                 try:
-                    runtime = loop.run_until_complete(mfu_runtime_monitor.get_snapshot(device_key))
+                    runtime = loop.run_until_complete(
+                        asyncio.wait_for(
+                            mfu_runtime_monitor.get_snapshot(device_key),
+                            timeout=ai_mfu_snapshot_timeout_sec(),
+                        )
+                    )
                 finally:
                     loop.close()
             except Exception:
