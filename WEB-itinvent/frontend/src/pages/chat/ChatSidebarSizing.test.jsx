@@ -100,18 +100,17 @@ describe('resizable chat sidebar', () => {
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Поиск чатов' })).toHaveFocus());
   });
 
-  it('keeps the Чаты/ИИ switcher in the collapsed rail header (Д2-5, п. 5)', () => {
+  it('keeps folder tabs in the collapsed rail — Telegram folders-sidebar', () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole('button', { name: 'Свернуть список чатов' }));
-    const chatsTab = screen.getByRole('tab', { name: 'Чаты' });
+    const personalTab = screen.getByRole('tab', { name: 'Личные' });
     const aiTab = screen.getByRole('tab', { name: 'ИИ' });
-    expect(chatsTab).toHaveAttribute('aria-selected', 'true');
+    expect(personalTab).toHaveAttribute('aria-selected', 'true');
     expect(aiTab).toHaveAttribute('aria-selected', 'false');
-    // Сегментный вид: у выбранной вкладки явный фон из workspace-токенов.
-    expect(chatsTab).toHaveStyle({ backgroundColor: 'var(--chat-workspace-tab-active-bg)' });
     fireEvent.click(aiTab);
     expect(aiTab).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('button', { name: /Новый AI-чат/ })).toBeInTheDocument();
+    expect(personalTab).toHaveAttribute('aria-selected', 'false');
+    expect(screen.getByRole('button', { name: 'Развернуть список чатов' })).toBeInTheDocument();
   });
 
   it('does not apply stored desktop collapse to mobile', () => {
@@ -122,9 +121,27 @@ describe('resizable chat sidebar', () => {
     expect(screen.queryByRole('button', { name: 'Развернуть список чатов' })).not.toBeInTheDocument();
   });
 
+  it('compact mode keeps avatar+name rows, hides preview and persists across remount', () => {
+    const first = render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Компактный список чатов' }));
+    // Имя видно в компакт-блоке; дубль внутри скрытого expanded-блока не в счёт.
+    const visibleNames = () => screen.getAllByText('Николаев Михаил Сергеевич')
+      .filter((node) => !node.closest('[hidden]'));
+    expect(visibleNames()).toHaveLength(1);
+    expect(screen.getByText('Вы: Проверить компоновку').closest('[hidden]')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Развернуть список чатов' }));
+    expect(screen.getByText('Вы: Проверить компоновку').closest('[hidden]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Компактный список чатов' }));
+    first.unmount();
+    render(<Harness />);
+    expect(visibleNames()).toHaveLength(1);
+    expect(screen.getByText('Вы: Проверить компоновку').closest('[hidden]')).not.toBeNull();
+  });
+
   it('survives unavailable and malformed storage', () => {
-    expect(readSidebarLayout({ getItem() { throw new Error('Blocked'); } })).toEqual({ width: 420, collapsed: false });
-    expect(readSidebarLayout({ getItem: () => 'null' })).toEqual({ width: 420, collapsed: false });
-    expect(readSidebarLayout({ getItem: () => '{"width":999,"collapsed":true}' })).toEqual({ width: 520, collapsed: true });
+    expect(readSidebarLayout({ getItem() { throw new Error('Blocked'); } })).toEqual({ width: 420, mode: 'expanded' });
+    expect(readSidebarLayout({ getItem: () => 'null' })).toEqual({ width: 420, mode: 'expanded' });
+    expect(readSidebarLayout({ getItem: () => '{"width":999,"collapsed":true}' })).toEqual({ width: 520, mode: 'collapsed' });
+    expect(readSidebarLayout({ getItem: () => '{"width":300,"mode":"compact"}' })).toEqual({ width: 300, mode: 'compact' });
   });
 });

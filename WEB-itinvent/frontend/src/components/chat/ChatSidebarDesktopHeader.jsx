@@ -1,14 +1,13 @@
 import { Badge } from '@mui/material';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
-import CreateRoundedIcon from '@mui/icons-material/CreateRounded';
-import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
-import NotificationsOutlinedIcon from '@mui/icons-material/NotificationsOutlined';
 import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
-import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
-import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
-import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
+import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
+import NotificationsOutlinedIcon from '@mui/icons-material/NotificationsOutlined';
+import ViewCompactAltRoundedIcon from '@mui/icons-material/ViewCompactAltRounded';
+import OpenInFullRoundedIcon from '@mui/icons-material/OpenInFullRounded';
 import { SidebarActionButton } from './ChatSidebarRows';
 import { useChatSidebarSizing } from './ChatSidebarSizingContext';
 import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
@@ -64,55 +63,50 @@ function WorkspaceTabs({ workspace, onWorkspaceChange, aiUnreadCount, chatsUnrea
   );
 }
 
-// Д2-5 (п. 5): тот же переключатель в свёрнутой узкой полосе списка —
-// компактные иконки с бейджами, чтобы раздел не исчезал при узком списке.
-function CollapsedWorkspaceTabs({ workspace, onWorkspaceChange, aiUnreadCount, chatsUnreadCount }) {
+// Свёрнутая лента папок — как folders-sidebar в Telegram Web K
+// (foldersSidebarContent): вертикальный ряд иконок-вкладок размером с
+// action-кнопку, активная подсвечена, бейдж непрочитанных у каждой,
+// скролл без скроллбара при переполнении.
+function CollapsedFolderRail({ items }) {
   return (
     <div
       role="tablist"
-      aria-label="Разделы чата"
-      className="col-span-2 mx-1 mb-1 flex rounded-[10px] bg-[var(--chat-filter-strip-bg)] p-0.5"
+      aria-label="Папки чатов"
+      className="chat-scroll-hidden flex max-h-[38vh] flex-col items-center gap-1 overflow-y-auto py-0.5"
     >
-      {[
-        ['chats', 'Чаты', <ForumOutlinedIcon key="icon" sx={{ fontSize: 18 }} />],
-        ['ai', 'ИИ', <SmartToyOutlinedIcon key="icon" sx={{ fontSize: 18 }} />],
-      ].map(([key, label, icon]) => {
-        const tabUnread = Math.max(0, Number(key === 'ai' ? aiUnreadCount : chatsUnreadCount) || 0);
-        const selected = workspace === key;
-        return (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            title={label}
-            aria-label={label}
-            aria-selected={selected}
-            onClick={() => onWorkspaceChange(key)}
-            className="relative flex min-h-8 min-w-0 flex-1 items-center justify-center rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--chat-focus-ring)]"
-            style={{
-              backgroundColor: selected ? 'var(--chat-workspace-tab-active-bg)' : 'transparent',
-              color: selected ? 'var(--chat-workspace-tab-active-text)' : 'var(--chat-text-secondary)',
-            }}
-          >
-            {icon}
-            {tabUnread > 0 ? (
-              <span
-                data-chat-folder-unread-badge="true"
-                aria-label={`Непрочитанных сообщений: ${tabUnread}`}
-                className="absolute -top-0.5 right-0 inline-flex min-w-[14px] items-center justify-center rounded-full px-0.5 align-middle text-[9px] font-bold leading-none"
-                style={{
-                  minWidth: 14,
-                  height: 14,
-                  backgroundColor: selected ? 'var(--chat-workspace-tab-active-badge-bg)' : 'var(--chat-unread-bg)',
-                  color: selected ? 'var(--chat-workspace-tab-active-badge-text)' : 'var(--chat-unread-text)',
-                }}
-              >
-                {tabUnread > 99 ? '99+' : tabUnread}
-              </span>
-            ) : null}
-          </button>
-        );
-      })}
+      {items.map((item) => (
+        <button
+          key={item.key}
+          type="button"
+          role="tab"
+          title={item.label}
+          aria-label={item.label}
+          aria-selected={item.active}
+          onClick={item.onClick}
+          className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--chat-focus-ring)]"
+          style={{
+            backgroundColor: item.active ? 'var(--chat-folder-tab-active-bg)' : 'var(--chat-header-action-bg)',
+            color: item.active ? 'var(--chat-folder-tab-active-text)' : 'var(--chat-sidebar-action-text)',
+          }}
+        >
+          {item.icon}
+          {item.unread > 0 ? (
+            <span
+              data-chat-folder-unread-badge="true"
+              aria-label={`Непрочитанных сообщений: ${item.unread}`}
+              className="absolute -top-0.5 right-0 inline-flex min-w-[14px] items-center justify-center rounded-full px-0.5 align-middle text-[9px] font-bold leading-none"
+              style={{
+                minWidth: 14,
+                height: 14,
+                backgroundColor: item.active ? 'var(--chat-folder-tab-active-badge-bg)' : 'var(--chat-unread-bg)',
+                color: item.active ? 'var(--chat-folder-tab-active-badge-text)' : 'var(--chat-unread-text)',
+              }}
+            >
+              {item.unread > 99 ? '99+' : item.unread}
+            </span>
+          ) : null}
+        </button>
+      ))}
     </div>
   );
 }
@@ -129,8 +123,10 @@ export default function ChatSidebarDesktopHeader({
   aiUnreadCount = 0,
   chatsUnreadCount = 0,
   search = null,
+  railFolders = [],
+  onOpenFolderManager,
 }) {
-  const { collapsed, setCollapsed } = useChatSidebarSizing();
+  const { collapsed, compact, setCollapsed, setMode } = useChatSidebarSizing();
   const shell = useMainLayoutShell();
   const shellActions = shell.headerMode === 'hidden';
   const menuAction = shellActions && !shell.sidebarPinned;
@@ -140,23 +136,21 @@ export default function ChatSidebarDesktopHeader({
   );
 
   if (collapsed) {
+    // Рейл как folders-sidebar у Telegram: сверху меню и развернуть, затем
+    // поиск, далее вертикальная лента иконок папок с бейджами, снизу
+    // управление папками (слот «equalizer») и уведомления. Новый чат —
+    // плавающий FAB поверх аватарок, как в Telegram.
     return (
-      <div data-testid="chat-sidebar-desktop-header" className="grid grid-cols-2 justify-items-center py-2">
+      <div data-testid="chat-sidebar-desktop-header" className="flex flex-col items-center gap-1 py-2">
         {menuAction ? action('Открыть главное меню', shell.openDrawer, <MenuRoundedIcon fontSize="small" />) : null}
-        {action('Разделы и папки чатов', expand, <FolderOutlinedIcon fontSize="small" />)}
-        {showAiSection ? (
-          <CollapsedWorkspaceTabs
-            workspace={workspace}
-            onWorkspaceChange={onWorkspaceChange}
-            aiUnreadCount={aiUnreadCount}
-            chatsUnreadCount={chatsUnreadCount}
-          />
-        ) : null}
+        {action('Развернуть список чатов', expand, <ChevronRightRoundedIcon fontSize="small" />)}
         {action('Поиск чатов', onSearch, <SearchRoundedIcon fontSize="small" />)}
-        {action(workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат', onCreate, <CreateRoundedIcon fontSize="small" />, unavailable)}
+        {railFolders.length > 0 ? <CollapsedFolderRail items={railFolders} /> : null}
+        {typeof onOpenFolderManager === 'function'
+          ? action('Управление папками', () => onOpenFolderManager(), <SettingsOutlinedIcon fontSize="small" />)
+          : null}
         {shellActions && shell.showNotificationsButton ? action('Уведомления', shell.openNotifications,
           <Badge badgeContent={shell.notificationsBadgeValue} color="error" max={99}><NotificationsOutlinedIcon fontSize="small" /></Badge>) : null}
-        {setCollapsed ? action('Развернуть список чатов', expand, <ChevronRightRoundedIcon fontSize="small" />) : null}
       </div>
     );
   }
@@ -206,8 +200,10 @@ export default function ChatSidebarDesktopHeader({
             ? <span className="min-w-0 flex-1 font-semibold text-[color:var(--chat-text-strong)]">Чаты</span>
             : <span className="min-w-0 flex-1" />
         )}
-        {shellActions && shell.showNotificationsButton ? action('Уведомления', shell.openNotifications,
+        {shellActions && shell.showNotificationsButton && !compact ? action('Уведомления', shell.openNotifications,
           <Badge badgeContent={shell.notificationsBadgeValue} color="error" max={99}><NotificationsOutlinedIcon fontSize="small" /></Badge>) : null}
+        {setMode && compact ? action('Развернуть список чатов', () => setMode('expanded'), <OpenInFullRoundedIcon fontSize="small" />) : null}
+        {setMode && !compact ? action('Компактный список чатов', () => setMode('compact'), <ViewCompactAltRoundedIcon fontSize="small" />) : null}
         {setCollapsed ? action('Свернуть список чатов', onCollapse, <ChevronLeftRoundedIcon fontSize="small" />) : null}
       </div>
       {showAiSection ? (

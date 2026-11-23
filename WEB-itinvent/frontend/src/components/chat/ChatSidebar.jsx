@@ -19,6 +19,9 @@ import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded';
 import CreateRoundedIcon from '@mui/icons-material/CreateRounded';
+import GroupsRoundedIcon from '@mui/icons-material/GroupsRounded';
+import PersonOutlineRoundedIcon from '@mui/icons-material/PersonOutlineRounded';
+import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import ExitToAppRoundedIcon from '@mui/icons-material/ExitToAppRounded';
@@ -40,7 +43,7 @@ import ChatGroupCreateFlow from './ChatGroupCreateFlow';
 import ChatNewMessagePicker from './ChatNewMessagePicker';
 import ChatSidebarDesktopHeader from './ChatSidebarDesktopHeader';
 import { useChatSidebarSizing } from './ChatSidebarSizingContext';
-import { getConversationFolderIds } from './chatFolderUtils';
+import { buildChatFolderTabList, getConversationFolderIds } from './chatFolderUtils';
 import { GENERAL_AI_OPENING_ID, groupAiSidebarRowsByDate } from './chatAiSidebarModel';
 import { useChatFolderSwipe } from './useChatFolderSwipe';
 import { useChatSidebarSearchCollapse } from './useChatSidebarSearchCollapse';
@@ -330,6 +333,67 @@ function ChatSidebar({
       onPrefetchConversation?.(conversationId);
     }
   }, [onPrefetchConversation, searchChats]);
+  // Telegram-style results: a person whose direct chat is already listed under
+  // «Чаты» must not be duplicated under «Люди». People without a chat stay —
+  // clicking them starts a new direct conversation.
+  const visibleSearchPeople = useMemo(() => (
+    (Array.isArray(searchPeople) ? searchPeople : []).filter((person) => (
+      !resolveDirectConversationId(person?.id, { searchChats })
+    ))
+  ), [searchPeople, searchChats]);
+  // Свёрнутый рейл как folders-sidebar в Telegram Web K: вертикальная лента
+  // иконок папок с бейджами (Личные/Беседы/Задачи/кастомные/ИИ/Архив), а не
+  // стопка кнопок действий. Клик переключает папку без разворачивания.
+  const collapsedRailFolders = useMemo(() => {
+    const activateChats = () => {
+      if (workspace !== 'ai') return;
+      setWorkspace('chats');
+      setAiArchiveOpen(false);
+    };
+    const iconFor = (key) => {
+      if (key === 'personal') return <PersonOutlineRoundedIcon fontSize="small" />;
+      if (key === 'groups') return <GroupsRoundedIcon fontSize="small" />;
+      if (key === 'tasks') return <TaskAltRoundedIcon fontSize="small" />;
+      return <FolderOutlinedIcon fontSize="small" />;
+    };
+    const items = buildChatFolderTabList(customFolders).map((tab) => ({
+      key: tab.key,
+      label: tab.label,
+      icon: iconFor(tab.key),
+      unread: Math.max(0, Number(folderUnreadCounts?.[tab.key]) || 0),
+      active: workspace !== 'ai' && String(activeFolderKey) === tab.key,
+      onClick: () => {
+        activateChats();
+        onActiveFolderChange?.(tab.key);
+      },
+    }));
+    if (showAiSection) {
+      items.push({
+        key: 'ai',
+        label: 'ИИ',
+        icon: <SmartToyOutlinedIcon fontSize="small" />,
+        unread: Math.max(0, Number(folderUnreadCounts?.ai) || 0),
+        active: workspace === 'ai' && !aiArchiveOpen,
+        onClick: () => {
+          setWorkspace('ai');
+          setAiArchiveOpen(false);
+        },
+      });
+    }
+    items.push({
+      key: 'archived',
+      label: 'Архив',
+      icon: <ArchiveOutlinedIcon fontSize="small" />,
+      unread: workspace === 'ai' ? 0 : Math.max(0, Number(folderUnreadCounts?.archived) || 0),
+      active: workspace === 'ai' ? aiArchiveOpen : String(activeFolderKey) === 'archived',
+      onClick: () => {
+        if (workspace === 'ai') setAiArchiveOpen((current) => !current);
+        else onOpenArchive?.();
+      },
+    });
+    return items;
+  }, [customFolders, folderUnreadCounts, workspace, activeFolderKey, showAiSection,
+    aiArchiveOpen, setWorkspace, onActiveFolderChange, onOpenArchive]);
   const handleSidebarScrollRef = useCallback((node) => {
     setScrollElement(node);
     setSidebarListScrollElement(node);
@@ -586,7 +650,8 @@ function ChatSidebar({
         <ChatSidebarDesktopHeader ui={ui} workspace={workspace} showAiSection={showAiSection}
           onWorkspaceChange={(key) => { setWorkspace(key); if (key === 'ai') setAiArchiveOpen(false); }}
           onCreate={handleCreateAction} unavailable={chatUnavailable} onSearch={handleExpandSearch}
-          aiUnreadCount={Number(folderUnreadCounts?.ai || 0)} chatsUnreadCount={chatsUnreadCount} />
+          aiUnreadCount={Number(folderUnreadCounts?.ai || 0)} chatsUnreadCount={chatsUnreadCount}
+          railFolders={collapsedRailFolders} onOpenFolderManager={onOpenFolderManager} />
       ) : null}
       <div
         hidden={collapsed}
@@ -1040,11 +1105,11 @@ function ChatSidebar({
               <SidebarLoadingSkeleton ui={ui} compactMobile={compactMobile} />
             ) : null}
 
-            {!searchingSidebar && searchPeople.length > 0 ? (
+            {!searchingSidebar && visibleSearchPeople.length > 0 ? (
               <>
                 <SearchSectionHeader ui={ui} compactMobile={compactMobile}>Люди</SearchSectionHeader>
                 <div>
-                  {searchPeople.map((person) => (
+                  {visibleSearchPeople.map((person) => (
                     <PersonSearchRow
                       key={`person-${person.id}`}
                       person={person}
@@ -1394,7 +1459,7 @@ function ChatSidebar({
         </MenuItem>
       </Menu>
 
-      {composeFab && !collapsed && !composeActive ? (
+      {composeFab && !composeActive ? (
         <button
           type="button"
           data-testid="chat-compose-fab"
@@ -1405,7 +1470,7 @@ function ChatSidebar({
           className={joinClasses(
             'absolute z-10 inline-flex items-center justify-center rounded-full transition duration-150 hover:scale-[1.04] active:scale-[0.96] disabled:opacity-50',
             'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--chat-focus-ring)]',
-            compactMobile ? 'bottom-4 right-4' : 'bottom-5 right-5',
+            compactMobile || collapsed ? 'bottom-4 right-4' : 'bottom-5 right-5',
           )}
           style={{
             width: 44,
