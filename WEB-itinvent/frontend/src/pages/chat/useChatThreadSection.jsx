@@ -3,6 +3,7 @@ import Box from '@mui/material/Box';
 
 import ChatThread from '../../components/chat/ChatThread';
 import ChatEmojiDock from '../../components/chat/ChatEmojiDock';
+import { ChatEmojiUiContext } from '../../components/chat/ChatEmojiUiContext';
 import useChatComposerTextBridge from '../../components/chat/useChatComposerTextBridge';
 import ChatPageRightPanelContent from './ChatPageRightPanelContent';
 import buildChatPagePanesBags from './buildChatPagePanesBags';
@@ -164,6 +165,34 @@ export default function useChatThreadSection(ctx) {
     onComposerSelectionSync: syncComposerSelection,
   });
 
+  // Phase 2: emoji-состояние выносится в контекст — переключение панели
+  // обновляет только консьюмеров (композер, поповер, док), а ChatThread
+  // держит memo и не перерисовывает ленту сообщений.
+  const emojiUiValue = useMemo(
+    () => ({
+      emojiPickerOpen: !isMobile && emojiPickerOpen,
+      mobileEmojiPickerOpen: Boolean(isMobile && emojiPickerOpen),
+      emojiPanelMode,
+      onOpenEmojiPicker: handleOpenEmojiPicker,
+      onCloseEmojiPicker: handleCloseEmojiPicker,
+      onEmojiHoverStart: handleEmojiHoverStart,
+      onEmojiHoverEnd: handleEmojiHoverEnd,
+      onInsertEmoji: insertEmojiAtSelection,
+      onSendSticker: handleSendSticker,
+    }),
+    [
+      isMobile,
+      emojiPickerOpen,
+      emojiPanelMode,
+      handleOpenEmojiPicker,
+      handleCloseEmojiPicker,
+      handleEmojiHoverStart,
+      handleEmojiHoverEnd,
+      insertEmojiAtSelection,
+      handleSendSticker,
+    ],
+  );
+
   const threadPane = useMemo(
     () => (
       <Box
@@ -176,6 +205,7 @@ export default function useChatThreadSection(ctx) {
           position: 'relative',
         }}
       >
+      <ChatEmojiUiContext.Provider value={emojiUiValue}>
       <ChatThread
         theme={theme}
         ui={ui}
@@ -233,11 +263,6 @@ export default function useChatThreadSection(ctx) {
         onOpenComposerMenu={handleOpenComposerMenu}
         composerRef={composerRef}
         composerTextBridge={composerTextBridge}
-        onOpenEmojiPicker={handleOpenEmojiPicker}
-        onCloseEmojiPicker={handleCloseEmojiPicker}
-        onEmojiHoverStart={handleEmojiHoverStart}
-        onEmojiHoverEnd={handleEmojiHoverEnd}
-        emojiPanelMode={emojiPanelMode}
         onComposerFocusChange={handleComposerFocusChange}
         onSendMessage={handleComposerSend}
         onComposerPaste={handleComposerPaste}
@@ -279,9 +304,6 @@ export default function useChatThreadSection(ctx) {
         onPollVote={handlePollVote}
         onScrollToMessage={scrollToMessage}
         currentUserId={user?.id}
-        mobileEmojiPickerOpen={isMobile && emojiPickerOpen}
-        desktopEmojiPickerOpen={!isMobile && emojiPickerOpen}
-        onInsertEmoji={insertEmojiAtSelection}
         onSendSticker={handleSendSticker}
         voiceRecording={voiceRecording}
         voiceRecordingDuration={voiceRecordingDuration}
@@ -302,6 +324,7 @@ export default function useChatThreadSection(ctx) {
           onClose={handleCloseEmojiPicker}
         />
       ) : null}
+      </ChatEmojiUiContext.Provider>
       </Box>
     ),
     [
@@ -331,8 +354,7 @@ export default function useChatThreadSection(ctx) {
       effectiveLastReadMessageId,
       emojiDockEverOpened,
       emojiDockOpen,
-      emojiPickerOpen,
-      emojiPanelMode,
+      emojiUiValue,
       fileCaption,
       fileDialogOpen,
       fileDragActive,
@@ -345,10 +367,7 @@ export default function useChatThreadSection(ctx) {
       handleComposerPaste,
       handleComposerSend,
       handleCloseEmojiPicker,
-      handleEmojiHoverStart,
-      handleEmojiHoverEnd,
       handleOpenComposerMenu,
-      handleOpenEmojiPicker,
       handleOpenInfo,
       handleOpenMenu,
       handleOpenPinnedMessage,

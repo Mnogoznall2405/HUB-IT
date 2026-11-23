@@ -9,6 +9,7 @@ import {
 } from '@mui/material';
 import TextareaAutosize from '@mui/material/TextareaAutosize';
 import useAiAgentAccess from './useAiAgentAccess';
+import { useChatEmojiUi } from './ChatEmojiUiContext';
 import { ChatComposerScheduling, ScheduledMessagesBar } from './ChatScheduledMessages';
 import { alpha } from '@mui/material/styles';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
@@ -300,10 +301,10 @@ const ChatComposer = memo(function ChatComposer({
   onMessageTextChange,
   onComposerKeyDown,
   onComposerSelectionSync,
-  onOpenEmojiPicker,
-  onCloseEmojiPicker,
-  onEmojiHoverStart,
-  onEmojiHoverEnd,
+  onOpenEmojiPicker: onOpenEmojiPickerProp,
+  onCloseEmojiPicker: onCloseEmojiPickerProp,
+  onEmojiHoverStart: onEmojiHoverStartProp,
+  onEmojiHoverEnd: onEmojiHoverEndProp,
   onSendMessage,
   onComposerPaste,
   onComposerDrop,
@@ -314,11 +315,11 @@ const ChatComposer = memo(function ChatComposer({
   onSearchMentionPeople,
   composerDockRef,
   keyboardInset = 0,
-  mobileEmojiPickerOpen = false,
-  emojiPickerOpen = false,
-  emojiPanelMode = 'popover',
-  onInsertEmoji,
-  onSendSticker,
+  mobileEmojiPickerOpen: mobileEmojiPickerOpenProp = false,
+  emojiPickerOpen: emojiPickerOpenProp = false,
+  emojiPanelMode: emojiPanelModeProp = 'popover',
+  onInsertEmoji: onInsertEmojiProp,
+  onSendSticker: onSendStickerProp,
   currentUserId = null,
   voiceRecording = false,
   voiceRecordingDuration = 0,
@@ -332,6 +333,19 @@ const ChatComposer = memo(function ChatComposer({
   scheduled = null,
 }) {
   const agentAccess = useAiAgentAccess(activeConversationId, isAiConversation, currentUserId);
+  // Phase 2: emoji-состояние приходит из ChatEmojiUiContext, чтобы его
+  // переключение не перерисовывало ChatThread. Пропсы оставлены как fallback
+  // для изолированного рендера композера (тесты, сторонние потребители).
+  const emojiUi = useChatEmojiUi();
+  const mobileEmojiPickerOpen = emojiUi?.mobileEmojiPickerOpen ?? mobileEmojiPickerOpenProp;
+  const emojiPickerOpen = emojiUi?.emojiPickerOpen ?? emojiPickerOpenProp;
+  const emojiPanelMode = emojiUi?.emojiPanelMode ?? emojiPanelModeProp;
+  const onOpenEmojiPicker = emojiUi?.onOpenEmojiPicker ?? onOpenEmojiPickerProp;
+  const onCloseEmojiPicker = emojiUi?.onCloseEmojiPicker ?? onCloseEmojiPickerProp;
+  const onEmojiHoverStart = emojiUi?.onEmojiHoverStart ?? onEmojiHoverStartProp;
+  const onEmojiHoverEnd = emojiUi?.onEmojiHoverEnd ?? onEmojiHoverEndProp;
+  const onInsertEmoji = emojiUi?.onInsertEmoji ?? onInsertEmojiProp;
+  const onSendSticker = emojiUi?.onSendSticker ?? onSendStickerProp;
   // "Send later": right click (desktop) or long press (touch) on the send button.
   const [scheduleMenuAnchor, setScheduleMenuAnchor] = useState(null);
   const [scheduledListOpen, setScheduledListOpen] = useState(false);
