@@ -4,6 +4,9 @@ param(
     [string]$CanonicalHost = 'hubit.zsgp.ru',
     [switch]$Mirror,
     [switch]$FreshInstall,
+    # Optional .env to inject into ProjectRoot for the build when it is missing
+    # there (e.g. building from a git worktree, where .env is not checked out).
+    [string]$EnvFile,
     # Copy-only deploy: publish the already-built dist to IIS without npm install/build.
     [switch]$CopyOnly
 )
@@ -137,6 +140,24 @@ if ($CopyOnly) {
     Write-Host "CopyOnly: skip npm install/build, publishing existing dist"
 } else {
     Write-Host "Build frontend in: $frontendPath"
+    # vite.config.js resolves envDir to the repo root (frontend/../..): every
+    # VITE_* feature flag (chat, mail, ...) silently compiles to "off" when
+    # .env is absent there. Guard so a build from a worktree or a foreign
+    # path cannot silently publish a bundle with all modules disabled.
+    $rootEnvPath = Join-Path $ProjectRoot ".env"
+    $envFileProvisioned = $false
+    if (-not (Test-Path $rootEnvPath)) {
+        if ($EnvFile) {
+            if (-not (Test-Path $EnvFile)) {
+                throw "EnvFile not found: $EnvFile"
+            }
+            Copy-Item -LiteralPath $EnvFile -Destination $rootEnvPath
+            $envFileProvisioned = $true
+            Write-Host "EnvFile provisioned at $rootEnvPath for this build"
+        } else {
+            throw "Vite env file not found: $rootEnvPath. The frontend reads VITE_* feature flags (VITE_CHAT_ENABLED, VITE_MAIL_MODULE_ENABLED, ...) from the repo-root .env at build time; building without it silently disables those modules in the published bundle. Pass -EnvFile <path-to-.env> or restore .env in the project root."
+        }
+    }
     $previousCanonicalHost = $env:VITE_CANONICAL_HOST
     $hadCanonicalHost = Test-Path 'Env:VITE_CANONICAL_HOST'
     $env:VITE_CANONICAL_HOST = $CanonicalHost
@@ -147,6 +168,9 @@ if ($CopyOnly) {
     }
     finally {
         Pop-Location
+        if ($envFileProvisioned) {
+            Remove-Item -LiteralPath $rootEnvPath -Force -ErrorAction SilentlyContinue
+        }
         if ($hadCanonicalHost) {
             $env:VITE_CANONICAL_HOST = $previousCanonicalHost
         } else {

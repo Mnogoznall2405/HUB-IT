@@ -863,4 +863,28 @@ describe('ChatSidebar', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it('does not duplicate a person under Люди when their direct chat is already in results', () => {
+    renderWithTheme(buildProps({
+      // Non-matching query keeps highlightQuery from splitting names into spans.
+      sidebarQuery: 'zzz',
+      sidebarSearchActive: true,
+      searchingSidebar: false,
+      searchPeople: [
+        { id: 2, full_name: 'Никулин Александр Сергеевич' },
+        { id: 3, full_name: 'Николаев Пётр' },
+      ],
+      searchChats: [{
+        ...baseConversation,
+        id: 'conv-direct-2',
+        kind: 'direct',
+        title: 'Никулин Александр Сергеевич',
+        direct_peer: { id: 2, full_name: 'Никулин Александр Сергеевич' },
+      }],
+    }));
+
+    expect(screen.getAllByText('Никулин Александр Сергеевич')).toHaveLength(1);
+    expect(screen.getByText('Николаев Пётр')).toBeInTheDocument();
+    expect(screen.getByText('Люди')).toBeInTheDocument();
+  });
 });

@@ -11,6 +11,7 @@ export const CHAT_TELEGRAM_SIDEBAR_LAYOUT = Object.freeze({
   minWidth: 260,
   maxWidth: 520,
   railWidth: 72,
+  compactWidth: 176,
   threadMinWidth: 360,
   rowHeight: 58,
   avatarSize: 42,
