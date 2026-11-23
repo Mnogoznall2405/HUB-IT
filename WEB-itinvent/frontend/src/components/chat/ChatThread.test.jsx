@@ -23,6 +23,9 @@ vi.mock('../../api/chatConfig', () => ({ getChatConfigCached: () => Promise.reso
 
 vi.mock('../../api/chatStickers', () => ({
   chatStickersAPI: { listPacks: vi.fn(async () => ({ items: [] })) },
+  peekStickerPacksCache: vi.fn(() => null),
+  primeStickerPacksCache: vi.fn((scope, payload) => payload),
+  invalidateStickerPacksCache: vi.fn(),
 }));
 
 vi.mock('./useAiAgentAccess', () => ({
@@ -2246,6 +2249,7 @@ describe('ChatBubble', () => {
 describe('ChatThread composer', () => {
   it('opens the deferred picker as a popover above the composer without squeezing the thread', async () => {
     const onCloseEmojiPicker = vi.fn();
+    const onOpenEmojiPicker = vi.fn();
 
     renderWithTheme(
       <ChatThread
@@ -2254,6 +2258,7 @@ describe('ChatThread composer', () => {
           compactMobile: false,
           desktopEmojiPickerOpen: true,
           onCloseEmojiPicker,
+          onOpenEmojiPicker,
         })}
       />,
     );
@@ -2269,19 +2274,21 @@ describe('ChatThread composer', () => {
     expect(within(panel).getByRole('tab', { name: 'Эмодзи' })).toBeInTheDocument();
     expect(within(panel).getByRole('tab', { name: 'Стикеры' })).toBeInTheDocument();
     expect(within(panel).queryByRole('tab', { name: 'GIF' })).not.toBeInTheDocument();
+    // Поповер открыт → клик по кнопке смайла закрепляет панель (pinned),
+    // а не закрывает её — Telegram Desktop semantics.
     expect(screen.getByTestId('chat-composer-emoji-button')).toHaveAccessibleName(
-      'Закрыть панель эмодзи',
+      'Закрепить панель эмодзи',
     );
     // Поповер позиционируется абсолютно над полем ввода: у корня треда
     // не появляется резервный отступ — лента не сжимается.
     expect(screen.getByTestId('chat-thread-root').style.paddingInlineEnd).toBe('');
 
     fireEvent.click(screen.getByTestId('chat-composer-emoji-button'));
-    expect(onCloseEmojiPicker).toHaveBeenCalledTimes(1);
+    expect(onOpenEmojiPicker).toHaveBeenCalledTimes(1);
     fireEvent.click(within(panel).getByRole('button', { name: 'Закрыть панель эмодзи' }));
-    expect(onCloseEmojiPicker).toHaveBeenCalledTimes(2);
+    expect(onCloseEmojiPicker).toHaveBeenCalledTimes(1);
     fireEvent.keyDown(panel, { key: 'Escape' });
-    expect(onCloseEmojiPicker).toHaveBeenCalledTimes(3);
+    expect(onCloseEmojiPicker).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the emoji popover anchored to the composer at any thread width', () => {

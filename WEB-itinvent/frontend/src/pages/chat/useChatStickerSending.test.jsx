@@ -195,4 +195,67 @@ describe('useChatStickerSending', () => {
     expect(await firstPromise).toBe(true);
     expect(await secondPromise).toBe(true);
   });
+
+  it('releases the sticker lock when history preparation throws — retry succeeds', async () => {
+    const props = buildProps({
+      replyMessage: null,
+      ensureLatestThreadWindow: vi.fn(() => Promise.reject(new Error('history prep failed'))),
+    });
+    const { result } = renderHook(() => useChatStickerSending(props));
+
+    let first;
+    await act(async () => {
+      first = await result.current({ id: 'sticker-1' });
+    });
+    expect(first).toBe(false);
+    expect(props.notifyApiError).toHaveBeenCalled();
+    expect(chatStickersAPI.sendSticker).not.toHaveBeenCalled();
+
+    // Блокировка снята: тот же стикер можно отправить повторно.
+    props.ensureLatestThreadWindow.mockResolvedValue(undefined);
+    chatStickersAPI.sendSticker.mockResolvedValue({ id: 'message-1' });
+    let second;
+    await act(async () => {
+      second = await result.current({ id: 'sticker-1' });
+    });
+    expect(second).toBe(true);
+    expect(chatStickersAPI.sendSticker).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not block the same sticker in another conversation while one is in flight', async () => {
+    const props = buildProps({ replyMessage: null });
+    const resolvers = [];
+    chatStickersAPI.sendSticker.mockImplementation(
+      () => new Promise((resolve) => { resolvers.push(resolve); }),
+    );
+    const { result, rerender } = renderHook(
+      ({ conversationId }) => useChatStickerSending({
+        ...props,
+        activeConversationId: conversationId,
+      }),
+      { initialProps: { conversationId: 'conversation-1' } },
+    );
+
+    let firstPromise;
+    await act(async () => {
+      firstPromise = result.current({ id: 'sticker-1' });
+    });
+    // Тот же стикер в другой беседе — отдельный лок, отправка идёт.
+    rerender({ conversationId: 'conversation-2' });
+    let secondPromise;
+    await act(async () => {
+      secondPromise = result.current({ id: 'sticker-1' });
+    });
+
+    expect(chatStickersAPI.sendSticker).toHaveBeenCalledTimes(2);
+    expect(chatStickersAPI.sendSticker.mock.calls[0][0]).toBe('conversation-1');
+    expect(chatStickersAPI.sendSticker.mock.calls[1][0]).toBe('conversation-2');
+
+    await act(async () => {
+      resolvers.forEach((resolve, index) => resolve({ id: `message-${index}` }));
+      await Promise.all([firstPromise, secondPromise]);
+    });
+    expect(await firstPromise).toBe(true);
+    expect(await secondPromise).toBe(true);
+  });
 });

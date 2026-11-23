@@ -63,13 +63,14 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   currentUserId = null,
 }) {
   const recentStorageKey = useMemo(() => buildRecentStorageKey(currentUserId), [currentUserId]);
+  const cacheScope = useMemo(() => ({ userId: currentUserId }), [currentUserId]);
   const [packs, setPacks] = useState(() => {
-    const cached = peekStickerPacksCache();
+    const cached = peekStickerPacksCache(cacheScope);
     return Array.isArray(cached?.items) ? cached.items : [];
   });
   const [activeSectionId, setActiveSectionId] = useState('recent');
   const [recentStickerIds, setRecentStickerIds] = useState(() => readRecentStickerIds(recentStorageKey));
-  const [loading, setLoading] = useState(() => !Array.isArray(peekStickerPacksCache()?.items));
+  const [loading, setLoading] = useState(() => !Array.isArray(peekStickerPacksCache(cacheScope)?.items));
   const [loadError, setLoadError] = useState('');
   const [importOpen, setImportOpen] = useState(false);
   const [source, setSource] = useState('');
@@ -137,14 +138,14 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
 
   const applyPackPayload = useCallback((payload, preferredPackId = '') => {
     const nextPacks = Array.isArray(payload?.items) ? payload.items : [];
-    primeStickerPacksCache(payload);
+    primeStickerPacksCache(cacheScope, payload);
     setPacks(nextPacks);
     const preferred = String(preferredPackId || '').trim();
     if (preferred && nextPacks.some((item) => item.id === preferred)) {
       setActiveSectionId(preferred);
       pendingScrollSectionRef.current = preferred;
     }
-  }, []);
+  }, [cacheScope]);
 
   useEffect(() => {
     setRecentStickerIds(readRecentStickerIds(recentStorageKey));
@@ -153,9 +154,9 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   useEffect(() => {
     let cancelled = false;
     // При тёплом кэше спиннер не показываем — список уже отрисован.
-    if (!Array.isArray(peekStickerPacksCache()?.items)) setLoading(true);
+    if (!Array.isArray(peekStickerPacksCache(cacheScope)?.items)) setLoading(true);
     setLoadError('');
-    chatStickersAPI.listPacks()
+    chatStickersAPI.listPacks(cacheScope)
       .then((payload) => {
         if (!cancelled) applyPackPayload(payload);
       })
@@ -171,7 +172,7 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   useEffect(() => {
     const refreshPacks = () => {
       invalidateStickerPacksCache();
-      chatStickersAPI.listPacks({ force: true })
+      chatStickersAPI.listPacks({ ...cacheScope, force: true })
         .then((payload) => applyPackPayload(payload))
         .catch(() => {});
     };

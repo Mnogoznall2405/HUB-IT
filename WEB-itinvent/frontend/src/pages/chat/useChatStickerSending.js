@@ -23,29 +23,35 @@ export default function useChatStickerSending({
   return useCallback(async (sticker) => {
     const conversationId = String(activeConversationId || '').trim();
     const stickerId = String(sticker?.id || '').trim();
-    if (!conversationId || !stickerId || inFlightStickerIdsRef.current.has(stickerId)) return false;
-    inFlightStickerIdsRef.current.add(stickerId);
-    // R20: drain newer pages first so the sticker bubble lands at the real
-    // bottom of history instead of above an unloaded tail.
-    await ensureLatestThreadWindow?.();
-    const replyToMessageId = String(replyMessage?.id || '').trim() || undefined;
-    const optimisticMessage = createOptimisticStickerMessage?.({
-      conversationId,
-      sticker,
-      replyPreview: buildReplyPreview?.(replyMessage) || null,
-    });
-    stickerSendSeqRef.current += 1;
-    const clientMessageId = String(optimisticMessage?.client_message_id || '').trim()
-      || `chat-client:${conversationId}:${Date.now()}:${stickerSendSeqRef.current}`;
-    if (optimisticMessage) {
-      applyOutgoingThreadMessage(conversationId, optimisticMessage, {
-        scroll: true,
-        scrollSource: 'sendSticker',
-      });
-      setReplyMessage(null);
-      cancelPendingInitialAnchor();
-    }
+    // Лок scoped по беседе: in-flight стикера в чате A не блокирует
+    // отправку того же стикера в чате B, но двойной клик в одном чате
+    // по-прежнему дедуплицируется.
+    const lockKey = `${conversationId}:${stickerId}`;
+    if (!conversationId || !stickerId || inFlightStickerIdsRef.current.has(lockKey)) return false;
+    inFlightStickerIdsRef.current.add(lockKey);
+    let optimisticMessage = null;
+    let replyToMessageId;
     try {
+      // R20: drain newer pages first so the sticker bubble lands at the real
+      // bottom of history instead of above an unloaded tail.
+      await ensureLatestThreadWindow?.();
+      replyToMessageId = String(replyMessage?.id || '').trim() || undefined;
+      optimisticMessage = createOptimisticStickerMessage?.({
+        conversationId,
+        sticker,
+        replyPreview: buildReplyPreview?.(replyMessage) || null,
+      });
+      stickerSendSeqRef.current += 1;
+      const clientMessageId = String(optimisticMessage?.client_message_id || '').trim()
+        || `chat-client:${conversationId}:${Date.now()}:${stickerSendSeqRef.current}`;
+      if (optimisticMessage) {
+        applyOutgoingThreadMessage(conversationId, optimisticMessage, {
+          scroll: true,
+          scrollSource: 'sendSticker',
+        });
+        setReplyMessage(null);
+        cancelPendingInitialAnchor();
+      }
       const message = await chatStickersAPI.sendSticker(conversationId, stickerId, {
         client_message_id: clientMessageId,
         reply_to_message_id: replyToMessageId,
@@ -77,7 +83,7 @@ export default function useChatStickerSending({
       notifyApiError(error, 'Не удалось отправить стикер.');
       return false;
     } finally {
-      inFlightStickerIdsRef.current.delete(stickerId);
+      inFlightStickerIdsRef.current.delete(lockKey);
     }
   }, [
     activeConversationId,

@@ -11,6 +11,9 @@ vi.mock('../../api/chatStickers', () => ({
     listPacks: vi.fn(),
     importPack: vi.fn(),
   },
+  peekStickerPacksCache: vi.fn(() => null),
+  primeStickerPacksCache: vi.fn((scope, payload) => payload),
+  invalidateStickerPacksCache: vi.fn(),
 }));
 
 const theme = createTheme();

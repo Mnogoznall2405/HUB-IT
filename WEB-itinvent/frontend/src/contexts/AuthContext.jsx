@@ -3,6 +3,7 @@
  */
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { authAPI } from '../api/auth';
+import { invalidateStickerPacksCache } from '../api/chatStickers';
 import { clearAllChatDrafts } from '../lib/chatDraftsStorage';
 import { disableChatPushSubscription } from '../lib/chatNotifications';
 import { clearAllMailRecentCache } from '../lib/mailRecentCache';
@@ -203,6 +204,7 @@ export const AuthProvider = ({ children }) => {
     clearAllChatDrafts();
     clearAllMailRecentCache();
     sweepLogoutSessionData();
+    invalidateStickerPacksCache();
     setUser(null);
     setLoading(false);
     const generation = sessionGenerationRef.current;

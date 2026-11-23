@@ -28,6 +28,12 @@ STATE_DIR = STACK_DIR / STATE_NAME
 APP_DB = STATE_DIR / "app.sqlite3"
 CHAT_DB = STATE_DIR / "chat.sqlite3"
 
+# Работающая копия может лежать глубоко в дереве каталогов (worktree,
+# .codex_tmp) — тогда путь вложения стикера упирается в MAX_PATH=260 и
+# backend не может скопировать файл в чат. Для таких запусков каталог
+# данных выносится наружу через E2E_HUB_DATA_DIR (например C:\Temp\...).
+HUB_DATA_DIR = Path(os.environ["E2E_HUB_DATA_DIR"]) if os.environ.get("E2E_HUB_DATA_DIR") else STATE_DIR / "hub_data"
+
 BACKEND_PORT = int(os.environ.get("E2E_BACKEND_PORT", "18001"))
 
 # Environment must be set before any backend import — config and services
@@ -76,7 +82,7 @@ os.environ.update(
         "CORS_ORIGINS": f"http://127.0.0.1:{os.environ.get('E2E_FRONTEND_PORT', '5174')},http://localhost:{os.environ.get('E2E_FRONTEND_PORT', '5174')}",
         # File writes must stay inside .state — otherwise uploads and chat
         # attachments land in the developer's real data/ directory.
-        "HUB_DATA_DIR": str(STATE_DIR / "hub_data"),
+        "HUB_DATA_DIR": str(HUB_DATA_DIR),
         "MY_FILES_STORAGE_DIR": str(STATE_DIR / "my_files"),
         "MY_FILES_SPOOL_DIR": str(STATE_DIR / "my_files_spool"),
         "MY_FILES_PREVIEWS_DIR": str(STATE_DIR / "my_files_previews"),
@@ -92,6 +98,12 @@ os.environ.update(
         "AUTH_NEW_LOGIN_EMAIL_ENABLED": "0",
         "REDIS_URL": "",
         "REDIS_PASSWORD": "",
+        # Telegram-import в тестовом стеке недоступен (нет bot token) — вместо
+        # него сидится локальный набор; short_name попадает в список
+        # «дефолтных», поэтому _ensure_default_packs авто-устанавливает его
+        # любому пользователю при первом list_packs.
+        "CHAT_DEFAULT_STICKER_PACKS": "e2e_test_pack",
+        "TELEGRAM_BOT_TOKEN": "",
     }
 )
 
@@ -110,6 +122,8 @@ if str(WEB_ROOT) not in sys.path:
 def _seed() -> None:
     """Fresh schema + deterministic fixtures for the browser flows."""
     shutil.rmtree(STATE_DIR, ignore_errors=True)
+    if HUB_DATA_DIR != STATE_DIR / "hub_data":
+        shutil.rmtree(HUB_DATA_DIR, ignore_errors=True)
     if APP_DB.exists() or CHAT_DB.exists():
         raise RuntimeError("E2E SQLite files are busy; choose an unused E2E_STATE_NAME")
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -193,8 +207,68 @@ def _seed() -> None:
             )
 
 
+def _seed_sticker_pack() -> None:
+    """Локальный набор из 3 статичных WebP-стикеров.
+
+    Файлы лежат там же, где их кладёт реальный импорт
+    (``HUB_DATA_DIR/chat_sticker_packs/<pack_id>/``), а маркер превью-кэша
+    включает авто-установку набора пользователям. Доставка и рендер идут
+    через настоящие эндпоинты — тестируется полный контур без Telegram.
+    """
+    import base64
+    from uuid import uuid4
+
+    from backend.chat.db import chat_write_session
+    from backend.chat.models import ChatSticker, ChatStickerPack
+    from backend.chat.telegram_sticker_service import (
+        _PREVIEW_CACHE_MARKER,
+        telegram_sticker_service,
+    )
+
+    # 1x1 прозрачный WebP — минимальный валидный файл, /file и /preview
+    # отдают его как настоящий стикер.
+    webp = base64.b64decode("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA")
+
+    pack_id = str(uuid4())
+    sticker_ids = [str(uuid4()) for _ in range(3)]
+    pack_dir = telegram_sticker_service._storage_root / pack_id
+    pack_dir.mkdir(parents=True, exist_ok=True)
+    for sticker_id in sticker_ids:
+        (pack_dir / f"{sticker_id}.webp").write_bytes(webp)
+        (pack_dir / f"{sticker_id}.preview").write_bytes(webp)
+    (pack_dir / _PREVIEW_CACHE_MARKER).write_text("e2e", encoding="utf-8")
+
+    with chat_write_session() as session:
+        session.add(
+            ChatStickerPack(
+                id=pack_id,
+                short_name="e2e_test_pack",
+                title="E2E Test Pack",
+                sticker_type="regular",
+            )
+        )
+        for index, sticker_id in enumerate(sticker_ids):
+            session.add(
+                ChatSticker(
+                    id=sticker_id,
+                    pack_id=pack_id,
+                    telegram_file_id=f"e2e-file-{index}",
+                    telegram_file_unique_id=f"e2e-unique-{index}",
+                    emoji="\U0001f9ea",
+                    format="static",
+                    mime_type="image/webp",
+                    storage_name=f"{sticker_id}.webp",
+                    file_size=len(webp),
+                    width=512,
+                    height=512,
+                    sort_order=index,
+                )
+            )
+
+
 def main() -> None:
     _seed()
+    _seed_sticker_pack()
     if os.environ.get("E2E_AI_RELIABILITY") == "1":
         from ai_reliability_seed import seed_ai_reliability
         seed_ai_reliability(STATE_DIR)

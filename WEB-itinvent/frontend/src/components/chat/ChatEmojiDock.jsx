@@ -1,15 +1,25 @@
-import { Suspense, lazy, memo } from 'react';
+import { Suspense, lazy, memo, useLayoutEffect, useRef, useState } from 'react';
 import { Box, CircularProgress, IconButton, Typography } from '@mui/material';
 import { alpha } from '@mui/material/styles';
-import useMediaQuery from '@mui/material/useMediaQuery';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 
 const LazyChatEmojiPanel = lazy(() => import('./ChatEmojiPanel'));
 
-// При достаточной ширине viewport док — отдельная колонка справа от
-// переписки (как Telegram Desktop); на узком — overlay внутри колонки
-// треда, чтобы не вызывать горизонтальный скролл страницы.
-const COLUMN_MIN_VIEWPORT = '(min-width:1200px)';
+// Режим дока выбирается по ФАКТИЧЕСКОЙ ширине контейнера треда
+// (`chat-thread-pane-wrap`), а не по viewport: sidebar, dock и правая
+// инфо-панель отнимают место одновременно, и при фиксированном
+// breakpoint переписка сжималась бы до нерабочей ширины.
+// Колонка включается только если после дока остаётся >= MIN_THREAD_WIDTH
+// для переписки — иначе overlay поверх колонки треда.
+const DOCK_COLUMN_WIDTH = 360;
+const MIN_THREAD_WIDTH = 470;
+const DOCK_COLUMN_MIN_WRAP = DOCK_COLUMN_WIDTH + MIN_THREAD_WIDTH;
+
+export const EMOJI_DOCK_LAYOUT = {
+  columnWidth: DOCK_COLUMN_WIDTH,
+  minThreadWidth: MIN_THREAD_WIDTH,
+  minWrapWidthForColumn: DOCK_COLUMN_MIN_WRAP,
+};
 
 const dockFallback = (
   <Box sx={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center' }}>
@@ -25,12 +35,32 @@ const ChatEmojiDock = memo(function ChatEmojiDock({
   onSendSticker,
   onClose,
 }) {
-  const asColumn = useMediaQuery(COLUMN_MIN_VIEWPORT);
+  const rootRef = useRef(null);
+  const [asColumn, setAsColumn] = useState(false);
   const panelBg = ui.composerBg || ui.panelBg || theme.palette.background.paper;
   const borderColor = ui.borderSoft || theme.palette.divider;
 
+  useLayoutEffect(() => {
+    const wrap = rootRef.current?.parentElement;
+    if (!wrap) return undefined;
+    const evaluate = () => {
+      // Ширина wrap задаётся внешним flex-раскладом и не зависит от режима
+      // дока — измерение не зацикливается на переключении column/overlay.
+      setAsColumn(wrap.clientWidth >= DOCK_COLUMN_MIN_WRAP);
+    };
+    evaluate();
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(evaluate);
+      observer.observe(wrap);
+      return () => observer.disconnect();
+    }
+    window.addEventListener('resize', evaluate);
+    return () => window.removeEventListener('resize', evaluate);
+  }, []);
+
   return (
     <Box
+      ref={rootRef}
       data-testid="chat-emoji-dock"
       data-layout={asColumn ? 'column' : 'overlay'}
       role="dialog"
@@ -49,7 +79,7 @@ const ChatEmojiDock = memo(function ChatEmojiDock({
         borderLeft: `1px solid ${borderColor}`,
         ...(asColumn
           ? {
-              width: 'clamp(320px, 30vw, 380px)',
+              width: DOCK_COLUMN_WIDTH,
             }
           : {
               position: 'absolute',

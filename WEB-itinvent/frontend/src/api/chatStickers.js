@@ -3,28 +3,61 @@ import apiClient from './http';
 // Список наборов меняется редко (импорт/удаление), а панель эмодзи
 // открывается часто — кэшируем ответ на время сессии и дедуплицируем
 // параллельные запросы, чтобы повторное открытие было мгновенным.
-let stickerPacksCache = null;
-let stickerPacksInFlight = null;
+// Кэш scoped по пользователю и выбранной БД: backend возвращает наборы с
+// учётом current_user.id (приватные/общие), а заголовок X-Database-ID
+// может менять контекст — чужие данные недоступны по чужому ключу.
+const stickerPacksCacheByScope = new Map();
+const stickerPacksInFlightByScope = new Map();
+// Эпоха растёт при инвалидации: ответ запроса, начатого до неё, кэш не
+// засоряет — иначе гонка «запрос → инвалидировать → поздний ответ»
+// вернула бы устаревший список.
+let stickerPacksEpoch = 0;
 
-export const peekStickerPacksCache = () => stickerPacksCache;
-export const primeStickerPacksCache = (payload) => {
-  stickerPacksCache = payload;
-  return stickerPacksCache;
+const getSelectedDatabaseScopePart = () => {
+  try {
+    return String(window?.localStorage?.getItem('selected_database') || '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const resolveStickerPacksScope = (options) => (
+  `${String(options?.userId || 'anon')}::${getSelectedDatabaseScopePart() || 'default'}`
+);
+
+export const peekStickerPacksCache = (options) => (
+  stickerPacksCacheByScope.get(resolveStickerPacksScope(options)) || null
+);
+export const primeStickerPacksCache = (options, payload) => {
+  stickerPacksCacheByScope.set(resolveStickerPacksScope(options), payload);
+  return payload;
 };
 export const invalidateStickerPacksCache = () => {
-  stickerPacksCache = null;
+  stickerPacksCacheByScope.clear();
+  stickerPacksInFlightByScope.clear();
+  stickerPacksEpoch += 1;
 };
 
 export const chatStickersAPI = {
   listPacks: async (options = {}) => {
-    if (!options?.force && stickerPacksCache) return stickerPacksCache;
-    if (stickerPacksInFlight) return stickerPacksInFlight;
-    stickerPacksInFlight = apiClient.get('/chat/sticker-packs')
-      .then((response) => primeStickerPacksCache(response.data))
+    const scope = resolveStickerPacksScope(options);
+    const cached = stickerPacksCacheByScope.get(scope);
+    if (!options?.force && cached) return cached;
+    const inFlight = stickerPacksInFlightByScope.get(scope);
+    if (inFlight) return inFlight;
+    const epochAtStart = stickerPacksEpoch;
+    const request = apiClient.get('/chat/sticker-packs')
+      .then((response) => {
+        if (epochAtStart === stickerPacksEpoch) {
+          stickerPacksCacheByScope.set(scope, response.data);
+        }
+        return response.data;
+      })
       .finally(() => {
-        stickerPacksInFlight = null;
+        stickerPacksInFlightByScope.delete(scope);
       });
-    return stickerPacksInFlight;
+    stickerPacksInFlightByScope.set(scope, request);
+    return request;
   },
 
   previewPack: async (shortName, options = {}) => {
