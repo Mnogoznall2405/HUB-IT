@@ -36,8 +36,13 @@ import { getDesktopOfficeOpenLabel, openOriginalWithDesktopApplication } from '.
 const MailPdfPreviewSurface = lazy(() => import('../mail/MailPdfPreviewSurface'));
 const MailExcelPreviewGrid = lazy(() => import('../mail/MailExcelPreviewGrid'));
 const OfficeViewFrame = lazy(() => import('./OfficeViewFrame'));
+const CodeMirrorTextViewer = lazy(() => import('./CodeMirrorTextViewer'));
+const MarkdownFileViewer = lazy(() => import('./MarkdownFileViewer'));
 
-const DOCUMENT_PREVIEW_KINDS = new Set(['pdf', 'office_pdf', 'office_excel', 'office_view']);
+const DOCUMENT_PREVIEW_KINDS = new Set([
+  'pdf', 'office_pdf', 'office_excel', 'office_view',
+  'text', 'markdown', 'csv',
+]);
 
 const surfaceFallback = (
   <Skeleton variant="rectangular" height={420} sx={{ borderRadius: '8px' }} />
@@ -54,6 +59,7 @@ export default function DocumentPreviewDialog({
   objectUrl = '',
   excelWorkbook = null,
   officeView = null,
+  textPreview = null,
   pageCount = 0,
   sheets = [],
   loading = false,
@@ -69,11 +75,13 @@ export default function DocumentPreviewDialog({
 }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
-  const isExcel = sourceKind === 'excel' || kind === 'office_excel';
+  const isExcel = sourceKind === 'excel' || sourceKind === 'csv' || kind === 'office_excel' || kind === 'csv';
   const hasExcelTable = Boolean(isExcel && excelWorkbook);
   const hasOfficeView = Boolean(kind === 'office_view' && officeView?.config && officeView?.publicPath);
   const hasPdfPreview = Boolean(objectUrl && (kind === 'pdf' || kind === 'office_pdf' || isExcel));
   const hasImagePreview = Boolean(objectUrl && kind === 'image');
+  const hasMarkdownPreview = Boolean(kind === 'markdown' && textPreview);
+  const hasTextPreview = Boolean(kind === 'text' && textPreview);
   const canOpenInDesktopApplication = Boolean(onDownloadOriginal && canDownloadOriginal && isNativeShellRuntime());
   const desktopOpenLabel = getDesktopOfficeOpenLabel(sourceKind);
   const preferredMode = hasExcelTable ? 'table' : 'pdf';
@@ -127,7 +135,7 @@ export default function DocumentPreviewDialog({
   const showModeTabs = hasExcelTable && hasPdfPreview;
   const resolvedMode = hasExcelTable && mode === 'table' ? 'table' : 'pdf';
   const heading = title || 'Документ';
-  const subheading = subtitle || (hasOfficeView ? 'Просмотр (только чтение)' : isExcel ? 'Excel' : kind === 'office_pdf' ? 'PDF-предпросмотр' : 'PDF');
+  const subheading = subtitle || (hasOfficeView ? 'Просмотр (только чтение)' : hasMarkdownPreview ? 'Markdown' : hasTextPreview ? 'Текст' : kind === 'csv' ? 'CSV-таблица' : isExcel ? 'Excel' : kind === 'office_pdf' ? 'PDF-предпросмотр' : 'PDF');
 
   const body = useMemo(() => {
     if (loading) {
@@ -164,6 +172,33 @@ export default function DocumentPreviewDialog({
             config={officeView.config}
             publicPath={officeView.publicPath}
             onError={officeView.onError}
+          />
+        </Suspense>
+      );
+    }
+
+    if (hasMarkdownPreview) {
+      return (
+        <Suspense fallback={surfaceFallback}>
+          <MarkdownFileViewer
+            value={textPreview.text}
+            fileName={heading}
+            encoding={textPreview.encoding}
+            truncated={textPreview.truncated}
+          />
+        </Suspense>
+      );
+    }
+
+    if (hasTextPreview) {
+      return (
+        <Suspense fallback={surfaceFallback}>
+          <CodeMirrorTextViewer
+            value={textPreview.text}
+            fileName={heading}
+            language={textPreview.language}
+            encoding={textPreview.encoding}
+            truncated={textPreview.truncated}
           />
         </Suspense>
       );
@@ -241,8 +276,10 @@ export default function DocumentPreviewDialog({
     excelWorkbook,
     hasExcelTable,
     hasImagePreview,
+    hasMarkdownPreview,
     hasOfficeView,
     hasPdfPreview,
+    hasTextPreview,
     officeView,
     heading,
     isMobile,
@@ -254,6 +291,7 @@ export default function DocumentPreviewDialog({
     sheets,
     sourceKind,
     objectUrl,
+    textPreview,
   ]);
 
   return (

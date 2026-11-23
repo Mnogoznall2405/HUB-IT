@@ -10,6 +10,8 @@ import {
   buildMessageSourceDownloadPayload,
   buildPrintMailDocumentHtml,
   downloadBlobFile,
+  getOfficeAttachmentSourceKind,
+  getOfficeViewSourceKind,
   normalizeAttachmentPreviewMetadata,
   parseDownloadFilename,
 } from './mailMessageFileActions';
@@ -168,6 +170,56 @@ describe('mailMessageFileActions', () => {
       objectUrl: '',
       textContent: '',
     });
+  });
+
+  it('classifies view-only text/delimited formats for the DocEditor viewer only', () => {
+    // getOfficeAttachmentSourceKind stays the convertible-office allowlist —
+    // conversion paths must not pick up view-only types.
+    expect(getOfficeAttachmentSourceKind({ filename: 'notes.txt', contentType: 'text/plain' })).toBe('');
+    expect(getOfficeAttachmentSourceKind({ filename: 'data.csv', contentType: 'text/csv' })).toBe('');
+
+    const wordCases = [
+      { filename: 'doc.odt', contentType: '' },
+      { filename: 'doc.ott', contentType: '' },
+      { filename: 'doc.fodt', contentType: '' },
+    ];
+    wordCases.forEach((args) => {
+      expect(getOfficeViewSourceKind(args), JSON.stringify(args)).toBe('word');
+    });
+
+    const excelCases = [
+      { filename: 'sheet.fods', contentType: '' },
+      { filename: 'book.xlsb', contentType: '' },
+      { filename: 'sheet.ots', contentType: '' },
+    ];
+    excelCases.forEach((args) => {
+      expect(getOfficeViewSourceKind(args), JSON.stringify(args)).toBe('excel');
+    });
+
+    expect(getOfficeViewSourceKind({ filename: 'show.pps', contentType: '' })).toBe('presentation');
+    expect(getOfficeViewSourceKind({ filename: 'slides.fodp', contentType: '' })).toBe('presentation');
+
+    // Binaries, archives and native-viewer formats stay out of office view.
+    [
+      { filename: 'setup.exe', contentType: 'application/octet-stream' },
+      { filename: 'pack.zip', contentType: 'application/zip' },
+      { filename: 'clip.mp4', contentType: 'video/mp4' },
+      { filename: 'page.html', contentType: 'text/html' },
+      { filename: 'data.json', contentType: 'application/json' },
+      { filename: 'notes.txt', contentType: 'text/plain' },
+      { filename: 'README.md', contentType: 'text/markdown' },
+      { filename: 'data.csv', contentType: 'text/csv' },
+      { filename: 'run.log', contentType: 'text/plain' },
+      { filename: 'data.tsv', contentType: 'text/tab-separated-values' },
+      { filename: 'noext', contentType: 'application/octet-stream' },
+    ].forEach((args) => {
+      expect(getOfficeViewSourceKind(args), JSON.stringify(args)).toBe('');
+    });
+
+    // Real office formats classify identically on both classifiers.
+    expect(getOfficeViewSourceKind({ filename: 'a.docx', contentType: '' })).toBe('word');
+    expect(getOfficeViewSourceKind({ filename: 'a.xlsx', contentType: '' })).toBe('excel');
+    expect(getOfficeViewSourceKind({ filename: 'a.pptx', contentType: '' })).toBe('presentation');
   });
 
   it('normalizes office preview sheet metadata with page ranges', () => {

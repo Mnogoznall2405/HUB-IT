@@ -1,6 +1,7 @@
 import {
   buildAttachmentBlobPayload,
   getOfficeAttachmentSourceKind,
+  getOfficeViewSourceKind,
   normalizeAttachmentPreviewMetadata,
 } from './mailMessageFileActions';
 import { parseExcelWorkbookFromBlob } from '../../lib/excelPreview';
@@ -24,7 +25,7 @@ export const buildOfficeAttachmentPreviewState = async ({
       : ''
   ),
 }) => {
-  const officeSourceKind = getOfficeAttachmentSourceKind({ filename, contentType });
+  const officeSourceKind = getOfficeViewSourceKind({ filename, contentType });
   const requestOptions = signal ? { mailboxId, signal } : { mailboxId };
 
   // Direct read-only DocEditor preview: no conversion wait and no editing session.

@@ -36,7 +36,7 @@ from backend.services.request_auth_context_service import (
 import hashlib
 
 from backend.services import onlyoffice_service as oo
-from backend.services.mail_attachment_preview_service import classify_office_source
+from backend.services.mail_attachment_preview_service import classify_office_view_source
 from backend.services.mail_office_view_source_store import office_view_source_store
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mail_runtime_snapshot_service import mail_runtime_snapshot_service
@@ -2049,7 +2049,7 @@ async def get_message_attachment_office_view(
 ):
     """Compact read-only DocEditor config for a mail attachment (no edit session)."""
     filename = _normalize_text(name) or _normalize_text(attachment_ref) or "attachment"
-    source_kind = classify_office_source(filename=filename, content_type=content_type)
+    source_kind = classify_office_view_source(filename=filename, content_type=content_type)
     if not source_kind:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Формат не поддерживает предпросмотр в редакторе")
     settings = _office_settings_or_503()

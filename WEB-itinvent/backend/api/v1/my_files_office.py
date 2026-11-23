@@ -454,7 +454,8 @@ async def get_office_view_config(
     settings = _settings_or_503()
     try:
         session = await run_in_threadpool(
-            my_files_collab_service.get_editor_session, file_id=file_id, user_id=int(current_user.id)
+            my_files_collab_service.get_editor_session, file_id=file_id, user_id=int(current_user.id),
+            for_view=True,
         )
     except Exception as exc:
         raise _service_error_to_http(exc) from exc

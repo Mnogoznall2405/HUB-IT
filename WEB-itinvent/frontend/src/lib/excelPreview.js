@@ -66,21 +66,7 @@ const clampSheetRange = (XLSX, worksheet) => {
   };
 };
 
-export const parseExcelWorkbookFromBlob = async (blob) => {
-  if (!blob) {
-    throw new Error('Excel preview blob is missing.');
-  }
-  const buffer = await readBlobArrayBuffer(blob);
-  if (buffer.byteLength > EXCEL_PREVIEW_MAX_BYTES) {
-    throw new Error('Excel workbook exceeds the preview size limit.');
-  }
-  const XLSX = await import('xlsx-js-style');
-  const workbook = XLSX.read(buffer, {
-    type: 'array',
-    cellDates: true,
-    dense: false,
-    sheetRows: EXCEL_PREVIEW_MAX_ROWS_PER_SHEET,
-  });
+const workbookToPreview = (XLSX, workbook) => {
   const allSheetNames = Array.isArray(workbook.SheetNames) ? workbook.SheetNames : [];
   const sheetNames = allSheetNames.slice(0, EXCEL_PREVIEW_MAX_SHEETS);
   const sheets = sheetNames.map((name, index) => {
@@ -103,4 +89,35 @@ export const parseExcelWorkbookFromBlob = async (blob) => {
     throw new Error('Excel workbook has no sheets.');
   }
   return { sheetNames, sheets };
+};
+
+export const parseExcelWorkbookFromBlob = async (blob) => {
+  if (!blob) {
+    throw new Error('Excel preview blob is missing.');
+  }
+  const buffer = await readBlobArrayBuffer(blob);
+  if (buffer.byteLength > EXCEL_PREVIEW_MAX_BYTES) {
+    throw new Error('Excel workbook exceeds the preview size limit.');
+  }
+  const XLSX = await import('xlsx-js-style');
+  const workbook = XLSX.read(buffer, {
+    type: 'array',
+    cellDates: true,
+    dense: false,
+    sheetRows: EXCEL_PREVIEW_MAX_ROWS_PER_SHEET,
+  });
+  return workbookToPreview(XLSX, workbook);
+};
+
+/**
+ * CSV/TSV -> workbook preview. Decoding happens before parsing so legacy
+ * cp1251 CSV files keep their Cyrillic content intact.
+ */
+export const parseCsvTextToWorkbook = async (text, { maxRows = EXCEL_PREVIEW_MAX_ROWS_PER_SHEET } = {}) => {
+  const XLSX = await import('xlsx-js-style');
+  const workbook = XLSX.read(String(text || ''), {
+    type: 'string',
+    sheetRows: maxRows,
+  });
+  return workbookToPreview(XLSX, workbook);
 };

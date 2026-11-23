@@ -8,6 +8,7 @@ import {
   getAttachmentPreviewPollDelay,
   waitForAttachmentPreview,
 } from '../documentPreview/asyncAttachmentPreview';
+import { CSV_EXTENSIONS, MARKDOWN_EXTENSIONS, TEXT_EXTENSIONS } from '../../lib/textPreview';
 
 export const CHAT_ATTACHMENT_PREVIEW_TIMEOUT_MS = ATTACHMENT_PREVIEW_TIMEOUT_MS;
 
@@ -65,7 +66,9 @@ export const isChatDocumentPreviewableAttachment = (attachment = {}) => {
     || contentType.includes('css')
     || contentType.includes('yaml')
     || contentType.includes('toml')
-    || ['txt', 'log', 'md', 'json', 'xml', 'yaml', 'yml', 'csv'].includes(extension)
+    || TEXT_EXTENSIONS.has(extension)
+    || MARKDOWN_EXTENSIONS.has(extension)
+    || CSV_EXTENSIONS.has(extension)
   ) {
     return true;
   }

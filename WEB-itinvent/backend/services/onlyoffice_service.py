@@ -16,6 +16,20 @@ from jose import JWTError, jwt
 
 EDITABLE_DOCUMENT_TYPES = {".docx": "word", ".xlsx": "cell", ".pptx": "slide"}
 
+# Types Document Server can *view* (read-only) on top of the editable set:
+# legacy Office and ODF formats the viewer renders directly. Plain-text
+# formats (txt/md/csv/log/…) are served by the native text viewers instead.
+VIEWABLE_DOCUMENT_TYPES = {
+    **EDITABLE_DOCUMENT_TYPES,
+    ".doc": "word", ".docm": "word", ".dot": "word", ".dotx": "word",
+    ".rtf": "word", ".odt": "word", ".ott": "word", ".fodt": "word",
+    ".xls": "cell", ".xlsb": "cell", ".xlsm": "cell", ".xlt": "cell", ".xltx": "cell",
+    ".xltm": "cell", ".ods": "cell", ".fods": "cell", ".ots": "cell",
+    ".ppt": "slide", ".pptm": "slide", ".pps": "slide", ".ppsm": "slide",
+    ".ppsx": "slide", ".pot": "slide", ".potx": "slide", ".potm": "slide",
+    ".odp": "slide", ".fodp": "slide", ".otp": "slide",
+}
+
 ROLE_OWNER = "owner"
 ROLE_EDIT = "edit"
 ROLE_COMMENT = "comment"
@@ -112,6 +126,10 @@ def editable_extension(file_name: str) -> str:
 
 def document_type_for(file_name: str) -> str:
     return EDITABLE_DOCUMENT_TYPES.get(editable_extension(file_name), "")
+
+
+def viewable_document_type(file_name: str) -> str:
+    return VIEWABLE_DOCUMENT_TYPES.get(editable_extension(file_name), "")
 
 
 def build_document_key(file_id: str, revision: int) -> str:
@@ -340,7 +358,7 @@ def viewer_document_type(*, file_name: str, source_kind: str = "") -> str:
     kind = _VIEWER_SOURCE_KINDS.get(str(source_kind or "").lower())
     if kind:
         return kind
-    return document_type_for(file_name)
+    return viewable_document_type(file_name)
 
 
 def build_viewer_config(

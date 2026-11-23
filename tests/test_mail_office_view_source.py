@@ -124,6 +124,44 @@ def test_office_view_parks_attachment_and_source_serves_it_anonymously(monkeypat
     assert seen_session_ids == ["sess-1"]
 
 
+def test_office_view_accepts_view_only_office_attachments(monkeypatch):
+    """View-only office formats (pps/ott/xlsb) open in the read-only viewer."""
+    monkeypatch.setattr(
+        mail_api_module.mail_service,
+        "download_attachment",
+        lambda **kwargs: ("deck.pps", "application/vnd.ms-powerpoint", b"ppt-bytes"),
+    )
+    client = _client()
+    view = _office_view(client, name="deck.pps", content_type="application/vnd.ms-powerpoint")
+    assert view.status_code == 200, view.text
+    config = view.json()["config"]
+    assert config["documentType"] == "slide"
+    assert config["document"]["fileType"] == "pps"
+    assert config["document"]["permissions"]["edit"] is False
+
+
+def test_office_view_rejects_unsupported_attachment_types(monkeypatch):
+    monkeypatch.setattr(
+        mail_api_module.mail_service,
+        "download_attachment",
+        lambda **kwargs: pytest.fail("unsupported formats never reach the mail backend"),
+    )
+    client = _client()
+    # Text formats are handled by the native text/markdown viewers, not the
+    # DocEditor path; binaries/archives stay unsupported everywhere.
+    for name, mime in (
+        ("setup.exe", "application/octet-stream"),
+        ("pack.zip", "application/zip"),
+        ("clip.mp4", "video/mp4"),
+        ("page.html", "text/html"),
+        ("notes.txt", "text/plain"),
+        ("readme.md", "text/markdown"),
+        ("data.csv", "text/csv"),
+    ):
+        resp = _office_view(client, name=name, content_type=mime)
+        assert resp.status_code == 422, (name, resp.status_code)
+
+
 def test_office_view_rejected_when_onlyoffice_disabled(monkeypatch):
     monkeypatch.setenv("ONLYOFFICE_ENABLED", "0")
     client = _client()

@@ -11,8 +11,8 @@ import {
   buildPrintMailDocumentHtml,
   createEmptyAttachmentPreview,
   downloadBlobFile,
-  getOfficeAttachmentSourceKind,
-  isOfficePreviewableAttachment,
+  getOfficeViewSourceKind,
+  isOfficeViewableAttachment,
 } from './mailMessageFileActions';
 import { buildOfficeAttachmentPreviewState } from './officeAttachmentPreview';
 import { openOriginalWithDesktopApplication } from '../documentPreview/desktopOfficeOpen';
@@ -263,7 +263,7 @@ export default function useMailMessageFileActions({
     const contentType = String(attachment?.content_type || '');
     const downloadContext = { messageOrId, attachment, fallbackMessage };
 
-    if (isOfficePreviewableAttachment(attachment)) {
+    if (isOfficeViewableAttachment(attachment)) {
       if (!messageId || !attachmentRef) {
         const contextError = buildAttachmentContextError({ attachment, messageId, mailboxId });
         reportError(contextError.message);
@@ -275,7 +275,7 @@ export default function useMailMessageFileActions({
       if (!isCurrentPreview()) return;
       if (desktopOpen.accepted) return;
 
-      const officeSourceKind = getOfficeAttachmentSourceKind({ filename, contentType });
+      const officeSourceKind = getOfficeViewSourceKind({ filename, contentType });
       setAttachmentPreview({
         ...createEmptyAttachmentPreview(),
         open: true,

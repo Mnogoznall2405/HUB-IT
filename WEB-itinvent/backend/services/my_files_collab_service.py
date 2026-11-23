@@ -212,11 +212,14 @@ class MyFilesCollabService:
 
     # -- editor session ---------------------------------------------------------------------
 
-    def get_editor_session(self, *, file_id: str, user_id: int) -> dict[str, Any]:
+    def get_editor_session(self, *, file_id: str, user_id: int, for_view: bool = False) -> dict[str, Any]:
         database_url = self.files._database_url_or_raise()
         with app_session(database_url) as session:
             row, role = self._access_locked(session, file_id, user_id)
-            if not oo.document_type_for(row.original_file_name):
+            supported = oo.document_type_for(row.original_file_name) or (
+                for_view and oo.viewable_document_type(row.original_file_name)
+            )
+            if not supported:
                 raise MyFilesValidationError("This file type cannot be edited online")
             revision = self._revision(session, row.id)
             return {

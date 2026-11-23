@@ -1,4 +1,5 @@
-import { getOfficeAttachmentSourceKind } from '../components/mail/mailMessageFileActions';
+import { getOfficeViewSourceKind } from '../components/mail/mailMessageFileActions';
+import { getTextFileKind } from './textPreview';
 
 export const formatFileSize = (bytes) => {
   const value = Number(bytes || 0);
@@ -30,7 +31,10 @@ export const getMyFilePreviewKind = (item) => {
   const contentType = getMyFileContentType(item).toLowerCase();
   const extension = getFileExtension(fileName);
   if (contentType.includes('pdf') || extension === 'pdf') return 'pdf';
-  const sourceKind = getOfficeAttachmentSourceKind({ filename: fileName, contentType });
+  // Native viewers own all text-like formats — they never reach ONLYOFFICE.
+  const textKind = getTextFileKind({ fileName, contentType });
+  if (textKind) return textKind;
+  const sourceKind = getOfficeViewSourceKind({ filename: fileName, contentType });
   if (sourceKind === 'excel') return 'office_excel';
   if (sourceKind) return 'office_pdf';
   return 'unsupported';
@@ -49,6 +53,7 @@ export const createEmptyDocumentPreviewState = () => ({
   previewBlob: null,
   excelWorkbook: null,
   officeView: null,
+  textPreview: null,
   pageCount: 0,
   sheets: [],
   pdfFilename: '',

@@ -8,10 +8,10 @@ import { openOriginalWithDesktopApplication } from '../../components/documentPre
 import {
   buildAttachmentBlobPayload,
   downloadBlobFile,
-  getOfficeAttachmentSourceKind,
+  getOfficeViewSourceKind,
   normalizeAttachmentPreviewMetadata,
 } from '../../components/mail/mailMessageFileActions';
-import { parseExcelWorkbookFromBlob } from '../../lib/excelPreview';
+import { parseCsvTextToWorkbook, parseExcelWorkbookFromBlob } from '../../lib/excelPreview';
 import {
   createEmptyDocumentPreviewState,
   getMyFileContentType,
@@ -19,6 +19,12 @@ import {
   getMyFilePreviewKind,
   resolveMyFilePreviewError,
 } from '../../lib/myFilesPreview';
+import {
+  decodeTextBuffer,
+  fetchTextWithLimit,
+  getTextLanguage,
+  TEXT_PREVIEW_MAX_BYTES,
+} from '../../lib/textPreview';
 import useRequestGuard from '../../lib/useRequestGuard';
 
 export function useMyFilesPreviewController({ downloadFile }) {
@@ -54,8 +60,9 @@ export function useMyFilesPreviewController({ downloadFile }) {
       });
       if (desktopOpen.accepted) return;
     }
-    const fallbackSourceKind = getOfficeAttachmentSourceKind({ filename: fileName, contentType });
+    const fallbackSourceKind = getOfficeViewSourceKind({ filename: fileName, contentType });
     const fallbackKind = getMyFilePreviewKind(item);
+    const nativeKind = ['text', 'markdown', 'csv'].includes(fallbackKind) ? fallbackKind : '';
 
     revokePreviewObjectUrl();
     setDocumentPreview({
@@ -64,7 +71,7 @@ export function useMyFilesPreviewController({ downloadFile }) {
       item,
       loading: true,
       kind: fallbackKind,
-      sourceKind: fallbackSourceKind,
+      sourceKind: nativeKind ? '' : fallbackSourceKind,
     });
 
     // Prepared-PDF/excel fallback: used when the viewer config is unavailable
@@ -121,6 +128,52 @@ export function useMyFilesPreviewController({ downloadFile }) {
     };
 
     try {
+      // Native text/Markdown/CSV preview: authenticated download-grant bytes,
+      // decoded locally, capped at TEXT_PREVIEW_MAX_BYTES (the reader is
+      // cancelled past the limit instead of buffering the whole file).
+      if (nativeKind) {
+        const grant = await myFilesAPI.createDownloadGrant(fileId);
+        const grantUrl = myFilesAPI.buildDownloadGrantUrl(grant?.download_path);
+        if (!grantUrl) throw new Error('preview source is unavailable');
+        const { buffer, truncated, totalBytes } = await fetchTextWithLimit(grantUrl, {
+          maxBytes: TEXT_PREVIEW_MAX_BYTES,
+        });
+        if (!isCurrent()) return;
+        if (nativeKind === 'csv') {
+          const decoded = decodeTextBuffer(buffer);
+          const excelWorkbook = await parseCsvTextToWorkbook(decoded.text);
+          if (!isCurrent()) return;
+          setDocumentPreview({
+            ...createEmptyDocumentPreviewState(),
+            open: true,
+            item,
+            loading: false,
+            kind: 'csv',
+            sourceKind: 'csv',
+            excelWorkbook,
+            textPreview: { text: '', encoding: decoded.encoding, truncated, totalBytes },
+          });
+          return;
+        }
+        const { text, encoding } = decodeTextBuffer(buffer);
+        setDocumentPreview({
+          ...createEmptyDocumentPreviewState(),
+          open: true,
+          item,
+          loading: false,
+          kind: nativeKind,
+          sourceKind: '',
+          textPreview: {
+            text,
+            encoding,
+            truncated,
+            totalBytes,
+            language: getTextLanguage(fileName),
+          },
+        });
+        return;
+      }
+
       // Office documents open directly in the read-only DocEditor viewer:
       // no conversion round-trip and no editing session. Falls back to the
       // prepared PDF preview when Document Server is unavailable — both when
