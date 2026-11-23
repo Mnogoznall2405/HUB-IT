@@ -140,18 +140,23 @@ describe('MyFilesLibraryDialog', () => {
     render(<MyFilesLibraryDialog open membersOnly library={{ id: 'lib-3', name: 'Подбор', quota_bytes: 10 * GIB }} onClose={onClose} />);
 
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('Доступ к общей папке')).toBeInTheDocument();
+    expect(within(dialog).getByText('Управление доступом')).toBeInTheDocument();
     expect(within(dialog).getByText(/Папка «Подбор»/)).toBeInTheDocument();
     // A library ``manage`` member must not rename, re-quota or delete the folder.
     expect(screen.queryByTestId('my-files-library-name')).not.toBeInTheDocument();
     expect(screen.queryByTestId('my-files-library-quota')).not.toBeInTheDocument();
     expect(screen.queryByTestId('my-files-library-delete')).not.toBeInTheDocument();
-    await within(dialog).findByTestId('my-files-library-members');
+    const members = await within(dialog).findByTestId('my-files-library-members');
+    await within(members).findByText('Админ');
 
+    // Nothing changed yet: saving stays disabled until a role or the list itself changes.
+    expect(screen.getByTestId('my-files-library-save')).toBeDisabled();
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Роль: Админ' }));
+    fireEvent.click(await screen.findByRole('option', { name: /^Просмотр/ }));
     fireEvent.click(screen.getByTestId('my-files-library-save'));
 
     await waitFor(() => expect(mockSetMembers).toHaveBeenCalledWith('lib-3', [
-      expect.objectContaining({ principal_id: '1', role: 'manage' }),
+      expect.objectContaining({ principal_id: '1', role: 'view' }),
     ]));
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(mockRemove).not.toHaveBeenCalled();

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import useRequestGuard from '../lib/useRequestGuard';
 import {
@@ -13,6 +13,8 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
+  Drawer,
   IconButton,
   InputAdornment,
   LinearProgress,
@@ -31,27 +33,22 @@ import {
   ToggleButtonGroup,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
-import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import CloudUploadOutlinedIcon from '@mui/icons-material/CloudUploadOutlined';
-import CreateNewFolderOutlinedIcon from '@mui/icons-material/CreateNewFolderOutlined';
 import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded';
 import ClearRoundedIcon from '@mui/icons-material/ClearRounded';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
-import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
-import SlideshowOutlinedIcon from '@mui/icons-material/SlideshowOutlined';
-import TableChartOutlinedIcon from '@mui/icons-material/TableChartOutlined';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import DriveFileMoveOutlinedIcon from '@mui/icons-material/DriveFileMoveOutlined';
 import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRenameOutlineRounded';
-import DriveFolderUploadOutlinedIcon from '@mui/icons-material/DriveFolderUploadOutlined';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
-import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
-import FolderSharedOutlinedIcon from '@mui/icons-material/FolderSharedOutlined';
+import MenuOutlinedIcon from '@mui/icons-material/MenuOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import StarOutlineRoundedIcon from '@mui/icons-material/StarOutlineRounded';
@@ -64,14 +61,15 @@ import MainLayout from '../components/layout/MainLayout';
 import MyFileAuditDialog from '../components/myFiles/MyFileAuditDialog';
 import MyFilesCollaboratorsDialog from '../components/myFiles/MyFilesCollaboratorsDialog';
 import MyFilesCopyDialog from '../components/myFiles/MyFilesCopyDialog';
+import MyFilesDetailsPanel from '../components/myFiles/MyFilesDetailsPanel';
 import MyFilesLibraryDialog from '../components/myFiles/MyFilesLibraryDialog';
 import MyFilesOfficeEditorDialog from '../components/myFiles/MyFilesOfficeEditorDialog';
 import MyFilesShareDialog from '../components/myFiles/MyFilesShareDialog';
+import MyFilesSidebar from '../components/myFiles/MyFilesSidebar';
 import MyFilesVersionsDialog from '../components/myFiles/MyFilesVersionsDialog';
 import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
 import FileActionsContextMenu, {
   getFileActionsAnchorPosition,
-  isFileActionsKeyboardShortcut,
 } from '../components/fileActions/FileActionsContextMenu';
 import PageShell from '../components/layout/PageShell';
 import PageTopBar from '../components/layout/PageTopBar';
@@ -119,6 +117,7 @@ import {
 } from '../lib/myFilesFilters';
 import {
   ACTIVE_PROCESSING_STATUSES,
+  formatDateTime,
   getFileVisualColors,
   getFileVisualMeta,
   READY_STATUSES,
@@ -224,7 +223,6 @@ export default function MyFiles() {
   const [breadcrumbs, setBreadcrumbs] = useState([]);
   const [allFolders, setAllFolders] = useState([]);
   const [createFolderOpen, setCreateFolderOpen] = useState(false);
-  const [createMenuAnchor, setCreateMenuAnchor] = useState(null);
   const [folderNameInput, setFolderNameInput] = useState('');
   const [renameDialog, setRenameDialog] = useState({ open: false, kind: '', id: '', name: '' });
   const [moveDialog, setMoveDialog] = useState({ open: false, kind: '', id: '', targetFolderId: '' });
@@ -251,6 +249,27 @@ export default function MyFiles() {
   const [showRetentionNotice, setShowRetentionNotice] = useState(() => (
     window.localStorage.getItem('my-files-retention-notice-dismissed') !== '1'
   ));
+  const isBelowLg = useMediaQuery(theme.breakpoints.down('lg'));
+  const isXs = useMediaQuery(theme.breakpoints.down('sm'));
+  const [navOpen, setNavOpen] = useState(false);
+  // ≥lg: the file nav collapses to a 64px icon rail; below lg it lives in a drawer.
+  const [navCollapsed, setNavCollapsed] = useState(() => (
+    window.localStorage.getItem('my-files-nav-collapsed') === '1'
+  ));
+  const toggleNavCollapsed = useCallback(() => {
+    setNavCollapsed((current) => {
+      const next = !current;
+      try { window.localStorage.setItem('my-files-nav-collapsed', next ? '1' : '0'); } catch { /* noop */ }
+      return next;
+    });
+  }, []);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  // Пункт «Сведения» в меню привязывает панель к объекту, даже если он не выбран.
+  const [detailsPinned, setDetailsPinned] = useState(null);
+  const openDetailsFor = useCallback((kind, entry) => {
+    if (entry?.id) setDetailsPinned({ kind, id: String(entry.id) });
+    setDetailsOpen(true);
+  }, []);
   const [dropTargetFolderId, setDropTargetFolderId] = useState('');
   const [thumbs, setThumbs] = useState({});
   const thumbsRef = useRef({});
@@ -268,7 +287,11 @@ export default function MyFiles() {
   const [confirmState, setConfirmState] = useState(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
-  const { downloadingFileId, downloadFile: handleDownload } = useMyFilesDownload({ notifyApiError, notifySuccess, notifyWarning });
+  // The guard checker of the latest load: false after unmount or once a newer
+  // load cycle began — keeps late download/share responses from touching state.
+  const latestIsCurrentRef = useRef(() => false);
+  const isPageCurrent = useCallback(() => latestIsCurrentRef.current(), []);
+  const { downloadingFileId, downloadFile: handleDownload } = useMyFilesDownload({ notifyApiError, notifySuccess, notifyWarning, isCurrent: isPageCurrent });
   const [exportingFileId, setExportingFileId] = useState('');
   const {
     documentPreview,
@@ -287,6 +310,7 @@ export default function MyFiles() {
   const activeLoadsRef = useRef(0);
   const loadData = useCallback(async ({ silent = false } = {}) => {
     const isCurrent = beginLoad();
+    latestIsCurrentRef.current = isCurrent;
     activeLoadsRef.current += 1;
     if (!silent) setLoading(true);
     setRefreshing(true);
@@ -443,7 +467,6 @@ export default function MyFiles() {
   const [pendingOpenId, setPendingOpenId] = useState('');
   const [creatingDocument, setCreatingDocument] = useState(false);
   const handleCreateDocument = useCallback(async (kind) => {
-    setCreateMenuAnchor(null);
     setCreatingDocument(true);
     try {
       const created = await myFilesOfficeAPI.createBlank({ kind, folderId: currentFolderId, libraryId });
@@ -573,7 +596,7 @@ export default function MyFiles() {
     revokeShare: handleRevokeShare,
     shareFolder: handleFolderShare,
     revokeFolderShare: handleRevokeFolderShare,
-  } = useMyFilesShares({ onFileShareChanged: handleFileShareChanged, onFolderShareChanged: handleFolderShareChanged, notifySuccess, notifyWarning, notifyApiError });
+  } = useMyFilesShares({ onFileShareChanged: handleFileShareChanged, onFolderShareChanged: handleFolderShareChanged, notifySuccess, notifyWarning, notifyApiError, isCurrent: isPageCurrent });
 
   // A folder found by search or in recent files may belong to a library other than the one being browsed.
   const navigateToFolder = useCallback((folderId, folderLibraryId) => {
@@ -1098,6 +1121,11 @@ export default function MyFiles() {
     clearSelection();
   }, [currentFolderId, viewParam, searchQuery, typeFilter, dateFilter, clearSelection]);
 
+  // A fresh selection or a navigation wins over an entry pinned via «Сведения».
+  useEffect(() => {
+    setDetailsPinned(null);
+  }, [selectedKeys, currentFolderId, viewParam, libraryId]);
+
   const toggleSelected = useCallback((key) => {
     setSelectedKeys((current) => {
       const next = new Set(current);
@@ -1417,6 +1445,145 @@ export default function MyFiles() {
   const fileMenuAccess = entryAccess(fileActionsMenu.item);
   const folderMenuAccess = entryAccess(folderActionsMenu.folder);
 
+  const pinnedEntry = detailsPinned
+    ? (detailsPinned.kind === 'folder'
+        ? (folders.find((entry) => String(entry.id) === detailsPinned.id)
+          || allFolders.find((entry) => String(entry.id) === detailsPinned.id))
+        : items.find((entry) => String(entry.id) === detailsPinned.id))
+    : null;
+  const detailsTarget = pinnedEntry
+    ? { kind: detailsPinned.kind, entry: pinnedEntry }
+    : (selectedFiles.length + selectedFolders.length === 1
+        ? (selectedFiles.length === 1
+            ? { kind: 'file', entry: selectedFiles[0] }
+            : { kind: 'folder', entry: selectedFolders[0] })
+        : null);
+  const detailsMulti = !pinnedEntry && (selectedFiles.length + selectedFolders.length) > 1
+    ? {
+      files: selectedFiles.length,
+      folders: selectedFolders.length,
+      totalBytes: selectedFiles.reduce((sum, file) => sum + Number(file.original_size_bytes || 0), 0),
+    }
+    : null;
+  const detailsContextTitle = isTrashView
+    ? (isLibraryView ? `Корзина — ${libraryName}` : 'Корзина')
+    : isRecentView
+      ? 'Недавние'
+      : isFavoritesView
+        ? 'Избранное'
+        : isSharedView && breadcrumbs.length === 0
+          ? 'Доступно мне'
+          : breadcrumbs.length > 0
+            ? String(breadcrumbs[breadcrumbs.length - 1]?.name || (isSharedView ? 'Доступно мне' : 'Мой диск'))
+            : isLibraryView ? libraryName : (isSharedView ? 'Доступно мне' : 'Мой диск');
+  const detailsLibraryLabel = (() => {
+    const entry = detailsTarget?.entry;
+    if (!entry) return '';
+    const entryLibraryId = entry.library_id || (isLibraryView ? libraryId : null);
+    if (!entryLibraryId) return '';
+    const name = String(entry.library_name || (String(entryLibraryId) === String(libraryId) ? libraryName : '') || '');
+    const role = String(entry.my_role || (String(entryLibraryId) === String(libraryId) ? libraryRole : '') || '');
+    const roleLabel = LIBRARY_ROLE_LABELS[role] || role;
+    if (!name) return roleLabel;
+    return roleLabel ? `${name} · ${roleLabel}` : name;
+  })();
+  const detailsRetentionText = detailsTarget?.kind === 'file'
+    ? (detailsTarget.entry.library_id || isLibraryView
+        ? 'Бессрочно'
+        : `${formatMyFilesRetentionLabel(detailsTarget.entry.retention_days)}${detailsTarget.entry.expires_at ? ` · до ${formatDateTime(detailsTarget.entry.expires_at)}` : ''}`)
+    : '';
+  const detailsLocationLabel = (() => {
+    if (!detailsTarget) return '';
+    const { kind, entry } = detailsTarget;
+    if (kind === 'folder') {
+      const parentId = String(entry.parent_id || '');
+      if (parentId && folderPathLabels.get(parentId)) return folderPathLabels.get(parentId);
+      return (entry.library_id || isLibraryView) ? libraryName : (isSharedView ? 'Доступно мне' : 'Мой диск');
+    }
+    const folderId = String(entry.folder_id || '');
+    if (folderId) return folderPathLabels.get(folderId) || String(entry.folder_name || '') || 'Мой диск';
+    return String(entry.folder_name || '')
+      || (entry.library_id ? detailsLibraryLabel || libraryName : (isSharedView ? 'Доступно мне' : 'Мой диск'));
+  })();
+  const detailsActions = (() => {
+    if (!detailsTarget) return {};
+    const { kind, entry } = detailsTarget;
+    const access = entryAccess(entry);
+    const readyFile = kind === 'file' && READY_STATUSES.has(String(entry.status || '').toLowerCase());
+    const editorOpen = kind === 'file' && (entry.shared_with_me || opensInEditor(entry));
+    const open = () => {
+      if (kind === 'folder') {
+        navigateToFolder(entry.id, entry.library_id);
+        return;
+      }
+      if (editorOpen) {
+        if (readyFile) openSharedFile(entry);
+        return;
+      }
+      if (readyFile && isMyFilePreviewSupported(entry)) void openDocumentPreview(entry);
+    };
+    return {
+      openLabel: kind === 'folder' ? 'Открыть' : (editorOpen ? sharedOpenLabel(entry) : 'Просмотреть'),
+      onOpen: open,
+      downloadLabel: kind === 'folder' ? 'Скачать (ZIP)' : 'Скачать',
+      onDownload: kind === 'folder'
+        ? (entry.shared_with_me ? null : () => { void handleFolderArchive(entry); })
+        : (readyFile ? () => { void handleDownload(entry); } : null),
+      downloading: kind === 'file' && downloadingFileId === String(entry.id || ''),
+      onShare: access.canShare && !entry.shared_with_me && (kind === 'folder' || readyFile)
+        ? () => { void (kind === 'folder' ? handleFolderShare(entry) : handleShare(entry)); }
+        : null,
+      onMore: (event) => (kind === 'folder' ? openFolderActionsMenu(event, entry) : openFileActionsMenu(event, entry)),
+    };
+  })();
+  const detailsPanelProps = {
+    onClose: () => setDetailsOpen(false),
+    kind: detailsTarget?.kind || null,
+    item: detailsTarget?.entry || null,
+    multi: detailsMulti,
+    contextTitle: detailsContextTitle,
+    contextChips: isLibraryView && libraryRole
+      ? [{ key: 'role', label: LIBRARY_ROLE_LABELS[libraryRole] || libraryRole }]
+      : [],
+    quota: detailsTarget || detailsMulti ? null : activeQuota,
+    ownerText: detailsTarget ? ownerLabel(detailsTarget.entry, currentUsername) : '',
+    locationLabel: detailsLocationLabel,
+    retentionText: detailsRetentionText,
+    libraryLabel: detailsLibraryLabel,
+    ...detailsActions,
+  };
+
+  const sidebarProps = {
+    officeEnabled: officeStatus.enabled,
+    createDisabled: !canWrite || uploading || readingDrop || creatingDocument || isSpecialView,
+    onCreateFolder: () => {
+      setFolderNameInput('');
+      setCreateFolderOpen(true);
+    },
+    onCreateDocument: handleCreateDocument,
+    onUploadFiles: () => fileInputRef.current?.click(),
+    onUploadFolder: () => folderInputRef.current?.click(),
+    isDriveActive: !currentFolderId && !isSpecialView && !isLibraryView,
+    isRecentView,
+    isFavoritesView,
+    isTrashView: isTrashView && !isLibraryView,
+    isSharedView,
+    navigateToView,
+    navigateToTrash,
+    libraries,
+    canManageLibraries,
+    activeLibraryId: isLibraryView ? libraryId : null,
+    onLibraryOpen: (library) => {
+      // An administrator who is not a member can only configure the library, not browse it.
+      if (!library.my_role && canManageLibraries) setLibraryDialog({ open: true, library });
+      else navigateToLibrary(library.id);
+    },
+    onLibraryCreate: () => setLibraryDialog({ open: true, library: null }),
+    quota: activeQuota,
+    quotaLoading: loading,
+    isLibraryView,
+  };
+
   return (
     <MainLayout showDatabaseSelector={false} headerMode="integrated">
       <PageShell>
@@ -1426,259 +1593,31 @@ export default function MyFiles() {
             display: 'flex',
             gap: 2.5,
             alignItems: 'stretch',
-            flexDirection: { xs: 'column', lg: 'row' },
           }}
         >
-          <Paper
-            variant="outlined"
-            sx={{
-              ...getOfficePanelSx(ui),
-              width: { lg: 252 },
-              flexShrink: 0,
-              p: 2,
-              alignSelf: { lg: 'flex-start' },
-              position: { lg: 'sticky' },
-              top: { lg: 16 },
-              display: 'flex',
-              flexDirection: { xs: 'row', lg: 'column' },
-              flexWrap: { xs: 'wrap', lg: 'nowrap' },
-              gap: 2,
+          {!isBelowLg ? (
+            <MyFilesSidebar
+              {...sidebarProps}
+              collapsed={navCollapsed}
+              onToggleCollapse={toggleNavCollapsed}
+            />
+          ) : null}
+          <Drawer
+            variant="temporary"
+            anchor="left"
+            open={navOpen}
+            onClose={() => setNavOpen(false)}
+            PaperProps={{
+              sx: { width: 280 },
+              'data-testid': 'my-files-nav-drawer',
             }}
           >
-            <Box sx={{ minWidth: { lg: '100%' } }}>
-              <Button
-                variant="contained"
-                startIcon={<AddRoundedIcon />}
-                onClick={(event) => setCreateMenuAnchor(event.currentTarget)}
-                disabled={!canWrite || uploading || readingDrop || creatingDocument || isSpecialView}
-                data-testid="my-files-create-button"
-                sx={{
-                  alignSelf: 'flex-start',
-                  borderRadius: '16px',
-                  px: 3,
-                  py: 1.6,
-                  fontWeight: 600,
-                  fontSize: '0.95rem',
-                  boxShadow: theme.shadows[3],
-                  '&:hover': { boxShadow: theme.shadows[6] },
-                }}
-              >
-                Создать
-              </Button>
-              <Menu
-                anchorEl={createMenuAnchor}
-                open={Boolean(createMenuAnchor)}
-                onClose={() => setCreateMenuAnchor(null)}
-              >
-                <MenuItem
-                  data-testid="my-files-create-folder-button"
-                  onClick={() => {
-                    setCreateMenuAnchor(null);
-                    setFolderNameInput('');
-                    setCreateFolderOpen(true);
-                  }}
-                >
-                  <ListItemIcon><CreateNewFolderOutlinedIcon fontSize="small" /></ListItemIcon>
-                  <ListItemText>Новая папка</ListItemText>
-                </MenuItem>
-                {officeStatus.enabled ? [
-                  ['docx', 'Документ', DescriptionOutlinedIcon],
-                  ['xlsx', 'Таблица', TableChartOutlinedIcon],
-                  ['pptx', 'Презентация', SlideshowOutlinedIcon],
-                ].map(([kind, label, KindIcon], index) => (
-                  <MenuItem
-                    key={kind}
-                    divider={index === 2}
-                    data-testid={`my-files-create-${kind}`}
-                    onClick={() => void handleCreateDocument(kind)}
-                  >
-                    <ListItemIcon><KindIcon fontSize="small" /></ListItemIcon>
-                    <ListItemText>{label}</ListItemText>
-                  </MenuItem>
-                )) : null}
-                <MenuItem
-                  data-testid="my-files-upload-files-menu"
-                  onClick={() => {
-                    setCreateMenuAnchor(null);
-                    fileInputRef.current?.click();
-                  }}
-                >
-                  <ListItemIcon><CloudUploadOutlinedIcon fontSize="small" /></ListItemIcon>
-                  <ListItemText>Загрузить файлы</ListItemText>
-                </MenuItem>
-                <MenuItem
-                  data-testid="my-files-upload-folder-button"
-                  onClick={() => {
-                    setCreateMenuAnchor(null);
-                    folderInputRef.current?.click();
-                  }}
-                >
-                  <ListItemIcon><DriveFolderUploadOutlinedIcon fontSize="small" /></ListItemIcon>
-                  <ListItemText>Загрузить папку</ListItemText>
-                </MenuItem>
-              </Menu>
-            </Box>
-
-            <Stack
-              spacing={0.5}
-              component="nav"
-              aria-label="Разделы файлов"
-              sx={{ minWidth: { lg: '100%' }, flex: { xs: 1, lg: 'unset' } }}
-            >
-              {[
-                {
-                  key: 'drive',
-                  icon: <FolderOutlinedIcon fontSize="small" />,
-                  label: 'Мой диск',
-                  active: !currentFolderId && !isSpecialView && !isLibraryView,
-                  onClick: () => navigateToView(null),
-                  testId: 'my-files-nav-drive',
-                },
-                {
-                  key: 'recent',
-                  icon: <HistoryOutlinedIcon fontSize="small" />,
-                  label: 'Недавние',
-                  active: isRecentView,
-                  onClick: () => navigateToView('recent'),
-                  testId: 'my-files-nav-recent',
-                },
-                {
-                  key: 'favorites',
-                  icon: <StarOutlineRoundedIcon fontSize="small" />,
-                  label: 'Избранное',
-                  active: isFavoritesView,
-                  onClick: () => navigateToView('favorites'),
-                  testId: 'my-files-nav-favorites',
-                },
-                {
-                  key: 'trash',
-                  icon: <DeleteOutlineIcon fontSize="small" />,
-                  label: 'Корзина',
-                  active: isTrashView && !isLibraryView,
-                  onClick: navigateToTrash,
-                  testId: 'my-files-nav-trash',
-                },
-                ...(officeStatus.enabled ? [{
-                  key: 'shared-editing',
-                  icon: <GroupOutlinedIcon fontSize="small" />,
-                  label: 'Доступно мне',
-                  active: isSharedView,
-                  onClick: () => navigateToView('shared'),
-                  testId: 'my-files-nav-shared-editing',
-                }] : []),
-              ].map((item) => (
-                <Box
-                  key={item.key}
-                  component="button"
-                  type="button"
-                  onClick={item.onClick}
-                  aria-current={item.active ? 'page' : undefined}
-                  data-testid={item.testId}
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 1.25,
-                    px: 1.5,
-                    py: 1,
-                    border: 'none',
-                    font: 'inherit',
-                    textAlign: 'left',
-                    width: '100%',
-                    borderRadius: '999px',
-                    cursor: 'pointer',
-                    fontWeight: 700,
-                    color: item.active ? 'primary.main' : 'text.primary',
-                    bgcolor: item.active ? alpha(theme.palette.primary.main, 0.12) : 'transparent',
-                    '&:hover': { bgcolor: 'action.hover' },
-                    '&:focus-visible': { outline: `2px solid ${theme.palette.primary.main}`, outlineOffset: 2 },
-                  }}
-                >
-                  {item.icon}
-                  <Typography variant="body2" sx={{ fontWeight: 700 }}>{item.label}</Typography>
-                </Box>
-              ))}
-            </Stack>
-
-            {libraries.length > 0 || canManageLibraries ? (
-              <Stack spacing={0.5} component="nav" aria-label="Общие папки" sx={{ minWidth: { lg: '100%' }, flex: { xs: 1, lg: 'unset' } }} data-testid="my-files-libraries">
-                <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 1.5 }}>
-                  <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Общие папки</Typography>
-                  {canManageLibraries ? (
-                    <Tooltip title="Создать общую папку">
-                      <IconButton
-                        size="small"
-                        aria-label="Создать общую папку"
-                        data-testid="my-files-library-add"
-                        onClick={() => setLibraryDialog({ open: true, library: null })}
-                      >
-                        <AddRoundedIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  ) : null}
-                </Stack>
-                {libraries.map((library) => {
-                  const active = isLibraryView && String(libraryId) === String(library.id);
-                  return (
-                    <Box
-                      key={library.id}
-                      component="button"
-                      type="button"
-                      onClick={() => {
-                        // An administrator who is not a member can only configure the library, not browse it.
-                        if (!library.my_role && canManageLibraries) setLibraryDialog({ open: true, library });
-                        else navigateToLibrary(library.id);
-                      }}
-                      aria-current={active ? 'page' : undefined}
-                      data-testid={`my-files-library-${library.id}`}
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1.25,
-                        px: 1.5,
-                        py: 1,
-                        border: 'none',
-                        font: 'inherit',
-                        textAlign: 'left',
-                        width: '100%',
-                        borderRadius: '999px',
-                        cursor: 'pointer',
-                        fontWeight: 700,
-                        color: active ? 'primary.main' : 'text.primary',
-                        bgcolor: active ? alpha(theme.palette.primary.main, 0.12) : 'transparent',
-                        '&:hover': { bgcolor: 'action.hover' },
-                        '&:focus-visible': { outline: `2px solid ${theme.palette.primary.main}`, outlineOffset: 2 },
-                      }}
-                    >
-                      <FolderSharedOutlinedIcon fontSize="small" />
-                      <Typography variant="body2" noWrap sx={{ fontWeight: 700, minWidth: 0 }}>{library.name}</Typography>
-                    </Box>
-                  );
-                })}
-              </Stack>
-            ) : null}
-
-            {activeQuota || loading ? (
-              <Box sx={{ minWidth: { xs: '100%', lg: '100%' }, mt: { lg: 1.5 } }} data-testid="my-files-quota">
-                <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
-                  <Typography variant="caption" color="text.secondary">
-                    {isLibraryView ? 'Общая папка' : 'Хранилище'}
-                  </Typography>
-                  <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                    {activeQuota
-                      ? (quotaLimit > 0 ? `${formatFileSize(quotaUsed)} / ${formatFileSize(quotaLimit)}` : `${formatFileSize(quotaUsed)} · без лимита`)
-                      : '—'}
-                  </Typography>
-                </Stack>
-                {activeQuota ? (
-                  quotaLimit > 0
-                    ? <LinearProgress variant="determinate" value={quotaPercent} sx={{ height: 6, borderRadius: 1 }} />
-                    : null
-                ) : (
-                  <Skeleton variant="rounded" height={6} />
-                )}
-              </Box>
-            ) : null}
-          </Paper>
+            <MyFilesSidebar
+              {...sidebarProps}
+              inDrawer
+              onNavigate={() => setNavOpen(false)}
+            />
+          </Drawer>
 
           <Box
             sx={{
@@ -1754,98 +1693,129 @@ export default function MyFiles() {
               onChange={handleFolderInputChange}
             />
 
-            <TextField
-              fullWidth
-              placeholder="Поиск по всему диску"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              inputProps={{ 'data-testid': 'my-files-search-input', 'aria-label': 'Поиск файла или папки по всему диску' }}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchOutlinedIcon />
-                  </InputAdornment>
-                ),
-                endAdornment: searchQuery ? (
-                  <InputAdornment position="end">
-                    <IconButton size="small" aria-label="Очистить поиск" onClick={() => setSearchQuery('')}>
-                      <ClearRoundedIcon fontSize="small" />
-                    </IconButton>
-                  </InputAdornment>
-                ) : null,
-              }}
+            <Box
               sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
                 mb: 1.5,
-                maxWidth: 720,
-                '& .MuiOutlinedInput-root': {
-                  borderRadius: '999px',
-                  bgcolor: alpha(theme.palette.text.primary, theme.palette.mode === 'dark' ? 0.08 : 0.05),
-                  '& fieldset': { borderColor: 'transparent' },
-                  '&:hover fieldset': { borderColor: 'transparent' },
-                  '&.Mui-focused': { bgcolor: 'background.paper', boxShadow: theme.shadows[3] },
-                  '&.Mui-focused fieldset': { borderColor: theme.palette.primary.main },
-                },
+                flexWrap: 'wrap',
+                rowGap: 1,
               }}
-            />
+            >
+              {isBelowLg ? (
+                <IconButton
+                  aria-label="Открыть навигацию по файлам"
+                  data-testid="my-files-nav-toggle"
+                  onClick={() => setNavOpen(true)}
+                  sx={{ flexShrink: 0 }}
+                >
+                  <MenuOutlinedIcon />
+                </IconButton>
+              ) : null}
 
-            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ mb: 1.5, minHeight: 40 }}>
-              {isTrashView ? (
-                <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0 }}>
-                  <Typography variant="h5" sx={{ fontWeight: 700 }} noWrap>
-                    {isLibraryView ? `Корзина — ${libraryName}` : 'Корзина'}
-                  </Typography>
-                  {(items.length > 0 || folders.length > 0) ? (
-                    <Button
-                      size="small"
-                      color="error"
-                      variant="outlined"
-                      disabled={!canWrite}
-                      onClick={() => void handleEmptyTrash()}
-                      data-testid="my-files-empty-trash"
-                    >
-                      Очистить корзину
-                    </Button>
-                  ) : null}
-                </Stack>
-              ) : isRecentView || isFavoritesView || (isSharedView && breadcrumbs.length === 0) ? (
-                <Typography variant="h5" sx={{ fontWeight: 700 }}>
-                  {isRecentView ? 'Недавние' : isSharedView ? 'Доступно мне' : 'Избранное'}
-                </Typography>
-              ) : breadcrumbs.length > 0 ? (
-                <Breadcrumbs aria-label="Путь по папкам" data-testid="my-files-breadcrumbs" sx={{ minWidth: 0, flexShrink: 1 }}>
-                  <Link
-                    component="button"
-                    underline="hover"
-                    color="text.secondary"
-                    onClick={() => navigateToFolder(null)}
-                    sx={{ fontWeight: 600, cursor: 'pointer', fontSize: '1.05rem' }}
-                  >
-                    {isSharedView ? 'Доступно мне' : isLibraryView ? libraryName : 'Мой диск'}
-                  </Link>
-                  {breadcrumbs.map((crumb, index) => {
-                    const isLast = index === breadcrumbs.length - 1;
-                    return isLast ? (
-                      <Typography key={crumb.id} color="text.primary" sx={{ fontWeight: 700, fontSize: '1.05rem' }}>
-                        {crumb.name}
-                      </Typography>
-                    ) : (
-                      <Link
-                        key={crumb.id}
-                        component="button"
-                        underline="hover"
-                        color="text.secondary"
-                        onClick={() => navigateToFolder(crumb.id)}
-                        sx={{ fontWeight: 600, cursor: 'pointer', fontSize: '1.05rem' }}
+              <Box sx={{ flex: '1 1 auto', minWidth: 0, display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                {isTrashView ? (
+                  <>
+                    <Typography variant="h5" sx={{ fontWeight: 700 }} noWrap>
+                      {isLibraryView ? `Корзина — ${libraryName}` : 'Корзина'}
+                    </Typography>
+                    {(items.length > 0 || folders.length > 0) ? (
+                      <Button
+                        size="small"
+                        color="error"
+                        variant="outlined"
+                        disabled={!canWrite}
+                        onClick={() => void handleEmptyTrash()}
+                        data-testid="my-files-empty-trash"
                       >
-                        {crumb.name}
-                      </Link>
-                    );
-                  })}
-                </Breadcrumbs>
-              ) : (
-                <Typography variant="h5" sx={{ fontWeight: 700 }} noWrap>{isLibraryView ? libraryName : 'Мой диск'}</Typography>
-              )}
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+                        Очистить корзину
+                      </Button>
+                    ) : null}
+                  </>
+                ) : isRecentView || isFavoritesView || (isSharedView && breadcrumbs.length === 0) ? (
+                  <Typography variant="h5" sx={{ fontWeight: 700 }} noWrap>
+                    {isRecentView ? 'Недавние' : isSharedView ? 'Доступно мне' : 'Избранное'}
+                  </Typography>
+                ) : breadcrumbs.length > 0 ? (
+                  <Breadcrumbs
+                    aria-label="Путь по папкам"
+                    data-testid="my-files-breadcrumbs"
+                    maxItems={isXs ? 4 : 8}
+                    itemsBeforeCollapse={1}
+                    itemsAfterCollapse={2}
+                    sx={{ minWidth: 0, flexShrink: 1 }}
+                  >
+                    <Link
+                      component="button"
+                      underline="hover"
+                      color="text.secondary"
+                      onClick={() => navigateToFolder(null)}
+                      sx={{ fontWeight: 600, cursor: 'pointer', fontSize: '1.05rem' }}
+                    >
+                      {isSharedView ? 'Доступно мне' : isLibraryView ? libraryName : 'Мой диск'}
+                    </Link>
+                    {breadcrumbs.map((crumb, index) => {
+                      const isLast = index === breadcrumbs.length - 1;
+                      return isLast ? (
+                        <Typography key={crumb.id} color="text.primary" sx={{ fontWeight: 700, fontSize: '1.05rem' }} noWrap>
+                          {crumb.name}
+                        </Typography>
+                      ) : (
+                        <Link
+                          key={crumb.id}
+                          component="button"
+                          underline="hover"
+                          color="text.secondary"
+                          onClick={() => navigateToFolder(crumb.id)}
+                          sx={{ fontWeight: 600, cursor: 'pointer', fontSize: '1.05rem' }}
+                        >
+                          {crumb.name}
+                        </Link>
+                      );
+                    })}
+                  </Breadcrumbs>
+                ) : (
+                  <Typography variant="h5" sx={{ fontWeight: 700 }} noWrap>{isLibraryView ? libraryName : 'Мой диск'}</Typography>
+                )}
+              </Box>
+
+              <TextField
+                size="small"
+                placeholder="Поиск по всему диску"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                inputProps={{ 'data-testid': 'my-files-search-input', 'aria-label': 'Поиск файла или папки по всему диску' }}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchOutlinedIcon fontSize="small" />
+                    </InputAdornment>
+                  ),
+                  endAdornment: searchQuery ? (
+                    <InputAdornment position="end">
+                      <IconButton size="small" aria-label="Очистить поиск" onClick={() => setSearchQuery('')}>
+                        <ClearRoundedIcon fontSize="small" />
+                      </IconButton>
+                    </InputAdornment>
+                  ) : null,
+                }}
+                sx={{
+                  order: { xs: 3, sm: 0 },
+                  flexBasis: { xs: '100%', sm: 'auto' },
+                  width: { xs: '100%', sm: 320 },
+                  '& .MuiOutlinedInput-root': {
+                    borderRadius: '999px',
+                    bgcolor: alpha(theme.palette.text.primary, theme.palette.mode === 'dark' ? 0.08 : 0.05),
+                    '& fieldset': { borderColor: 'transparent' },
+                    '&:hover fieldset': { borderColor: 'transparent' },
+                    '&.Mui-focused': { bgcolor: 'background.paper', boxShadow: theme.shadows[3] },
+                    '&.Mui-focused fieldset': { borderColor: theme.palette.primary.main },
+                  },
+                }}
+              />
+
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0, order: { xs: 2, sm: 0 } }}>
                 {isLibraryView && libraryRole ? (
                   <Chip
                     size="small"
@@ -1878,6 +1848,31 @@ export default function MyFiles() {
                     </IconButton>
                   </Tooltip>
                 ) : null}
+                {!isTrashView ? (
+                  <Stack direction="row" spacing={1} alignItems="center" data-testid="my-files-filters">
+                    {[
+                      ['type', typeFilter, typeFilterLabel(typeFilter) || 'Тип', TYPE_FILTERS, setTypeFilter],
+                      ['date', dateFilter, dateFilterLabel(dateFilter) || 'Изменено', DATE_FILTERS, setDateFilter],
+                    ].map(([kind, value, label, options, setValue]) => (
+                      <Chip
+                        key={kind}
+                        clickable
+                        variant={value ? 'filled' : 'outlined'}
+                        color={value ? 'primary' : 'default'}
+                        label={label}
+                        data-testid={`my-files-filter-${kind}`}
+                        onClick={(event) => setFilterMenu({ kind, anchor: event.currentTarget })}
+                        onDelete={value ? () => setValue('') : undefined}
+                        deleteIcon={value ? <ClearRoundedIcon /> : undefined}
+                        icon={value ? undefined : <ArrowDropDownRoundedIcon />}
+                        sx={{ borderRadius: '8px', flexDirection: 'row-reverse', pl: value ? 0 : 0.5, '& .MuiChip-icon': { ml: -0.5, mr: 0.5 } }}
+                        aria-label={`Фильтр: ${label}`}
+                        aria-haspopup="menu"
+                        aria-controls={options.length ? `my-files-filter-menu-${kind}` : undefined}
+                      />
+                    ))}
+                  </Stack>
+                ) : null}
                 <ToggleButtonGroup
                   size="small"
                   exclusive
@@ -1892,63 +1887,51 @@ export default function MyFiles() {
                   <ToggleButton value="list" aria-label="Список" data-testid="my-files-view-list">
                     <Tooltip title="Список"><ViewListOutlinedIcon fontSize="small" /></Tooltip>
                   </ToggleButton>
-                  <ToggleButton value="grid" aria-label="Сетка" data-testid="my-files-view-toggle">
+                  <ToggleButton value="grid" aria-label="Сетка" data-testid="my-files-view-grid">
                     <Tooltip title="Сетка"><GridViewOutlinedIcon fontSize="small" /></Tooltip>
                   </ToggleButton>
                 </ToggleButtonGroup>
+                <Tooltip title="Сведения">
+                  <IconButton
+                    aria-label="Сведения"
+                    aria-pressed={detailsOpen}
+                    data-testid="my-files-details-toggle"
+                    color={detailsOpen ? 'primary' : 'default'}
+                    onClick={() => setDetailsOpen((open) => !open)}
+                  >
+                    <InfoOutlinedIcon />
+                  </IconButton>
+                </Tooltip>
                 <Tooltip title="Обновить">
                   <IconButton aria-label="Обновить список" onClick={() => loadData({ silent: true })} disabled={refreshing}>
                     {refreshing ? <CircularProgress size={20} /> : <RefreshOutlinedIcon />}
                   </IconButton>
                 </Tooltip>
               </Stack>
-            </Stack>
+            </Box>
 
             {!isTrashView ? (
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5, flexWrap: 'wrap', rowGap: 1 }} data-testid="my-files-filters">
-                {[
-                  ['type', typeFilter, typeFilterLabel(typeFilter) || 'Тип', TYPE_FILTERS, setTypeFilter],
-                  ['date', dateFilter, dateFilterLabel(dateFilter) || 'Изменено', DATE_FILTERS, setDateFilter],
-                ].map(([kind, value, label, options, setValue]) => (
-                  <Chip
-                    key={kind}
-                    clickable
-                    variant={value ? 'filled' : 'outlined'}
-                    color={value ? 'primary' : 'default'}
-                    label={label}
-                    data-testid={`my-files-filter-${kind}`}
-                    onClick={(event) => setFilterMenu({ kind, anchor: event.currentTarget })}
-                    onDelete={value ? () => setValue('') : undefined}
-                    deleteIcon={value ? <ClearRoundedIcon /> : undefined}
-                    icon={value ? undefined : <ArrowDropDownRoundedIcon />}
-                    sx={{ borderRadius: '8px', flexDirection: 'row-reverse', pl: value ? 0 : 0.5, '& .MuiChip-icon': { ml: -0.5, mr: 0.5 } }}
-                    aria-label={`Фильтр: ${label}`}
-                    aria-haspopup="menu"
-                    aria-controls={options.length ? `my-files-filter-menu-${kind}` : undefined}
-                  />
+              <Menu
+                id={`my-files-filter-menu-${filterMenu.kind}`}
+                anchorEl={filterMenu.anchor}
+                open={Boolean(filterMenu.anchor)}
+                onClose={() => setFilterMenu({ kind: '', anchor: null })}
+              >
+                {(filterMenu.kind === 'date' ? DATE_FILTERS : TYPE_FILTERS).map((option) => (
+                  <MenuItem
+                    key={option.value}
+                    selected={(filterMenu.kind === 'date' ? dateFilter : typeFilter) === option.value}
+                    data-testid={`my-files-filter-option-${option.value}`}
+                    onClick={() => {
+                      if (filterMenu.kind === 'date') setDateFilter(option.value);
+                      else setTypeFilter(option.value);
+                      setFilterMenu({ kind: '', anchor: null });
+                    }}
+                  >
+                    {option.label}
+                  </MenuItem>
                 ))}
-                <Menu
-                  id={`my-files-filter-menu-${filterMenu.kind}`}
-                  anchorEl={filterMenu.anchor}
-                  open={Boolean(filterMenu.anchor)}
-                  onClose={() => setFilterMenu({ kind: '', anchor: null })}
-                >
-                  {(filterMenu.kind === 'date' ? DATE_FILTERS : TYPE_FILTERS).map((option) => (
-                    <MenuItem
-                      key={option.value}
-                      selected={(filterMenu.kind === 'date' ? dateFilter : typeFilter) === option.value}
-                      data-testid={`my-files-filter-option-${option.value}`}
-                      onClick={() => {
-                        if (filterMenu.kind === 'date') setDateFilter(option.value);
-                        else setTypeFilter(option.value);
-                        setFilterMenu({ kind: '', anchor: null });
-                      }}
-                    >
-                      {option.label}
-                    </MenuItem>
-                  ))}
-                </Menu>
-              </Stack>
+              </Menu>
             ) : null}
 
             {selectedKeys.size > 0 ? (
@@ -2281,7 +2264,9 @@ export default function MyFiles() {
             <Box data-testid="my-files-grid">
               {!loading && visibleItems.length === 0 && visibleFolders.length === 0 ? (
                 <Stack spacing={1.5} alignItems="center" sx={{ py: 6 }}>
-                  <FolderOutlinedIcon sx={{ fontSize: 44, color: 'text.disabled' }} />
+                  {isTrashView
+                    ? <DeleteOutlineIcon sx={{ fontSize: 44, color: 'text.disabled' }} />
+                    : <FolderOutlinedIcon sx={{ fontSize: 44, color: 'text.disabled' }} />}
                   <Typography color="text.secondary" align="center">
                     {isTrashView ? 'Корзина пуста.' : isRecentView ? 'Нет недавних файлов.' : isSharedView ? (currentFolderId ? 'В этой папке пока нет файлов.' : 'Вам пока никто не открыл файлы и папки для совместной работы.') : isFavoritesView ? 'В избранном пока пусто — отметьте файлы звёздочкой.' : isLibraryView && !canWrite ? 'В этой папке пока нет файлов.' : 'Здесь пусто — перетащите файлы или папку.'}
                   </Typography>
@@ -2404,12 +2389,28 @@ export default function MyFiles() {
               </Typography>
             )}
           </Box>
+
+          {!isBelowLg && detailsOpen ? (
+            <MyFilesDetailsPanel {...detailsPanelProps} />
+          ) : null}
+          <Drawer
+            variant="temporary"
+            anchor="right"
+            open={isBelowLg && detailsOpen}
+            onClose={() => setDetailsOpen(false)}
+            PaperProps={{ sx: { width: 320 } }}
+          >
+            <MyFilesDetailsPanel {...detailsPanelProps} inDrawer />
+          </Drawer>
         </Box>
 
           <FileActionsContextMenu
             open={Boolean(fileActionsMenu.anchorPosition)}
             anchorPosition={fileActionsMenu.anchorPosition}
             fileName={getMyFileName(fileActionsMenu.item)}
+            onDetails={fileActionsMenu.item
+              ? () => openDetailsFor('file', fileActionsMenu.item)
+              : undefined}
             canDownload={Boolean(
               fileActionsMenu.item
               && READY_STATUSES.has(String(fileActionsMenu.item.status || '').toLowerCase()),
@@ -2546,29 +2547,22 @@ export default function MyFiles() {
           />
 
           <Menu
-            open={Boolean(folderActionsMenu.anchorPosition) && Boolean(folderActionsMenu.folder?.shared_with_me)}
+            open={Boolean(folderActionsMenu.anchorPosition) && Boolean(folderActionsMenu.folder)}
             onClose={closeFolderActionsMenu}
             anchorReference="anchorPosition"
             anchorPosition={folderActionsMenu.anchorPosition || undefined}
           >
             <MenuItem
-              data-testid="folder-action-open-shared"
+              data-testid="folder-action-details"
               onClick={() => {
                 const folder = folderActionsMenu.folder;
                 closeFolderActionsMenu();
-                if (folder) navigateToFolder(folder.id, folder.library_id);
+                if (folder) openDetailsFor('folder', folder);
               }}
             >
-              <ListItemIcon><FolderOutlinedIcon fontSize="small" /></ListItemIcon>
-              <ListItemText>Открыть</ListItemText>
+              <ListItemIcon><InfoOutlinedIcon fontSize="small" /></ListItemIcon>
+              <ListItemText>Сведения</ListItemText>
             </MenuItem>
-          </Menu>
-          <Menu
-            open={Boolean(folderActionsMenu.anchorPosition) && !folderActionsMenu.folder?.shared_with_me}
-            onClose={closeFolderActionsMenu}
-            anchorReference="anchorPosition"
-            anchorPosition={folderActionsMenu.anchorPosition || undefined}
-          >
             <MenuItem
               data-testid="folder-action-open"
               onClick={() => {
@@ -2580,112 +2574,123 @@ export default function MyFiles() {
               <ListItemIcon><FolderOutlinedIcon fontSize="small" /></ListItemIcon>
               <ListItemText>Открыть</ListItemText>
             </MenuItem>
-            <MenuItem
-              data-testid="folder-action-rename"
-              disabled={!folderMenuAccess.canWrite}
-              onClick={() => {
-                const folder = folderActionsMenu.folder;
-                closeFolderActionsMenu();
-                if (folder) openRenameDialog('folder', folder.id, folder.name);
-              }}
-            >
-              <ListItemIcon><DriveFileRenameOutlineRoundedIcon fontSize="small" /></ListItemIcon>
-              <ListItemText>Переименовать</ListItemText>
-            </MenuItem>
-            {folderMenuAccess.library ? null : (
+            {folderActionsMenu.folder?.shared_with_me ? null : [
               <MenuItem
-                data-testid="folder-action-favorite"
+                key="rename"
+                data-testid="folder-action-rename"
                 disabled={!folderMenuAccess.canWrite}
                 onClick={() => {
                   const folder = folderActionsMenu.folder;
                   closeFolderActionsMenu();
-                  if (folder) void handleToggleFavorite(folder, 'folder');
+                  if (folder) openRenameDialog('folder', folder.id, folder.name);
                 }}
               >
-                <ListItemIcon>
-                  {folderActionsMenu.folder?.is_favorite
-                    ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
-                    : <StarOutlineRoundedIcon fontSize="small" />}
-                </ListItemIcon>
-                <ListItemText>{folderActionsMenu.folder?.is_favorite ? 'Убрать из избранного' : 'В избранное'}</ListItemText>
-              </MenuItem>
-            )}
-            <MenuItem
-              data-testid="folder-action-archive"
-              onClick={() => {
-                const folder = folderActionsMenu.folder;
-                closeFolderActionsMenu();
-                if (folder) void handleFolderArchive(folder);
-              }}
-            >
-              <ListItemIcon><ArchiveOutlinedIcon fontSize="small" /></ListItemIcon>
-              <ListItemText>Скачать папку (ZIP)</ListItemText>
-            </MenuItem>
-            <MenuItem
-              data-testid="folder-action-move"
-              disabled={!folderMenuAccess.canWrite}
-              onClick={() => {
-                const folder = folderActionsMenu.folder;
-                closeFolderActionsMenu();
-                if (folder) openMoveDialog('folder', folder.id);
-              }}
-            >
-              <ListItemIcon><DriveFileMoveOutlinedIcon fontSize="small" /></ListItemIcon>
-              <ListItemText>Переместить</ListItemText>
-            </MenuItem>
-            <MenuItem
-              data-testid="folder-action-share"
-              disabled={!folderMenuAccess.canShare}
-              onClick={() => {
-                const folder = folderActionsMenu.folder;
-                closeFolderActionsMenu();
-                if (folder) void handleFolderShare(folder);
-              }}
-            >
-              <ListItemIcon><ShareOutlinedIcon fontSize="small" /></ListItemIcon>
-              <ListItemText>Поделиться папкой</ListItemText>
-            </MenuItem>
-            {officeStatus.enabled && !folderMenuAccess.library ? (
+                <ListItemIcon><DriveFileRenameOutlineRoundedIcon fontSize="small" /></ListItemIcon>
+                <ListItemText>Переименовать</ListItemText>
+              </MenuItem>,
+              folderMenuAccess.library ? null : (
+                <MenuItem
+                  key="favorite"
+                  data-testid="folder-action-favorite"
+                  disabled={!folderMenuAccess.canWrite}
+                  onClick={() => {
+                    const folder = folderActionsMenu.folder;
+                    closeFolderActionsMenu();
+                    if (folder) void handleToggleFavorite(folder, 'folder');
+                  }}
+                >
+                  <ListItemIcon>
+                    {folderActionsMenu.folder?.is_favorite
+                      ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
+                      : <StarOutlineRoundedIcon fontSize="small" />}
+                  </ListItemIcon>
+                  <ListItemText>{folderActionsMenu.folder?.is_favorite ? 'Убрать из избранного' : 'В избранное'}</ListItemText>
+                </MenuItem>
+              ),
               <MenuItem
-                data-testid="folder-action-collaborators"
+                key="archive"
+                data-testid="folder-action-archive"
+                onClick={() => {
+                  const folder = folderActionsMenu.folder;
+                  closeFolderActionsMenu();
+                  if (folder) void handleFolderArchive(folder);
+                }}
+              >
+                <ListItemIcon><ArchiveOutlinedIcon fontSize="small" /></ListItemIcon>
+                <ListItemText>Скачать папку (ZIP)</ListItemText>
+              </MenuItem>,
+              <MenuItem
+                key="move"
+                data-testid="folder-action-move"
+                disabled={!folderMenuAccess.canWrite}
+                onClick={() => {
+                  const folder = folderActionsMenu.folder;
+                  closeFolderActionsMenu();
+                  if (folder) openMoveDialog('folder', folder.id);
+                }}
+              >
+                <ListItemIcon><DriveFileMoveOutlinedIcon fontSize="small" /></ListItemIcon>
+                <ListItemText>Переместить</ListItemText>
+              </MenuItem>,
+              <MenuItem
+                key="share"
+                data-testid="folder-action-share"
                 disabled={!folderMenuAccess.canShare}
                 onClick={() => {
                   const folder = folderActionsMenu.folder;
                   closeFolderActionsMenu();
-                  if (folder) setCollaboratorsFolder(folder);
+                  if (folder) void handleFolderShare(folder);
                 }}
               >
-                <ListItemIcon><GroupOutlinedIcon fontSize="small" /></ListItemIcon>
-                <ListItemText>Совместный доступ</ListItemText>
-              </MenuItem>
-            ) : null}
-            {folderActionsMenu.folder?.is_shared ? (
+                <ListItemIcon><ShareOutlinedIcon fontSize="small" /></ListItemIcon>
+                <ListItemText>Поделиться папкой</ListItemText>
+              </MenuItem>,
+              officeStatus.enabled && !folderMenuAccess.library ? (
+                <MenuItem
+                  key="collaborators"
+                  data-testid="folder-action-collaborators"
+                  disabled={!folderMenuAccess.canShare}
+                  onClick={() => {
+                    const folder = folderActionsMenu.folder;
+                    closeFolderActionsMenu();
+                    if (folder) setCollaboratorsFolder(folder);
+                  }}
+                >
+                  <ListItemIcon><GroupOutlinedIcon fontSize="small" /></ListItemIcon>
+                  <ListItemText>Совместный доступ</ListItemText>
+                </MenuItem>
+              ) : null,
+              folderActionsMenu.folder?.is_shared ? (
+                <MenuItem
+                  key="revoke-share"
+                  data-testid="folder-action-revoke-share"
+                  disabled={!folderMenuAccess.canShare}
+                  onClick={() => {
+                    const folder = folderActionsMenu.folder;
+                    closeFolderActionsMenu();
+                    if (folder) void handleRevokeFolderShare(folder.id);
+                  }}
+                >
+                  <ListItemIcon><LinkOutlinedIcon fontSize="small" /></ListItemIcon>
+                  <ListItemText>Отключить ссылку</ListItemText>
+                </MenuItem>
+              ) : null,
+              <Divider key="danger-divider" />,
               <MenuItem
-                data-testid="folder-action-revoke-share"
-                disabled={!folderMenuAccess.canShare}
+                key="delete"
+                data-testid="folder-action-delete"
+                disabled={!folderMenuAccess.canWrite}
                 onClick={() => {
                   const folder = folderActionsMenu.folder;
                   closeFolderActionsMenu();
-                  if (folder) void handleRevokeFolderShare(folder.id);
+                  if (folder) void handleDeleteFolder(folder);
                 }}
+                sx={{ color: 'error.main' }}
               >
-                <ListItemIcon><LinkOutlinedIcon fontSize="small" /></ListItemIcon>
-                <ListItemText>Отключить ссылку</ListItemText>
-              </MenuItem>
-            ) : null}
-            <MenuItem
-              data-testid="folder-action-delete"
-              disabled={!folderMenuAccess.canWrite}
-              onClick={() => {
-                const folder = folderActionsMenu.folder;
-                closeFolderActionsMenu();
-                if (folder) void handleDeleteFolder(folder);
-              }}
-              sx={{ color: 'error.main' }}
-            >
-              <ListItemIcon sx={{ color: 'inherit' }}><DeleteOutlineIcon fontSize="small" /></ListItemIcon>
-              <ListItemText>Удалить</ListItemText>
-            </MenuItem>
+                <ListItemIcon sx={{ color: 'inherit' }}><DeleteOutlineIcon fontSize="small" /></ListItemIcon>
+                <ListItemText>Удалить</ListItemText>
+              </MenuItem>,
+            ]}
           </Menu>
 
         <Dialog open={uploadDialogOpen} onClose={closeUploadDialog} maxWidth="sm" fullWidth>
