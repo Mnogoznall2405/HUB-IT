@@ -3484,12 +3484,14 @@
       "evidence": [
         "статическая проверка по file:line (цикл 9, перепроверено вручную)",
         "[cycle12:confirmed] items берётся из payload и рендерится полным map без лимита/пагинации (SharedFolder.jsx:93,207); серверный лимит не документирован.",
-        "[cycle13:confirmed] get_public_folder выбирает все готовые AppMyFile поддерева без LIMIT (my_files_service.py:4300-4309) и возвращает полный items (4341-4345), а клиент рендерит items.map без окна, пагинации или виртуализации (SharedFolder.jsx:207-259). На папке с тысячами файлов это один длинный синхронный рендер и десятки тысяч MUI-узлов, причём «Файлов: N» (SharedFolder.jsx:171) показывает полный размер и не сигнализирует о тяжести. Ограничения на число файлов в шаре нет — формулировка «лимит сервера неизвестен» уточняется как «лимита нет». Фактический объём папок не измерялся, но неограниченный рендер подтверждён по коду."
+        "[cycle13:confirmed] get_public_folder выбирает все готовые AppMyFile поддерева без LIMIT (my_files_service.py:4300-4309) и возвращает полный items (4341-4345), а клиент рендерит items.map без окна, пагинации или виртуализации (SharedFolder.jsx:207-259). На папке с тысячами файлов это один длинный синхронный рендер и десятки тысяч MUI-узлов, причём «Файлов: N» (SharedFolder.jsx:171) показывает полный размер и не сигнализирует о тяжести. Ограничения на число файлов в шаре нет — формулировка «лимит сервера неизвестен» уточняется как «лимита нет». Фактический объём папок не измерялся, но неограниченный рендер подтверждён по коду.",
+        "[cycle13:live] Live cycle 13 large-data probe: synthetic 2000-file public folder rendered in 8.38 s, 20 180 DOM nodes, body height 98 184 px, JS heap 186 MB (isolated stand, route-mocked payload). This confirms the unbounded-render impact, not just the code path."
       ],
       "verification": [
         "static",
         "перепроверено (цикл 12)",
-        "перепроверено (цикл 13)"
+        "перепроверено (цикл 13)",
+        "tooling"
       ],
       "originalClaim": "SharedFolder: полный список файлов рендерится без ограничений (лимит сервера неизвестен)",
       "originalEvidence": [
@@ -3508,9 +3510,16 @@
           "verdict": "confirmed",
           "note": "get_public_folder выбирает все готовые AppMyFile поддерева без LIMIT (my_files_service.py:4300-4309) и возвращает полный items (4341-4345), а клиент рендерит items.map без окна, пагинации или виртуализации (SharedFolder.jsx:207-259). На папке с тысячами файлов это один длинный синхронный рендер и десятки тысяч MUI-узлов, причём «Файлов: N» (SharedFolder.jsx:171) показывает полный размер и не сигнализирует о тяжести. Ограничения на число файлов в шаре нет — формулировка «лимит сервера неизвестен» уточняется как «лимита нет». Фактический объём папок не измерялся, но неограниченный рендер подтверждён по коду.",
           "sourceFile": "verdicts_perf.json"
+        },
+        {
+          "cycle": 13,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Live cycle 13 large-data probe: synthetic 2000-file public folder rendered in 8.38 s, 20 180 DOM nodes, body height 98 184 px, JS heap 186 MB (isolated stand, route-mocked payload). This confirms the unbounded-render impact, not just the code path.",
+          "sourceFile": "manual-live-large"
         }
       ],
-      "currentConclusion": "get_public_folder выбирает все готовые AppMyFile поддерева без LIMIT (my_files_service.py:4300-4309) и возвращает полный items (4341-4345), а клиент рендерит items.map без окна, пагинации или виртуализации (SharedFolder.jsx:207-259). На папке с тысячами файлов это один длинный синхронный рендер и десятки тысяч MUI-узлов, причём «Файлов: N» (SharedFolder.jsx:171) показывает полный размер и не сигнализирует о тяжести. Ограничения на число файлов в шаре нет — формулировка «лимит сервера неизвестен» уточняется как «лимита нет». Фактический объём папок не измерялся, но неограниченный рендер подтверждён по коду."
+      "currentConclusion": "Live cycle 13 large-data probe: synthetic 2000-file public folder rendered in 8.38 s, 20 180 DOM nodes, body height 98 184 px, JS heap 186 MB (isolated stand, route-mocked payload). This confirms the unbounded-render impact, not just the code path."
     },
     {
       "id": "FE-0099",

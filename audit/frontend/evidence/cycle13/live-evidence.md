@@ -43,3 +43,8 @@ HTTP error probes:
 - Forced GET /api/v1/hub/tasks -> 401: app redirected to /login (session treated as rejected).
 - 403: page rendered raw backend detail "E2E forced 403" in the task area; no logout.
 - 429/500 probes were not completed because the isolated login rate limit was hit during the run.
+
+Large-data probe (FE-0098):
+- Synthetic public folder: 2000 items, route-mocked payload, isolated stand.
+- First render 8.38 s; 20180 DOM nodes; 2001 interactive elements; body 98184 px; JS heap 186 MB.
+- Screenshot: live-large-sharedfolder.png.
