@@ -87,3 +87,35 @@ A1: `execute_bounded` capacity/timeout/admission не тронуты — про�
 - Замерить p50/p95 TTFT и токены промпта на проде при включённом флаге (поля `intent_mode`/`mode_denied_calls` в result_json уже готовы).
 - При хорошей точности JEV расширить light-context: отложить memory/summary до post-JEV решения.
 - Рассмотреть read/act для tool-mode и калибровку `AI_JEV_ROUTING_THRESHOLD` по режимным вопросам.
+
+---
+
+## Цикл 2 — ревью исправлений (HEAD после `0d118110`)
+
+### Воспроизведённые дефекты и исправления
+
+| # | Дефект (подтверждён кодом) | Исправление |
+|---|---|---|
+| P1-1 | `".action." not in id` не ловил `helpdesk.request_draft`, `ai.files.*`, `kb.attachments.send`, `me.files.attach` | Централизованная `tool_effect()` в `tools/context.py`: read/artifact/delivery/action/meta/**unknown**. Аудит всех 100 инструментов реестра — тест гарантирует 0 unknown; новые инструменты по умолчанию `unknown` ≠ read |
+| P1-2 | `len(available_groups) <= 1` → `return None` без классификации режима | Ранний выход оставлен только для выключенного флага; при ≤1 группе group-вопросы пропускаются, но mode-вопросы всё равно идут в JEV тем же `decide()` |
+| P1-3 | CHAT оставлял побочные эффекты вне tool loop | `artifacts`/`kb_attachment_send` обнуляются на выходе `_execute_run`; draft-retry/reuse-блок пропускается при chat; `ai.request_tool_group` → `mode_denied` |
+| P2-1 | READ-модель видела action-спеки в промпте | `tool_specs` фильтруются по `run_allowed_tools` до промпта; расширение отвечает честным `no_allowed_specs` вместо `already_enabled` |
+| P2-2 | Первый LLM-вызов всегда брал схему с `tool_calls` | Новая `AI_CHAT_RESPONSE_SCHEMA_CHAT` (без tool_calls/artifacts/kb_attachment_send) на обоих call-site при `intent_mode=="chat"` |
+| P2-3 | `_fetch_routing_inputs` не видел вложение reply-цели | `has_attachment` теперь покрывает `reply_to_message_id`; добавлен `routing_inputs` lap в телеметрию |
+
+### Повторная проверка
+
+- `test_ai_jev_intent_modes.py`: **58/58 PASS** (+23: классификация эффектов, аудит реестра, 0/1/много групп, no_allowed_specs, read-отказы helpdesk/files).
+- `test_ai_tool_routing.py` + `test_ai_jev_routing.py`: **85/85 PASS** (1 тест обновлён: одиночная группа теперь вызывает JEV только для режима).
+- Полная смежная регрессия: **354/356 PASS** — единственные фейлы это `test_claude_transport_keeps_recipient_arguments_through_http_worker` (pre-existing, воспроизводится на `2fdb29bc`, вне A5) и `test_single_group_skips_jev_call` (обновлён под новую семантику P1-2, после фикса 143/143 зелёно).
+
+### Измерения цикла 2 (fake decide — CPU/объёмы, НЕ сетевая задержка)
+
+- routing-вызов CPU: ~43 мкс — не изменился (режимные вопросы в том же `decide()`).
+- Новый лап `routing_inputs` в `ai_chat.run.*` телеметрии для раздельного замера light-inputs.
+- **Блокер**: доступа к реальным JEV/LLM нет — p50/p95 сетевых замеров не выполнялись, результаты не выдуманы. Benchmark воспроизводим командой из цикла 1.
+
+### Остаточные ограничения
+
+- E2E-прогон через реальный оркестратор для всех 9 сценариев ревью покрыт unit-уровнем (ceiling/режимы/expansion), кроме части сценариев, требующих живой JEV — документировано как блокер.
+- READ-режим по-прежнему допускает `ai.files.*` только через режим ACT — «выгрузи в Excel» следует за `m_mode_act` или sticky-группами.

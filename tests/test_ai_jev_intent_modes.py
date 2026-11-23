@@ -283,9 +283,9 @@ def test_expansion_filters_action_specs_in_read_mode():
         call={"tool_id": "ai.request_tool_group", "args": {"group": "office"}},
         **env,
     )
-    # The only office spec is an action tool -> nothing to offer.
-    assert payload["data"]["accepted"] is True
-    assert payload["data"]["code"] == "already_enabled"
+    # The only office spec is an action tool -> honest "nothing usable".
+    assert payload["data"]["accepted"] is False
+    assert payload["data"]["code"] == "no_allowed_specs"
     assert "office.action.mail_send_draft" not in {
         s["tool_id"] for s in env["tool_specs"]}
 
@@ -341,6 +341,118 @@ def test_intent_mode_scenarios(monkeypatch, text, answers, expected_mode, must_c
         assert group in result
     for group in must_lack:
         assert group not in result
+
+
+# ---------- P1-1: centralized tool-effect classification ----------
+
+
+def test_tool_effect_audited_registry_has_no_unknowns():
+    """Every one of the 100 registered tools resolves to a real effect —
+    unknown is reserved for NEW tools only."""
+    registry = importlib.import_module("backend.ai_chat.tools").ai_tool_registry
+    ids = sorted(getattr(registry, "_tools", {}).keys())
+    assert len(ids) >= 90
+    unknown = [t for t in ids if tools_context_module.tool_effect(t) == "unknown"]
+    assert unknown == []
+
+
+@pytest.mark.parametrize("tool_id,effect", [
+    ("helpdesk.request_draft", "action"),
+    ("office.action.mail_send_draft", "action"),
+    ("chat.action.message_send_draft", "action"),
+    ("ai.files.create", "artifact"),
+    ("ai.files.report", "artifact"),
+    ("ai.files.convert_document", "artifact"),
+    ("itinvent.equipment.export", "artifact"),
+    ("kb.attachments.send", "delivery"),
+    ("me.files.attach", "delivery"),
+    ("ai.request_tool_group", "meta"),
+    ("itinvent.equipment.search", "read"),
+    ("office.mail.search", "read"),
+    ("network.host.ping", "read"),
+    ("kb.articles.search", "read"),
+    ("me.equipment", "read"),
+    ("totally.new.tool", "unknown"),
+])
+def test_tool_effect_classification(tool_id, effect):
+    assert tools_context_module.tool_effect(tool_id) == effect
+
+
+def test_read_ceiling_excludes_non_read_effects():
+    """helpdesk draft, ai.files.*, deliveries and action tools are all out
+    of a READ ceiling — not just '.action.' ids."""
+    enabled = [
+        "itinvent.equipment.search", "helpdesk.request_draft", "ai.files.create",
+        "ai.files.report", "kb.attachments.send", "me.files.attach",
+        "office.action.mail_send_draft", "ai.request_tool_group",
+        "office.mail.search",
+    ]
+    ceiling = frozenset(
+        t for t in enabled if tools_context_module.tool_effect(t) == "read")
+    assert ceiling == {"itinvent.equipment.search", "office.mail.search"}
+
+
+def test_read_denies_helpdesk_draft_and_files_create():
+    registry = registry_module.AiToolRegistry.__new__(registry_module.AiToolRegistry)
+    registry._tools = {}
+    ceiling = frozenset({"itinvent.equipment.search", "office.mail.search"})
+    ctx = _ctx(enabled_tools=["helpdesk.request_draft", "ai.files.create",
+                              "itinvent.equipment.search"],
+               run_allowed_tools=ceiling)
+    for denied in ("helpdesk.request_draft", "ai.files.create"):
+        result, _ = registry.execute_bounded(tool_id=denied, raw_args={}, context=ctx)
+        assert result.ok is False, denied
+    assert ctx.mode_denied_calls == 2
+
+
+# ---------- P1-2: single/zero-group bots still get an intent mode ----------
+
+
+def test_single_group_chat_question_gets_chat_mode(monkeypatch):
+    """Bot with only the office group: «объясни деловую переписку» → CHAT,
+    empty routed set — the ceiling is still enforced."""
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"m_mode_chat": 0.95, "m_mode_act": 0.05}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="объясни, как правильно организовать деловую переписку",
+        available_groups={"office"},
+    )
+    assert result is not None
+    assert result.intent_mode == "chat"
+    assert result == set()
+
+
+def test_single_group_data_request_stays_routed(monkeypatch):
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_office": 0.9, "m_mode_chat": 0.05, "m_mode_act": 0.05}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="покажи мои последние письма",
+        available_groups={"office"},
+    )
+    assert result.intent_mode == "read"
+    assert "office" in result
+
+
+def test_zero_groups_chat_mode(monkeypatch):
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision({"m_mode_chat": 0.9}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="привет, как дела", available_groups=set())
+    # Zero groups + no questions -> smalltalk/greeting path or chat decision
+    assert result is not None
+
+
+# ---------- P2-1: honest expansion codes ----------
+
+
+def test_expansion_reports_no_allowed_specs_instead_of_already_enabled():
+    env = _expansion_env(frozenset({"itinvent.equipment.search"}))
+    payload, _ = service_module._handle_tool_group_expansion(
+        call={"tool_id": "ai.request_tool_group", "args": {"group": "office"}},
+        **env,
+    )
+    # office specs exist but the ceiling filtered all of them -> honest code
+    assert payload["data"]["code"] == "no_allowed_specs"
+    assert payload["data"]["accepted"] is False
 
 
 def test_chat_mode_blocks_every_tool_call_even_without_specs():

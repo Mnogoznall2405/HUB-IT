@@ -80,6 +80,8 @@ from backend.ai_chat.tools.context import (
     normalize_enabled_tools,
     normalize_tool_settings,
     resolve_effective_database_id,
+    tool_effect,
+    TOOL_EFFECT_READ,
 )
 from backend.appdb.db import (
     app_session,
@@ -566,6 +568,17 @@ AI_CHAT_RESPONSE_SCHEMA_FINAL = {
         "kb_attachment_send": AI_KB_ATTACHMENT_SEND_SCHEMA,
     },
     "required": ["answer_markdown", "quick_replies", "artifacts", "kb_attachment_send"],
+    "additionalProperties": False,
+}
+# A5 (P2-2): CHAT runs ask for a pure conversational answer — no tool_calls
+# and no artifact/delivery fields the model could misuse.
+AI_CHAT_RESPONSE_SCHEMA_CHAT = {
+    "type": "object",
+    "properties": {
+        "answer_markdown": {"type": "string"},
+        "quick_replies": AI_QUICK_REPLIES_SCHEMA,
+    },
+    "required": ["answer_markdown", "quick_replies"],
     "additionalProperties": False,
 }
 
@@ -1444,7 +1457,7 @@ def _route_tool_groups_jev(
     The mode is derived from answers about the USER REQUEST only: tool results
     can never upgrade a run to a more privileged mode.
     """
-    if not _jev_routing_enabled() or len(available_groups) <= 1:
+    if not _jev_routing_enabled():
         return None
     normalized = _normalize_text(trigger_text)
     sticky = set(sticky_groups or set()) & set(available_groups)
@@ -1476,24 +1489,23 @@ def _route_tool_groups_jev(
         logger.info("ai_jev_routing_cache hit mode=groups routed=%s", sorted(cached[0]))
         return JevRoutingResult(cached[0], intent_mode=cached[1])
     logger.info("ai_jev_routing_cache miss mode=groups")
-    group_questions = {
-        f"g_{group}": jev_noul(
-            spec.get("question", ""),
-            true_label=spec.get("true_label", ""),
-            false_label=spec.get("false_label", ""),
-        )
-        for group, spec in _JEV_GROUP_QUESTIONS.items()
-        if group in available_groups
-    }
-    if not group_questions:
-        return JevRoutingResult(
-            _jev_fallback_groups(
-                trigger_text=normalized,
-                available_groups=available_groups,
-                sticky_groups=sticky,
+    group_questions = (
+        {
+            f"g_{group}": jev_noul(
+                spec.get("question", ""),
+                true_label=spec.get("true_label", ""),
+                false_label=spec.get("false_label", ""),
             )
-        )
-    # A5: same decide() call — mode questions cost no extra network round trip.
+            for group, spec in _JEV_GROUP_QUESTIONS.items()
+            if group in available_groups
+        }
+        # P1-2: group choice is only non-trivial with >1 candidate — the
+        # intent-mode questions are still asked either way.
+        if len(available_groups) > 1
+        else {}
+    )
+    # A5 (P1-2): mode questions go to JEV even when group choice is trivial
+    # (0–1 available groups) — classify intent, not only pick groups.
     questions = dict(group_questions)
     for key, spec in _JEV_MODE_QUESTIONS.items():
         questions[key] = jev_noul(
@@ -1527,7 +1539,9 @@ def _route_tool_groups_jev(
         )
     threshold = _jev_routing_threshold()
     probs: dict[str, float] = {}
-    routed: set[str] = set()
+    # With no group questions the group set is trivially the available one —
+    # JEV was still consulted for the intent mode alone.
+    routed: set[str] = set() if group_questions else set(available_groups)
     for group in available_groups:
         answer = decision.answers.get(f"g_{group}")
         probability = float(getattr(answer, "probability", 0.0) or 0.0)
@@ -1764,10 +1778,25 @@ def _handle_tool_group_expansion(
             "Ответь на основе уже доступных инструментов."
         )
     elif not missing_specs:
-        code = "already_enabled"
-        accepted = True
-        routed_groups.add(requested_group)
-        message = f"Группа '{requested_group}' уже подключена — используй её инструменты."
+        # P2-1: distinguish "everything already offered" from "the group has
+        # specs but the run ceiling filtered every one out" — the latter
+        # must not pretend the group is usable.
+        group_spec_ids = {
+            _normalize_text((spec or {}).get("tool_id"))
+            for spec in all_tool_specs
+            if get_tool_group((spec or {}).get("tool_id")) == requested_group
+        }
+        if group_spec_ids and run_allowed is not None and not (group_spec_ids & run_allowed):
+            code = "no_allowed_specs"
+            message = (
+                f"Группа '{requested_group}' в текущем режиме не содержит доступных "
+                "инструментов — ответь на основе уже доступных."
+            )
+        else:
+            code = "already_enabled"
+            accepted = True
+            routed_groups.add(requested_group)
+            message = f"Группа '{requested_group}' уже подключена — используй её инструменты."
     elif len(expanded_groups) >= AI_TOOL_GROUP_EXPANSION_LIMIT:
         code = "limit_reached"
         message = "Лимит дополнительных групп на этот запуск исчерпан — ответь доступными инструментами."
@@ -6066,6 +6095,7 @@ class AiChatService:
         Returns ``None`` on any failure; the caller then keeps the legacy
         post-context routing path.
         """
+        started_at = time.perf_counter()
         try:
             normalized_conversation_id = _normalize_text(conversation_id)
             with chat_session() as session:
@@ -6074,10 +6104,18 @@ class AiChatService:
                     return None
                 if int(trigger.sender_user_id or 0) != int(user_id or 0) or trigger.is_deleted:
                     return None
+                # P2-3: "reply to a document" counts as an attachment context
+                # even when the new message itself carries no files.
+                attachment_message_ids = [trigger.id]
+                reply_id = _normalize_text(getattr(trigger, "reply_to_message_id", None))
+                if reply_id:
+                    reply_msg = session.get(ChatMessage, reply_id)
+                    if reply_msg is not None:
+                        attachment_message_ids.append(reply_msg.id)
                 has_attachment = (
                     session.execute(
                         select(ChatMessageAttachment.id)
-                        .where(ChatMessageAttachment.message_id == trigger.id)
+                        .where(ChatMessageAttachment.message_id.in_(attachment_message_ids))
                         .limit(1)
                     ).first()
                     is not None
@@ -6100,6 +6138,8 @@ class AiChatService:
                 for text in (_normalize_text(body) for body in reversed(rows))
                 if text
             ]
+            _log_ai_run_timing(
+                "routing_inputs", started_at, run_id=_normalize_text(trigger_message_id))
             return {
                 "trigger_text": _normalize_text(trigger.body),
                 "has_attachment": has_attachment,
@@ -6284,7 +6324,10 @@ class AiChatService:
             trigger_text=_normalize_text(extracted_context.get("trigger_text")),
             user_messages=list(extracted_context.get("user_messages") or []),
         )
-        if draft_followup(policy.trigger_text):
+        # P1-3: draft retry/reuse creates action-card surfaces — skip the
+        # whole path when this run was classified conversational.
+        _draft_flow_ok = routing is None or routing.get("intent_mode") != JEV_INTENT_CHAT
+        if _draft_flow_ok and draft_followup(policy.trigger_text):
             with app_session() as session:
                 pending_query = select(AppAiPendingAction).where(
                         AppAiPendingAction.conversation_id == run_payload["conversation_id"],
@@ -6335,7 +6378,7 @@ class AiChatService:
                     policy.ambiguous_previous = True
                     policy.rejection = "Есть несколько активных черновиков. Уточните, какой из них нужно исправить."
         tool_context.draft_policy = policy
-        if draft_retry(policy.trigger_text):
+        if _draft_flow_ok and draft_retry(policy.trigger_text):
             if policy.ambiguous_previous:
                 return policy.answer(""), [], None, {}, extracted_context, [], [], []
             if policy.previous_action:
@@ -6408,7 +6451,7 @@ class AiChatService:
             tool_context.run_allowed_tools = frozenset(
                 tool_id
                 for tool_id in tool_context.enabled_tools
-                if ".action." not in _normalize_text(tool_id)
+                if tool_effect(tool_id) == TOOL_EFFECT_READ
             )
         extracted_context["intent_mode"] = intent_mode
         if jev_selected_tools is not None:
@@ -6435,6 +6478,14 @@ class AiChatService:
             tool_specs = [
                 item for item in all_tool_specs
                 if get_tool_group((item or {}).get("tool_id")) in routed_groups
+            ]
+        # P2-1: never advertise tools the run ceiling forbids — a READ model
+        # must not see action/artifact/delivery specs it cannot execute.
+        if tool_context.run_allowed_tools is not None:
+            tool_specs = [
+                item
+                for item in tool_specs
+                if _normalize_text((item or {}).get("tool_id")) in tool_context.run_allowed_tools
             ]
         # J2: the model may request one more allowed group mid-run; the spec is
         # attached whenever a permitted tool is still not offered — also when
@@ -6869,7 +6920,11 @@ class AiChatService:
         payload, usage = _complete_json_step(
             current_system_prompt=system_prompt,
             current_user_prompt=user_prompt,
-            response_schema=AI_CHAT_RESPONSE_SCHEMA_WITH_TOOLS,
+            response_schema=(
+                AI_CHAT_RESPONSE_SCHEMA_CHAT
+                if intent_mode == JEV_INTENT_CHAT
+                else AI_CHAT_RESPONSE_SCHEMA_WITH_TOOLS
+            ),
             schema_name="ai_chat_response_with_tools",
         )
         _log_ai_run_timing("llm_first", first_llm_started_at, run_id=run_id)
@@ -7077,7 +7132,11 @@ class AiChatService:
                 next_payload, next_usage = _complete_json_step(
                     current_system_prompt=followup_system_prompt,
                     current_user_prompt=followup_user_prompt,
-                    response_schema=AI_CHAT_RESPONSE_SCHEMA_WITH_TOOLS,
+                    response_schema=(
+                AI_CHAT_RESPONSE_SCHEMA_CHAT
+                if intent_mode == JEV_INTENT_CHAT
+                else AI_CHAT_RESPONSE_SCHEMA_WITH_TOOLS
+            ),
                     schema_name="ai_chat_response_with_tools",
                 )
                 _log_ai_run_timing("llm_followup", followup_started_at, run_id=run_id, round=tool_rounds_used)
@@ -7363,6 +7422,10 @@ class AiChatService:
                 else "Личная память выключена." if extracted_context.get("memory_status") == "disabled"
                 else "Память не изменена: сейчас не удалось безопасно сохранить этот запрос.")
         final_usage = _merge_usage(extracted_context.get("memory_usage") or {}, final_usage)
+        # A5 (P1-3): a CHAT run never emits artifacts, deliveries or new
+        # action cards — even if the model put them into the response JSON.
+        if intent_mode == JEV_INTENT_CHAT:
+            artifacts, kb_attachment_send = [], None
         extracted_context["mode_denied_calls"] = int(getattr(tool_context, "mode_denied_calls", 0) or 0)
         return answer_markdown, artifacts, kb_attachment_send, final_usage, extracted_context, tool_traces, generated_file_specs, sorted(routed_groups)
 

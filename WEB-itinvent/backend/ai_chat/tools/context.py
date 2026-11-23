@@ -121,6 +121,73 @@ NETWORK_TOOL_SSL_CHECK = "network.ssl.check"
 NETWORK_TOOL_ACTION_WOL_DRAFT = "network.action.wol_draft"
 NETWORK_TOOL_HOST_INFO = "network.host.info"
 
+# ── A5: server-side tool-effect classification ────────────────────────────
+# One place, one taxonomy. `execute_bounded`/`run_allowed_tools` must never
+# guess semantics from the tool_id string again.
+TOOL_EFFECT_READ = "read"          # pure data lookup, no side effects
+TOOL_EFFECT_ARTIFACT = "artifact" # creates a file/report artifact
+TOOL_EFFECT_DELIVERY = "delivery" # sends/delivers content to the user
+TOOL_EFFECT_ACTION = "action"     # draft/action card or data change
+TOOL_EFFECT_META = "meta"         # orchestration (ai.request_tool_group)
+TOOL_EFFECT_UNKNOWN = "unknown"   # NOT read — new tools land here by default
+
+# Explicit per-id overrides for tools whose name does not carry ".action."
+# but which still produce side effects (audited registry, 100 tools).
+_TOOL_EFFECT_OVERRIDES: dict[str, str] = {
+    "ai.request_tool_group": TOOL_EFFECT_META,
+    "helpdesk.request_draft": TOOL_EFFECT_ACTION,
+    "ai.files.create": TOOL_EFFECT_ARTIFACT,
+    "ai.files.report": TOOL_EFFECT_ARTIFACT,
+    "ai.files.convert_document": TOOL_EFFECT_ARTIFACT,
+    "itinvent.equipment.export": TOOL_EFFECT_ARTIFACT,
+    "kb.attachments.send": TOOL_EFFECT_DELIVERY,
+    "me.files.attach": TOOL_EFFECT_DELIVERY,
+}
+
+# Audited read-only families. A tool_id outside these prefixes AND outside
+# the overrides is classified UNKNOWN — never silently read-only.
+_TOOL_READ_PREFIXES: tuple[str, ...] = (
+    "ad.mailbox.", "ad.mailboxes.", "ad.user.", "ad.users.",
+    "chat.users.", "chat.conversations.",
+    "directory.",
+    "itinvent.acts.", "itinvent.analytics.", "itinvent.audit.",
+    "itinvent.computers.", "itinvent.consumables.", "itinvent.database.",
+    "itinvent.directory.", "itinvent.employee.", "itinvent.entity.",
+    "itinvent.equipment.", "itinvent.user.",
+    "kb.articles.", "kb.attachments.get_text", "kb.categories.",
+    "me.account.", "me.computer.", "me.equipment", "me.files.search",
+    "me.it_requests", "me.mailbox.",
+    "mfu.",
+    "network.branch.", "network.dns.", "network.host.info", "network.host.ping",
+    "network.ports.", "network.socket.", "network.ssl.",
+    "office.announcements.", "office.mail.", "office.mailbox.",
+    "office.tasks.", "office.workday.",
+    "voice.",
+    "warehouse.",
+)
+
+
+def tool_effect(tool_id: Any) -> str:
+    """Classify a registered tool's side-effect profile.
+
+    ``unknown`` is returned for anything not explicitly classified — a new
+    tool never silently inherits read-only status. ``me.files.attach`` and
+    ``kb.attachments.send`` are deliveries, ``*.action.*``/``*_draft`` are
+    action-prep, ``ai.files.*``/equipment export are artifacts.
+    """
+    tid = _normalize_text(tool_id)
+    if not tid:
+        return TOOL_EFFECT_UNKNOWN
+    override = _TOOL_EFFECT_OVERRIDES.get(tid)
+    if override:
+        return override
+    if ".action." in tid or tid.endswith("_draft"):
+        return TOOL_EFFECT_ACTION
+    if tid.startswith(_TOOL_READ_PREFIXES):
+        return TOOL_EFFECT_READ
+    return TOOL_EFFECT_UNKNOWN
+
+
 DEFAULT_ITINVENT_TOOL_IDS = [
     ITINVENT_TOOL_DATABASE_CURRENT,
     ITINVENT_TOOL_EQUIPMENT_SEARCH,
