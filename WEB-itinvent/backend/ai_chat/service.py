@@ -4771,6 +4771,50 @@ class AiChatService:
         return (_utc_now() - stamp).total_seconds()
 
     _AI_CLAIM_CANDIDATE_LIMIT = 8
+    _AI_CLAIM_MAX_PAGES = 4
+    _AI_CLAIM_CONTENTION_SQLSTATES = frozenset({"55P03", "40P01", "40001"})
+    _AI_CLAIM_BACKSTOP_INDEX = "uq_app_ai_bot_runs_running_conversation"
+
+    @staticmethod
+    def _claim_sqlstate(exc) -> str:
+        orig = getattr(exc, "orig", None)
+        diag = getattr(orig, "diag", None)
+        return str(
+            getattr(orig, "sqlstate", "")
+            or getattr(diag, "sqlstate", "")
+            or getattr(orig, "pgcode", "")
+            or ""
+        )
+
+    def _is_claim_contention(self, exc: Exception) -> bool:
+        """A4 cycle 2: only KNOWN contention signals may skip a candidate.
+
+        Expected: lock_not_available/deadlock/serialization failures and the
+        unique-violation raised by the backstop index itself. Connection loss,
+        missing schema/columns, syntax or permission errors propagate — the
+        caller logs a real failure instead of a silent "no work" verdict.
+        """
+        sqlstate = self._claim_sqlstate(exc)
+        if isinstance(exc, OperationalError):
+            if sqlstate:
+                return sqlstate in self._AI_CLAIM_CONTENTION_SQLSTATES
+            # sqlite has no SQLSTATE; a busy file lock is the same semantic
+            # as lock_not_available — another writer holds it.
+            message = str(getattr(exc, "orig", exc) or exc).lower()
+            return "locked" in message or "busy" in message
+        if isinstance(exc, IntegrityError):
+            orig = getattr(exc, "orig", exc)
+            constraint = str(getattr(getattr(orig, "diag", None), "constraint_name", "") or "")
+            marker = self._AI_CLAIM_BACKSTOP_INDEX
+            if constraint == marker or (sqlstate == "23505" and marker in str(orig)):
+                return True
+            # sqlite (dev/tests) reports the partial unique index by name or
+            # by its indexed column; anything else is a real failure.
+            text_repr = str(orig)
+            return not sqlstate and "UNIQUE" in text_repr.upper() and (
+                marker in text_repr or "ai_bot_runs.conversation_id" in text_repr
+            )
+        return False
 
     @staticmethod
     def _run_claim_head_predicates():
@@ -4819,64 +4863,86 @@ class AiChatService:
 
         Candidates are conversation heads only, so a busy or contended
         conversation never blocks the queue: each failed candidate is rolled
-        back and the next oldest head is tried. On SQLite (dev/tests) the
-        file lock already serializes writers; the same predicates apply.
+        back and the next oldest head is tried. The candidate scan is keyset-
+        paginated on (created_at, id) with a bounded page count — up to
+        ``_AI_CLAIM_MAX_PAGES * _AI_CLAIM_CANDIDATE_LIMIT`` heads are tried
+        per call, so a run of locked conversations cannot starve a free one
+        behind them, and the scan can never busy-loop an unbounded queue.
+        On SQLite (dev/tests) the file lock already serializes writers; the
+        same predicates apply.
         """
         bind = session.get_bind()
         is_postgres = str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower() == "postgresql"
         busy, earlier = self._run_claim_head_predicates()
-        candidates = list(
-            session.execute(
-                select(AppAiBotRun.id, AppAiBotRun.conversation_id)
-                .where(AppAiBotRun.status == "queued", busy, earlier)
-                .order_by(AppAiBotRun.created_at.asc(), AppAiBotRun.id.asc())
-                .limit(self._AI_CLAIM_CANDIDATE_LIMIT)
-            )
-        )
-        for run_id, conversation_id in candidates:
-            try:
-                if is_postgres:
-                    session.execute(text("SET LOCAL lock_timeout = '5s'"))
-                    locked_mapping = session.execute(
-                        select(AppAiBotConversation.id)
-                        .where(AppAiBotConversation.conversation_id == conversation_id)
-                        .with_for_update(nowait=True)
-                    ).scalar_one_or_none()
-                    if locked_mapping is None:
-                        run_status = session.execute(
-                            select(AppAiBotRun.status).where(AppAiBotRun.id == run_id)
-                        ).scalar_one_or_none()
-                        if run_status != "queued":
-                            session.rollback()
-                            continue
-                        # Runs without a mapping row are claimed anyway so the
-                        # caller can fail them with a clear error.
-                changed = session.execute(
-                    update(AppAiBotRun)
-                    .where(
-                        AppAiBotRun.id == run_id,
-                        AppAiBotRun.status == "queued",
-                        busy,
-                        earlier,
-                    )
-                    .values(status="running")
-                    .execution_options(synchronize_session=False)
+        cursor_created_at = None
+        cursor_id = None
+        attempted = 0
+        for _page in range(self._AI_CLAIM_MAX_PAGES):
+            probe_filters = [AppAiBotRun.status == "queued", busy, earlier]
+            if cursor_id is not None:
+                probe_filters.append(
+                    tuple_(AppAiBotRun.created_at, AppAiBotRun.id)
+                    > tuple_(cursor_created_at, cursor_id)
                 )
-                if int(changed.rowcount or 0) != 1:
+            candidates = [
+                (row.id, row.conversation_id, row.created_at)
+                for row in session.execute(
+                    select(AppAiBotRun.id, AppAiBotRun.conversation_id, AppAiBotRun.created_at)
+                    .where(*probe_filters)
+                    .order_by(AppAiBotRun.created_at.asc(), AppAiBotRun.id.asc())
+                    .limit(self._AI_CLAIM_CANDIDATE_LIMIT)
+                )
+            ]
+            if not candidates:
+                return None
+            for run_id, conversation_id, created_at in candidates:
+                attempted += 1
+                cursor_created_at, cursor_id = created_at, run_id
+                try:
+                    if is_postgres:
+                        session.execute(text("SET LOCAL lock_timeout = '5s'"))
+                        locked_mapping = session.execute(
+                            select(AppAiBotConversation.id)
+                            .where(AppAiBotConversation.conversation_id == conversation_id)
+                            .with_for_update(nowait=True)
+                        ).scalar_one_or_none()
+                        if locked_mapping is None:
+                            run_status = session.execute(
+                                select(AppAiBotRun.status).where(AppAiBotRun.id == run_id)
+                            ).scalar_one_or_none()
+                            if run_status != "queued":
+                                session.rollback()
+                                continue
+                            # Runs without a mapping row are claimed anyway so the
+                            # caller can fail them with a clear error.
+                    changed = session.execute(
+                        update(AppAiBotRun)
+                        .where(
+                            AppAiBotRun.id == run_id,
+                            AppAiBotRun.status == "queued",
+                            busy,
+                            earlier,
+                        )
+                        .values(status="running")
+                        .execution_options(synchronize_session=False)
+                    )
+                    if int(changed.rowcount or 0) != 1:
+                        session.rollback()
+                        continue
+                    return session.get(AppAiBotRun, run_id)
+                except (IntegrityError, OperationalError) as exc:
+                    if not self._is_claim_contention(exc):
+                        session.rollback()
+                        raise
                     session.rollback()
-                    continue
-                return session.get(AppAiBotRun, run_id)
-            except IntegrityError:
-                # uq_app_ai_bot_runs_running_conversation backstop fired: a
-                # concurrent claim committed first. The row stays queued.
-                session.rollback()
-            except OperationalError:
-                # FOR UPDATE NOWAIT / lock_timeout / deadlock: the
-                # conversation is contended — try the next candidate.
-                session.rollback()
-            except Exception:
-                session.rollback()
-                raise
+                except Exception:
+                    session.rollback()
+                    raise
+        if attempted >= self._AI_CLAIM_MAX_PAGES * self._AI_CLAIM_CANDIDATE_LIMIT:
+            logger.warning(
+                "ai_run_claim: %d candidate heads contended in one call; returning no-work",
+                attempted,
+            )
         return None
 
     def _process_single_run(self) -> bool:

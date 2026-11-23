@@ -29,9 +29,17 @@ def svc(tmp_path, monkeypatch):
 
     @contextmanager
     def session():
-        with Session(engine, expire_on_commit=False) as db:
-            with db.begin():
-                yield db
+        # Same contract as backend.appdb.db.app_session: commit on clean exit,
+        # rollback on error; inner rollbacks are legal mid-transaction.
+        db = Session(engine, expire_on_commit=False)
+        try:
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     monkeypatch.setattr(service_module, "app_session", session)
     svc = service_module.AiChatService()
@@ -203,3 +211,63 @@ def test_enqueue_assigns_monotone_queue_seq_under_mapping_lock(svc, monkeypatch)
         ).scalar_one()
     assert seqs == [1, 2, 3]
     assert mapping.last_run_seq == 3
+
+
+class _FakeDbapiError(Exception):
+    def __init__(self, message="db error", *, sqlstate=None, constraint_name=None):
+        super().__init__(message)
+        self.sqlstate = sqlstate
+        self.diag = type("Diag", (), {"constraint_name": constraint_name})()
+
+
+def _operational_error(sqlstate):
+    from sqlalchemy.exc import OperationalError
+
+    return OperationalError("SELECT 1", {}, _FakeDbapiError(sqlstate=sqlstate))
+
+
+def _integrity_error(sqlstate=None, constraint_name=None, message="unique failed"):
+    from sqlalchemy.exc import IntegrityError
+
+    return IntegrityError("UPDATE t", {}, _FakeDbapiError(message, sqlstate=sqlstate, constraint_name=constraint_name))
+
+
+def test_claim_contention_classifier_accepts_expected_sqlstates(svc):
+    for sqlstate in ("55P03", "40P01", "40001"):
+        assert svc._is_claim_contention(_operational_error(sqlstate)), sqlstate
+
+
+def test_claim_contention_classifier_rejects_unexpected_errors(svc):
+    # Connection loss (08xxx), missing table (42P01), auth failure (28xxx):
+    # real failures must propagate, never look like "queue is empty".
+    for sqlstate in ("08006", "42P01", "28000", "57P01"):
+        assert not svc._is_claim_contention(_operational_error(sqlstate)), sqlstate
+
+
+def test_claim_contention_classifier_backstop_unique_index_only(svc):
+    backstop = _integrity_error(
+        sqlstate="23505",
+        constraint_name="uq_app_ai_bot_runs_running_conversation",
+        message='duplicate key value violates unique constraint "uq_app_ai_bot_runs_running_conversation"',
+    )
+    assert svc._is_claim_contention(backstop)
+    other = _integrity_error(
+        sqlstate="23505",
+        constraint_name="uq_ai_bot_runs_trigger",
+        message='duplicate key value violates unique constraint "uq_ai_bot_runs_trigger"',
+    )
+    assert not svc._is_claim_contention(other)
+    # NOT NULL / FK violations are never contention.
+    not_null = _integrity_error(sqlstate="23502", constraint_name=None, message="null value violates not-null constraint")
+    assert not svc._is_claim_contention(not_null)
+
+
+def test_claim_contention_classifier_sqlite_backstop_message(svc):
+    sqlite_dup = _integrity_error(message="UNIQUE constraint failed: ai_bot_runs.conversation_id")
+    assert svc._is_claim_contention(sqlite_dup)
+    sqlite_index = _integrity_error(
+        message="UNIQUE constraint failed: index 'uq_app_ai_bot_runs_running_conversation'"
+    )
+    assert svc._is_claim_contention(sqlite_index)
+    not_null = _integrity_error(message="NOT NULL constraint failed: ai_bot_runs.status")
+    assert not svc._is_claim_contention(not_null)

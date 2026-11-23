@@ -32,9 +32,10 @@
 **FIFO-ключ — `queue_seq`.** `created_at` задаётся приложением (`_utc_now()`), а не БД — при разнобое часов хостов порядок прибытия искажается. Поэтому добавлен `ai_bot_conversations.last_run_seq`, инкрементируемый под локом mapping-строки при enqueue, и `ai_bot_runs.queue_seq`. Порядок внутри диалога: `(COALESCE(queue_seq,-1), created_at, id)` — NULL `queue_seq` (строки до миграции, dev-вставки) сортируется старейшим и детерминировано тай-брейчится `(created_at, id)`.
 
 **Claim-алгоритм** (`_claim_next_queued_run`):
-1. Пробник (без блокировок): queued-строки, являющиеся головами своих диалогов — `NOT EXISTS(running sibling)` и `NOT EXISTS(earlier queued sibling)` — `ORDER BY created_at, id LIMIT 8`.
+1. Пробник (без блокировок): queued-строки, являющиеся головами своих диалогов — `NOT EXISTS(running sibling)` и `NOT EXISTS(earlier queued sibling)` — `ORDER BY created_at, id`. Выборка **keyset-пагинирована** по `(created_at, id)`: страница `LIMIT 8`, до `_AI_CLAIM_MAX_PAGES=4` страниц на вызов (≤32 голов). Если все 32 головы на contention — claim возвращает `None` с warning-логом; следующий опрос воркера повторит (bounded scan, без busy-loop и без голодания свободных диалогов за заблокированными).
 2. Для каждого кандидата: `SET LOCAL lock_timeout='5s'` → `FOR UPDATE NOWAIT` на mapping-строке → условный `UPDATE ... SET status='running' WHERE id=:id AND status='queued' AND <те же head-предикаты>` (READ COMMITTED перевычисляет предикаты на момент записи).
-3. `rowcount=1` → claim состоялся; иначе `ROLLBACK` и следующий кандидат. `IntegrityError` (сработал backstop-индекс) и `OperationalError` (NOWAIT/lock_timeout/deadlock) → пропуск кандидата.
+3. `rowcount=1` → claim состоялся; иначе `ROLLBACK` и следующий кандидат.
+4. **Классификация ошибок** (`_is_claim_contention`, цикл 2): пропускается только известный contention — `OperationalError` с SQLSTATE `55P03` (lock_not_available: NOWAIT/lock_timeout), `40P01` (deadlock), `40001` (serialization) и `IntegrityError` 23505 именно от `uq_app_ai_bot_runs_running_conversation`. Все прочие ошибки (08xxx соединение, 42P01 схема, 28xxx auth, чужие constraint'ы, NOT NULL) — `rollback` + `raise`: вызывающий код видит реальный сбой, а не «пустую очередь». На sqlite (нет SQLSTATE) contention распознаётся по busy/locked-сообщению и сообщению unique-индекса.
 
 ## 4. Почему не альтернативы
 
@@ -68,6 +69,7 @@
 
 - `test_pg_different_conversations_claim_in_parallel`: convA+convB, 2 барьерных воркера → оба claim'ятся одновременно → 2 running (по одному на диалог).
 - `test_pg_busy_conversation_skipped_not_blocked`: convA(running)+convA2(queued)+convB(queued) → выбирается `b1`; занятый диалог не блокирует очередь.
+- `test_pg_claim_skips_eight_locked_heads_to_reach_free_conversation` (цикл 2, анти-starvation): 8 самых старых голов на диалогах, чьи mapping-строки заперты чужими транзакциями (`FOR UPDATE` удерживается), 9-й диалог свободен → claim **в том же вызове** через keyset-страницу 2 достаёт `free99-r1`; после освобождения локов `locked00-r1` claim'ится штатно. До пагинации (LIMIT 8) свободная голова не попадала в выборку — дефект устранён.
 
 ## 8. Отмена и восстановление — FIXED/PARTIAL
 
@@ -92,8 +94,9 @@
 
 - Среда: PostgreSQL **16.15** (Ubuntu, dev-сервер `10.103.0.10`), драйвер `psycopg` 3.3.8, SQLAlchemy 2.0.48.
 - Изоляция: отдельная схема `a4test` в dev-БД через `schema_translate_map` + scratch-схемы `a4migtest`/`a4migduptest` для прогона миграции. Таблицы `app.*` не затрагивались. Гард env: `AI_RUN_TEST_DATABASE_URL` + `AI_RUN_TEST_SCHEMA` (должна содержать "test", как `SCAN_TEST_DATABASE_URL`).
-- Команда: `pytest tests/test_ai_run_serialization_pg.py` с выставленными env → **18 passed / 0 failed** за ~10 с.
+- Команда: `pytest tests/test_ai_run_serialization_pg.py` с выставленными env → **22 passed / 0 failed** за ~17 с.
 - Миграция прогнана на scratch-схеме: колонки, backfill `queue_seq` (порядок `created_at,id` → `old:1, new:2`), `last_run_seq=2`, оба индекса созданы; при двух running на диалог upgrade падает `RuntimeError` с перечнем — **не** автоисправляет данные.
+- `test_pg_migration_0176_rebuilds_invalid_index`: репетиция окна «старые воркеры во время `CREATE UNIQUE INDEX CONCURRENTLY`» — заведомо дублирующий running ломает concurrent-build → остаётся `INVALID` индекс (`pg_index.indisvalid=false`, подтверждено запросом). После ручного разрешения дубля повторный upgrade дропает INVALID-индекс и перестраивает VALID (`indisvalid=true`).
 
 ## 11. Нагрузка — FIXED
 
@@ -101,17 +104,23 @@
 
 - Результат: **все 100 run завершены ровно один раз**, очередь полностью осушена, 0 ошибок/дедлоков/потерянных заданий.
 - FIFO: для каждого из 20 диалогов порядок завершения совпал с `queue_seq` 1..5.
-- Время: **1.14 с** (~88 claim+complete roundtrip/с через сеть к dev-PG; доминирует сетевая латентность, не contention). Конфликтов/бесконечных retry не наблюдалось.
+- Время: **1.22 с** (~82 claim+complete roundtrip/с через сеть к dev-PG; доминирует сетевая латентность, не contention). Конфликтов/бесконечных retry не наблюдалось.
+
+`test_pg_load_with_continuous_enqueue` (цикл 2): 10 диалогов × 3 раунда enqueue **во время** работы 4 воркеров — 30 run, все завершены ровно раз, очередь осушена, порядок завершения в каждом диалоге совпал с enqueue-порядком (`queue_seq`). Гонка enqueue↔claim не роняет задания и не нарушает FIFO.
+
+`test_pg_migration_0176_backfill_large_table_timed` (цикл 2): backfill **3000** пред-существующих runs по 30 диалогам одним `UPDATE ... FROM (ROW_NUMBER() OVER (PARTITION BY ...))` — **0.16 с** на dev-PG, порядок верифицирован полным пересчётом window-функцией (0 расхождений), `last_run_seq=100` на диалог. Прежний коррелированный `COUNT(*)` оставался бы O(n²) по каждому диалогу; новый — один проход O(n). На sqlite-fallback оставлен коррелированный вариант (dev-БД малы, `UPDATE ... FROM` поддержан не везде).
 
 ## 12. Изменения схемы БД — FIXED (миграция `20261118_0176`)
 
 | Изменение | Детали |
 |---|---|
-| `ai_bot_runs.queue_seq BIGINT NULL` | FIFO-ключ; backfill: `ROW_NUMBER`-эквивалент через коррелированный `COUNT` по `(created_at,id)` per-conv |
+| `ai_bot_runs.queue_seq BIGINT NULL` | FIFO-ключ; backfill на PG — один `UPDATE ... FROM (ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY created_at, id))` (O(n), 3000 строк ≈ 0.16 с на dev); на sqlite — коррелированный `COUNT` |
 | `ai_bot_conversations.last_run_seq BIGINT NOT NULL DEFAULT 0` | счётчик enqueue; backfill `= MAX(queue_seq)` по диалогу |
 | `uq_app_ai_bot_runs_running_conversation` | `UNIQUE (conversation_id) WHERE status='running'`, `CONCURRENTLY` + `lock_timeout=5s` |
 | `ix_app_ai_bot_runs_conversation_status_queue_seq` | покрывает head-предикаты, `CONCURRENTLY` |
 | Dup-guard | `HAVING COUNT(*)>1` по running → `RuntimeError` с перечнем; оператор решает вручную |
+| Invalid-index repair (цикл 2) | перед созданием индексов проверяется `pg_index.indisvalid/indisready` — INVALID-остаток упавшего concurrent-build дропается (`DROP INDEX CONCURRENTLY`) и пересоздаётся; VALID-индекс не трогается |
+| `lock_timeout` на DDL (цикл 2) | `SET LOCAL lock_timeout='10s'` на `ADD COLUMN`/backfill-фазу транзакции; `5s` на каждый `CONCURRENTLY` — миграция не висит за блокировщиком, повтор безопасен |
 | Тестовый крючок | `ITINVENT_MIGRATION_APP_SCHEMA` — переопределение схемы только для этого файла (по умолчанию `app`) |
 
 Rollback: `downgrade()` снимает индексы `CONCURRENTLY` и колонки; данные не теряются.
@@ -122,26 +131,41 @@ Rollback: `downgrade()` снимает индексы `CONCURRENTLY` и коло
 - **Поздние side-effects**: сериализация run не отменяет физически выполняющийся поток инструмента после wall-timeout (ограничение A1 — Python не убивает поток). Защита — существующая идемпотентность (client-id/outbox). CONFIRMED остаточный риск.
 - **`_process_single_run` end-to-end на PG** (claim→LLM→completion): проверен на уровне claim+terminal transitions; полный прогон с фейковой LLM на PG — NOT TESTED (покрыт sqlite-регрессией).
 - **Несколько независимых процессов ОС**: проверено независимыми подключениями/транзакциями, что транзакционно эквивалентно; буквальный spawn процессов — NOT TESTED.
-- **Предсуществующие падения** `test_ai_sandbox_release`/`test_ai_sandbox_runtime` (release-манифест без `shared/llm/json_stream.py`) — подтверждены на `main`, к A4 отношения не имеют. CONFIRMED.
+- **Предел скана claim**: >32 одновременно залоченных головы → вызов возвращает `None` + warning; следующий цикл воркера повторит. Это не потеря задания (строки остаются queued), но под экстремально горячей нагрузкой добавляет латентность. Предел — сознательный bounded-scan, увеличивается константами `_AI_CLAIM_MAX_PAGES`/`_AI_CLAIM_CANDIDATE_LIMIT`. CONFIRMED.
+- **Предсуществующие падения** — `tests/test_ai_sandbox_release.py::test_allowlisted_release_imports_worker_without_repository_or_live_env` и `tests/test_ai_sandbox_runtime.py::test_gateway_containerfile_is_a_buildable_pinned_release_artifact` (release-манифест без `shared/llm/json_stream.py` — `ModuleNotFoundError` в собранном бандле). Воспроизводятся на неизменённом `main` теми же командами (`pytest tests/test_ai_*.py`) в этом же окружении — к A4 отношения не имеют и в этом PR не исправляются. CONFIRMED.
 
 ## 14. Развёртывание и откат
 
-**Deploy:**
-1. Убедиться, что нет дублей: `SELECT conversation_id, COUNT(*) FROM app.ai_bot_runs WHERE status='running' GROUP BY 1 HAVING COUNT(*)>1` — миграция сама откажется при дублях; разрешить их вручную (cancel/finish) и повторить.
-2. `alembic upgrade head` — `CONCURRENTLY`-индексы не блокируют запись; `lock_timeout=5s` защищает от долгих ожиданий (при таймауте — повторить).
-3. Порядок релиза: **миграция → код**. Новый claim читает `queue_seq`, поэтому требует колонку; старый код новой схеме не мешает (игнорирует новые колонки, уникальный индекс для него — лишь дополнительный fail-closed backstop).
-4. Откат кода — безопасен: старый код игнорирует новые колонки. Уникальный индекс при откате кода остаётся работать как backstop — старый claim при гонке двух running получит `IntegrityError` вместо скрытого нарушения (fail-closed, желаемо).
-5. Откат миграции: `alembic downgrade -1` — удаляет индексы/колонки; run-данные не затрагиваются.
+**Deploy (рекомендуемый порядок, с дренированием AI worker):**
 
-**Мониторинг:** claim-пропуски видны как `None` → `process_next_run=False` → idle-цикл; аномальный рост `pg_locks` на `ai_bot_conversations` укажет на зависший enqueue.
+Окно риска, проверенное репетицией: пока **старые** воркеры продолжают claim'ить, конкурентный build уникального индекса может наткнуться на свежий дубль running → build падает → остаётся INVALID-индекс. Миграция это умеет чинить повторным прогоном, но самый чистый путь — остановить воркеры на время перехода (API-процессы и enqueue продолжают работать: новые сообщения копятся в `queued`, теряться не могут).
+
+1. Пред-проверка дублей: `SELECT conversation_id, COUNT(*) FROM app.ai_bot_runs WHERE status='running' GROUP BY 1 HAVING COUNT(*)>1` — при непустом результате разрешить вручную (cancel/finish) до миграции.
+2. Остановить AI worker-процессы (дренировать активные run'ы или дать watchdog-CAS перевести их в `failed` по TTL политики A1).
+3. `alembic upgrade head` — `ADD COLUMN`/`UPDATE` под `lock_timeout=10s` (при таймауте — повторить позже, транзакция откатывается без следов); `CONCURRENTLY`-индексы с `lock_timeout=5s`.
+4. Пост-проверка: `SELECT indisvalid, indisready FROM pg_index WHERE indexrelid='app.uq_app_ai_bot_runs_running_conversation'::regclass` → `t,t`. Если `false` — дубль проскочил окном (см. п.2): разрешить дубли и повторить `upgrade` — INVALID-остаток дропнется и пересоздастся автоматически.
+5. Деплой кода (новый claim) → запуск воркеров. Порядок «миграция → код» при остановленных воркерах безопасен; **при работающих старых воркерах — PARTIAL**: допустимо (дополнительные дубли только откажут build'у и будут видимы в `indisvalid`), но требует повторного прогона и потому не рекомендуется.
+6. Откат кода — безопасен: старый код игнорирует новые колонки; уникальный индекс остаётся fail-closed backstop'ом (старый claim при гонке двух running получит `IntegrityError` вместо скрытого нарушения — желаемо).
+7. Откат миграции: `alembic downgrade -1` — удаляет индексы/колонки; run-данные не затрагиваются.
+
+**Мониторинг:** claim-пропуски видны как `None` → `process_next_run=False` → idle-цикл; warning `ai_run_claim: N candidate heads contended` — >32 залоченных голов; аномальный рост `pg_locks` на `ai_bot_conversations` укажет на зависший enqueue.
 
 ## Результаты (итог)
 
 | Категория | PASS | FAIL | BLOCKED |
 |---|---|---|---|
-| PG конкурентность/FIFO/нагрузка (`test_ai_run_serialization_pg`) | 18 | 0 | 0 |
-| SQLite логика A4 (`test_ai_run_conversation_serialization`) | 8 | 0 | 0 |
-| AI-регрессия `tests/test_ai_*` (sqlite) | 639 | 2* | 18 skipped |
-| Прогон миграции на scratch-схеме | 2 (внутри 18) | 0 | 0 |
+| PG конкурентность/FIFO/нагрузка/миграция (`test_ai_run_serialization_pg`) | 22 | 0 | 0 |
+| SQLite логика A4 + классификатор ошибок (`test_ai_run_conversation_serialization`) | 12 | 0 | 0 |
+| AI-регрессия `tests/test_ai_*` (sqlite) | 643 | 2* | 22 skipped |
+| Прогон миграции на scratch-схемах (в т.ч. 3000-строчный backfill, INVALID-index repair) | 4 (внутри 22) | 0 | 0 |
 
-\* оба фейла — предсуществующие на `main` (`shared/llm/json_stream` отсутствует в release-манифесте), не связаны с A4.
+\* оба фейла — предсуществующие на `main`: `test_ai_sandbox_release.py::test_allowlisted_release_imports_worker_without_repository_or_live_env`, `test_ai_sandbox_runtime.py::test_gateway_containerfile_is_a_buildable_pinned_release_artifact` (`shared/llm/json_stream` отсутствует в release-манифесте), не связаны с A4.
+
+## Цикл 2 — правки независимого ревью (итог)
+
+| Риск | Решение | Подтверждение |
+|---|---|---|
+| Starvation: `LIMIT 8` пробник — свободный 9-й диалог не попадал в выборку за 8 залоченными | keyset-пагинация `(created_at,id)`, до 4×8=32 голов на вызов + warning при исчерпании | `test_pg_claim_skips_eight_locked_heads_to_reach_free_conversation` — FIXED |
+| Backfill O(n²) коррелированным `COUNT` | `UPDATE ... FROM (ROW_NUMBER() PARTITION BY)` на PG | 3000 строк ≈ 0.16 с, полный пересчёт = 0 расхождений — FIXED |
+| Concurrent-build во время работы старых воркеров → INVALID-индекс | `_index_state` (indisvalid/indisready) → drop INVALID → dup-check → rebuild; runbook с дренированием воркеров | `test_pg_migration_0176_rebuilds_invalid_index` — FIXED |
+| Подавление любых `OperationalError`/`IntegrityError` как «нет работы» | `_is_claim_contention`: только 55P03/40P01/40001 и unique-violation backstop-индекса; прочее — raise | 4 unit-теста классификатора — FIXED |

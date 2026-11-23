@@ -640,3 +640,220 @@ def test_pg_load_100_runs_20_conversations_4_workers(svc):
         ).scalars())
     assert not remaining, f"lost or stuck runs: {[row.id for row in remaining]}"
     print(f"\nA4 load: 100 runs / 20 conversations / 4 workers in {elapsed:.2f}s")
+
+
+def test_pg_claim_skips_eight_locked_heads_to_reach_free_conversation(svc):
+    """Starvation guard: the 8 oldest heads sit on conversations whose mapping
+    rows are locked by other transactions; a free 9th head must still be
+    claimed in the SAME call via keyset pagination — not returned as
+    'no work' after the first page."""
+    locked_convs = [f"locked{i:02d}" for i in range(8)]
+    free_conv = "free99"
+    _seed(svc, conversations=locked_convs + [free_conv])
+    t0 = datetime.now(timezone.utc)
+    for idx, conv in enumerate(locked_convs):
+        _add_run(svc, f"{conv}-r1", conv=conv, seq=1, created_at=t0 + timedelta(seconds=idx))
+    _add_run(svc, f"{free_conv}-r1", conv=free_conv, seq=1,
+             created_at=t0 + timedelta(seconds=60))
+    lockers = []
+    try:
+        for conv in locked_convs:
+            locker = Session(svc.engine, expire_on_commit=False)
+            locker.begin()
+            locked = locker.execute(
+                select(AppAiBotConversation.id)
+                .where(AppAiBotConversation.conversation_id == conv)
+                .with_for_update()
+            ).scalar_one_or_none()
+            assert locked is not None
+            lockers.append(locker)
+        assert _claim(svc) == f"{free_conv}-r1"
+    finally:
+        for locker in lockers:
+            locker.rollback()
+            locker.close()
+    # After the locks release, the previously contended conversations claim
+    # normally and in order.
+    assert _claim(svc) == "locked00-r1"
+
+
+def test_pg_load_with_continuous_enqueue(svc):
+    """4 workers drain while a producer keeps enqueueing across 10
+    conversations: nothing is lost, per-conversation completion order equals
+    enqueue order even though enqueue and claim interleave."""
+    conversations = [f"enq{i:02d}" for i in range(10)]
+    _seed(svc, conversations=conversations)
+    rounds = 3
+    errors = []
+    producer_done = threading.Event()
+    stop_workers = threading.Event()
+    completion_order: dict[str, list[str]] = {conv: [] for conv in conversations}
+    order_lock = threading.Lock()
+
+    def producer():
+        try:
+            for step in range(rounds):
+                for conv in conversations:
+                    payload = svc.queue_run_for_message(
+                        conversation_id=conv,
+                        trigger_message_id=f"{conv}-m{step}",
+                        current_user_id=2,
+                    )
+                    assert payload is not None
+                time.sleep(0.01)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            producer_done.set()
+
+    def queue_idle() -> bool:
+        with svc.session() as db:
+            pending = db.execute(
+                select(AppAiBotRun.id).where(AppAiBotRun.status.in_(["queued", "running"])).limit(1)
+            ).first()
+        return pending is None
+
+    def worker():
+        while not stop_workers.is_set():
+            try:
+                with svc.session() as db:
+                    run = svc._claim_next_queued_run(db)
+                    run_id = run.id if run is not None else None
+                    conv_id = run.conversation_id if run is not None else None
+                if run_id is None:
+                    time.sleep(0.005)
+                    continue
+                time.sleep(0.002)
+                with svc.session() as db:
+                    changed = db.execute(
+                        update(AppAiBotRun)
+                        .where(AppAiBotRun.id == run_id, AppAiBotRun.status.in_(["queued", "running"]))
+                        .values(status="completed", completed_at=datetime.now(timezone.utc),
+                                updated_at=datetime.now(timezone.utc))
+                    )
+                    if int(changed.rowcount or 0) == 1:
+                        with order_lock:
+                            completion_order[conv_id].append(run_id)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+                return
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    prod = threading.Thread(target=producer)
+    prod.start()
+    prod.join(timeout=60)
+    deadline = time.monotonic() + 120
+    while not queue_idle() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    stop_workers.set()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert not any(thread.is_alive() for thread in threads), "queue did not drain under continuous enqueue"
+    assert not errors
+    assert queue_idle()
+    for conv in conversations:
+        completed = completion_order[conv]
+        assert len(completed) == rounds, f"{conv}: {completed}"
+        with svc.session() as db:
+            seq_by_id = {
+                row.id: row.queue_seq
+                for row in db.execute(
+                    select(AppAiBotRun).where(AppAiBotRun.conversation_id == conv)
+                ).scalars()
+            }
+        assert [seq_by_id[run_id] for run_id in completed] == sorted(seq_by_id[run_id] for run_id in completed), \
+            f"FIFO violated in {conv}: {completed}"
+    print(f"\nA4 enqueue-during-claim load: {rounds * len(conversations)} runs / "
+          f"{len(conversations)} conversations / 4 workers drained")
+
+
+MIGRATION_BULK_SCHEMA = "a4migbulktest"
+MIGRATION_INVALID_SCHEMA = "a4miginvtest"
+
+
+def test_pg_migration_0176_backfill_large_table_timed(svc, monkeypatch):
+    """Backfill scale check: 3000 pre-existing runs over 30 conversations are
+    assigned queue_seq by a single ROW_NUMBER pass. Verified: contiguous
+    1..N per conversation in (created_at, id) order, last_run_seq continued,
+    and the actual wall time is reported."""
+    engine = _scratch_schema_engine(MIGRATION_BULK_SCHEMA)
+    try:
+        with engine.begin() as conn:
+            for idx in range(30):
+                conn.execute(text(
+                    f'INSERT INTO "{MIGRATION_BULK_SCHEMA}"."ai_bot_conversations" (bot_id, user_id, conversation_id, rolling_summary, summary_until_seq, context_reset_seq, use_personal_memory, title_source, created_at, updated_at) '
+                    f"VALUES ('agent', 2, 'convb{idx}', '', 0, 0, true, 'assistant', now(), now())"
+                ))
+            conn.execute(text(
+                f'INSERT INTO "{MIGRATION_BULK_SCHEMA}"."ai_bot_runs" (id, bot_id, conversation_id, user_id, trigger_message_id, status, request_json, result_json, usage_json, created_at, updated_at) '
+                "SELECT 'bulk-' || g, 'agent', 'convb' || (g % 30), 2, 'm-' || g, 'queued', '{}', '{}', '{}', "
+                "now() + (g::text || ' milliseconds')::interval, now() FROM generate_series(1, 3000) g"
+            ))
+        started = time.monotonic()
+        _run_upgrade_0176(engine, MIGRATION_BULK_SCHEMA, monkeypatch)
+        elapsed = time.monotonic() - started
+        with engine.connect() as conn:
+            wrong_order = conn.execute(text(
+                f'SELECT COUNT(*) FROM ('
+                f'SELECT id, queue_seq, ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY created_at, id) AS rn '
+                f'FROM "{MIGRATION_BULK_SCHEMA}"."ai_bot_runs") t WHERE queue_seq <> rn'
+            )).scalar_one()
+            last_seqs = conn.execute(text(
+                f'SELECT c.conversation_id, c.last_run_seq, '
+                f'(SELECT COUNT(*) FROM "{MIGRATION_BULK_SCHEMA}"."ai_bot_runs" r WHERE r.conversation_id = c.conversation_id) AS n '
+                f'FROM "{MIGRATION_BULK_SCHEMA}"."ai_bot_conversations" c'
+            )).all()
+        assert wrong_order == 0
+        for conv_id, last_seq, count in last_seqs:
+            assert last_seq == count == 100, (conv_id, last_seq, count)
+        assert elapsed < 120, f"backfill of 3000 rows took {elapsed:.1f}s"
+        print(f"\nA4 migration backfill: 3000 rows / 30 conversations in {elapsed:.2f}s")
+    finally:
+        engine.dispose()
+
+
+def test_pg_migration_0176_rebuilds_invalid_index(svc, monkeypatch):
+    """Old-worker-window rehearsal: a CREATE UNIQUE INDEX CONCURRENTLY that
+    loses to a duplicate running row leaves an INVALID index behind (what an
+    upgrade attempted while old workers still claim would produce). Verified:
+    a retried upgrade drops the INVALID index and rebuilds a VALID one after
+    the operator resolved the duplicate."""
+    engine = _scratch_schema_engine(MIGRATION_INVALID_SCHEMA)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                f'INSERT INTO "{MIGRATION_INVALID_SCHEMA}"."ai_bot_conversations" (bot_id, user_id, conversation_id, rolling_summary, summary_until_seq, context_reset_seq, use_personal_memory, title_source, created_at, updated_at) '
+                "VALUES ('agent', 2, 'convInv', '', 0, 0, true, 'assistant', now(), now())"
+            ))
+            for run_id in ("runA", "runB"):
+                conn.execute(text(
+                    f'INSERT INTO "{MIGRATION_INVALID_SCHEMA}"."ai_bot_runs" (id, bot_id, conversation_id, user_id, trigger_message_id, status, request_json, result_json, usage_json, created_at, updated_at) '
+                    f"VALUES ('{run_id}', 'agent', 'convInv', 2, 'm-{run_id}', 'running', '{{}}', '{{}}', '{{}}', now(), now())"
+                ))
+        # Simulate the failed concurrent build a mid-deploy old worker would cause.
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            with pytest.raises(Exception):
+                conn.execute(text(
+                    f'CREATE UNIQUE INDEX CONCURRENTLY "uq_app_ai_bot_runs_running_conversation" '
+                    f'ON "{MIGRATION_INVALID_SCHEMA}"."ai_bot_runs" (conversation_id) WHERE status = \'running\''
+                ))
+        with engine.connect() as conn:
+            valid = conn.execute(text(
+                "SELECT indisvalid FROM pg_index WHERE indexrelid = CAST(:name AS regclass)"
+            ), {"name": f"{MIGRATION_INVALID_SCHEMA}.uq_app_ai_bot_runs_running_conversation"}).scalar_one()
+        assert valid is False, "expected the failed CONCURRENTLY build to leave an INVALID index"
+        # Operator resolves the duplicate (cancel one run), then re-runs upgrade.
+        with engine.begin() as conn:
+            conn.execute(text(
+                f'UPDATE "{MIGRATION_INVALID_SCHEMA}"."ai_bot_runs" SET status = \'cancelled\' WHERE id = \'runB\''
+            ))
+        _run_upgrade_0176(engine, MIGRATION_INVALID_SCHEMA, monkeypatch)
+        with engine.connect() as conn:
+            valid = conn.execute(text(
+                "SELECT indisvalid FROM pg_index WHERE indexrelid = CAST(:name AS regclass)"
+            ), {"name": f"{MIGRATION_INVALID_SCHEMA}.uq_app_ai_bot_runs_running_conversation"}).scalar_one()
+        assert valid is True
+    finally:
+        engine.dispose()

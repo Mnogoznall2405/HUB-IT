@@ -101,11 +101,36 @@ def _drop_index(*, name: str, table: str) -> None:
             bind.execute(sa.text("SELECT set_config('lock_timeout', :value, false)"), {"value": previous})
 
 
+def _index_state(name: str) -> tuple[bool, bool] | None:
+    """(indisvalid, indisready) for PG, None elsewhere/absent."""
+    if op.get_bind().dialect.name != "postgresql":
+        return None
+    row = op.get_bind().execute(
+        sa.text(
+            "SELECT indisvalid, indisready FROM pg_index "
+            "WHERE indexrelid = to_regclass(:name)"
+        ),
+        {"name": f"{_schema()}.{name}" if _schema() else name},
+    ).first()
+    return (bool(row[0]), bool(row[1])) if row else None
+
+
+def _set_local_lock_timeout(value: str) -> None:
+    """Bound DDL/backfill lock waits inside the migration transaction."""
+    if op.get_bind().dialect.name == "postgresql":
+        op.get_bind().execute(sa.text("SELECT set_config('lock_timeout', :v, true)"), {"v": value})
+
+
 def upgrade() -> None:
     if _scope() == "chat":
         return
     bind = op.get_bind()
     postgres = bind.dialect.name == "postgresql"
+    if postgres:
+        # ADD COLUMN takes a brief ACCESS EXCLUSIVE; the backfill UPDATE takes
+        # row locks. A stuck wait must abort fast and leave the table usable —
+        # retry after the blocker finishes instead of piling up behind it.
+        _set_local_lock_timeout("10s")
 
     run_columns = _columns(RUNS_TABLE)
     if "queue_seq" not in run_columns:
@@ -121,21 +146,37 @@ def upgrade() -> None:
     runs = f"{_schema()}.{RUNS_TABLE}" if _schema() else RUNS_TABLE
     conversations = f"{_schema()}.{CONVERSATIONS_TABLE}" if _schema() else CONVERSATIONS_TABLE
 
-    # Backfill: dense per-conversation FIFO order over (created_at, id) so the
-    # pre-existing queue keeps its arrival order, then continue the counter on
-    # the mapping row so new enqueues stay above every backfilled value.
-    bind.execute(
-        sa.text(
-            f"""
-            UPDATE {runs} SET queue_seq = (
-                SELECT COUNT(*) FROM {runs} earlier
-                WHERE earlier.conversation_id = {runs}.conversation_id
-                  AND (earlier.created_at < {runs}.created_at
-                       OR (earlier.created_at = {runs}.created_at AND earlier.id <= {runs}.id))
-            ) WHERE queue_seq IS NULL
-            """
+    # Backfill: single O(n) pass with ROW_NUMBER on PostgreSQL; the correlated
+    # COUNT(*) fallback only runs on sqlite dev/test databases (small data,
+    # no window-UPDATE support assumptions needed elsewhere).
+    if postgres:
+        bind.execute(
+            sa.text(
+                f"""
+                UPDATE {runs} SET queue_seq = ranked.rn
+                FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY conversation_id ORDER BY created_at, id
+                    ) AS rn
+                    FROM {runs}
+                ) ranked
+                WHERE {runs}.id = ranked.id AND {runs}.queue_seq IS NULL
+                """
+            )
         )
-    )
+    else:
+        bind.execute(
+            sa.text(
+                f"""
+                UPDATE {runs} SET queue_seq = (
+                    SELECT COUNT(*) FROM {runs} earlier
+                    WHERE earlier.conversation_id = {runs}.conversation_id
+                      AND (earlier.created_at < {runs}.created_at
+                           OR (earlier.created_at = {runs}.created_at AND earlier.id <= {runs}.id))
+                ) WHERE queue_seq IS NULL
+                """
+            )
+        )
     bind.execute(
         sa.text(
             f"""
@@ -148,6 +189,14 @@ def upgrade() -> None:
     )
 
     if postgres:
+        # Concurrent builds can leave an INVALID index behind (a duplicate
+        # running row committed by an OLD worker during the build aborts it).
+        # Drop INVALID leftovers so a retried upgrade rebuilds cleanly; a
+        # VALID index is left alone.
+        for index_name in (QUEUE_SEQ_INDEX, RUNNING_UNIQUE_INDEX):
+            state = _index_state(index_name)
+            if state is not None and (not state[0] or not state[1]):
+                _drop_index(name=index_name, table=RUNS_TABLE)
         duplicates = list(
             bind.execute(
                 sa.text(
