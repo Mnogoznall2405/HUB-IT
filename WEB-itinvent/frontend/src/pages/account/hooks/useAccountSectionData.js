@@ -125,6 +125,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   // Start as loading for managers: the users effect fires after the first paint, and an initial
   // `false` renders the short "not found" row first, so the table jumps when the real rows arrive.
   const [usersLoading, setUsersLoading] = useState(canManageUsers);
+  const [taskDelegatesLoadFailed, setTaskDelegatesLoadFailed] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
   const [cleanupResult, setCleanupResult] = useState({ deactivated: 0, deleted: 0 });
@@ -242,15 +243,18 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
         custom_permissions: normalizePermissions(item?.custom_permissions),
       }));
       let usersWithDelegates = mergeTaskDelegatesIntoUsers(baseUsers, { items: [] });
+      let delegatesLoadFailed = false;
       if (baseUsers.length > 0) {
         try {
           const delegatesPayload = await authAPI.getTaskDelegatesBulk(baseUsers.map((item) => item.id));
           usersWithDelegates = mergeTaskDelegatesIntoUsers(baseUsers, delegatesPayload);
         } catch (delegateError) {
+          delegatesLoadFailed = true;
           console.error(delegateError);
         }
       }
       if (!isCurrent()) return;
+      setTaskDelegatesLoadFailed(delegatesLoadFailed);
       setUsers(usersWithDelegates);
       setBlockingError('');
     } catch (error) {
@@ -634,14 +638,23 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
         my_files_quota_bytes: draft.my_files_quota_bytes ?? null,
       };
       const updated = await authAPI.updateUser(userId, payload);
-      await authAPI.updateTaskDelegates(
-        userId,
-        normalizeTaskDelegateLinks(draft.task_delegate_links).map((item) => ({
-          delegate_user_id: Number(item.delegate_user_id),
-          role_type: item.role_type === 'deputy' ? 'deputy' : 'assistant',
-          is_active: item.is_active !== false,
-        })),
-      );
+      // FE-0232: если bulk-загрузка делегатов упала, draft.task_delegate_links —
+      // это не данные пользователя, а пустой дефолт. Отправка такого списка
+      // стирает реальные связи на сервере — пропускаем запись и предупреждаем.
+      if (taskDelegatesLoadFailed) {
+        notifyInfo('Связи помощников и заместителей не изменены: не удалось загрузить их текущий список.', {
+          dedupeMode: 'none',
+        });
+      } else {
+        await authAPI.updateTaskDelegates(
+          userId,
+          normalizeTaskDelegateLinks(draft.task_delegate_links).map((item) => ({
+            delegate_user_id: Number(item.delegate_user_id),
+            role_type: item.role_type === 'deputy' ? 'deputy' : 'assistant',
+            is_active: item.is_active !== false,
+          })),
+        );
+      }
       await loadUsers();
       if (canManageSessions) await loadSessions();
       if (Number(userId) === Number(user?.id)) {
@@ -667,7 +680,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     } finally {
       setSavingUser(false);
     }
-  }, [canManageSessions, loadSessions, loadUsers, notifyApiError, notifyInfo, notifySuccess, refreshSession, user?.id]);
+  }, [canManageSessions, loadSessions, loadUsers, notifyApiError, notifyInfo, notifySuccess, refreshSession, taskDelegatesLoadFailed, user?.id]);
 
   const handleDeleteUser = useCallback(async (target) => {
     try {

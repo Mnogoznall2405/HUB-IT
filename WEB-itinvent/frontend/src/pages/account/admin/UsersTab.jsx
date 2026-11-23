@@ -218,7 +218,12 @@ export default function UsersTab({
       setDrawerOpen(false);
       setDraft(null);
     } else if (result.user) {
-      setDraft(createUserDraftFromItem(result.user));
+      const reseeded = createUserDraftFromItem(result.user);
+      // PATCH-ответ не содержит task_delegate_links — сохраняем только что
+      // записанные связи, иначе повторное сохранение открытого редактора
+      // отправит пустой список и сотрёт их (FE-0232).
+      reseeded.task_delegate_links = draft.task_delegate_links;
+      setDraft(reseeded);
     }
   }, [draft, editorMode, isVeryWide, onCreateUser, onUpdateUser]);
 
