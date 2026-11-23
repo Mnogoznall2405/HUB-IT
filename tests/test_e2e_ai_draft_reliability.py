@@ -32,7 +32,7 @@ from backend.services.user_service import UserService
 
 
 TOOLS = ["directory.people.search", "office.mail.contacts.resolve", "office.action.mail_send_draft",
-         "chat.action.message_send_draft", "ad.user.password_status"]
+         "chat.action.message_send_draft", "ad.user.password_status", "chat.users.search"]
 PERMISSIONS = ["chat.read", "chat.write", "chat.ai.use", "mail.access", "address_book.read", "ad_users.read"]
 
 
@@ -52,6 +52,9 @@ def agent(tmp_path, monkeypatch):
     monkeypatch.setattr(ai_module, "ai_chat_service", svc)
     monkeypatch.setattr(chat_module, "user_service", users)
     monkeypatch.setattr(user_module, "user_service", users)
+    # chat tools bound user_service at import time — patch that binding too,
+    # otherwise chat.users.search queries a different (empty) database.
+    monkeypatch.setattr("backend.ai_chat.tools.chat.user_service", users)
     monkeypatch.setattr(chat_api, "chat_service", chat)
     monkeypatch.setattr(chat_api, "_schedule_chat_message_side_effects", lambda **kwargs: None)
     monkeypatch.setattr(chat_api, "_schedule_ai_run_for_message", lambda **kwargs: None)
@@ -677,7 +680,7 @@ def test_adding_address_to_chat_body_preserves_channel(agent):
 
 
 @pytest.mark.parametrize("channel", ["mail", "chat"])
-def test_explicit_channel_change_replaces_the_previous_draft(agent, channel):
+def test_explicit_channel_change_replaces_the_previous_draft(agent, channel, monkeypatch):
     if channel == "mail":
         action_cards.build_chat_message_draft(conversation_id="agent-conv", run_id="legacy", requester_user_id=99,
             payload={"peer_user_id": 848, "text": "Добавить почту"})
@@ -688,8 +691,14 @@ def test_explicit_channel_change_replaces_the_previous_draft(agent, channel):
             run_id="legacy", requester_user_id=99, payload={"to": ["antonova.op@example.test"], "subject": "ЗУП", "body": "Добавить почту"})
         text = "Вместо письма напиши Антоновой в чат"
         draft = call("chat.action.message_send_draft", peer_user_id=848, text="Добавить почту")
+        # SQLite lower() does not fold Cyrillic — stub the lookup result instead
+        # of relying on the SQL LIKE path (pre-existing PG-only behaviour).
+        import backend.ai_chat.tools.chat as chat_tools
+        monkeypatch.setattr(chat_tools.user_service, "search_users", lambda **k: {
+            "items": [{"id": 848, "display_name": "Антонова Ольга Павловна"}], "total": 1})
     agent.steps.extend([
-        {"tool_calls": [call("office.mail.contacts.resolve", q="Антонова"), draft]},
+        {"tool_calls": [call("office.mail.contacts.resolve", q="Антонова"),
+                        call("chat.users.search", query="Антонова"), draft]},
         {"answer_markdown": "Готово"},
     ])
     agent.request(text)

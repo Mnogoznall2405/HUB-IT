@@ -121,6 +121,95 @@ NETWORK_TOOL_SSL_CHECK = "network.ssl.check"
 NETWORK_TOOL_ACTION_WOL_DRAFT = "network.action.wol_draft"
 NETWORK_TOOL_HOST_INFO = "network.host.info"
 
+# ── A5: server-side tool-effect classification ────────────────────────────
+# One place, one taxonomy. `execute_bounded`/`run_allowed_tools` must never
+# guess semantics from the tool_id string again.
+TOOL_EFFECT_READ = "read"          # pure data lookup, no side effects
+TOOL_EFFECT_ARTIFACT = "artifact" # creates a file/report artifact
+TOOL_EFFECT_DELIVERY = "delivery" # sends/delivers content to the user
+TOOL_EFFECT_ACTION = "action"     # draft/action card or data change
+TOOL_EFFECT_META = "meta"         # orchestration (ai.request_tool_group)
+TOOL_EFFECT_UNKNOWN = "unknown"   # NOT read — new tools land here by default
+
+# Explicit per-id overrides for tools whose name does not carry ".action."
+# but which still produce side effects (audited registry, 100 tools).
+_TOOL_EFFECT_OVERRIDES: dict[str, str] = {
+    "ai.request_tool_group": TOOL_EFFECT_META,
+    "helpdesk.request_draft": TOOL_EFFECT_ACTION,
+    "ai.files.create": TOOL_EFFECT_ARTIFACT,
+    "ai.files.report": TOOL_EFFECT_ARTIFACT,
+    "ai.files.convert_document": TOOL_EFFECT_ARTIFACT,
+    "itinvent.equipment.export": TOOL_EFFECT_ARTIFACT,
+    "kb.attachments.send": TOOL_EFFECT_DELIVERY,
+    "me.files.attach": TOOL_EFFECT_DELIVERY,
+}
+
+# P1-1 (cycle 3): exact audited allowlist — every registered read tool by id.
+# A prefix match would silently promote new tools like `office.mail.delete`
+# or `directory.people.modify` to read; only an id present HERE is read.
+_TOOL_READ_TOOLS: frozenset[str] = frozenset({
+    "ad.mailbox.password_status", "ad.mailboxes.expiring_soon",
+    "ad.user.groups", "ad.user.lockout_status", "ad.user.logon_history",
+    "ad.user.password_status", "ad.users.expiring_soon",
+    "chat.users.search", "chat.conversations.search",
+    "directory.department.get", "directory.people.search",
+    "itinvent.acts.pending", "itinvent.analytics.summary",
+    "itinvent.audit.dismissed_with_equipment", "itinvent.computers.changes",
+    "itinvent.computers.get", "itinvent.computers.search",
+    "itinvent.computers.software_search", "itinvent.consumables.search",
+    "itinvent.database.current", "itinvent.directory.branches",
+    "itinvent.directory.departments", "itinvent.directory.equipment_types",
+    "itinvent.directory.locations", "itinvent.directory.statuses",
+    "itinvent.directory.vendors", "itinvent.employee.list_equipment",
+    "itinvent.employee.search", "itinvent.entity.resolve",
+    "itinvent.equipment.acts", "itinvent.equipment.get_card",
+    "itinvent.equipment.history", "itinvent.equipment.list_by_branch",
+    "itinvent.equipment.models_search", "itinvent.equipment.search",
+    "itinvent.equipment.search_multi_db", "itinvent.equipment.search_universal",
+    "itinvent.user.by_name", "itinvent.user.full_context",
+    "kb.articles.get", "kb.articles.search", "kb.attachments.get_text",
+    "kb.categories.list",
+    "me.account.status", "me.computer.health", "me.equipment",
+    "me.files.search", "me.it_requests", "me.mailbox.quota",
+    "mfu.device.status", "mfu.devices.list", "mfu.devices.low_toner",
+    "mfu.pages.monthly",
+    "network.branch.overview", "network.dns.lookup", "network.host.info",
+    "network.host.ping", "network.ports.search", "network.socket.search",
+    "network.ssl.check",
+    "office.announcements.get", "office.announcements.list",
+    "office.mail.contacts.resolve", "office.mail.get_message",
+    "office.mail.search", "office.mailbox.quota_report",
+    "office.tasks.get", "office.tasks.projects", "office.tasks.search",
+    "office.workday.summary",
+    "voice.meeting.get", "voice.meetings.search",
+    "warehouse.balances.search", "warehouse.it_requests.get",
+    "warehouse.it_requests.search",
+})
+
+
+def tool_effect(tool_id: Any) -> str:
+    """Classify a registered tool's side-effect profile.
+
+    ``unknown`` is returned for anything not explicitly classified — a new
+    tool never silently inherits read-only status. ``me.files.attach`` and
+    ``kb.attachments.send`` are deliveries, ``*.action.*``/``*_draft`` are
+    action-prep, ``ai.files.*``/equipment export are artifacts.
+    """
+    tid = _normalize_text(tool_id)
+    if not tid:
+        return TOOL_EFFECT_UNKNOWN
+    override = _TOOL_EFFECT_OVERRIDES.get(tid)
+    if override:
+        return override
+    if ".action." in tid or tid.endswith("_draft"):
+        return TOOL_EFFECT_ACTION
+    if tid in _TOOL_READ_TOOLS:
+        return TOOL_EFFECT_READ
+    # Fail-closed: an unlisted id — even under a familiar prefix like
+    # ``office.mail.delete`` — is UNKNOWN, never silently read.
+    return TOOL_EFFECT_UNKNOWN
+
+
 DEFAULT_ITINVENT_TOOL_IDS = [
     ITINVENT_TOOL_DATABASE_CURRENT,
     ITINVENT_TOOL_EQUIPMENT_SEARCH,
@@ -384,6 +473,16 @@ class AiToolExecutionContext:
     allow_kb_document_delivery: bool = False
     # Server-owned state; never populated from model arguments.
     draft_policy: Any = None
+    # A5: per-run tool ceiling derived from the JEV intent mode.
+    # ``None`` keeps the legacy ceiling (``enabled_tools``); an empty set
+    # (CHAT mode) forbids every registry execution for this run, including
+    # auto-pagination and group-expansion follow-ups. The field is set by
+    # the orchestrator only — never from model output or tool results.
+    run_allowed_tools: frozenset[str] | None = None
+    # JEV intent mode for this run: "chat" | "read" | "act" | None.
+    intent_mode: str | None = None
+    # Counted in the run profile: model tool_calls refused by run_allowed_tools.
+    mode_denied_calls: int = 0
 
     @property
     def is_admin(self) -> bool:

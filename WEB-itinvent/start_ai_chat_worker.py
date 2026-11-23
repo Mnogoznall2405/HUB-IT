@@ -82,8 +82,19 @@ async def main() -> None:
     digest_check_interval_sec = _env_float("AI_IT_DIGEST_CHECK_INTERVAL_SEC", 60.0, 15.0, 3600.0)
     last_digest_check_at = 0.0
     digest_task: asyncio.Task | None = None
+    # A1 (cycle 3): claim-loop heartbeat — the watchdog reaps stale `queued`
+    # rows only while this heartbeat is fresh; a wedged/dead loop stops it and
+    # queued backlog is preserved instead of being falsely declared lost.
+    heartbeat_interval_sec = _env_float("AI_WORKER_HEARTBEAT_SEC", 15.0, 5.0, 300.0)
+    last_heartbeat_at = 0.0
     logger.info("AI chat worker started: batch_size=%s concurrency=%s", batch_size, concurrency)
     while True:
+        if time.monotonic() - last_heartbeat_at >= heartbeat_interval_sec:
+            last_heartbeat_at = time.monotonic()
+            try:
+                await asyncio.to_thread(ai_chat_service.worker_heartbeat)
+            except Exception:
+                logger.exception("AI worker heartbeat write failed")
         if last_result_repair_at == 0.0 or time.monotonic() - last_result_repair_at >= 60.0:
             last_result_repair_at = time.monotonic()
             try:

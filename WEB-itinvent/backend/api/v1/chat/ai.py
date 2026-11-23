@@ -1,6 +1,8 @@
 """AI chat endpoints."""
 from __future__ import annotations
 
+import asyncio
+
 from backend.api.v1.chat._shim import chat_api
 from typing import Any
 
@@ -329,16 +331,33 @@ async def confirm_ai_action(
     current_user: User = Depends(require_permission(PERM_CHAT_AI_USE)),
 ):
     from backend.ai_chat.action_cards import confirm_action
+    from backend.ai_chat.timeouts import ai_action_confirm_timeout_sec
 
     try:
-        card = await chat_api()._run_chat_call(
-            confirm_action,
-            action_id=action_id,
-            current_user=current_user,
-            payload_overrides=payload,
+        # A1: bound the confirm call — external systems (Exchange, ITINVENT,
+        # 1C) have their own driver timeouts, but the request must not hang
+        # past this budget. On timeout the outcome is unknown: the action
+        # stays in "executing" and existing repair mechanisms reconcile it;
+        # the user is told not to retry blindly.
+        card = await asyncio.wait_for(
+            chat_api()._run_chat_call(
+                confirm_action,
+                action_id=action_id,
+                current_user=current_user,
+                payload_overrides=payload,
+            ),
+            timeout=ai_action_confirm_timeout_sec(),
         )
         _after_choice_reply(card, current_user)
         return card
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "Подтверждение выполняется слишком долго. Результат операции "
+                "неизвестен — проверьте состояние карточки перед повтором."
+            ),
+        )
     except LookupError:
         raise HTTPException(status_code=404, detail="Action was not found")
     except Exception as exc:
