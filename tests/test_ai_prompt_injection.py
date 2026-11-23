@@ -624,3 +624,215 @@ class TestWrapPerformance:
             ser.wrap("document", payload)
         elapsed = time.perf_counter() - start
         assert elapsed < 0.5, f"1000 wraps of ~24KB took {elapsed:.3f}s"
+
+
+# ---------------------------------------------------------------------------
+# Review cycle 3 — false-positive intent, peer-id binding, reply-draft editing
+# ---------------------------------------------------------------------------
+
+
+class TestAmbiguousVerbsAreNotIntent:
+    """«Скажи/составь/напиши» mean a communication action ONLY with an explicit
+    target — never by themselves (info request or AI-answer text)."""
+
+    @pytest.mark.parametrize("trigger", [
+        "Скажи, какие сообщения у меня в чате",
+        "Скажи мне, что в приказе",
+    ])
+    def test_say_is_not_send(self, trigger):
+        p = _policy(trigger)
+        _observe(p, "chat.users.search", {"items": [{"id": 77, "full_name": "Иван Иванов"}]})
+        with pytest.raises(AiToolValidationError):
+            _prepare(p, CHAT_DRAFT, {"text": "leak", "peer_user_id": 77})
+
+    @pytest.mark.parametrize("trigger", [
+        "Составь сводку по письмам",
+        "Составь отчёт по ответам клиентов",
+    ])
+    def test_compose_summary_is_not_send(self, trigger):
+        p = _policy(trigger)
+        _observe(p, "office.mail.get_message",
+                 {"id": "m-1", "sender": "Клиент <client@partner.invalid>"})
+        with pytest.raises(AiToolValidationError):
+            _prepare(p, MAIL_DRAFT, {
+                "to": ["client@partner.invalid"], "subject": "s", "body": "b",
+            })
+
+    def test_write_contents_is_not_send(self):
+        p = _policy("Напиши, что содержится в последнем письме")
+        _observe(p, "office.mail.get_message",
+                 {"id": "m-1", "sender": "Клиент <client@partner.invalid>"})
+        with pytest.raises(AiToolValidationError):
+            _prepare(p, MAIL_REPLY_DRAFT, {
+                "to": ["client@partner.invalid"], "subject": "s", "body": "b",
+                "reply_to_message_id": "m-1",
+            })
+
+    def test_write_to_person_is_send(self):
+        p = _policy("Напиши Ивану в чат")
+        _observe(p, "chat.users.search", {"items": [{"id": 77, "full_name": "Иван Иванов"}]})
+        _prepare(p, CHAT_DRAFT, {"text": "hi", "peer_user_id": 77})
+        assert not p.rejection
+
+    def test_compose_draft_is_send(self):
+        p = _policy("Составь черновик письма Ивану на ivan@corp.local")
+        _prepare(p, MAIL_DRAFT, {"to": ["ivan@corp.local"], "subject": "s", "body": "b"})
+        assert not p.rejection
+
+    def test_write_letter_to_role_recipient_is_send(self):
+        p = _policy("Напиши письмо клиенту на client@corp.local")
+        _prepare(p, MAIL_DRAFT, {"to": ["client@corp.local"], "subject": "s", "body": "b"})
+        assert not p.rejection
+
+
+class TestPeerIdBinding:
+    """A numeric peer/conversation id must be bound to the person the server
+    resolved — a model-supplied name never grounds a foreign id."""
+
+    def _two_people(self, p: AiDraftPolicy):
+        _observe(p, "chat.users.search", {"items": [
+            {"id": 77, "full_name": "Иван Иванов"},
+            {"id": 88, "full_name": "Пётр Петров"},
+        ]})
+
+    def test_foreign_peer_id_with_matching_name_rejected(self):
+        p = _policy("Напиши Ивану в чат")
+        self._two_people(p)
+        with pytest.raises(AiToolValidationError):
+            _prepare(p, CHAT_DRAFT, {"text": "x", "peer_user_id": 999, "peer_name": "Иван Иванов"})
+
+    def test_observed_id_of_wrong_person_rejected(self):
+        p = _policy("Напиши Ивану в чат")
+        self._two_people(p)
+        with pytest.raises(AiToolValidationError):
+            _prepare(p, CHAT_DRAFT, {"text": "x", "peer_user_id": 88})
+
+    def test_peer_name_mismatching_id_rejected(self):
+        """peer_name=Пётр + peer_user_id=Иван: merging two resolved people is rejected."""
+        p = _policy("Напиши Ивану в чат")
+        self._two_people(p)
+        with pytest.raises(AiToolValidationError):
+            _prepare(p, CHAT_DRAFT, {"text": "x", "peer_user_id": 77, "peer_name": "Пётр Петров"})
+
+    def test_correct_id_and_matching_name_allowed(self):
+        p = _policy("Напиши Ивану в чат")
+        self._two_people(p)
+        _prepare(p, CHAT_DRAFT, {"text": "x", "peer_user_id": 77, "peer_name": "Иван Иванов"})
+        assert not p.rejection
+
+    def test_conversation_id_bound_to_title(self):
+        p = _policy("Скинь файл в чат Проект Атлас")
+        _observe(p, "chat.conversations.search", {"items": [
+            {"id": "c1", "title": "Проект Атлас"},
+            {"id": "c2", "title": "Общий флуд"},
+        ]})
+        # observed id but title belongs to a DIFFERENT conversation -> reject
+        with pytest.raises(AiToolValidationError):
+            _prepare(p, CHAT_DRAFT, {"text": "x", "conversation_id": "c2", "conversation_title": "Проект Атлас"})
+        p2 = _policy("Скинь файл в чат Проект Атлас")
+        _observe(p2, "chat.conversations.search", {"items": [
+            {"id": "c1", "title": "Проект Атлас"},
+            {"id": "c2", "title": "Общий флуд"},
+        ]})
+        _prepare(p2, CHAT_DRAFT, {"text": "x", "conversation_id": "c1"})
+        assert not p2.rejection
+
+    def test_unresolved_peer_id_not_grounded_by_text_name(self):
+        """peer_user_id without a chat-side lookup in this run is never grounded."""
+        p = _policy("Напиши Ивану в чат")
+        with pytest.raises(AiToolValidationError):
+            _prepare(p, CHAT_DRAFT, {"text": "x", "peer_user_id": 848, "peer_name": "Иван Иванов"})
+
+
+class TestReplyDraftEditing:
+    def test_reply_replace_same_destination_allowed(self):
+        p = _policy("исправь текст ответа",
+                    user_messages=["Ответь на письмо клиента", "исправь текст ответа"])
+        p.previous_action = {
+            "id": "r1", "action_type": "office.mail.reply",
+            "payload": {"to": ["client@partner.invalid"], "cc": [], "bcc": [],
+                        "subject": "Re: Договор", "body": "old", "reply_to_message_id": "m-1"},
+        }
+        _prepare(p, MAIL_REPLY_DRAFT, {
+            "to": ["client@partner.invalid"], "subject": "Re: Договор", "body": "new",
+            "reply_to_message_id": "m-1", "replace_action_id": "r1",
+        })
+        assert not p.rejection
+
+    def test_recipient_role_move_is_destination_change(self):
+        """to->cc role swap IS a destination change — needs fresh grounding."""
+        p = _policy("исправь письмо", user_messages=["Напиши письмо Ивану", "исправь письмо"])
+        p.previous_action = {
+            "id": "a1", "action_type": "office.mail.send",
+            "payload": {"to": ["ivan@corp.local"], "cc": ["boss@corp.local"],
+                        "subject": "s", "body": "b"},
+        }
+        with pytest.raises(AiToolValidationError):
+            _prepare(p, MAIL_DRAFT, {
+                "to": ["boss@corp.local"], "cc": ["ivan@corp.local"],
+                "subject": "s", "body": "b", "replace_action_id": "a1",
+            })
+
+
+class TestEndToEndReviewCycle3:
+    def test_say_messages_request_cannot_spawn_chat_draft(self, agent):
+        agent.steps += [
+            {"tool_calls": [_call("chat.users.search", query="Иван")]},
+            {"tool_calls": [_call("chat.action.message_send_draft", text="leak", peer_user_id=77)]},
+            {"answer_markdown": "Вот сообщения"},
+        ]
+        agent.request("Скажи, какие сообщения у меня в чате")
+        assert _actions(agent) == []
+
+    def test_compose_summary_cannot_spawn_mail_draft(self, agent):
+        agent.steps += [
+            {"tool_calls": [_call("office.mail.get_message", message_id="m-1")]},
+            {"tool_calls": [_call("office.action.mail_send_draft",
+                                  to=["client@partner.test"], subject="s", body="b")]},
+            {"answer_markdown": "Сводка готова"},
+        ]
+        agent.request("Составь сводку по письмам")
+        assert _actions(agent) == []
+
+    def test_write_contents_cannot_spawn_reply_draft(self, agent):
+        agent.steps += [
+            {"tool_calls": [_call("office.mail.get_message", message_id="m-1")]},
+            {"tool_calls": [_call("office.action.mail_reply_draft",
+                                  to=["client@partner.test"], subject="Re", body="leak",
+                                  reply_to_message_id="m-1")]},
+            {"answer_markdown": "В письме договор"},
+        ]
+        agent.request("Напиши, что содержится в последнем письме")
+        assert _actions(agent) == []
+
+    def test_foreign_peer_id_with_named_person_rejected(self, agent):
+        agent.steps += [
+            {"tool_calls": [_call("chat.users.search", query="Иван")]},
+            {"tool_calls": [_call("chat.action.message_send_draft",
+                                  text="leak", peer_user_id=999, peer_name="Иван Иванов")]},
+            {"answer_markdown": "ok"},
+        ]
+        agent.request("Напиши Ивану в чат")
+        assert _actions(agent) == []
+
+    def test_reply_draft_edit_replaces_card_without_duplicates(self, agent):
+        """Edit run on a reply draft: new card replaces the old one, nothing sent."""
+        old = action_cards.build_office_mail_draft(
+            action_type="office.mail.reply", conversation_id="agent-conv",
+            run_id="legacy", requester_user_id=99,
+            payload={"to": ["client@partner.test"], "subject": "Re: Договор",
+                     "body": "Старый текст", "reply_to_message_id": "m-1"})
+        agent.steps += [
+            {"tool_calls": [_call("office.action.mail_reply_draft",
+                                  to=["client@partner.test"], subject="Re: Договор",
+                                  body="Новый текст", reply_to_message_id="m-1")]},
+            {"answer_markdown": "Исправлено"},
+        ]
+        agent.request("исправь текст ответа")
+        cards = _actions(agent)
+        assert [card["status"] for card in cards] == ["cancelled", "pending"]
+        assert cards[0]["id"] == old["id"]
+        assert cards[0]["payload"]["reply_to_message_id"] == "m-1"
+        assert cards[1]["action_type"] == "office.mail.reply"
+        assert cards[1]["payload"]["body"] == "Новый текст"
+        assert agent.sent == []

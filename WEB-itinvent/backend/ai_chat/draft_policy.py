@@ -27,12 +27,41 @@ _EMPLOYEE_EMAIL = re.compile(
 # A communication draft may be created only when the USER asked for a
 # send/reply/message action. Grounding (a resolved peer/mail/conversation from
 # tool results) is a separate check and never substitutes intent.
-_SEND_INTENT = re.compile(
-    r"\b(?:напиш\w*|отправ\w*|состав\w*|подготов\w*\s+письм\w*|ответь\w*|ответить|"
-    r"перешл\w*|пересл\w*|передай\w*|скаж\w*|сообщ\w*|скинь\w*|сбрось\w*)"
-    r"|\b(?:send|write|reply|forward|draft)\b",
+#
+# Strong verbs unambiguously mean "send something to someone"; ambiguous verbs
+# («напиши», «составь», «скажи») also mean "write an answer for me" or "make a
+# summary", so they count as send intent only together with an explicit target:
+# a named person, a role noun, an e-mail address or the word «черновик»/«draft».
+_SEND_STRONG = re.compile(
+    r"\b(?:отправ\w*|ответь\w*|ответить|перешл\w*|пересл\w*|переда[йт]\w*|"
+    r"доставь\w*)\b|\b(?:send|reply|forward|resend)\b",
     re.IGNORECASE,
 )
+_SEND_AMBIG = re.compile(
+    r"\b(?:напиш\w*|состав\w*|подготов\w*|наброса\w*|скажи(?:те)?\b|"
+    r"сообщи(?:те|ть)?\b|скинь\w*|сбрось\w*)\b|\b(?:write|draft|compose|tell)\b",
+    re.IGNORECASE,
+)
+_SEND_TARGET = re.compile(
+    r"черновик\w*|\bdraft\b|@\w|клиент\w*|заказчик\w*|сотрудник\w*|коллег\w*|"
+    r"администратор\w*|руководител\w*|директор\w*|менеджер\w*|бухгалтер\w*|"
+    r"кадровик\w*|юрист\w*|поддержк\w*|шеф\w*|босс\w*|"
+    r"\bему\b|\bей\b|\bим\b|\bнём\b|\bней\b|\bних\b",
+    re.IGNORECASE,
+)
+_WORD = re.compile(r"[А-ЯЁA-Zа-яёa-z\-]{4,}")
+
+
+def _send_intent(text: str) -> bool:
+    if _SEND_STRONG.search(text):
+        return True
+    if not _SEND_AMBIG.search(text):
+        return False
+    if _SEND_TARGET.search(text):
+        return True
+    # «Напиши Ивану» — a capitalized token after the first word is a person name.
+    words = _WORD.findall(text)
+    return any(word[0].isupper() for word in words[1:])
 _MAIL_CHANNEL = re.compile(
     r"письм\w*|почт\w*|e-?mail|\bmail\b|ответ\w*|\breply\b|forward|перешл\w*|пересл\w*",
     re.IGNORECASE,
@@ -83,7 +112,11 @@ class AiDraftPolicy:
     observed_mail_senders: dict[str, str] = field(default_factory=dict)
     observed_peer_user_ids: set[int] = field(default_factory=set)
     observed_conversation_ids: set[str] = field(default_factory=set)
-    observed_person_names: set[str] = field(default_factory=set)
+    # id -> name/title tokens: binds a numeric target to the person or
+    # conversation the server actually resolved, so a model-supplied name
+    # cannot ground a foreign id.
+    observed_peer_names: dict[int, list[str]] = field(default_factory=dict)
+    observed_conversation_titles: dict[str, list[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for text in [self.trigger_text, *self.user_messages]:
@@ -205,44 +238,66 @@ class AiDraftPolicy:
         return " ".join([self.trigger_text, *self.user_messages]).lower()
 
     def _chat_target_grounded(self, args: dict[str, Any]) -> bool:
-        # The destination must be grounded in this run's server tool results or in
-        # the user's own text — a document/mail/KB snippet cannot pick the target.
+        # The destination must be grounded in this run's server tool results or
+        # in the user's own text — a document/mail/KB snippet cannot pick the
+        # target, and a model-supplied name never grounds a foreign numeric id.
         trusted_text = self._trusted_text()
+
+        def stems_in_text(name: str) -> bool:
+            return any(token[:4] in trusted_text for token in _name_tokens(name))
+
+        def stems_overlap(first: list[str], second: list[str]) -> bool:
+            return any(one[:4] == two[:4] for one in first for two in second)
+
         peer_id = args.get("peer_user_id")
         peer_name = _norm(args.get("peer_name"))
         conversation_id = _norm(args.get("conversation_id"))
         conversation_title = _norm(args.get("conversation_title"))
         if peer_id:
             try:
-                if int(peer_id) in self.observed_peer_user_ids:
-                    return True
+                pid = int(peer_id)
             except (TypeError, ValueError):
-                pass
-        if conversation_id and conversation_id in self.observed_conversation_ids:
+                return False
+            # Only a chat-side lookup in THIS run grounds a numeric peer id.
+            if pid not in self.observed_peer_user_ids:
+                return False
+            observed_tokens = self.observed_peer_names.get(pid) or []
+            # A model-supplied peer_name must describe the SAME person the id
+            # resolved to — merging a verified name with another id is rejected.
+            if peer_name and observed_tokens and not stems_overlap(_name_tokens(peer_name), observed_tokens):
+                return False
+            if observed_tokens:
+                # The resolved person must be who the user asked for.
+                return any(token[:4] in trusted_text for token in observed_tokens)
+            return bool(peer_name) and stems_in_text(peer_name)
+        if conversation_id:
+            if conversation_id not in self.observed_conversation_ids:
+                return False
+            title_tokens = self.observed_conversation_titles.get(conversation_id) or []
+            if conversation_title and title_tokens and not stems_overlap(_name_tokens(conversation_title), title_tokens):
+                return False
+            if title_tokens:
+                return any(token[:4] in trusted_text for token in title_tokens) or (
+                    bool(conversation_title) and stems_in_text(conversation_title)
+                )
             return True
-        # Name tokens are matched by a 4-char stem so Cyrillic declension
-        # ("Мария" -> "Марии", "Иван" -> "Ивану") still grounds the target.
+        # No id at all: the model named the target, so ground it on the user's
+        # own text only (a 4-char stem covers Cyrillic declension).
         for name in (peer_name, conversation_title):
-            if name and any(token[:4] in trusted_text for token in _name_tokens(name)):
+            if name and stems_in_text(name):
                 return True
-        # A person resolved this run by a server lookup whose name the user
-        # themselves mentioned grounds a peer target ("напиши Антоновой" ->
-        # contacts.resolve -> peer_user_id). The numeric id alone never does.
-        if (peer_id or peer_name) and any(
-            token[:4] in trusted_text for token in self.observed_person_names
-        ):
-            return True
         return False
 
     def _same_destination(self, tool_id: str, args: dict[str, Any], stored_payload: dict[str, Any]) -> bool:
         if tool_id in (MAIL_DRAFT, MAIL_REPLY_DRAFT):
             from backend.ai_chat.tools.office import coerce_mail_recipients
 
-            def recipients(source: dict[str, Any]) -> list[str]:
-                return sorted(
-                    address.lower()
+            def recipients(source: dict[str, Any]) -> tuple[tuple[str, ...], ...]:
+                # to/cc/bcc compared per field: moving an address between
+                # roles IS a destination change and needs fresh grounding.
+                return tuple(
+                    tuple(sorted(address.lower() for address in coerce_mail_recipients(source.get(key))))
                     for key in ("to", "cc", "bcc")
-                    for address in coerce_mail_recipients(source.get(key))
                 )
             try:
                 if recipients(args) != recipients(stored_payload):
@@ -268,7 +323,7 @@ class AiDraftPolicy:
         pending action the user already created plus its original request.
         """
         text = self.trigger_text
-        if draft_followup(text) and not _SEND_INTENT.search(text):
+        if draft_followup(text) and not _send_intent(text):
             # A pending draft the server surfaced + draft-edit phrasing is itself
             # user direction: the intent was established when the draft was made.
             if is_replace:
@@ -279,7 +334,7 @@ class AiDraftPolicy:
                 (item for item in reversed(self.user_messages) if item != text and not draft_retry(item)),
                 text,
             )
-        if not _SEND_INTENT.search(text):
+        if not _send_intent(text):
             self.rejection = (
                 "В запросе пользователя нет поручения отправить письмо или сообщение. "
                 "Уточните у пользователя, нужно ли готовить черновик."
@@ -318,13 +373,6 @@ class AiDraftPolicy:
         if str(tool_id).startswith("ad."):
             self.ad_checked = True
         contacts: list[dict[str, Any]] = []
-        person_fields = ("name", "full_name", "display_name", "username")
-        if tool_id in ("office.mail.contacts.resolve", "directory.people.search",
-                       "chat.users.search", "ad.user.password_status"):
-            for item in data.get("items") or ([data.get("user") or {}] if tool_id == "ad.user.password_status" else []):
-                if isinstance(item, dict):
-                    for field_name in person_fields:
-                        self.observed_person_names.update(_name_tokens(str(item.get(field_name) or "")))
         if tool_id == "office.mail.contacts.resolve":
             contacts = data.get("items") or []
         elif tool_id in ("office.mail.search", "office.mail.get_message"):
@@ -348,12 +396,20 @@ class AiDraftPolicy:
                         peer_id = 0
                     if peer_id > 0:
                         self.observed_peer_user_ids.add(peer_id)
+                        tokens: list[str] = []
+                        for field_name in ("display_name", "full_name", "name", "username"):
+                            tokens.extend(_name_tokens(str(item.get(field_name) or "")))
+                        if tokens:
+                            self.observed_peer_names[peer_id] = tokens
         elif tool_id == "chat.conversations.search":
             for item in data.get("items") or []:
                 if isinstance(item, dict):
                     conv_id = _norm(item.get("id") or item.get("conversation_id"))
                     if conv_id:
                         self.observed_conversation_ids.add(conv_id)
+                        tokens = _name_tokens(str(item.get("title") or item.get("name") or ""))
+                        if tokens:
+                            self.observed_conversation_titles[conv_id] = tokens
         elif tool_id == "directory.people.search":
             for person in data.get("items") or []:
                 for email in person.get("work_emails") or []:
