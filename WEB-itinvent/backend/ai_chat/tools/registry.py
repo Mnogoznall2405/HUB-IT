@@ -235,6 +235,33 @@ class AiToolRegistry:
         """
         global _in_flight, _leaked_now, _leaked_total, _rejected_total, _queue_timeout_total, _submitted_total
         normalized_tool_id = _normalize_text(tool_id)
+        # A5 run-mode ceiling: a JEV CHAT/READ decision narrows which tools may
+        # execute for this run. Enforced at the single execution choke point so
+        # it covers model calls, auto-pagination and post-expansion retries.
+        run_allowed = getattr(context, "run_allowed_tools", None)
+        if run_allowed is not None and normalized_tool_id not in run_allowed:
+            try:
+                context.mode_denied_calls = int(getattr(context, "mode_denied_calls", 0) or 0) + 1
+            except Exception:
+                pass
+            logger.info(
+                "ai_tool_mode_denied run_id=%s conversation_id=%s tool_id=%s intent_mode=%s",
+                getattr(context, "run_id", None) or "-",
+                getattr(context, "conversation_id", None) or "-",
+                normalized_tool_id or "-",
+                getattr(context, "intent_mode", None) or "-",
+            )
+            return self._error_result(
+                tool_id=normalized_tool_id,
+                context=context,
+                error_code="tool_mode_denied",
+                error_text="Инструмент недоступен в режиме текущего запуска.",
+                message=(
+                    "Текущий режим запуска не разрешает этот инструмент. "
+                    "Ответь без его вызова или попроси пользователя переформулировать поручение."
+                ),
+                latency_ms=0,
+            )
         tool = self.get(normalized_tool_id)
         timeout_sec = ai_tool_wall_timeout_sec()
         tool_timeout = getattr(tool, "timeout_sec", None) if tool is not None else None

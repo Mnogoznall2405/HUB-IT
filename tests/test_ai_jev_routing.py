@@ -130,7 +130,10 @@ def test_group_routing_questions_cover_only_available_groups(monkeypatch):
         available_groups={"itinvent", "other"},
     )
     # 'other' не спрашивается у JEV — она всегда добавляется как safety net.
-    assert set(captured["questions"]) == {"g_itinvent"}
+    # A5: m_mode_* вопросы в том же decide() — фильтруем их из проверки групп.
+    group_keys = {key for key in captured["questions"] if not key.startswith("m_mode_")}
+    assert group_keys == {"g_itinvent"}
+    assert {"m_mode_chat", "m_mode_act"} <= set(captured["questions"])
     state = captured["state"]
     assert state["available_groups"] == ["itinvent", "other"]
 
