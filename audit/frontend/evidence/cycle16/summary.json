@@ -1,0 +1,72 @@
+{
+  "generatedAt": "2026-11-23",
+  "auditBase": "60dfe457",
+  "testedSource": "4776ce5f",
+  "testedSourceNote": "clean git archive of main 4776ce5f; root .env copied locally for VITE_* build flags (content not published)",
+  "stand": "local_backend.py SQLite .state-cycle16 :18006 + static proxy :5224",
+  "routeInventory": {
+    "total": 51,
+    "redirects": 5,
+    "userVisible": 46,
+    "public": 3,
+    "standaloneProtected": 31,
+    "parameterizedOrChild": 12,
+    "adminSections": 12,
+    "settingsSections": 6
+  },
+  "coverage": {
+    "E2E": 6,
+    "Functional": 26,
+    "Smoke": 7,
+    "Blocked": 7,
+    "Redirect": 5,
+    "functionalPlusE2E": 32,
+    "functionalPlusE2EPercent": 69.6,
+    "e2ePercent": 13.0
+  },
+  "newE2E": {
+    "count": 5,
+    "scenarios": [
+      "/feed publish -> reload",
+      "/tasks create + edit + checklist -> reload",
+      "/chat notes send + cross-tab + reload + API dedupe",
+      "/my-files upload + search + reload + preview",
+      "/admin/users create synthetic user -> reload"
+    ]
+  },
+  "fe0059": {
+    "graceSeconds": 180,
+    "oldWithinGrace": 200,
+    "oldAfterGrace": 401,
+    "newTokenAfterOldRejection": 200,
+    "familyRevokedInLostResponseScenario": false,
+    "forcedLogoutCause": "client lost the rotated response; only the stale cookie remains"
+  },
+  "fe0083": {
+    "parallel3": [200, 200, 401],
+    "winnerCookiesAfterBurst": 401,
+    "sequentialWithinGrace": [200, 200],
+    "familyRevoked": true,
+    "trigger": "concurrency exceeding grace reuse hits"
+  },
+  "blocked": [
+    "FE-0215 no mailbox, MAIL_MODULE_ENABLED=0",
+    "FE-0230 no Windows WebView2 host",
+    "FE-0232/FE-0239 no fixtures and no approved mutations",
+    "FE-0259 construction 502: BUH20_1C creds absent",
+    "/database needs branch/SQL data",
+    "/my-files/edit/:fileId editor error state"
+  ],
+  "screenshots": [
+    "live-c16-feed-e2e.png",
+    "live-c16-task-e2e.png",
+    "live-c16-task-edit2.png",
+    "live-c16-task-checklist.png",
+    "live-c16-chat-e2e-clean.png",
+    "live-c16-files-e2e2.png",
+    "live-c16-files-preview.png",
+    "live-c16-admin-user-e2e.png",
+    "live-c16-admin-sections.png",
+    "live-c16-edge-routes.png"
+  ]
+}

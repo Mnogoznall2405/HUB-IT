@@ -260,6 +260,8 @@ best-effort, пользовательские ошибки не глотаютс
 
 
 
+
+
 ## Карточки записей FE-0078…FE-0325 (перепроверка циклов 12–13)
 
 > Карточки перегенерированы из ISSUES.json; исходные утверждения, текущие выводы
@@ -301,7 +303,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: Auth/Concurrency | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/api/http.js` :54,66-76
 - Суть/механизм: Триггер в реальности: silent refresh на каждый visibilitychange (AuthContext.jsx:471-508) — пробуждение ноутбука с N вкладок → гонка внутри grace-окна → массовый logout. Потеря несохранённых черновиков — да (принудительный logout). Grace/MAX_HITS не трогать (auth-политика).
-- Доказательства: probe_refresh_race.mjs (local stack): 3 параллельных POST /auth/refresh с одной кукой → [200,200,401]; далее /auth/me → 401 и во ВТОРОЙ вкладке (тот же cookie jar) → 401 — family отозвана, обе вкладки разлогинены; код: http.js:54,66-76 — refreshInFlight только внутри вкладки; navigator.locks/BroadcastChannel отсутствуют; backend auth.py:135 (_REFRESH_GRACE_MAX_HITS=1), 1648-1676 (grace 15 c → revoke family); [cycle12:confirmed] High, ручная проверка: refreshInFlight только внутри вкладки (http.js:54,66-76), navigator.locks/BroadcastChannel нет; backend grace max 1 -> 3 параллельных refresh дают [200,200,401] и отзыв family (probe_refresh_race.mjs).; [cycle13:confirmed] Live cycle 13: 3 параллельных POST /auth/refresh с одной кукой дали [401,200,200], затем /auth/me 401 — family отозвана, вкладки разлогинены.; [cycle14:live] Two-tab browser race on isolated stack 5219/18002: three concurrent POST /auth/refresh from two pages sharing cookies -> [200,401,200]; /auth/me -> 401; a NEW refresh cookie after the race -> 401 "Refresh token has been revoked"; both tabs reloaded to /login.
+- Доказательства: probe_refresh_race.mjs (local stack): 3 параллельных POST /auth/refresh с одной кукой → [200,200,401]; далее /auth/me → 401 и во ВТОРОЙ вкладке (тот же cookie jar) → 401 — family отозвана, обе вкладки разлогинены; код: http.js:54,66-76 — refreshInFlight только внутри вкладки; navigator.locks/BroadcastChannel отсутствуют; backend auth.py:135 (_REFRESH_GRACE_MAX_HITS=1), 1648-1676 (grace 15 c → revoke family); [cycle12:confirmed] High, ручная проверка: refreshInFlight только внутри вкладки (http.js:54,66-76), navigator.locks/BroadcastChannel нет; backend grace max 1 -> 3 параллельных refresh дают [200,200,401] и отзыв family (probe_refresh_race.mjs).; [cycle13:confirmed] Live cycle 13: 3 параллельных POST /auth/refresh с одной кукой дали [401,200,200], затем /auth/me 401 — family отозвана, вкладки разлогинены.; [cycle14:live] Two-tab browser race on isolated stack 5219/18002: three concurrent POST /auth/refresh from two pages sharing cookies -> [200,401,200]; /auth/me -> 401; a NEW refresh cookie after the race -> 401 "Refresh token has been revoked"; both tabs reloaded to /login.; [cycle16:live] Same cookie, 3 parallel POST /auth/refresh -> [200,200,401]. Cookies from a successful response -> /auth/me 401 and /auth/refresh 401 "revoked": the third hit exceeded grace MAX_HITS and revoked the family, killing the winners too. Control: two sequential retries within grace -> [200,200], new access 200. Trigger is concurrency, not staleness.
 - Связано: FE-0059
 
 ### FE-0084 — Service Worker обновляется только полной перезагрузкой приложения; уведомление об обновлении — только в Settings

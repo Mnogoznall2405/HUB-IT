@@ -28,6 +28,7 @@
 | `CYCLE_13_REVIEW.md` | Runtime-верификация цикла 13, покрытие и ограничения |
 | `CYCLE_14_REVIEW.md` | Runtime-проверки High, PWA/offline, +12 маршрутов и схема verification |
 | `CYCLE_15_REVIEW.md` | Оставшиеся High, нормализация verification, PWA и +12 маршрутов |
+| `CYCLE_16_REVIEW.md` | Реальная инвентаризация маршрутов, 5 полных E2E, FE-0059/FE-0083 |
 | `evidence/` | Скриншоты, сводки субагентов, verdicts циклов 12–13 |
 
 ## Правила

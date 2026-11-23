@@ -2308,7 +2308,8 @@
         "консоль: ERR_INTERNET_DISCONNECTED xN, WS failed xN",
         "AUTH_SECURITY_STACK.md:18-19 — задокументированный компромисс («recovered only within the configured grace window»)",
         "[cycle12:confirmed] High, ручная проверка: grace допускает 1 повтор, затем отзывает family (auth.py:135,1648-1675); runtime-разлогин после офлайна подтверждён.",
-        "[cycle15:live] Auth disconnect probe on isolated backend (refresh grace 180 s from root .env): login, rotate refresh while discarding the new cookies (lost response), wait 185 s, retry the old refresh cookie -> 401 \"Refresh token has been revoked\"; old access cookie /auth/me -> 401. Reproduces forced logout after a lost rotation response."
+        "[cycle15:live] Auth disconnect probe on isolated backend (refresh grace 180 s from root .env): login, rotate refresh while discarding the new cookies (lost response), wait 185 s, retry the old refresh cookie -> 401 \"Refresh token has been revoked\"; old access cookie /auth/me -> 401. Reproduces forced logout after a lost rotation response.",
+        "[cycle16:live] Lost rotation response: after 185 s (> effective grace 180 s) the old refresh cookie -> 401 \"Refresh token has been revoked\". The NEW token pair issued by the rotation remained valid: /auth/me 200 and /auth/refresh 200. So the family is not revoked by the mere old-cookie rejection; the forced logout happens because the client kept only the old cookie."
       ],
       "impact": "Пользователи нестабильных сетей (Wi-Fi-роуминг, мобильный интернет, VPN) теряют сессию и несохранённый ввод",
       "recommendation": "Решение владельца: рассмотреть grace 60-120 c для web или мягкое восстановление; замерить refresh_reuse_detected/refresh_expired_or_already_used в метриках",
@@ -2336,9 +2337,16 @@
           "verdict": "confirmed",
           "note": "Lost rotation response + retry after grace -> family revoked and access rejected; FE-0059 confirmed live.",
           "sourceFile": "manual-live-refresh-loss"
+        },
+        {
+          "cycle": 16,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Lost-response probe: old token after grace -> 401 revoked; new token from the same rotation -> /auth/me 200 and /auth/refresh 200. Forced logout is caused by losing the new cookie, not by family revocation.",
+          "sourceFile": "manual-live-refresh-loss-viability"
         }
       ],
-      "currentConclusion": "Подтверждено: потерянный ответ ротации + повтор старой cookie после grace даёт 401 revoked и 401 на /auth/me; пользователь разлогинен.",
+      "currentConclusion": "Подтверждено: при потерянном ответе ротации клиент остаётся со старой cookie; после grace старый refresh -> 401 revoked, /auth/me -> 401, принудительный logout. Новый токен, выданный ротацией, при этом остаётся живым — проблема клиентская (потеря ответа), а не отзыв family.",
       "verificationLegacy": [
         "live-production",
         "static",
@@ -3272,7 +3280,8 @@
         "backend auth.py:135 (_REFRESH_GRACE_MAX_HITS=1), 1648-1676 (grace 15 c → revoke family)",
         "[cycle12:confirmed] High, ручная проверка: refreshInFlight только внутри вкладки (http.js:54,66-76), navigator.locks/BroadcastChannel нет; backend grace max 1 -> 3 параллельных refresh дают [200,200,401] и отзыв family (probe_refresh_race.mjs).",
         "[cycle13:confirmed] Live cycle 13: 3 параллельных POST /auth/refresh с одной кукой дали [401,200,200], затем /auth/me 401 — family отозвана, вкладки разлогинены.",
-        "[cycle14:live] Two-tab browser race on isolated stack 5219/18002: three concurrent POST /auth/refresh from two pages sharing cookies -> [200,401,200]; /auth/me -> 401; a NEW refresh cookie after the race -> 401 \"Refresh token has been revoked\"; both tabs reloaded to /login."
+        "[cycle14:live] Two-tab browser race on isolated stack 5219/18002: three concurrent POST /auth/refresh from two pages sharing cookies -> [200,401,200]; /auth/me -> 401; a NEW refresh cookie after the race -> 401 \"Refresh token has been revoked\"; both tabs reloaded to /login.",
+        "[cycle16:live] Same cookie, 3 parallel POST /auth/refresh -> [200,200,401]. Cookies from a successful response -> /auth/me 401 and /auth/refresh 401 \"revoked\": the third hit exceeded grace MAX_HITS and revoked the family, killing the winners too. Control: two sequential retries within grace -> [200,200], new access 200. Trigger is concurrency, not staleness."
       ],
       "verification": [
         "static-code",
@@ -3307,9 +3316,16 @@
           "verdict": "confirmed",
           "note": "Two-tab browser race plus new refresh token check confirms whole token family revocation, not just old-cookie rejection.",
           "sourceFile": "manual-live-two-tabs"
+        },
+        {
+          "cycle": 16,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "3 parallel refresh: [200,200,401]; new cookies from a 200 response -> 401 on /auth/me and /auth/refresh (family revoked). Sequential control within grace: [200,200], new access alive.",
+          "sourceFile": "manual-live-refresh-race-family"
         }
       ],
-      "currentConclusion": "Подтверждено двумя вкладками и проверкой нового refresh: family отозвана, новый refresh -> 401 revoked, обе вкладки на /login.",
+      "currentConclusion": "Подтверждено: 3 параллельных refresh с одной cookie -> [200,200,401]; family отозвана, токены даже успешных ответов дают 401. Два последовательных повтора внутри grace проходят (200), поэтому триггер — именно параллельность (несколько вкладок/visibilitychange), а не устаревание.",
       "verificationLegacy": [
         "static",
         "tooling",

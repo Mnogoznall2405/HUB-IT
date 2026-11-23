@@ -301,3 +301,23 @@ MSBuild/Roslyn-узлы простаивают, серверу не мешают
 - Остались static-only: FE-0215, FE-0230, FE-0232, FE-0239, FE-0259.
 - Итог: 323 записи; Confirmed 269, Suspected 11, Fixed 2, Rejected 41.
   Валидатор 0 ошибок. Отчёт CYCLE_15_REVIEW.md.
+
+## Цикл 16 — реальное покрытие и глубокие E2E (2026-11-23)
+
+- База 60dfe457; проверенный код — чистый main 4776ce5f (PR #14), собран с
+  локальными VITE_*-флагами из root .env (не публикуется).
+- Инвентаризация из App.jsx: 51 route entry, 5 redirect, 46 user-visible,
+  12 admin sections, 6 settings tabs.
+- Реальное покрытие: E2E 6 (13.0%), Functional 26, Functional+E2E 32/46 (69.6%),
+  Smoke-only 7, Blocked 7. «36 сценариев» = 32 route entry, не 100%.
+- Новые полные E2E (5): feed publish, tasks create+edit+checklist, chat notes
+  send+cross-tab+reload, my-files upload+search+preview, admin user create.
+  Всего E2E-сценариев 8.
+- FE-0083 подтверждён: 3 parallel refresh -> [200,200,401]; токены победителей
+  после burst -> 401, family отозвана; sequential within grace -> [200,200].
+- FE-0059 уточнён: старый токен после grace -> 401 revoked, но НОВЫЙ токен той же
+  ротации остаётся 200; family не отозвана, причина logout — потеря ответа.
+- Blocked: FE-0215 (нет mailbox), FE-0230 (нет WebView2), FE-0232/0239 (нет
+  fixtures), FE-0259 (Construction 502), /database и /my-files/edit.
+- Итог: 323 записи, Confirmed 269, Suspected 11, Fixed 2, Rejected 41.
+  Валидатор 0 ошибок. Отчёт CYCLE_16_REVIEW.md.

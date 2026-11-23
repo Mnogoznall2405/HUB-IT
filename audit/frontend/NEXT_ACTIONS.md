@@ -184,3 +184,17 @@
 - 11 Suspected: FE-0004, FE-0051, FE-0076, FE-0110, FE-0115, FE-0161,
   FE-0194, FE-0265, FE-0300, FE-0323, FE-0324.
 - Довести E2E создания записей (не только диалоги) для ключевых маршрутов.
+
+## Цикл 16 — очередь (2026-11-23)
+
+- FE-0215: локальный IMAP/SMTP fixture + MAIL_MODULE_ENABLED=1, autosave и
+  inline-вложения на реальном backend.
+- FE-0230: Windows Desktop/WebView2 host, поздний desktop.hostReady.
+- FE-0232/FE-0239: синтетические пользователи/отделы/делегаты, разрешённые
+  мутации в одноразовой БД.
+- FE-0259: Construction object/direction + 1С-креды, F5/close/unmount.
+- E2E-создание записей: /tickets, /vcs, /passwords, /docflow (сейчас диалоги).
+- Public shares: реальные токены, скачивание, expiry/отзыв.
+- PWA: активация waiting-worker, offline с истёкшей сессией (FE-0325/0084/0085).
+- 11 Suspected: FE-0004, FE-0051, FE-0076, FE-0110, FE-0115, FE-0161,
+  FE-0194, FE-0265, FE-0300, FE-0323, FE-0324.
