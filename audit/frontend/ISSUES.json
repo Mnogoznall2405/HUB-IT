@@ -15,14 +15,14 @@
   "issueCounters": {
     "critical": 0,
     "high": 12,
-    "medium": 123,
+    "medium": 124,
     "low": 173,
     "info": 15,
-    "suspected": 11,
+    "suspected": 12,
     "fixedExternally": 2,
     "rejected": 41,
     "confirmed": 269,
-    "total": 323
+    "total": 324
   },
   "issues": [
     {
@@ -8221,7 +8221,8 @@
         "[cycle12:confirmed] После autosave blob-URL inline-превью отзываются (MailComposeHost.jsx:524-539), DOM Quill не переписывается (эффект выходит по nextValue===valueRef, MailRichTextEditor.jsx:228-242), а buildPortableComposeHtml удаляет img с не-cid src (mailComposeHtml.js:138-145).",
         "[cycle13:confirmed] Static remains confirmed; live mail check not possible: isolated stack runs MAIL_MODULE_ENABLED=0 and has no mailbox.",
         "[cycle15:blocked] Cycle 15 mailbox investigation: local_backend forcibly sets MAIL_MODULE_ENABLED=0; no IMAP/SMTP fixture or test mailbox exists. Route-mocking can validate UI only, not server-side autosave/attachment persistence, so live check remains blocked.",
-        "[cycle17:blocked] The mail transport is Exchange EWS (backend/services/mail_service.py + mail_exchange_transport.create_exchange_account), not IMAP/SMTP. A local IMAP/SMTP fixture would not be used by the backend. The isolated stack forces MAIL_MODULE_ENABLED=0 and /mail shows the corporate-password gate; no EWS test server or test mailbox exists. Live inline-image/autosave verification remains blocked; route-mocking would be UI-only."
+        "[cycle17:blocked] The mail transport is Exchange EWS (backend/services/mail_service.py + mail_exchange_transport.create_exchange_account), not IMAP/SMTP. A local IMAP/SMTP fixture would not be used by the backend. The isolated stack forces MAIL_MODULE_ENABLED=0 and /mail shows the corporate-password gate; no EWS test server or test mailbox exists. Live inline-image/autosave verification remains blocked; route-mocking would be UI-only.",
+        "[cycle18:analysis] The draft path uses Exchange EWS, not IMAP/SMTP: MailDraftLifecycle.upsert_draft creates exchangelib Message(folder=account.drafts, HTMLBody, recipients), attaches FileAttachment objects (inline images are cid attachments), calls draft_item.save() (CreateItem) and save(update_fields=...) (UpdateItem); existing drafts are fetched via account.drafts/GetItem and deleted via DeleteItem. Minimal EWS contracts: GetFolder/FindFolder (Drafts), CreateItem/UpdateItem/GetItem/DeleteItem, attachment create/get, NTLM + TLS. No EWS test server exists; a full SOAP EWS double would be a separate service, not available without owner permission. A service-level mock of Account/Message could verify the HTML/attachment payload but not UI->EWS autosave/read; it would be a limited contract test, not E2E."
       ],
       "verification": [
         "static-code"
@@ -8252,7 +8253,7 @@
           "sourceFile": "manual-live-mail-transport"
         }
       ],
-      "currentConclusion": "Static remains confirmed. Live mail check is blocked: the backend uses Exchange EWS (not IMAP/SMTP), the isolated stack disables the mail module, and no EWS test server or mailbox is available.",
+      "currentConclusion": "Static remains confirmed. Full live verification is blocked: the backend uses Exchange EWS (exchangelib), the isolated stack disables the mail module, and no EWS test server/mailbox exists. A local IMAP/SMTP fixture is not applicable. A service-level mock could test the draft HTML/attachment payload only; it would be a limited contract test, not a full E2E.",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)",
@@ -8752,7 +8753,7 @@
       "title": "Аккаунт: ранний return null до хуков при runtime-флаге Desktop → крах рендера «Rendered fewer hooks»",
       "category": "React/Hooks",
       "severity": "High",
-      "status": "Confirmed",
+      "status": "Suspected",
       "file": "WEB-itinvent/frontend/src/pages/account/settings/notifications/ChatNotificationsSettingsCard.jsx",
       "lines": "36 (if(isNativeShellRuntime()) return null до хуков 38-117); ChatNotificationsSettingsCard.jsx:30; platform.js:14-16; desktopBridge.js:905-907 (bridgeReady асинхронный)",
       "notes": "при готовности моста WebView2 карточка возвращает null до хуков → React crash страницы настроек в HUB Desktop; вспышка PWA-карточки в десктопе",
@@ -8761,10 +8762,13 @@
         "[cycle12:confirmed] High, ручная проверка: isNativeShellRuntime() возвращает null до хуков (HubItPwaSettingsCard.jsx:36-38; ChatNotificationsSettingsCard.jsx:30-32, файл переехал в pages/account/settings/notifications/). Флаг зависит от асинхронного desktopBridgeReady (platform.js:14-16), поэтому смена false→true меняет число хуков и роняет рендер.",
         "[cycle13:confirmed] Static remains confirmed; live simulation with a late desktop.hostReady on the isolated stand did not reproduce a hooks error (card subtree unmounted on re-render), so live reproduction is inconclusive.",
         "[cycle15:blocked] Cycle 15 Desktop investigation: C# DesktopBridgeHost sends hostReady only after WebView2 bridge initialization; no Windows Desktop host/build is available in this audit, and browser simulation is not a valid WebView2 proof. Need a real WebView2 host with delayed CoreWebView2 init.",
-        "[cycle17:live] Real Windows WebView2 host: HUB.Desktop PerfBench build from b95c4cac, WebView2 157.0.4341.60, isolated profile, local stand. The desktop.ready handshake was delayed 8 s (test condition), then /settings/notifications was loaded. The card \"Фоновая доставка чатов\" mounted with shell=null; at the hostReady flip the \"Обновить фоновую доставку\" button was clicked synchronously. Result: shell=true, no pageerror/console error; the parent unmounted the card. Live crash not reproduced in this path."
+        "[cycle17:live] Real Windows WebView2 host: HUB.Desktop PerfBench build from b95c4cac, WebView2 157.0.4341.60, isolated profile, local stand. The desktop.ready handshake was delayed 8 s (test condition), then /settings/notifications was loaded. The card \"Фоновая доставка чатов\" mounted with shell=null; at the hostReady flip the \"Обновить фоновую доставку\" button was clicked synchronously. Result: shell=true, no pageerror/console error; the parent unmounted the card. Live crash not reproduced in this path.",
+        "[cycle18:static] Hooks before the early return: useTheme, useMemo, useAuth, useNotification, useState x2, useEffect x2, useCallback (9). With isNativeShellRuntime() true the component returns before all 9. AccountWorkspace renders the card only when !nativeShell; MainLayout handles DESKTOP_CAPABILITIES_CHANGED_EVENT via setDesktopActionsAvailable, so the capabilities message after hostReady re-renders the tree and removes the card. ChatNotificationsSettingsCard does not subscribe to hostReady; no synchronous card-local update on the flip.",
+        "[cycle18:live-negative] Real Windows WebView2 host (cycle 17 evidence): desktop.ready delayed 8 s, card mounted with shell=null, update button clicked synchronously at hostReady. No pageerror/console error; the parent unmounted the card. This is a negative live result, not proof that the defect is absent."
       ],
       "verification": [
-        "static-code"
+        "static-code",
+        "test-harness"
       ],
       "originalClaim": "Аккаунт: ранний return null до хуков при runtime-флаге Desktop → крах рендера «Rendered fewer hooks»",
       "originalEvidence": [
@@ -8790,15 +8794,22 @@
           "verdict": "inconclusive",
           "note": "Real WebView2 host with delayed hostReady + synchronous button click: no hooks error; parent unmounted the card. Static risk remains, live effect not reproduced.",
           "sourceFile": "manual-live-webview2-late-hostready"
+        },
+        {
+          "cycle": 18,
+          "date": "2026-11-23",
+          "verdict": "not-reproduced",
+          "note": "Independent hook/parent analysis + real WebView2 negative result. No reachable card-local re-render; status Suspected, severity High (potential impact, reachability unproven).",
+          "sourceFile": "evidence/cycle18/fe0230-analysis.md"
         }
       ],
-      "currentConclusion": "Статический механизм подтверждён (return null до хуков), но live-крах не воспроизведён: в реальном WebView2 host при позднем hostReady родитель размонтирует карточку. Для краха нужен card-local re-render до parent re-render; этот сценарий не достигнут.",
+      "currentConclusion": "Статический механизм подтверждён: 9 хуков до раннего return, 0 после; смена флага на том же экземпляре нарушила бы Rules of Hooks. Но пользовательский крах не воспроизведён: hostReady сразу сопровождается capabilities, MainLayout перерисовывает дерево, и родитель размонтирует карточку; card-local re-render в этом окне не достигнут. Статус понижен до Suspected (High-импакт при достижимости, вероятность не доказана).",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Static early-return before hooks is confirmed, but cycle 15 browser simulation and cycle 17 real WebView2 host both failed to produce the render crash: on hostReady the parent re-renders nativeShell and unmounts the card before a card-local re-render. The defect remains static-only; live user-visible effect is unproven.",
+      "statusRationale": "Static early return before hooks is real: the component calls 9 hooks when isNativeShellRuntime() is false and 0 hooks when true. A same-instance re-render across that flip would violate the Rules of Hooks. The parent AccountWorkspace computes nativeShell on every render and renders the card only when false; MainLayout listens to desktop.capabilities (sent immediately after hostReady) and sets state, which re-renders the layout tree and unmounts the card. The card has no hostReady subscription; its local updates are async/user-driven. Cycle 17 real WebView2 host with delayed hostReady + synchronous button click produced no hooks error; the parent unmounted the card. No reachable card-local re-render was demonstrated. Reclassified to Suspected pending a reproducible user-visible crash; severity kept High as potential impact if reached (settings page render crash), with unproven reachability.",
       "runtimeStatus": "not-reproduced-live"
     },
     {
@@ -8850,10 +8861,12 @@
         "[cycle12:confirmed] High, ручная проверка: при ошибке bulk-загрузки делегатов users остаются с task_delegate_links=[] (useAccountSectionData.js:244-251, accountUserModel.js:27-39); сохранение пользователя отправляет этот пустой список в updateTaskDelegates (637-644) и стирает связи.",
         "[cycle13:confirmed] Static remains confirmed; live account-admin race not executed in cycle 13 (no test-data mutation outside throwaway stack).",
         "[cycle15:blocked] Cycle 15 account fixtures not prepared; no approved mutation of delegate links in the isolated DB. Static catch->empty merge->save chain remains confirmed.",
-        "[cycle17:live] Synthetic users in isolated DB: owner 11 with delegate 12. Injected GET /auth/task-delegates 500 on page load; opened owner in admin, the delegate was absent from the drawer; Save sent PUT /auth/users/11/task-delegates {\"items\":[]} and the bulk link count went 1 -> 0. Control without injection: delegate present, Save kept 1 -> 1. Data loss reproduced; persistence checked on the real backend."
+        "[cycle17:live] Synthetic users in isolated DB: owner 11 with delegate 12. Injected GET /auth/task-delegates 500 on page load; opened owner in admin, the delegate was absent from the drawer; Save sent PUT /auth/users/11/task-delegates {\"items\":[]} and the bulk link count went 1 -> 0. Control without injection: delegate present, Save kept 1 -> 1. Data loss reproduced; persistence checked on the real backend.",
+        "[cycle18:live] Strict regression test (11 checks, exit 0): cleared links 0; seeded 1; injected bulk 500 -> drawer hides delegate; Save PUT items:[]; links 1 -> 0; reseeded 1; control without injection -> drawer shows delegate, PUT items:1, links 1 -> 1. Script audit/frontend/evidence/cycle18/fe0232-delegates.cjs."
       ],
       "verification": [
-        "static-code"
+        "static-code",
+        "local-browser"
       ],
       "originalClaim": "Аккаунт: падение bulk-загрузки делегатов → сохранение пользователя стирает все связи помощник/зам",
       "originalEvidence": [
@@ -8879,9 +8892,16 @@
           "verdict": "confirmed",
           "note": "Injected bulk failure: 1 link -> 0 after Save; control: 1 -> 1. Real backend persistence.",
           "sourceFile": "manual-live-admin-delegates"
+        },
+        {
+          "cycle": 18,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Strict 11-check test: seed 0->1, injected payload [] and links 1->0, control 1->1. Independent repeat passed.",
+          "sourceFile": "evidence/cycle18/fe0232-delegates.cjs"
         }
       ],
-      "currentConclusion": "Confirmed live: when the bulk delegate load fails, the list has no delegate links; saving a user sends an empty items array and erases all assistant/deputy links. Control without the failure preserves the link.",
+      "currentConclusion": "Confirmed live with strict assertions: a failed bulk delegate load hides the links; saving the user sends an empty items array and erases all assistant/deputy links (1 -> 0). Control without the failure preserves the link (1 -> 1).",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)",
@@ -9108,10 +9128,12 @@
         "[cycle12:confirmed] High, ручная проверка: loadMembers без seq-guard (DepartmentsTab.jsx:58-89) может применить ответ старого отдела; handleSaveManagers отправляет draftManagerIds в текущий selectedDepartmentId (129-142).",
         "[cycle13:confirmed] Static remains confirmed; live department-manager race not executed in cycle 13.",
         "[cycle15:blocked] Cycle 15 department/user fixtures not prepared; no approved mutation. Static race remains confirmed.",
-        "[cycle17:live] Two synthetic departments: D1 managers [11], D2 managers [13]. D1 members GET delayed 3.2 s; selected D1 then quickly D2. The late D1 response overwrote draftManagerIds while D2 was selected; Save sent PUT /departments/D2/managers {\"manager_user_ids\":[11]}. After: D2 managers [11], D1 unchanged [11]. Wrong-department write reproduced on the real backend."
+        "[cycle17:live] Two synthetic departments: D1 managers [11], D2 managers [13]. D1 members GET delayed 3.2 s; selected D1 then quickly D2. The late D1 response overwrote draftManagerIds while D2 was selected; Save sent PUT /departments/D2/managers {\"manager_user_ids\":[11]}. After: D2 managers [11], D1 unchanged [11]. Wrong-department write reproduced on the real backend.",
+        "[cycle18:live] Strict regression test (8 checks, exit 0): D1 [14], D2 [16] before; delayed D1 members response applied while D2 selected (UI shows D1 owner/delegate); Save PUT /departments/D2/managers {\"manager_user_ids\":[14]}; after D1 [14], D2 [14]. Script audit/frontend/evidence/cycle18/fe0239-departments.cjs."
       ],
       "verification": [
-        "static-code"
+        "static-code",
+        "local-browser"
       ],
       "originalClaim": "Аккаунт: гонка loadMembers между отделами → «Сохранить начальников» пишет роли в чужой отдел",
       "originalEvidence": [
@@ -9137,9 +9159,16 @@
           "verdict": "confirmed",
           "note": "Delayed D1 members load + switch to D2: D2 managers 13 -> 11. Real backend persistence.",
           "sourceFile": "manual-live-admin-departments"
+        },
+        {
+          "cycle": 18,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Strict 8-check test: before D1 14/D2 16; stale D1 members shown under D2; PUT D2 [14]; after D2 [14]. Independent repeat passed.",
+          "sourceFile": "evidence/cycle18/fe0239-departments.cjs"
         }
       ],
-      "currentConclusion": "Confirmed live: a late loadMembers response from the previously selected department overwrites the manager draft; Save writes those managers into the currently selected department. D2 received D1 manager [11] instead of its own [13].",
+      "currentConclusion": "Confirmed live with strict assertions: a late members response from D1 overwrites the manager draft while D2 is selected; Save writes D1 managers into D2 (D2 16 -> 14), D1 unchanged. The PUT targets the selected D2 and contains the stale D1 manager id.",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)",
@@ -9865,7 +9894,7 @@
     },
     {
       "id": "FE-0259",
-      "title": "Construction-workspace: нет beforeunload — черновики недельной сводки теряются при F5/закрытии",
+      "title": "Construction-workspace: нет beforeunload — черновики дневной сводки и недельного плана теряются при F5/закрытии",
       "category": "DataLoss/Construction",
       "severity": "High",
       "status": "Confirmed",
@@ -9877,10 +9906,12 @@
         "[cycle12:confirmed] High, ручная проверка: ConstructionWorkWorkspace использует только SPA-guard useConstructionWorkLeaveGuard (строка 41), beforeunload нет; в ConstructionWorkPanel.jsx:165-167 и TaskCanvasWorkspace.jsx:348-349 он есть. F5/закрытие теряет черновик.",
         "[cycle13:confirmed] Static remains confirmed; live construction-workspace check blocked: local stack has no 1C/SQL construction data.",
         "[cycle15:blocked] Cycle 15 mocked construction attempt reached the page but the workspace requires a configured object/direction («сначала настройте объект»); mocked planning alone is insufficient. F5/close/unmount still blocked by missing configured construction fixture.",
-        "[cycle17:live] Created a managed construction object with a GUID direction in the isolated DB, added a work via the UI (plan saved to the backend, visible after reload), switched to \"Сводка за день\", entered 5 in \"За день\" (dirty, \"Сохранить сводку\" shown). F5 reload: no beforeunload dialog; after reload the value is empty and the dirty UI is gone. The weekly/day draft is lost without a prompt; the route-level leave guard covers SPA navigation but not reload/close."
+        "[cycle17:live] Created a managed construction object with a GUID direction in the isolated DB, added a work via the UI (plan saved to the backend, visible after reload), switched to \"Сводка за день\", entered 5 in \"За день\" (dirty, \"Сохранить сводку\" shown). F5 reload: no beforeunload dialog; after reload the value is empty and the dirty UI is gone. The weekly/day draft is lost without a prompt; the route-level leave guard covers SPA navigation but not reload/close.",
+        "[cycle18:live] Strict regression test (11 checks, exit 0) on a synthetic managed object: work plan PUT 200 and persisted in planning API after reload; daily summary dirty (\"Сохранить сводку\") -> F5 without beforeunload -> value \"\" and dirty UI gone; weekly plan target dirty (\"Сохранить план недели\") -> F5 without beforeunload -> value \"\" and dirty UI gone. Script audit/frontend/evidence/cycle18/fe0259-construction.cjs."
       ],
       "verification": [
-        "static-code"
+        "static-code",
+        "local-browser"
       ],
       "originalClaim": "Construction-workspace: нет beforeunload — черновики недельной сводки теряются при F5/закрытии",
       "originalEvidence": [
@@ -9906,16 +9937,31 @@
           "verdict": "confirmed",
           "note": "Managed object + work plan; draft value 5; F5 without beforeunload; value lost. Real backend for the plan, client-side draft.",
           "sourceFile": "manual-live-construction-workspace"
+        },
+        {
+          "cycle": 18,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Strict 11-check test: plan PUT 200 and persisted; daily and weekly drafts dirty; F5 no beforeunload; both values lost. Title corrected to daily summary + weekly plan.",
+          "sourceFile": "evidence/cycle18/fe0259-construction.cjs"
         }
       ],
-      "currentConclusion": "Confirmed live on a synthetic managed object: the work plan saves, but an unsaved day/week draft is lost on F5 with no beforeunload prompt. useConstructionWorkLeaveGuard protects React Router navigation, not page reload/close.",
+      "currentConclusion": "Confirmed live with strict assertions: the work plan saves and persists, but unsaved daily-summary and weekly-plan drafts are lost on F5 without a beforeunload prompt. useConstructionWorkLeaveGuard protects React Router navigation, not reload/close. The record title now names both affected drafts, not a non-existent \"weekly summary\" control.",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
       "statusRationale": "Cycle 15 mocked construction attempt reached the page but the workspace requires a configured object/direction («сначала настройте объект»); mocked planning alone is insufficient. F5/close/unmount still blocked by missing configured construction fixture.",
-      "runtimeStatus": "reproduced-live"
+      "runtimeStatus": "reproduced-live",
+      "titleHistory": [
+        {
+          "title": "Construction-workspace: нет beforeunload — черновики недельной сводки теряются при F5/закрытии",
+          "changedInCycle": 18,
+          "date": "2026-11-23",
+          "reason": "The tested UI has no separate \"weekly summary\" control. The affected drafts are the daily summary (\"Сводка за день\") and the weekly plan (\"Планирование\"); both are lost on F5 without a warning."
+        }
+      ]
     },
     {
       "id": "FE-0260",
@@ -12355,6 +12401,54 @@
         "static",
         "tooling"
       ]
+    },
+    {
+      "id": "FE-0326",
+      "title": "My Files: PNG-превью отдаёт повреждённый артефакт (preview.png), публичная ссылка показывает битое изображение",
+      "category": "MyFiles/Preview",
+      "severity": "Medium",
+      "status": "Confirmed",
+      "page": "/my-files, /shared-files/:token",
+      "file": "WEB-itinvent/backend/services/my_files_service.py",
+      "lines": "3568-3663",
+      "relatedFiles": [
+        {
+          "file": "WEB-itinvent/backend/services/document_preview_job_service.py",
+          "lines": "260-310, 503-555"
+        },
+        {
+          "file": "WEB-itinvent/backend/api/v1/my_files.py",
+          "lines": "947-990 (public preview)"
+        }
+      ],
+      "verification": [
+        "local-browser",
+        "local-api"
+      ],
+      "runtimeStatus": "reproduced-live",
+      "evidence": [
+        "[cycle18:local-browser] Uploaded a 64x64 solid PNG (RGB 200,30,40). Authenticated preview dialog shows an image 64x64; canvas pixel (200,30,40) — the user-visible authenticated preview works.",
+        "[cycle18:local-api] GET /api/v1/my-files/{id}/preview/content -> 200 image/png, 180 bytes; Pillow Image.open(...).load() raises OSError \"broken data stream\". The previews dir contains the corrupt preview.png (180 bytes). Another upload's preview.webp (88 bytes) and thumb.webp (86 bytes) load fine.",
+        "[cycle18:local-browser] Public share: /shared-files/{token} renders <img src=/api/v1/my-files/public/{token}/preview/content>; the public preview endpoint returns 200 image/png 180 bytes and Pillow fails with the same broken stream. The original file download still works.",
+        "[cycle18:repeat] Reproduced on two uploads sharing blob 8726c036... (same PNG content); the uploaded original (186 bytes) opens fine in Pillow. Screenshot evidence/cycle18/shots/c18-public-preview.png."
+      ],
+      "impact": "Публичная ссылка на изображение показывает битое превью; потребители /preview/content (публичный просмотр, печать/конвертация) получают невалидный PNG. Скачивание оригинала работает; аутентифицированный диалог использует WebP/thumb и выглядит корректно.",
+      "recommendation": "Валидировать сгенерированный PNG-артефакт (декодирование) или отдавать для image preview валидный WebP/thumb/оригинал; добавить тест декодирования артефакта в preview worker.",
+      "regressionRisk": "low",
+      "originalClaim": "PNG-превью в My Files отдаёт повреждённый артефакт, публичная ссылка показывает битое изображение.",
+      "originalEvidence": [
+        "Cycle 18 strict E2E and public-share probe on the isolated stand; Pillow decode failure; authenticated UI canvas pixel correct."
+      ],
+      "currentConclusion": "Confirmed live: the preview worker writes a corrupt preview.png for image blobs; /preview/content and the public preview endpoint return it. The authenticated dialog uses a valid WebP/thumb and works, but the public image preview is broken. Original download works.",
+      "reverificationHistory": [
+        {
+          "cycle": 18,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Authenticated canvas preview correct; preview.png 180 bytes fails Pillow; public preview endpoint returns the same corrupt PNG. Reproduced on two uploads (blob 8726c036...).",
+          "sourceFile": "evidence/cycle18/fe_public_preview.cjs"
+        }
+      ]
     }
   ],
   "sources": [
@@ -12413,6 +12507,19 @@
   "highBreakdown": {
     "historical": 12,
     "current": 11,
+    "allHigh": [
+      "FE-0022",
+      "FE-0023",
+      "FE-0059",
+      "FE-0083",
+      "FE-0197",
+      "FE-0198",
+      "FE-0215",
+      "FE-0230",
+      "FE-0232",
+      "FE-0239",
+      "FE-0259"
+    ],
     "runtimeProven": [
       "FE-0022",
       "FE-0023",
@@ -12436,11 +12543,16 @@
       "FE-0239",
       "FE-0259"
     ],
+    "fixedExternally": [
+      "FE-0078"
+    ],
     "staticOnly": [
-      "FE-0215",
-      "FE-0230"
+      "FE-0215"
     ],
     "runtimeNotReproduced": [
+      "FE-0230"
+    ],
+    "suspectedHigh": [
       "FE-0230"
     ],
     "blockedEnvironment": [

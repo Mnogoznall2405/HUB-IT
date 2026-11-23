@@ -1,0 +1,78 @@
+{
+  "test": "FE-0259",
+  "pass": true,
+  "draftKinds": [
+    "daily-summary",
+    "weekly-plan"
+  ],
+  "titleNote": "The tested drafts are the daily summary and the weekly plan; no separate \"weekly summary\" control exists.",
+  "checks": [
+    {
+      "name": "setup.objectCreated",
+      "ok": true,
+      "detail": {
+        "status": 201,
+        "id": "construction-7fa7c5d64969400cbe81"
+      }
+    },
+    {
+      "name": "plan.saveResponse",
+      "ok": true,
+      "detail": {
+        "status": 200
+      }
+    },
+    {
+      "name": "plan.workVisible",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "plan.workAfterReload",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "plan.persistedInApi",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "count": 1
+      }
+    },
+    {
+      "name": "daily.dirtyState",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "daily.noBeforeUnload",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "daily.draftLostAfterF5",
+      "ok": true,
+      "detail": {
+        "value": ""
+      }
+    },
+    {
+      "name": "weekly.dirtyState",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "weekly.noBeforeUnload",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "weekly.draftLostAfterF5",
+      "ok": true,
+      "detail": {
+        "value": ""
+      }
+    }
+  ]
+}

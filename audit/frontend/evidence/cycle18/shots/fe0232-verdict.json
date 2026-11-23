@@ -1,0 +1,111 @@
+{
+  "test": "FE-0232",
+  "pass": true,
+  "checks": [
+    {
+      "name": "seed.clearedToZero",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "links": 0,
+        "owners": 1
+      }
+    },
+    {
+      "name": "seed.delegateLinkOne",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "links": 1,
+        "owners": 1
+      }
+    },
+    {
+      "name": "injected.drawerHidesDelegate",
+      "ok": true,
+      "detail": {
+        "drawerHasDelegate": false,
+        "saveEnabled": true,
+        "putBodies": 1,
+        "putItems": 0
+      }
+    },
+    {
+      "name": "injected.saveEnabled",
+      "ok": true,
+      "detail": {
+        "drawerHasDelegate": false,
+        "saveEnabled": true,
+        "putBodies": 1,
+        "putItems": 0
+      }
+    },
+    {
+      "name": "injected.emptyPayload",
+      "ok": true,
+      "detail": {
+        "drawerHasDelegate": false,
+        "saveEnabled": true,
+        "putBodies": 1,
+        "putItems": 0
+      }
+    },
+    {
+      "name": "injected.linkErased",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "links": 0,
+        "owners": 1
+      }
+    },
+    {
+      "name": "control.reseededToOne",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "links": 1,
+        "owners": 1
+      }
+    },
+    {
+      "name": "control.drawerShowsDelegate",
+      "ok": true,
+      "detail": {
+        "drawerHasDelegate": true,
+        "saveEnabled": true,
+        "putBodies": 1,
+        "putItems": 1
+      }
+    },
+    {
+      "name": "control.saveEnabled",
+      "ok": true,
+      "detail": {
+        "drawerHasDelegate": true,
+        "saveEnabled": true,
+        "putBodies": 1,
+        "putItems": 1
+      }
+    },
+    {
+      "name": "control.nonEmptyPayload",
+      "ok": true,
+      "detail": {
+        "drawerHasDelegate": true,
+        "saveEnabled": true,
+        "putBodies": 1,
+        "putItems": 1
+      }
+    },
+    {
+      "name": "control.linkPreserved",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "links": 1,
+        "owners": 1
+      }
+    }
+  ]
+}

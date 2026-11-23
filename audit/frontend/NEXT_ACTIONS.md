@@ -210,3 +210,18 @@
 - 11 Suspected: FE-0004, FE-0051, FE-0076, FE-0110, FE-0115, FE-0161,
   FE-0194, FE-0265, FE-0300, FE-0323, FE-0324.
 - При появлении исправлений — повторить матрицу refresh и five E2E на новом SHA.
+
+## Цикл 18 — очередь (2026-11-23)
+
+- FE-0326: валидировать PNG-артефакт или отдавать WebP/thumb/оригинал для image
+  preview; добавить decode-тест в preview worker.
+- FE-0230: найти достижимый card-local re-render при late hostReady; иначе
+  оставить Suspected.
+- FE-0215: limited service-level EWS contract test (fake Account/Message), только
+  с согласия владельца; полный EWS double — отдельный сервис.
+- FE-0232/FE-0239/FE-0259: исправления — не отправлять items:[] при сбое bulk,
+  request-id/abort при смене отдела, beforeunload/автосохранение.
+- /computers, /statistics: синтетические данные; /database — SQL test set;
+  ONLYOFFICE — тестовый сервер.
+- 11 Suspected: FE-0004, FE-0051, FE-0076, FE-0110, FE-0115, FE-0161,
+  FE-0194, FE-0265, FE-0300, FE-0323, FE-0324.

@@ -1,0 +1,458 @@
+{
+  "base": "http://127.0.0.1:5228",
+  "runId": "1795429349298-180",
+  "controls": [],
+  "results": [
+    {
+      "name": "feed",
+      "pass": true,
+      "ms": 7538,
+      "checks": [
+        {
+          "name": "feed.dialogClosed",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "feed.visibleAfterPublish",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "feed.apiCreated",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "feed.apiUnique",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "feed.apiRecordId",
+          "ok": true,
+          "detail": {
+            "id": "be9fa11a-74e8-45c8-adab-9d79d0bd5fdb"
+          },
+          "mandatory": true
+        },
+        {
+          "name": "feed.visibleAfterReload",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "feed.persistedAfterReload",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "feed.sameRecordAfterReload",
+          "ok": true,
+          "detail": {
+            "before": "be9fa11a-74e8-45c8-adab-9d79d0bd5fdb",
+            "after": "be9fa11a-74e8-45c8-adab-9d79d0bd5fdb"
+          },
+          "mandatory": true
+        }
+      ],
+      "details": {
+        "token": "AUDIT-C18-FEED-1795429349298-180",
+        "matches": 1,
+        "afterReload": 1,
+        "shot": "C:\\Users\\Администратор\\AppData\\Local\\Temp\\2\\opencode\\hub-audit-publish\\audit\\frontend\\evidence\\cycle18\\shots\\feed-1795429349298-180.png"
+      },
+      "error": null,
+      "failedChecks": [],
+      "observations": []
+    },
+    {
+      "name": "tasks",
+      "pass": true,
+      "ms": 22506,
+      "checks": [
+        {
+          "name": "tasks.createdInApi",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "tasks.uniqueAfterCreate",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "tasks.createdId",
+          "ok": true,
+          "detail": {
+            "id": "31669ccc-fee2-401d-9bef-55276bc8e2f3"
+          },
+          "mandatory": true
+        },
+        {
+          "name": "tasks.visibleAfterReload",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "tasks.persistedAfterReload",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "tasks.editedVisible",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "tasks.editedAfterReload",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "tasks.descriptionPersisted",
+          "ok": true,
+          "detail": {
+            "status": 200,
+            "description": "edited-AUDIT-C18-TASK-1795429349298-180"
+          },
+          "mandatory": true
+        },
+        {
+          "name": "tasks.checklistTaskCreated",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "tasks.checklistPersistedInApi",
+          "ok": true,
+          "detail": {
+            "count": 1,
+            "total": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "tasks.checklistVisibleInCard",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "tasks.checklistAfterReload",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "tasks.checklistUniqueAfterReload",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "tasks.noTaskDuplicates",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        }
+      ],
+      "details": {
+        "token": "AUDIT-C18-TASK-1795429349298-180",
+        "created": 1,
+        "editedAfterReload": true,
+        "checklist": 1,
+        "shot": "C:\\Users\\Администратор\\AppData\\Local\\Temp\\2\\opencode\\hub-audit-publish\\audit\\frontend\\evidence\\cycle18\\shots\\tasks-1795429349298-180.png"
+      },
+      "error": null,
+      "failedChecks": [],
+      "observations": []
+    },
+    {
+      "name": "chat",
+      "pass": true,
+      "ms": 20843,
+      "checks": [
+        {
+          "name": "chat.firstTabSeesFirst",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "chat.secondTabSeesFirst",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "chat.firstTabSeesSecond",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "chat.firstAfterReload",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "chat.secondAfterReload",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "chat.notesConversationFound",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "chat.apiFirstCount",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "chat.apiSecondCount",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "chat.apiDuplicatesZero",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        }
+      ],
+      "details": {
+        "token": "AUDIT-C18-CHAT-1795429349298-180",
+        "firstCount": 1,
+        "secondCount": 1,
+        "shot": "C:\\Users\\Администратор\\AppData\\Local\\Temp\\2\\opencode\\hub-audit-publish\\audit\\frontend\\evidence\\cycle18\\shots\\chat-1795429349298-180.png"
+      },
+      "error": null,
+      "failedChecks": [],
+      "observations": []
+    },
+    {
+      "name": "myFiles",
+      "pass": true,
+      "ms": 11381,
+      "checks": [
+        {
+          "name": "myfiles.uploadDialogClosed",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "myfiles.createdInApi",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "myfiles.uniqueAfterUpload",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "myfiles.previewReady",
+          "ok": true,
+          "detail": {
+            "status": "ready"
+          },
+          "mandatory": true
+        },
+        {
+          "name": "myfiles.visibleAfterReload",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "myfiles.searchFindsFile",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "myfiles.apiUniqueAfterReload",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "myfiles.previewDialogOpened",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "myfiles.previewImageShown",
+          "ok": true,
+          "detail": {
+            "alt": "audit-c18-1795429349298-180.png"
+          },
+          "mandatory": true
+        },
+        {
+          "name": "myfiles.previewApiImage",
+          "ok": true,
+          "detail": {
+            "status": 200,
+            "type": "image/png",
+            "bytes": 180
+          },
+          "mandatory": true
+        },
+        {
+          "name": "myfiles.previewHasFactualContent",
+          "ok": true,
+          "detail": {
+            "width": 64,
+            "height": 64,
+            "rgb": [
+              200,
+              30,
+              40
+            ]
+          },
+          "mandatory": true
+        },
+        {
+          "name": "myfiles.previewArtifactDecodes",
+          "ok": false,
+          "detail": "v\\Lib\\site-packages\\PIL\\ImageFile.py\", line 444, in load\r\n    raise _get_oserror(err_code, encoder=False)\r\nOSError: broken data stream when reading image file\r\n",
+          "mandatory": false
+        }
+      ],
+      "details": {
+        "name": "audit-c18-1795429349298-180.png",
+        "apiCount": 1,
+        "previewReady": true,
+        "previewPixels": {
+          "width": 64,
+          "height": 64,
+          "rgb": [
+            200,
+            30,
+            40
+          ]
+        },
+        "shot": "C:\\Users\\Администратор\\AppData\\Local\\Temp\\2\\opencode\\hub-audit-publish\\audit\\frontend\\evidence\\cycle18\\shots\\myfiles-1795429349298-180.png"
+      },
+      "error": null,
+      "failedChecks": [],
+      "observations": [
+        {
+          "name": "myfiles.previewArtifactDecodes",
+          "ok": false,
+          "detail": "v\\Lib\\site-packages\\PIL\\ImageFile.py\", line 444, in load\r\n    raise _get_oserror(err_code, encoder=False)\r\nOSError: broken data stream when reading image file\r\n",
+          "mandatory": false
+        }
+      ]
+    },
+    {
+      "name": "adminUsers",
+      "pass": true,
+      "ms": 10145,
+      "checks": [
+        {
+          "name": "admin.createdInApi",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "admin.uniqueAfterCreate",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        },
+        {
+          "name": "admin.createdId",
+          "ok": true,
+          "detail": {
+            "id": 11
+          },
+          "mandatory": true
+        },
+        {
+          "name": "admin.visibleAfterReload",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "admin.searchReturnsCreated",
+          "ok": true,
+          "detail": null,
+          "mandatory": true
+        },
+        {
+          "name": "admin.apiUniqueAfterReload",
+          "ok": true,
+          "detail": {
+            "count": 1
+          },
+          "mandatory": true
+        }
+      ],
+      "details": {
+        "loginName": "audit_c18_1795429349298_180",
+        "apiCount": 1,
+        "shot": "C:\\Users\\Администратор\\AppData\\Local\\Temp\\2\\opencode\\hub-audit-publish\\audit\\frontend\\evidence\\cycle18\\shots\\admin-1795429349298-180.png"
+      },
+      "error": null,
+      "failedChecks": [],
+      "observations": []
+    }
+  ]
+}

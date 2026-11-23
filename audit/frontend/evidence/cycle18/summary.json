@@ -1,0 +1,81 @@
+{
+  "generatedAt": "2026-11-23",
+  "auditBase": "209611a3",
+  "testedSha": "338912d9",
+  "environment": "clean git archive 338912d9; FE build + backend from the same export; SQLite .state-cycle18 :18008; static proxy :5228; preview worker start_preview_worker.py",
+  "fiveE2E": {
+    "runId": "1795429349298-180",
+    "passed": 5,
+    "total": 5,
+    "mandatoryChecks": 49,
+    "checksByScenario": { "feed": 8, "tasks": 14, "chat": 9, "myFiles": 12, "adminUsers": 6 },
+    "observations": 1
+  },
+  "negativeControls": {
+    "cases": 10,
+    "failedAsExpected": 10,
+    "positiveControl": "PASS",
+    "controls": [
+      "feed_api_error",
+      "feed_wrong_record",
+      "tasks_save_noop",
+      "tasks_duplicate",
+      "chat_duplicate",
+      "myfiles_hide",
+      "myfiles_duplicate",
+      "admin_hide",
+      "admin_duplicate",
+      "login_timeout"
+    ]
+  },
+  "strictRegressions": {
+    "FE-0232": { "checks": 11, "pass": true, "seedLinks": "0->1", "injected": "items:[] and links 1->0", "control": "links 1->1" },
+    "FE-0239": { "checks": 8, "pass": true, "put": "D2 [14]", "after": "D1 [14], D2 [14]" },
+    "FE-0259": { "checks": 11, "pass": true, "draftKinds": ["daily-summary", "weekly-plan"], "planPersisted": true, "beforeUnload": false, "draftsLost": true }
+  },
+  "FE-0230": {
+    "status": "Suspected",
+    "severity": "High",
+    "runtimeStatus": "not-reproduced-live",
+    "hooksBeforeReturn": 9,
+    "hooksAfterReturn": 0,
+    "liveResult": "real WebView2 late hostReady + synchronous click: no crash; parent unmounted the card",
+    "reason": "parent nativeShell guard + capabilities-driven re-render; no reachable card-local re-render"
+  },
+  "FE-0215": {
+    "runtimeStatus": "blocked-environment",
+    "transport": "Exchange EWS (exchangelib), not IMAP/SMTP",
+    "fullE2E": false,
+    "limitedTest": "service-level fake Account/Message contract test only"
+  },
+  "FE-0326": {
+    "severity": "Medium",
+    "status": "Confirmed",
+    "summary": "PNG preview artifact preview.png is corrupt; public image share preview broken; original download works"
+  },
+  "registry": {
+    "total": 324,
+    "statuses": { "Confirmed": 269, "Suspected": 12, "Fixed-externally": 2, "Rejected": 41 },
+    "severity": { "High": 12, "Medium": 124, "Low": 173, "Info": 15 },
+    "highBreakdown": {
+      "historical": 12,
+      "current": 11,
+      "runtimeProven": 10,
+      "unresolvedRuntime": 9,
+      "staticOnly": ["FE-0215"],
+      "runtimeNotReproduced": ["FE-0230"],
+      "suspectedHigh": ["FE-0230"]
+    }
+  },
+  "coverage": {
+    "totalRouteEntries": 51,
+    "userVisible": 46,
+    "E2E": 9,
+    "Functional": 27,
+    "Smoke": 2,
+    "Blocked": 8,
+    "Redirect": 5,
+    "functionalPlusE2E": 36,
+    "functionalPlusE2EPercent": 78.3
+  }
+}

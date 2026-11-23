@@ -1,0 +1,85 @@
+{
+  "test": "FE-0326",
+  "pass": true,
+  "file": "audit-c18-1795429633664-832.png",
+  "checks": [
+    {
+      "name": "setup.pngWithPreview",
+      "ok": true,
+      "detail": {
+        "files": [
+          {
+            "name": "audit-c18-1795429633664-832.png",
+            "preview": "ready"
+          },
+          {
+            "name": "audit-c18-1795429592130-17.png",
+            "preview": "ready"
+          },
+          {
+            "name": "audit-c18-1795429349298-180.png",
+            "preview": "ready"
+          },
+          {
+            "name": "audit-c18-1795429263298-593.png",
+            "preview": "ready"
+          },
+          {
+            "name": "audit-c18-1795429146269-148.png",
+            "preview": "ready"
+          },
+          {
+            "name": "c18-preview.png",
+            "preview": "ready"
+          }
+        ]
+      }
+    },
+    {
+      "name": "share.created",
+      "ok": true,
+      "detail": {
+        "status": 200
+      }
+    },
+    {
+      "name": "public.previewImageElement",
+      "ok": true,
+      "detail": {
+        "src": "/api/v1/my-files/public/<token>/preview/content"
+      }
+    },
+    {
+      "name": "public.previewStatus",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "type": "image/png",
+        "bytes": 180
+      }
+    },
+    {
+      "name": "public.previewCorruptReproduced",
+      "ok": true,
+      "detail": {
+        "decodeOk": false,
+        "decodeError": "v\\Lib\\site-packages\\PIL\\ImageFile.py\", line 444, in load\r\n    raise _get_oserror(err_code, encoder=False)\r\nOSError: broken data stream when reading image file\r\n"
+      }
+    },
+    {
+      "name": "public.originalDownloadWorks",
+      "ok": true,
+      "detail": {
+        "status": 200
+      }
+    },
+    {
+      "name": "share.revoked",
+      "ok": true,
+      "detail": {
+        "status": 204
+      }
+    }
+  ]
+}
+

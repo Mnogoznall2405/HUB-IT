@@ -341,3 +341,24 @@ MSBuild/Roslyn-узлы простаивают, серверу не мешают
   direction workspace; /dashboard — Functional.
 - Реестр: 323 записи, 269/11/2/41; highBreakdown обновлён, runtimeStatus у пяти High;
   валидатор 0 ошибок. Отчёт CYCLE_17_REVIEW.md.
+
+## Цикл 18 — достоверность тестов и проверка High (2026-11-23)
+
+- Чистый SHA 338912d9, отдельная SQLite .state-cycle18; five-e2e переписан:
+  сценарий PASS только при выполнении всех явных assertions (49 обязательных
+  проверок), а не при отсутствии исключения.
+- Negative controls 10/10 падают как должны: API error, missing save, wrong
+  record, duplicates, hidden record, login timeout; положительный feed PASS.
+- FE-0232 strict: 11/11; links 0 -> 1, injected bulk 500 -> Save items:[] -> 0;
+  control 1 -> 1. FE-0239 strict: 8/8; PUT D2 [14], D2 16 -> 14.
+  FE-0259 strict: 11/11; plan persisted; daily + weekly drafts lost on F5 без
+  beforeunload; title исправлен на «дневная сводка и недельный план».
+- FE-0230: 9 хуков до early return, 0 после; parent unmounts via capabilities;
+  реальный WebView2 late-hostReady + click не дал краха; статус Suspected,
+  severity High (potential impact, reachability unproven).
+- FE-0215: EWS-анализ; полный E2E невозможен без EWS test server; возможен
+  только limited service-level контрактный тест.
+- Новый дефект FE-0326 (Medium): PNG preview artifact preview.png повреждён;
+  публичная ссылка на изображение показывает битое превью; оригинал скачивается.
+- Реестр: 324 записи; 269 Confirmed / 12 Suspected / 2 Fixed / 41 Rejected;
+  High 12, Medium 124, Low 173, Info 15. Валидатор 0 ошибок.
