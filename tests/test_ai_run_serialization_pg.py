@@ -642,12 +642,13 @@ def test_pg_load_100_runs_20_conversations_4_workers(svc):
     print(f"\nA4 load: 100 runs / 20 conversations / 4 workers in {elapsed:.2f}s")
 
 
-def test_pg_claim_skips_eight_locked_heads_to_reach_free_conversation(svc):
-    """Starvation guard: the 8 oldest heads sit on conversations whose mapping
-    rows are locked by other transactions; a free 9th head must still be
-    claimed in the SAME call via keyset pagination — not returned as
-    'no work' after the first page."""
-    locked_convs = [f"locked{i:02d}" for i in range(8)]
+def test_pg_claim_skips_32_locked_heads_to_reach_free_conversation(svc):
+    """Starvation guard (cycle 3): 32 heads sit on conversations whose mapping
+    rows are locked by other transactions — BEYOND the old 4x8 candidate
+    bound that reset its cursor every call. With FOR UPDATE ... SKIP LOCKED
+    the free 33rd head is claimed in the same call and on every repeat poll;
+    once the locks release, the previously contended heads claim in order."""
+    locked_convs = [f"locked{i:02d}" for i in range(32)]
     free_conv = "free99"
     _seed(svc, conversations=locked_convs + [free_conv])
     t0 = datetime.now(timezone.utc)
@@ -656,9 +657,16 @@ def test_pg_claim_skips_eight_locked_heads_to_reach_free_conversation(svc):
     _add_run(svc, f"{free_conv}-r1", conv=free_conv, seq=1,
              created_at=t0 + timedelta(seconds=60))
     lockers = []
+    # NullPool engine: 32 lock-holding connections must not exhaust the
+    # service engine's QueuePool (size 5 + overflow 10).
+    from sqlalchemy.pool import NullPool
+
+    lock_engine = create_engine(PG_URL, poolclass=NullPool).execution_options(
+        schema_translate_map={"app": PG_SCHEMA, "system": PG_SCHEMA, "chat": PG_SCHEMA}
+    )
     try:
         for conv in locked_convs:
-            locker = Session(svc.engine, expire_on_commit=False)
+            locker = Session(lock_engine, expire_on_commit=False)
             locker.begin()
             locked = locker.execute(
                 select(AppAiBotConversation.id)
@@ -667,14 +675,22 @@ def test_pg_claim_skips_eight_locked_heads_to_reach_free_conversation(svc):
             ).scalar_one_or_none()
             assert locked is not None
             lockers.append(locker)
+        # Same call reaches past 32 locked heads; repeated polls behave the
+        # same (second poll: free conv now busy, everything else locked ->
+        # clean None, not an error and not a busy-loop).
         assert _claim(svc) == f"{free_conv}-r1"
+        assert _claim(svc) is None
     finally:
         for locker in lockers:
             locker.rollback()
             locker.close()
-    # After the locks release, the previously contended conversations claim
-    # normally and in order.
+        lock_engine.dispose()
+    # After the locks release, the contended conversations claim normally
+    # and in (created_at, id) order — recovery, not permanent starvation.
+    _finish(svc, f"{free_conv}-r1")
     assert _claim(svc) == "locked00-r1"
+    _finish(svc, "locked00-r1")
+    assert _claim(svc) == "locked01-r1"
 
 
 def test_pg_load_with_continuous_enqueue(svc):

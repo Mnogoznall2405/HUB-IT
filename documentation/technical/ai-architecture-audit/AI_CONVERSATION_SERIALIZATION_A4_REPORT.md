@@ -25,17 +25,19 @@
 
 Два взаимодополняющих уровня:
 
-**Уровень 1 — строковая блокировка диалога (основной механизм).** Claim-транзакция берёт `FOR UPDATE NOWAIT` на строке `app.ai_bot_conversations` — той же самой строке, которую enqueue держит при вставке нового run (`_enqueue_run` уже делал `.with_for_update()`). Пока claim держит этот лок: (а) ни один enqueue этого диалога не может закоммитить новый run → `queued`-набор заморожен → голова очереди стабильна; (б) второй claim этого же диалога не может быть в полёте (NOWAIT проваливается мгновенно, воркер переходит к следующему кандидату). Лок держится только до коммита claim-транзакции (миллисекунды) — **не** на время LLM-вызова.
+**Уровень 1 — строковая блокировка диалога (основной механизм).** Claim-транзакция берёт `FOR UPDATE ... SKIP LOCKED` на строке `app.ai_bot_conversations` — той же самой строке, которую enqueue держит при вставке нового run (`_enqueue_run` уже делал `.with_for_update()`). Пока claim держит этот лок: (а) ни один enqueue этого диалога не может закоммитить новый run → `queued`-набор заморожен → голова очереди стабильна; (б) второй claim этого же диалога не может быть в полёте — его пробник пропустит эту строку как залоченную и возьмёт следующую свободную голову **в порядке `(created_at,id)`** (SKIP LOCKED вместо NOWAIT — устранение starvation, цикл 3). Лок держится только до коммита claim-транзакции (миллисекунды) — **не** на время LLM-вызова.
 
 **Уровень 2 — частичный уникальный индекс (backstop).** `uq_app_ai_bot_runs_running_conversation ON ai_bot_runs (conversation_id) WHERE status = 'running'` — декларативная гарантия «не более одного running на диалог» для любого пути, обходящего лок (будущий код, прямой SQL, run без mapping-строки). `CREATE INDEX CONCURRENTLY` в миграции.
 
 **FIFO-ключ — `queue_seq`.** `created_at` задаётся приложением (`_utc_now()`), а не БД — при разнобое часов хостов порядок прибытия искажается. Поэтому добавлен `ai_bot_conversations.last_run_seq`, инкрементируемый под локом mapping-строки при enqueue, и `ai_bot_runs.queue_seq`. Порядок внутри диалога: `(COALESCE(queue_seq,-1), created_at, id)` — NULL `queue_seq` (строки до миграции, dev-вставки) сортируется старейшим и детерминировано тай-брейчится `(created_at, id)`.
 
-**Claim-алгоритм** (`_claim_next_queued_run`):
-1. Пробник (без блокировок): queued-строки, являющиеся головами своих диалогов — `NOT EXISTS(running sibling)` и `NOT EXISTS(earlier queued sibling)` — `ORDER BY created_at, id`. Выборка **keyset-пагинирована** по `(created_at, id)`: страница `LIMIT 8`, до `_AI_CLAIM_MAX_PAGES=4` страниц на вызов (≤32 голов). Если все 32 головы на contention — claim возвращает `None` с warning-логом; следующий опрос воркера повторит (bounded scan, без busy-loop и без голодания свободных диалогов за заблокированными).
-2. Для каждого кандидата: `SET LOCAL lock_timeout='5s'` → `FOR UPDATE NOWAIT` на mapping-строке → условный `UPDATE ... SET status='running' WHERE id=:id AND status='queued' AND <те же head-предикаты>` (READ COMMITTED перевычисляет предикаты на момент записи).
-3. `rowcount=1` → claim состоялся; иначе `ROLLBACK` и следующий кандидат.
-4. **Классификация ошибок** (`_is_claim_contention`, цикл 2): пропускается только известный contention — `OperationalError` с SQLSTATE `55P03` (lock_not_available: NOWAIT/lock_timeout), `40P01` (deadlock), `40001` (serialization) и `IntegrityError` 23505 именно от `uq_app_ai_bot_runs_running_conversation`. Все прочие ошибки (08xxx соединение, 42P01 схема, 28xxx auth, чужие constraint'ы, NOT NULL) — `rollback` + `raise`: вызывающий код видит реальный сбой, а не «пустую очередь». На sqlite (нет SQLSTATE) contention распознаётся по busy/locked-сообщению и сообщению unique-индекса.
+**Claim-алгоритм** (`_claim_next_queued_run`, цикл 3 — PostgreSQL-ветка через `SKIP LOCKED`):
+1. Пробник: `SELECT r.id FROM ai_bot_runs r JOIN ai_bot_conversations m ON m.conversation_id = r.conversation_id WHERE r.status='queued' AND <head-предикаты> ORDER BY r.created_at, r.id FOR UPDATE OF m SKIP LOCKED LIMIT 1`. Залоченные mapping-строки пропускает **сама БД** в порядке сортировки — первая свободная голова находится одним запросом при **любом** числе залоченных диалогов (8, 32, 1000 — границы нет, проблема starvation устранена конструктивно). Параллельно второй пробник (без локов) берёт старейшую голову **без** mapping-строки (edge-case; `FOR UPDATE` на nullable-сторону outer join невозможен) — из двух кандидатов выбирается более ранний по `(created_at, id)`.
+2. `SET LOCAL lock_timeout='5s'`; условный `UPDATE ... SET status='running' WHERE id=:id AND status='queued' AND <те же head-предикаты>` (READ COMMITTED перевычисляет предикаты на момент записи).
+3. `rowcount=1` → claim состоялся. Иначе `ROLLBACK` и повторный пробник — не более `_AI_CLAIM_MAX_ATTEMPTS=8` попыток на вызов (защита от теоретического ping-pong на горячих гонках; при исчерпании — `None` + warning, следующий опрос воркера повторит).
+4. **Классификация ошибок** (`_is_claim_contention`, цикл 2): пропускается только известный contention — `OperationalError` с SQLSTATE `55P03` (lock_not_available: lock_timeout на строке run), `40P01` (deadlock), `40001` (serialization) и `IntegrityError` 23505 именно от `uq_app_ai_bot_runs_running_conversation`. Все прочие ошибки (08xxx соединение, 42P01 схема, 28xxx auth, чужие constraint'ы, NOT NULL) — `rollback` + `raise`: вызывающий код видит реальный сбой, а не «пустую очередь». На sqlite (нет SQLSTATE) contention распознаётся по busy/locked-сообщению и сообщению unique-индекса.
+
+SQLite-ветка (`_claim_next_queued_run_scan`, только dev/test): прежняя bounded-сканирующая версия с keyset-пагинацией 4×8 — файловая блокировка sqlite и так сериализует писателей.
 
 ## 4. Почему не альтернативы
 
@@ -69,7 +71,7 @@
 
 - `test_pg_different_conversations_claim_in_parallel`: convA+convB, 2 барьерных воркера → оба claim'ятся одновременно → 2 running (по одному на диалог).
 - `test_pg_busy_conversation_skipped_not_blocked`: convA(running)+convA2(queued)+convB(queued) → выбирается `b1`; занятый диалог не блокирует очередь.
-- `test_pg_claim_skips_eight_locked_heads_to_reach_free_conversation` (цикл 2, анти-starvation): 8 самых старых голов на диалогах, чьи mapping-строки заперты чужими транзакциями (`FOR UPDATE` удерживается), 9-й диалог свободен → claim **в том же вызове** через keyset-страницу 2 достаёт `free99-r1`; после освобождения локов `locked00-r1` claim'ится штатно. До пагинации (LIMIT 8) свободная голова не попадала в выборку — дефект устранён.
+- `test_pg_claim_skips_32_locked_heads_to_reach_free_conversation` (цикл 3, анти-starvation): **32** старейшие головы на диалогах с mapping-строками, запертыми чужими `FOR UPDATE`-транзакциями (за пределом бывшей границы 4×8 — курсор старого скана обнулялся при каждом вызове, и 33-я свободная голова не достигалась никогда); свободный 33-й диалог claim'ится **в том же вызове** одним `SKIP LOCKED`-пробником. Повторный опрос при удерживаемых локах → чистый `None` без ошибок и busy-loop. После освобождения локов обработка восстанавливается строго в `(created_at, id)`-порядке (`locked00` → `locked01`) — starvation не постоянно.
 
 ## 8. Отмена и восстановление — FIXED/PARTIAL
 
@@ -104,7 +106,7 @@
 
 - Результат: **все 100 run завершены ровно один раз**, очередь полностью осушена, 0 ошибок/дедлоков/потерянных заданий.
 - FIFO: для каждого из 20 диалогов порядок завершения совпал с `queue_seq` 1..5.
-- Время: **1.22 с** (~82 claim+complete roundtrip/с через сеть к dev-PG; доминирует сетевая латентность, не contention). Конфликтов/бесконечных retry не наблюдалось.
+- Время: **1.11 с** (~90 claim+complete roundtrip/с через сеть к dev-PG; доминирует сетевая латентность, не contention). Конфликтов/бесконечных retry не наблюдалось.
 
 `test_pg_load_with_continuous_enqueue` (цикл 2): 10 диалогов × 3 раунда enqueue **во время** работы 4 воркеров — 30 run, все завершены ровно раз, очередь осушена, порядок завершения в каждом диалоге совпал с enqueue-порядком (`queue_seq`). Гонка enqueue↔claim не роняет задания и не нарушает FIFO.
 
@@ -131,7 +133,7 @@ Rollback: `downgrade()` снимает индексы `CONCURRENTLY` и коло
 - **Поздние side-effects**: сериализация run не отменяет физически выполняющийся поток инструмента после wall-timeout (ограничение A1 — Python не убивает поток). Защита — существующая идемпотентность (client-id/outbox). CONFIRMED остаточный риск.
 - **`_process_single_run` end-to-end на PG** (claim→LLM→completion): проверен на уровне claim+terminal transitions; полный прогон с фейковой LLM на PG — NOT TESTED (покрыт sqlite-регрессией).
 - **Несколько независимых процессов ОС**: проверено независимыми подключениями/транзакциями, что транзакционно эквивалентно; буквальный spawn процессов — NOT TESTED.
-- **Предел скана claim**: >32 одновременно залоченных головы → вызов возвращает `None` + warning; следующий цикл воркера повторит. Это не потеря задания (строки остаются queued), но под экстремально горячей нагрузкой добавляет латентность. Предел — сознательный bounded-scan, увеличивается константами `_AI_CLAIM_MAX_PAGES`/`_AI_CLAIM_CANDIDATE_LIMIT`. CONFIRMED.
+- **Предел повторных попыток claim**: пробник `SKIP LOCKED` не имеет границы по числу залоченных диалогов, но гонка «пробник → UPDATE» (статус сменился между выборкой и записью) повторяет пробник не более 8 раз за вызов; при исчерпании — `None` + warning `ai_run_claim: N probe attempts contended`, следующий опрос воркера повторяет. Проверено повторными опросами — это латентность, не потеря задания. CONFIRMED.
 - **Предсуществующие падения** — `tests/test_ai_sandbox_release.py::test_allowlisted_release_imports_worker_without_repository_or_live_env` и `tests/test_ai_sandbox_runtime.py::test_gateway_containerfile_is_a_buildable_pinned_release_artifact` (release-манифест без `shared/llm/json_stream.py` — `ModuleNotFoundError` в собранном бандле). Воспроизводятся на неизменённом `main` теми же командами (`pytest tests/test_ai_*.py`) в этом же окружении — к A4 отношения не имеют и в этом PR не исправляются. CONFIRMED.
 
 ## 14. Развёртывание и откат
@@ -148,7 +150,7 @@ Rollback: `downgrade()` снимает индексы `CONCURRENTLY` и коло
 6. Откат кода — безопасен: старый код игнорирует новые колонки; уникальный индекс остаётся fail-closed backstop'ом (старый claim при гонке двух running получит `IntegrityError` вместо скрытого нарушения — желаемо).
 7. Откат миграции: `alembic downgrade -1` — удаляет индексы/колонки; run-данные не затрагиваются.
 
-**Мониторинг:** claim-пропуски видны как `None` → `process_next_run=False` → idle-цикл; warning `ai_run_claim: N candidate heads contended` — >32 залоченных голов; аномальный рост `pg_locks` на `ai_bot_conversations` укажет на зависший enqueue.
+**Мониторинг:** claim-пропуски видны как `None` → `process_next_run=False` → idle-цикл; warning `ai_run_claim: N probe attempts contended` — непрерывная гонка на головах (не зависит от числа залоченных диалогов); аномальный рост `pg_locks` на `ai_bot_conversations` укажет на зависший enqueue.
 
 ## Результаты (итог)
 
@@ -165,7 +167,15 @@ Rollback: `downgrade()` снимает индексы `CONCURRENTLY` и коло
 
 | Риск | Решение | Подтверждение |
 |---|---|---|
-| Starvation: `LIMIT 8` пробник — свободный 9-й диалог не попадал в выборку за 8 залоченными | keyset-пагинация `(created_at,id)`, до 4×8=32 голов на вызов + warning при исчерпании | `test_pg_claim_skips_eight_locked_heads_to_reach_free_conversation` — FIXED |
-| Backfill O(n²) коррелированным `COUNT` | `UPDATE ... FROM (ROW_NUMBER() PARTITION BY)` на PG | 3000 строк ≈ 0.16 с, полный пересчёт = 0 расхождений — FIXED |
+| Starvation: `LIMIT 8` пробник — свободный 9-й диалог не попадал в выборку за 8 залоченными | keyset-пагинация `(created_at,id)`, до 4×8=32 голов на вызов + warning при исчерпании | `test_pg_claim_skips_32_locked_heads_to_reach_free_conversation` — FIXED (усилено в цикле 3) |
+| Backfill O(n²) коррелированным `COUNT` | `UPDATE ... FROM (ROW_NUMBER() PARTITION BY)` на PG | 3000 строк ≈ 0.14 с, полный пересчёт = 0 расхождений — FIXED |
 | Concurrent-build во время работы старых воркеров → INVALID-индекс | `_index_state` (indisvalid/indisready) → drop INVALID → dup-check → rebuild; runbook с дренированием воркеров | `test_pg_migration_0176_rebuilds_invalid_index` — FIXED |
 | Подавление любых `OperationalError`/`IntegrityError` как «нет работы» | `_is_claim_contention`: только 55P03/40P01/40001 и unique-violation backstop-индекса; прочее — raise | 4 unit-теста классификатора — FIXED |
+
+## Цикл 3 — окончательное устранение starvation
+
+| Риск | Решение | Подтверждение |
+|---|---|---|
+| Постоянное starvation после 32 залоченных голов: курсор keyset-пагинации обнулялся при каждом вызове — 33-я свободная голова не достигалась ни одним опросом | Пробник переписан на `JOIN ai_bot_conversations ... FOR UPDATE OF m SKIP LOCKED LIMIT 1` — пропуск залоченных mapping-строк выполняет сама БД в порядке `(created_at,id)`; границы по числу contention нет. Runs без mapping-строки — отдельный lock-free пробник, победитель по более раннему `(created_at,id)`. Гонка пробник→UPDATE — bounded retry (≤8), не bounded scan | `test_pg_claim_skips_32_locked_heads_to_reach_free_conversation`: 32 залоченных + 1 свободный → claim в том же вызове; повторный опрос → `None` без busy-loop; после снятия локов `locked00→locked01` по порядку — FIXED |
+
+Гарантия отсутствия starvation на PostgreSQL теперь конструктивная: единственное состояние, когда claim возвращает `None` при наличии свободных голов, — исчерпание 8 retry из-за непрерывной гонки на самих головах (статус меняется между пробником и UPDATE); это не зависит от числа залоченных диалогов и восстанавливается следующим опросом воркера.
