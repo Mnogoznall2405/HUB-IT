@@ -254,6 +254,10 @@ best-effort, пользовательские ошибки не глотаютс
 
 
 
+
+
+
+
 ## Карточки записей FE-0078…FE-0325 (перепроверка циклов 12–13)
 
 > Карточки перегенерированы из ISSUES.json; исходные утверждения, текущие выводы
@@ -295,7 +299,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: Auth/Concurrency | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/api/http.js` :54,66-76
 - Суть/механизм: Триггер в реальности: silent refresh на каждый visibilitychange (AuthContext.jsx:471-508) — пробуждение ноутбука с N вкладок → гонка внутри grace-окна → массовый logout. Потеря несохранённых черновиков — да (принудительный logout). Grace/MAX_HITS не трогать (auth-политика).
-- Доказательства: probe_refresh_race.mjs (local stack): 3 параллельных POST /auth/refresh с одной кукой → [200,200,401]; далее /auth/me → 401 и во ВТОРОЙ вкладке (тот же cookie jar) → 401 — family отозвана, обе вкладки разлогинены; код: http.js:54,66-76 — refreshInFlight только внутри вкладки; navigator.locks/BroadcastChannel отсутствуют; backend auth.py:135 (_REFRESH_GRACE_MAX_HITS=1), 1648-1676 (grace 15 c → revoke family); [cycle12:confirmed] High, ручная проверка: refreshInFlight только внутри вкладки (http.js:54,66-76), navigator.locks/BroadcastChannel нет; backend grace max 1 -> 3 параллельных refresh дают [200,200,401] и отзыв family (probe_refresh_race.mjs).; [cycle13:confirmed] Live cycle 13: 3 параллельных POST /auth/refresh с одной кукой дали [401,200,200], затем /auth/me 401 — family отозвана, вкладки разлогинены.
+- Доказательства: probe_refresh_race.mjs (local stack): 3 параллельных POST /auth/refresh с одной кукой → [200,200,401]; далее /auth/me → 401 и во ВТОРОЙ вкладке (тот же cookie jar) → 401 — family отозвана, обе вкладки разлогинены; код: http.js:54,66-76 — refreshInFlight только внутри вкладки; navigator.locks/BroadcastChannel отсутствуют; backend auth.py:135 (_REFRESH_GRACE_MAX_HITS=1), 1648-1676 (grace 15 c → revoke family); [cycle12:confirmed] High, ручная проверка: refreshInFlight только внутри вкладки (http.js:54,66-76), navigator.locks/BroadcastChannel нет; backend grace max 1 -> 3 параллельных refresh дают [200,200,401] и отзыв family (probe_refresh_race.mjs).; [cycle13:confirmed] Live cycle 13: 3 параллельных POST /auth/refresh с одной кукой дали [401,200,200], затем /auth/me 401 — family отозвана, вкладки разлогинены.; [cycle14:live] Two-tab browser race on isolated stack 5219/18002: three concurrent POST /auth/refresh from two pages sharing cookies -> [200,401,200]; /auth/me -> 401; a NEW refresh cookie after the race -> 401 "Refresh token has been revoked"; both tabs reloaded to /login.
 - Связано: FE-0059
 
 ### FE-0084 — Service Worker обновляется только полной перезагрузкой приложения; уведомление об обновлении — только в Settings
@@ -376,7 +380,7 @@ best-effort, пользовательские ошибки не глотаютс
 ### FE-0098 — SharedFolder: полный список файлов рендерится без ограничений (лимит сервера неизвестен)
 - Категория: Performance | Серьёзность: Low | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/SharedFolder.jsx` :93,207
-- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] items берётся из payload и рендерится полным map без лимита/пагинации (SharedFolder.jsx:93,207); серверный лимит не документирован.; [cycle13:confirmed] get_public_folder выбирает все готовые AppMyFile поддерева без LIMIT (my_files_service.py:4300-4309) и возвращает полный items (4341-4345), а клиент рендерит items.map без окна, пагинации или виртуализации (SharedFolder.jsx:207-259). На папке с тысячами файлов это один длинный синхронный рендер и десятки тысяч MUI-узлов, причём «Файлов: N» (SharedFolder.jsx:171) показывает полный размер и не сигнализирует о тяжести. Ограничения на число файлов в шаре нет — формулировка «лимит сервера неизвестен» уточняется как «лимита нет». Фактический объём папок не измерялся, но неограниченный рендер подтверждён по коду.
+- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] items берётся из payload и рендерится полным map без лимита/пагинации (SharedFolder.jsx:93,207); серверный лимит не документирован.; [cycle13:confirmed] get_public_folder выбирает все готовые AppMyFile поддерева без LIMIT (my_files_service.py:4300-4309) и возвращает полный items (4341-4345), а клиент рендерит items.map без окна, пагинации или виртуализации (SharedFolder.jsx:207-259). На папке с тысячами файлов это один длинный синхронный рендер и десятки тысяч MUI-узлов, причём «Файлов: N» (SharedFolder.jsx:171) показывает полный размер и не сигнализирует о тяжести. Ограничения на число файлов в шаре нет — формулировка «лимит сервера неизвестен» уточняется как «лимита нет». Фактический объём папок не измерялся, но неограниченный рендер подтверждён по коду.; [cycle13:live] Live cycle 13 large-data probe: synthetic 2000-file public folder rendered in 8.38 s, 20 180 DOM nodes, body height 98 184 px, JS heap 186 MB (isolated stand, route-mocked payload). This confirms the unbounded-render impact, not just the code path.; [cycle14:live] Synthetic 2000-file public folder on isolated stand: 8.38 s first render, 20180 DOM nodes, 98184 px body, 186 MB heap.
 
 ### FE-0099 — Почта: двойной GET /mail/bootstrap на свежей вкладке (scope pending → resolved → повторная выборка)
 - Категория: Performance/Mail | Серьёзность: Low | Статус: Confirmed
@@ -943,13 +947,13 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: Auth/UX | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/Login.jsx` :1505-1521 (submitTwoFactorSetup→verifyTwoFactorSetup→applyAuthenticatedPayload→setUser, AuthContext.jsx:557-568) → LoginRoute (App.jsx:237-239) отдаёт PostAuthNavigate → Login unmount ДО setStep(setup_complete); renderSetupCompleteStep — мёртвый код в проде
 - Суть/механизм: пользователь не видит backup-коды при обязательной 2FA — риск блокировки при потере TOTP-устройства; тест Login.test.jsx:503 маскирует дефект (рендерит без LoginRoute)
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] verifyTwoFactorSetup ставит user (AuthContext.jsx:557-568) до setStep('setup_complete') (Login.jsx:1514-1520); LoginRoute при isAuthenticated отдаёт PostAuthNavigate (App.jsx:237-253), Login размонтируется и renderSetupCompleteStep (2190-2219) не показывается.; [cycle13:confirmed] Live cycle 13 (route-mocked 2FA на изолированном стенде): после verify-2fa URL сразу /dashboard, экран backup-кодов не появился ни через 0.25/0.8/2/4 c.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] verifyTwoFactorSetup ставит user (AuthContext.jsx:557-568) до setStep('setup_complete') (Login.jsx:1514-1520); LoginRoute при isAuthenticated отдаёт PostAuthNavigate (App.jsx:237-253), Login размонтируется и renderSetupCompleteStep (2190-2219) не показывается.; [cycle13:confirmed] Live cycle 13 (route-mocked 2FA на изолированном стенде): после verify-2fa URL сразу /dashboard, экран backup-кодов не появился ни через 0.25/0.8/2/4 c.; [cycle14:live] Real 2FA flow on isolated stack 18004/5222 (policy=all, loopback=external, seeded e2e_admin): login -> 2fa_setup_required -> enable-2fa (real otpauth secret) -> TOTP -> verify-2fa. URL became /dashboard immediately; backup-code screen and codes did not appear at 4 s.
 
 ### FE-0198 — Login: обязательная привязка trusted-device (remember-device sheet) недостижима — тот же routing race
 - Категория: Auth/UX | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/Login.jsx` :1394-1415,1137-1153,1170-1181,2342-2399: setRememberDeviceOpen(true) при уже установленном user → sheet не рендерится
 - Суть/механизм: required-enrollment молча пропускается — фича фактически отключена
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] completeAuthenticatedRedirect (1404-1415) после установки user вызывает openRememberDevicePrompt → setRememberDeviceOpen(true) (1170-1181), но LoginRoute уже размонтировал Login (App.jsx:237-253), и sheet на 2342-2399 не рендерится — обязательная привязка пропускается.; [cycle13:confirmed] Live cycle 13 (route-mocked 2FA на изолированном стенде): после verify-2fa-login URL сразу /dashboard, remember-device sheet не появился ни через 0.25/0.8/2/4 c.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] completeAuthenticatedRedirect (1404-1415) после установки user вызывает openRememberDevicePrompt → setRememberDeviceOpen(true) (1170-1181), но LoginRoute уже размонтировал Login (App.jsx:237-253), и sheet на 2342-2399 не рендерится — обязательная привязка пропускается.; [cycle13:confirmed] Live cycle 13 (route-mocked 2FA на изолированном стенде): после verify-2fa-login URL сразу /dashboard, remember-device sheet не появился ни через 0.25/0.8/2/4 c.; [cycle14:live] Real second login after enabling 2FA on 5222: login -> 2fa_required -> TOTP -> verify. External zone, discoverable_trusted_devices_count=0. URL became /dashboard; mandatory remember-device sheet did not appear.
 
 ### FE-0199 — Login: кастомный диалог «Запомнить устройство» без управления фокусом/Escape/inert
 - Категория: A11y/Login | Серьёзность: Medium | Статус: Confirmed
@@ -1276,10 +1280,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: runtime-замер локального стека (цикл 11); [cycle12:confirmed] Runtime-замер цикла 11: /database при масштабе 200% даёт горизонтальное переполнение ~400px; фиксированного overflow-контейнера нет.
 
 ### FE-0253 — JS heap растёт при повторных переключениях страниц: 85→85→143MB за 3 раунда по 8 маршрутов
-- Категория: Perf/Memory | Серьёзность: Medium | Статус: Suspected
+- Категория: Perf/Memory | Серьёзность: Medium | Статус: Rejected
 - Файл: `WEB-itinvent/frontend/src` :роутинг
 - Суть/механизм: CDP usedJSHeapSize после каждого раунда goto×8: +58MB на 3-м раунде; возможна легитимная инерция кэша чанков — нужен более длинный прогон/GC-профиль
-- Доказательства: runtime-замер локального стека (цикл 11); [cycle12:unverifiable] Замер 85→85→143MB не контролирует GC и не воспроизводился повторно; утечка конкретного слушателя/кэша не локализована.; [cycle13:unverifiable] Замер probe_wave3.mjs:24-31 шёл hard-goto по 8 маршрутам, читал performance.memory.usedJSHeapSize сразу после 1.2 с ожидания и ни разу не вызывал HeapProfiler.collectGarbage, поэтому +58 МБ на третьем раунде неотличимы от отложенной сборки мусора и кэша скомпилированного кода. Hard-навигация уничтожает JS-realm, так что React-состояние, листенеры и модульные кэши между раундами копиться не могут, а общие кэши в коде ограничены (swrCache — 80 записей, ChatLinkPreview — 300, chatHelpers — 4000 с очисткой). Решает прогон 10+ раундов с HeapProfiler.collectGarbage перед каждым чтением: плоский post-GC тренд означает GC-шум, монотонный рост — утечку, а heap snapshot diff с retainer-путями локализует объект. Пока такого замера нет, утечка не доказана, но и не исключена: исходный тест SPA-переходы вообще не проверял.
+- Доказательства: runtime-замер локального стека (цикл 11); [cycle12:unverifiable] Замер 85→85→143MB не контролирует GC и не воспроизводился повторно; утечка конкретного слушателя/кэша не локализована.; [cycle13:unverifiable] Замер probe_wave3.mjs:24-31 шёл hard-goto по 8 маршрутам, читал performance.memory.usedJSHeapSize сразу после 1.2 с ожидания и ни разу не вызывал HeapProfiler.collectGarbage, поэтому +58 МБ на третьем раунде неотличимы от отложенной сборки мусора и кэша скомпилированного кода. Hard-навигация уничтожает JS-realm, так что React-состояние, листенеры и модульные кэши между раундами копиться не могут, а общие кэши в коде ограничены (swrCache — 80 записей, ChatLinkPreview — 300, chatHelpers — 4000 с очисткой). Решает прогон 10+ раундов с HeapProfiler.collectGarbage перед каждым чтением: плоский post-GC тренд означает GC-шум, монотонный рост — утечку, а heap snapshot diff с retainer-путями локализует объект. Пока такого замера нет, утечка не доказана, но и не исключена: исходный тест SPA-переходы вообще не проверял.; [cycle14:refuted] Cycle 13/14 memory probe: 12 rounds x 8 routes with forced GC; heap 37.1→51 plateau→23.3 after full GC; no monotonic growth.
 
 ### FE-0254 — hubit://open/dashboard protocol launch вызывает console-ошибку в обычном браузере
 - Категория: UX/Desktop | Серьёзность: Info | Статус: Confirmed
@@ -1711,10 +1715,10 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: Reliability/PWA | Серьёзность: Medium | Статус: Confirmed
 - Страница: все маршруты (проверено /login)
 - Файл: `WEB-itinvent/frontend/src/contexts/AuthContext.jsx` :310-339
-- Доказательства: live local E2E (cycle 13): built app served by vite preview :5221, SW active and controls the page, app-shell/assets cached; offline reload /login stays on «Загружаем раздел… | Подготавливаем интерфейс HUB-IT» at 10/30/55/65 s.; AuthContext verifySession: error with HTTP status 0 (offline) is not a definitive 401/403, so scheduleRetry repeats forever with max 30 s delay; setLoading(false) is never called on this path (AuthContext.jsx:310-339).; SW itself serves the shell offline (200), so the hang is in auth recovery, not in the service worker navigation fallback.
+- Доказательства: live local E2E (cycle 13): built app served by vite preview :5221, SW active and controls the page, app-shell/assets cached; offline reload /login stays on «Загружаем раздел… | Подготавливаем интерфейс HUB-IT» at 10/30/55/65 s.; AuthContext verifySession: error with HTTP status 0 (offline) is not a definitive 401/403, so scheduleRetry repeats forever with max 30 s delay; setLoading(false) is never called on this path (AuthContext.jsx:310-339).; SW itself serves the shell offline (200), so the hang is in auth recovery, not in the service worker navigation fallback.; [cycle14:live] PWA deep test on built app :5223: fresh offline reload stays on loader >50 s; only 2 refresh attempts during 50 s (no request storm); reconnect recovers to /login in ~2 s; offline reload with existing session shows /dashboard and «Нет подключения · Показываем сохранённые данные»; two tabs both show the loader.
 - Связано: FE-0084, FE-0085, FE-0070
 
-## Счётчики (цикл 13, после runtime-верификации и перепроверки Suspected)
+## Счётчики (цикл 14, после runtime-проверок и очистки схемы verification)
 
 | Серьёзность | Кол-во |
 |---|---|
@@ -1724,7 +1728,7 @@ best-effort, пользовательские ошибки не глотаютс
 | Low | 173 |
 | Info | 15 |
 | Confirmed | 269 |
-| Suspected (подмножество) | 12 |
+| Suspected (подмножество) | 11 |
 | Fixed-externally | 2 |
-| Rejected | 40 |
+| Rejected | 41 |
 | **Всего записей** | **323** |

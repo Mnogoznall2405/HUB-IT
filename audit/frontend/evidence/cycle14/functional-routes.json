@@ -1,0 +1,22 @@
+{
+  "environment": "built app :5223 + isolated backend :18002; e2e_admin",
+  "routes": [
+    { "route": "/about", "action": "Перейти в HUB", "result": "navigated to /dashboard" },
+    { "route": "/profile", "action": "Служебные данные", "result": "expanded, content visible" },
+    { "route": "/address-book", "action": "refresh + empty state", "result": "empty state shown, refresh clicked" },
+    { "route": "/company-structure", "action": "Обзор + Обновить", "result": "tab switched, refresh clicked" },
+    { "route": "/docflow", "action": "Подключить", "result": "dialog opened" },
+    { "route": "/tickets", "action": "Создать заявку", "result": "dialog opened" },
+    { "route": "/scan-center", "action": "Открыть очередь", "result": "queue view opened" },
+    { "route": "/passwords", "action": "Новая запись", "result": "dialog opened" },
+    { "route": "/vcs", "action": "Добавить терминал", "result": "dialog opened" },
+    { "route": "/construction", "action": "Создать объект", "result": "dialog opened" },
+    { "route": "/warehouse-1c", "action": "Остатки", "result": "balances tab active" },
+    { "route": "/mfu", "action": "error/empty state", "result": "server error state rendered" }
+  ],
+  "additional": {
+    "back_navigation": "/address-book -> /tickets -> back -> /address-book",
+    "mobile_overflow": { "/address-book": 0, "/feed": 0, "/tickets": 0 },
+    "feed": "composer button present, click did not open dialog in this pass (not counted)"
+  }
+}

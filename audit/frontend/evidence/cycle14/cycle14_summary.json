@@ -1,0 +1,20 @@
+{
+  "generatedAt": "2026-11-23",
+  "baseAuditCommit": "d2fe61a7",
+  "checkedHead": "5513db68",
+  "total": 323,
+  "statuses": { "Confirmed": 269, "Suspected": 11, "Fixed-externally": 2, "Rejected": 41 },
+  "severity": { "High": 12, "Medium": 123, "Low": 173, "Info": 15 },
+  "newFindings": [],
+  "refuted": ["FE-0253"],
+  "liveHigh": ["FE-0197", "FE-0198", "FE-0083", "FE-0023"],
+  "browserChecked": ["FE-0197", "FE-0198", "FE-0083", "FE-0023", "FE-0098", "FE-0253", "FE-0325"],
+  "blockedLive": ["FE-0215", "FE-0230", "FE-0232", "FE-0239", "FE-0259", "FE-0022"],
+  "functionalRoutes": {
+    "total": 24,
+    "of": 36,
+    "percent": 66.7,
+    "newInCycle14": ["/about", "/profile", "/address-book", "/company-structure", "/docflow", "/tickets", "/scan-center", "/passwords", "/vcs", "/construction", "/warehouse-1c", "/mfu"]
+  },
+  "verificationMethods": ["static-code", "local-browser", "local-browser-mock", "local-api", "test-harness", "production-observer"]
+}

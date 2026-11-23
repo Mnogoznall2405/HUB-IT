@@ -23,7 +23,7 @@ for (const i of fresh) {
   md += '\n';
 }
 const c = j.issueCounters;
-md += `## Счётчики (цикл 13, после runtime-верификации и перепроверки Suspected)\n\n`;
+md += `## Счётчики (цикл 14, после runtime-проверок и очистки схемы verification)\n\n`;
 md += `| Серьёзность | Кол-во |\n|---|---|\n| Critical | ${c.critical} |\n| High | ${c.high} (FE-0022, FE-0023, FE-0059, FE-0078, FE-0083, FE-0197, FE-0198, FE-0215, FE-0230, FE-0232, FE-0239, FE-0259) |\n| Medium | ${c.medium} |\n| Low | ${c.low} |\n| Info | ${c.info} |\n| Confirmed | ${c.confirmed ?? ''} |\n| Suspected (подмножество) | ${c.suspected} |\n| Fixed-externally | ${c.fixedExternally ?? 0} |\n| Rejected | ${c.rejected ?? 0} |\n| **Всего записей** | **${j.issues.length}** |\n`;
 
 const cur = fs.readFileSync(DIR + 'ISSUES.md', 'utf8');

@@ -26,6 +26,7 @@
 | `TEST_RESULTS.md` | Результаты линтеров/тестов |
 | `NEXT_ACTIONS.md` | Очередь следующих шагов |
 | `CYCLE_13_REVIEW.md` | Runtime-верификация цикла 13, покрытие и ограничения |
+| `CYCLE_14_REVIEW.md` | Runtime-проверки High, PWA/offline, +12 маршрутов и схема verification |
 | `evidence/` | Скриншоты, сводки субагентов, verdicts циклов 12–13 |
 
 ## Правила
