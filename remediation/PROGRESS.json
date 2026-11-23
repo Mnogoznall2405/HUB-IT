@@ -3370,7 +3370,7 @@
       "review": null,
       "notes": "",
       "pr_status": "open",
-      "commit": "0f310c9d",
+      "commit": "bcb41ca0",
       "note": "PR #23 fix/auth-2fa-flow @0f310c9d: postAuthUiHold gate in LoginRoute; backup codes + trusted-device prompt reachable; dialog a11y. Vitest 49 pass (7 new + 42 regression). Build pass. PR open, not merged."
     },
     {
@@ -3390,7 +3390,7 @@
       "review": null,
       "notes": "",
       "pr_status": "open",
-      "commit": "0f310c9d",
+      "commit": "bcb41ca0",
       "note": "PR #23 fix/auth-2fa-flow @0f310c9d: postAuthUiHold gate in LoginRoute; backup codes + trusted-device prompt reachable; dialog a11y. Vitest 49 pass (7 new + 42 regression). Build pass. PR open, not merged."
     },
     {
@@ -3410,7 +3410,7 @@
       "review": null,
       "notes": "",
       "pr_status": "open",
-      "commit": "0f310c9d",
+      "commit": "bcb41ca0",
       "note": "PR #23 fix/auth-2fa-flow @0f310c9d: postAuthUiHold gate in LoginRoute; backup codes + trusted-device prompt reachable; dialog a11y. Vitest 49 pass (7 new + 42 regression). Build pass. PR open, not merged."
     },
     {
