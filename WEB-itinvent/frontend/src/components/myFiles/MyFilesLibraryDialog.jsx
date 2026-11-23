@@ -55,9 +55,12 @@ export const quotaBytesToGbInput = (bytes) => {
 const QUOTA_GB_PATTERN = /^\d+([.,]\d+)?$/;
 
 export const parseQuotaGbInput = (raw) => {
-  const text = String(raw ?? '').trim();
-  // Пустая строка — осознанное снятие лимита (0 байт).
-  if (!text) return { ok: true, gb: 0, bytes: 0 };
+  const original = String(raw ?? '');
+  // Пустая строка — осознанное снятие лимита (0 байт); строка из одних
+  // пробелов — ошибка, а не замаскированная очистка.
+  if (original === '') return { ok: true, gb: 0, bytes: 0 };
+  const text = original.trim();
+  if (!text) return { ok: false, reason: 'format', gb: NaN, bytes: 0 };
   if (/^-/.test(text)) return { ok: false, reason: 'negative', gb: NaN, bytes: 0 };
   if (!QUOTA_GB_PATTERN.test(text)) return { ok: false, reason: 'format', gb: NaN, bytes: 0 };
   const gb = Number(text.replace(',', '.'));

@@ -64,7 +64,8 @@ describe('quota helpers', () => {
 
   it('parses empty input as unlimited and rejects non-numbers', () => {
     expect(parseQuotaGbInput('')).toEqual({ ok: true, gb: 0, bytes: 0 });
-    expect(parseQuotaGbInput('  ')).toEqual({ ok: true, gb: 0, bytes: 0 });
+    // Пробелы — ошибка, а не замаскированная очистка лимита.
+    expect(parseQuotaGbInput('  ').ok).toBe(false);
     expect(parseQuotaGbInput('10')).toEqual({ ok: true, gb: 10, bytes: 10 * GIB });
     expect(parseQuotaGbInput('1,5').bytes).toBe(Math.round(1.5 * GIB));
     expect(parseQuotaGbInput('..').ok).toBe(false);
@@ -296,6 +297,7 @@ describe('MyFilesLibraryDialog', () => {
     ['1.2.3', /Укажите число ГБ/],
     ['0.0000000001', /меньше 1 байта/],
     ['99999999999', /больше поддерживаемого/],
+    ['   ', /Укажите число ГБ/],
   ])('shows a validation error for %s instead of silently correcting input', async (value, message) => {
     mockListMembers.mockResolvedValue({ items: [] });
     const onClose = vi.fn();
