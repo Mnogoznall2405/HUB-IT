@@ -8,8 +8,9 @@ from typing import Any
 from backend.ai_chat.tools.base import AiToolValidationError
 
 MAIL_DRAFT = "office.action.mail_send_draft"
+MAIL_REPLY_DRAFT = "office.action.mail_reply_draft"
 CHAT_DRAFT = "chat.action.message_send_draft"
-COMMUNICATION_DRAFTS = {MAIL_DRAFT, CHAT_DRAFT}
+COMMUNICATION_DRAFTS = {MAIL_DRAFT, MAIL_REPLY_DRAFT, CHAT_DRAFT}
 _EMAIL = re.compile(r"[\w.!#$%&'*+/=?^`{|}~-]+@[\w.-]+\.[a-zA-Z]{2,}")
 _AD = re.compile(r"\bAD\b|Active\s+Directory", re.IGNORECASE)
 _FOLLOWUP = re.compile(r"исправ|поправ|обнов|добав|пропуст|опечат|неверн|черновик|вместо|букв", re.IGNORECASE)
@@ -43,6 +44,14 @@ def explicit_channel(text: str) -> str | None:
     return (MAIL_DRAFT if matches[-1].lastgroup == "mail" else CHAT_DRAFT) if matches else None
 
 
+def _norm(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _name_tokens(text: str) -> list[str]:
+    return [token.lower() for token in re.findall(r"[\w\-]{4,}", text or "")]
+
+
 @dataclass
 class AiDraftPolicy:
     trigger_text: str = ""
@@ -53,6 +62,13 @@ class AiDraftPolicy:
     successful_drafts: list[dict[str, Any]] = field(default_factory=list)
     rejection: str = ""
     ad_checked: bool = False
+    # Server-observed anchors gathered from tool results of THIS run. A recipient or
+    # target is "grounded" only when it came from the user's own text or was resolved
+    # by a server tool call in this run — never from document/KB/tool-result text.
+    observed_mail_message_ids: set[str] = field(default_factory=set)
+    observed_mail_senders: dict[str, str] = field(default_factory=dict)
+    observed_peer_user_ids: set[int] = field(default_factory=set)
+    observed_conversation_ids: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         for text in [self.trigger_text, *self.user_messages]:
@@ -102,8 +118,12 @@ class AiDraftPolicy:
             selected_channel = selected_channel or previous_channel
             # A change of channel replaces the same pending intent too.
             args["replace_action_id"] = self.previous_action["id"]
-        if selected_channel and tool_id != selected_channel:
-            self.rejection = "Сохраните выбранный канал: обновите черновик письма." if selected_channel == MAIL_DRAFT else "Сохраните выбранный канал: обновите черновик сообщения в чате."
+        mail_drafts = {MAIL_DRAFT, MAIL_REPLY_DRAFT}
+        if selected_channel == MAIL_DRAFT and tool_id not in mail_drafts:
+            self.rejection = "Сохраните выбранный канал: обновите черновик письма."
+            raise AiToolValidationError(self.rejection)
+        if selected_channel == CHAT_DRAFT and tool_id != CHAT_DRAFT:
+            self.rejection = "Сохраните выбранный канал: обновите черновик сообщения в чате."
             raise AiToolValidationError(self.rejection)
         if tool_id == MAIL_DRAFT:
             from backend.ai_chat.tools.office import coerce_mail_recipients
@@ -116,6 +136,55 @@ class AiDraftPolicy:
                 )
                 raise AiToolValidationError(self.rejection)
             self.validate_employee_email(str(args.get("body") or ""))
+        elif tool_id == MAIL_REPLY_DRAFT:
+            from backend.ai_chat.tools.office import coerce_mail_recipients
+
+            anchor = _norm(args.get("reply_to_message_id"))
+            if anchor not in self.observed_mail_message_ids:
+                self.rejection = (
+                    "Черновик ответа отклонён: исходное письмо не было получено инструментом "
+                    "office.mail.get_message/office.mail.search в этом запросе. Сначала найдите и откройте письмо."
+                )
+                raise AiToolValidationError(self.rejection)
+            recipients = [address for key in ("to", "cc", "bcc") for address in coerce_mail_recipients(args.get(key))]
+            allowed = set(self.verified_addresses)
+            original_sender = self.observed_mail_senders.get(anchor)
+            if original_sender:
+                allowed.add(original_sender)
+            if any(address.lower() not in allowed for address in recipients):
+                self.rejection = (
+                    "Адрес получателя в ответе не подтверждён: используйте отправителя исходного письма "
+                    "или адрес, явно указанный пользователем."
+                )
+                raise AiToolValidationError(self.rejection)
+            self.validate_employee_email(str(args.get("body") or ""))
+        elif tool_id == CHAT_DRAFT and not args.get("replace_action_id"):
+            # The destination must be grounded in this run's server tool results or in
+            # the user's own text — a document/mail/KB snippet cannot pick the target.
+            trusted_text = " ".join([self.trigger_text, *self.user_messages]).lower()
+            peer_id = args.get("peer_user_id")
+            peer_name = _norm(args.get("peer_name"))
+            conversation_id = _norm(args.get("conversation_id"))
+            conversation_title = _norm(args.get("conversation_title"))
+            grounded = False
+            if peer_id and int(peer_id) in self.observed_peer_user_ids:
+                grounded = True
+            if conversation_id and conversation_id in self.observed_conversation_ids:
+                grounded = True
+            if not grounded:
+                # Name tokens are matched by a 4-char stem so Cyrillic declension
+                # ("Мария" -> "Марии", "Иван" -> "Ивану") still grounds the target.
+                for name in (peer_name, conversation_title):
+                    if name and any(token[:4] in trusted_text for token in _name_tokens(name)):
+                        grounded = True
+                        break
+            if not grounded:
+                self.rejection = (
+                    "Черновик сообщения отклонён: получатель не подтверждён запросом пользователя. "
+                    "Сначала найдите сотрудника (chat.users.search) или чат (chat.conversations.search) "
+                    "по имени из запроса пользователя."
+                )
+                raise AiToolValidationError(self.rejection)
         self.rejection = ""
         return tool_id, args
 
@@ -131,6 +200,33 @@ class AiDraftPolicy:
         contacts: list[dict[str, Any]] = []
         if tool_id == "office.mail.contacts.resolve":
             contacts = data.get("items") or []
+        elif tool_id in ("office.mail.search", "office.mail.get_message"):
+            items = data.get("items") if isinstance(data.get("items"), list) else [data]
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                message_id = _norm(item.get("id") or item.get("message_id"))
+                if not message_id:
+                    continue
+                self.observed_mail_message_ids.add(message_id)
+                sender = next(iter(_EMAIL.findall(str(item.get("sender") or ""))), "")
+                if sender:
+                    self.observed_mail_senders[message_id] = sender.lower()
+        elif tool_id == "chat.users.search":
+            for item in data.get("items") or []:
+                if isinstance(item, dict):
+                    try:
+                        peer_id = int(item.get("id") or item.get("user_id") or 0)
+                    except (TypeError, ValueError):
+                        peer_id = 0
+                    if peer_id > 0:
+                        self.observed_peer_user_ids.add(peer_id)
+        elif tool_id == "chat.conversations.search":
+            for item in data.get("items") or []:
+                if isinstance(item, dict):
+                    conv_id = _norm(item.get("id") or item.get("conversation_id"))
+                    if conv_id:
+                        self.observed_conversation_ids.add(conv_id)
         elif tool_id == "directory.people.search":
             for person in data.get("items") or []:
                 for email in person.get("work_emails") or []:
