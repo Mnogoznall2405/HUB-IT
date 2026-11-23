@@ -455,6 +455,91 @@ def test_expansion_reports_no_allowed_specs_instead_of_already_enabled():
     assert payload["data"]["accepted"] is False
 
 
+# ---------- P1-1 cycle 3: fail-closed unknowns ----------
+
+
+@pytest.mark.parametrize("tool_id", [
+    "office.mail.delete",           # known prefix, unknown tool -> NOT read
+    "itinvent.equipment.update",
+    "directory.people.modify",
+    "kb.articles.delete",
+    "me.files.delete",
+    "mfu.device.reset",
+    "warehouse.balances.adjust",
+    "office.tasks.delete",
+])
+def test_unknown_tool_under_known_prefix_is_not_read(tool_id):
+    effect = tools_context_module.tool_effect(tool_id)
+    assert effect == "unknown", f"{tool_id} -> {effect}"
+    assert effect != "read"
+
+
+@pytest.mark.parametrize("tool_id", [
+    "network.action.reboot",        # .action. family is fail-closed as action
+    "office.action.mail_delete",
+])
+def test_unknown_action_family_tool_is_never_read(tool_id):
+    assert tools_context_module.tool_effect(tool_id) != "read"
+
+
+def test_every_registered_tool_effect_is_explicit():
+    """Audit per id: every registered tool is classified by an explicit rule —
+    overrides, '.action.'/'_draft' suffixes, or the audited read allowlist."""
+    registry = importlib.import_module("backend.ai_chat.tools").ai_tool_registry
+    ids = sorted(getattr(registry, "_tools", {}).keys())
+    for tid in ids:
+        effect = tools_context_module.tool_effect(tid)
+        assert effect != "unknown", f"unclassified registered tool: {tid}"
+        if tid in tools_context_module._TOOL_READ_TOOLS:
+            assert effect == "read", tid
+
+
+# ---------- P2-1: tool-mode chat vs resolver tools ----------
+
+
+def _tool_mode(monkeypatch, decide):
+    monkeypatch.setenv("AI_JEV_ROUTING", "1")
+    monkeypatch.setenv("AI_JEV_ROUTING_MODE", "tool")
+    monkeypatch.setattr(service_module.jev_client, "is_configured", lambda: True)
+    monkeypatch.setattr(service_module.jev_client, "decide", decide)
+
+
+def test_tool_mode_empty_core_is_chat_without_resolvers(monkeypatch):
+    """JEV selects nothing -> CHAT; ALWAYS_KEEP resolver tools do NOT mask it."""
+    _tool_mode(monkeypatch, lambda **kw: _jev_decision({}))
+    specs = [
+        {"tool_id": "itinvent.equipment.search", "description": "поиск"},
+        {"tool_id": "itinvent.entity.resolve", "description": "resolver"},
+    ]
+    result = service_module._route_tools_jev(
+        trigger_text="расскажи анекдот", tool_specs=specs)
+    assert result == set()
+    assert getattr(result, "intent_mode", None) == "chat"
+
+
+def test_tool_mode_nonempty_selection_keeps_resolvers(monkeypatch):
+    _tool_mode(monkeypatch, lambda **kw: _jev_decision({"t00": 0.9}))
+    specs = [
+        {"tool_id": "itinvent.equipment.search", "description": "поиск"},
+        {"tool_id": "itinvent.entity.resolve", "description": "resolver"},
+    ]
+    result = service_module._route_tools_jev(
+        trigger_text="найди ноутбук Иванова", tool_specs=specs)
+    assert "itinvent.equipment.search" in result
+    assert "itinvent.entity.resolve" in result  # resolver kept for real work
+    assert getattr(result, "intent_mode", None) is None
+
+
+def test_tool_mode_jev_failure_is_not_chat(monkeypatch):
+    def _boom(**kw):
+        raise TimeoutError("down")
+    _tool_mode(monkeypatch, _boom)
+    specs = [{"tool_id": "itinvent.equipment.search", "description": "поиск"}]
+    result = service_module._route_tools_jev(
+        trigger_text="найди технику", tool_specs=specs)
+    assert getattr(result, "intent_mode", None) != "chat"
+
+
 def test_chat_mode_blocks_every_tool_call_even_without_specs():
     """§5: even if the model hallucinates a tool_id in CHAT, execution is
     refused at the registry — specs are not the only barrier."""

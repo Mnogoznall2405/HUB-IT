@@ -1655,7 +1655,7 @@ def _route_tools_jev(
     cached = _jev_routing_cache_get(cache_key)
     if cached is not None:
         logger.info("ai_jev_routing_cache hit mode=tool selected=%s", len(cached[0]))
-        return set(cached[0])
+        return JevRoutingResult(cached[0], intent_mode=cached[1])
     logger.info("ai_jev_routing_cache miss mode=tool")
     questions: dict[str, dict[str, Any]] = {}
     key_to_tool: dict[str, str] = {}
@@ -1685,12 +1685,20 @@ def _route_tools_jev(
         return _fallback_tool_ids()
     threshold = _jev_routing_threshold()
     enabled_ids = set(key_to_tool.values())
-    selected = {
+    # P2-1 (cycle 3): decide "needs real tools" on the CORE selection only —
+    # resolver tools are helpers appended later and must not mask an empty
+    # core as "tools needed". A real JEV decision with an empty core is a
+    # confident CHAT; a JEV FAILURE still returns the fallback with no mode.
+    core_selected = {
         tool_id
         for key, tool_id in key_to_tool.items()
         if float(getattr(decision.answers.get(key), "probability", 0.0) or 0.0) >= threshold
     }
-    selected |= _JEV_ALWAYS_KEEP_TOOLS & enabled_ids
+    if not core_selected:
+        _jev_routing_cache_set(cache_key, set(), JEV_INTENT_CHAT)
+        logger.info("ai_jev_routing(mode=tool) empty core -> chat latency_ms=%.0f", (time.perf_counter() - started_at) * 1000)
+        return JevRoutingResult(intent_mode=JEV_INTENT_CHAT)
+    selected = core_selected | (_JEV_ALWAYS_KEEP_TOOLS & enabled_ids)
     logger.info(
         "ai_jev_routing(mode=tool) selected=%s/%s latency_ms=%.0f model=%s",
         len(selected),
@@ -1699,7 +1707,7 @@ def _route_tools_jev(
         decision.model,
     )
     _jev_routing_cache_set(cache_key, selected)
-    return selected
+    return JevRoutingResult(selected)
 
 
 def _unattached_tool_group_hint(group: str, title: str) -> str:
@@ -6088,6 +6096,7 @@ class AiChatService:
         conversation_id: str,
         trigger_message_id: str,
         user_id: int,
+        run_id: str = "",
     ) -> dict[str, Any] | None:
         """A5 light context: the cheap reads JEV needs before the heavy
         context build — trigger text, attachment flag, dialog tail.
@@ -6139,7 +6148,7 @@ class AiChatService:
                 if text
             ]
             _log_ai_run_timing(
-                "routing_inputs", started_at, run_id=_normalize_text(trigger_message_id))
+                "routing_inputs", started_at, run_id=run_id or _normalize_text(trigger_message_id))
             return {
                 "trigger_text": _normalize_text(trigger.body),
                 "has_attachment": has_attachment,
@@ -6290,6 +6299,7 @@ class AiChatService:
                 conversation_id=run_payload["conversation_id"],
                 trigger_message_id=run_payload["trigger_message_id"],
                 user_id=int(user_payload.get("id") or 0),
+                run_id=run_id,
             )
             if routing_inputs is not None:
                 routing = self._route_for_run(
@@ -7414,6 +7424,24 @@ class AiChatService:
             used_tool_ids,
             len(tool_specs),
         )
+        # A5 unified run profile record (P2-2): one line per run correlating
+        # mode, ceilings, offered-vs-used tools and denied model calls.
+        logger.info(
+            "ai_run_profile run_id=%s intent=%s routed_groups=%s expanded_groups=%s "
+            "tool_specs=%s allowed_tools=%s used_tools=%s mode_denied=%s",
+            run_id,
+            intent_mode or "-",
+            sorted(routed_groups),
+            sorted(expanded_groups),
+            len(tool_specs),
+            (
+                "all"
+                if tool_context.run_allowed_tools is None
+                else len(tool_context.run_allowed_tools)
+            ),
+            used_tool_ids,
+            int(getattr(tool_context, "mode_denied_calls", 0) or 0),
+        )
         memory_command = re.match(r"^\s*(?:запомни|забудь|удали\s+из\s+памяти)", policy.trigger_text, re.I)
         memory_claim = re.search(r"запомнил|(?:памят|предпочтени).{0,60}(?:сохран|обновлен|удален|записан)", answer_markdown, re.I)
         if (not tool_traces and (memory_command or memory_claim)
@@ -7422,9 +7450,11 @@ class AiChatService:
                 else "Личная память выключена." if extracted_context.get("memory_status") == "disabled"
                 else "Память не изменена: сейчас не удалось безопасно сохранить этот запрос.")
         final_usage = _merge_usage(extracted_context.get("memory_usage") or {}, final_usage)
-        # A5 (P1-3): a CHAT run never emits artifacts, deliveries or new
-        # action cards — even if the model put them into the response JSON.
-        if intent_mode == JEV_INTENT_CHAT:
+        # A5 (P1-3, cycle 3): unified post-processing effect control — CHAT
+        # and READ never emit artifacts, deliveries or new action cards even
+        # if the model put them into the response JSON. These fields bypass
+        # execute_bounded, so they are stripped here server-side.
+        if intent_mode in (JEV_INTENT_CHAT, JEV_INTENT_READ):
             artifacts, kb_attachment_send = [], None
         extracted_context["mode_denied_calls"] = int(getattr(tool_context, "mode_denied_calls", 0) or 0)
         return answer_markdown, artifacts, kb_attachment_send, final_usage, extracted_context, tool_traces, generated_file_specs, sorted(routed_groups)

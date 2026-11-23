@@ -144,27 +144,47 @@ _TOOL_EFFECT_OVERRIDES: dict[str, str] = {
     "me.files.attach": TOOL_EFFECT_DELIVERY,
 }
 
-# Audited read-only families. A tool_id outside these prefixes AND outside
-# the overrides is classified UNKNOWN — never silently read-only.
-_TOOL_READ_PREFIXES: tuple[str, ...] = (
-    "ad.mailbox.", "ad.mailboxes.", "ad.user.", "ad.users.",
-    "chat.users.", "chat.conversations.",
-    "directory.",
-    "itinvent.acts.", "itinvent.analytics.", "itinvent.audit.",
-    "itinvent.computers.", "itinvent.consumables.", "itinvent.database.",
-    "itinvent.directory.", "itinvent.employee.", "itinvent.entity.",
-    "itinvent.equipment.", "itinvent.user.",
-    "kb.articles.", "kb.attachments.get_text", "kb.categories.",
-    "me.account.", "me.computer.", "me.equipment", "me.files.search",
-    "me.it_requests", "me.mailbox.",
-    "mfu.",
-    "network.branch.", "network.dns.", "network.host.info", "network.host.ping",
-    "network.ports.", "network.socket.", "network.ssl.",
-    "office.announcements.", "office.mail.", "office.mailbox.",
-    "office.tasks.", "office.workday.",
-    "voice.",
-    "warehouse.",
-)
+# P1-1 (cycle 3): exact audited allowlist — every registered read tool by id.
+# A prefix match would silently promote new tools like `office.mail.delete`
+# or `directory.people.modify` to read; only an id present HERE is read.
+_TOOL_READ_TOOLS: frozenset[str] = frozenset({
+    "ad.mailbox.password_status", "ad.mailboxes.expiring_soon",
+    "ad.user.groups", "ad.user.lockout_status", "ad.user.logon_history",
+    "ad.user.password_status", "ad.users.expiring_soon",
+    "chat.users.search", "chat.conversations.search",
+    "directory.department.get", "directory.people.search",
+    "itinvent.acts.pending", "itinvent.analytics.summary",
+    "itinvent.audit.dismissed_with_equipment", "itinvent.computers.changes",
+    "itinvent.computers.get", "itinvent.computers.search",
+    "itinvent.computers.software_search", "itinvent.consumables.search",
+    "itinvent.database.current", "itinvent.directory.branches",
+    "itinvent.directory.departments", "itinvent.directory.equipment_types",
+    "itinvent.directory.locations", "itinvent.directory.statuses",
+    "itinvent.directory.vendors", "itinvent.employee.list_equipment",
+    "itinvent.employee.search", "itinvent.entity.resolve",
+    "itinvent.equipment.acts", "itinvent.equipment.get_card",
+    "itinvent.equipment.history", "itinvent.equipment.list_by_branch",
+    "itinvent.equipment.models_search", "itinvent.equipment.search",
+    "itinvent.equipment.search_multi_db", "itinvent.equipment.search_universal",
+    "itinvent.user.by_name", "itinvent.user.full_context",
+    "kb.articles.get", "kb.articles.search", "kb.attachments.get_text",
+    "kb.categories.list",
+    "me.account.status", "me.computer.health", "me.equipment",
+    "me.files.search", "me.it_requests", "me.mailbox.quota",
+    "mfu.device.status", "mfu.devices.list", "mfu.devices.low_toner",
+    "mfu.pages.monthly",
+    "network.branch.overview", "network.dns.lookup", "network.host.info",
+    "network.host.ping", "network.ports.search", "network.socket.search",
+    "network.ssl.check",
+    "office.announcements.get", "office.announcements.list",
+    "office.mail.contacts.resolve", "office.mail.get_message",
+    "office.mail.search", "office.mailbox.quota_report",
+    "office.tasks.get", "office.tasks.projects", "office.tasks.search",
+    "office.workday.summary",
+    "voice.meeting.get", "voice.meetings.search",
+    "warehouse.balances.search", "warehouse.it_requests.get",
+    "warehouse.it_requests.search",
+})
 
 
 def tool_effect(tool_id: Any) -> str:
@@ -183,8 +203,10 @@ def tool_effect(tool_id: Any) -> str:
         return override
     if ".action." in tid or tid.endswith("_draft"):
         return TOOL_EFFECT_ACTION
-    if tid.startswith(_TOOL_READ_PREFIXES):
+    if tid in _TOOL_READ_TOOLS:
         return TOOL_EFFECT_READ
+    # Fail-closed: an unlisted id — even under a familiar prefix like
+    # ``office.mail.delete`` — is UNKNOWN, never silently read.
     return TOOL_EFFECT_UNKNOWN
 
 

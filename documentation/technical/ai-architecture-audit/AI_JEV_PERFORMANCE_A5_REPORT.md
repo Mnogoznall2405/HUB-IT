@@ -119,3 +119,26 @@ A1: `execute_bounded` capacity/timeout/admission не тронуты — про�
 
 - E2E-прогон через реальный оркестратор для всех 9 сценариев ревью покрыт unit-уровнем (ceiling/режимы/expansion), кроме части сценариев, требующих живой JEV — документировано как блокер.
 - READ-режим по-прежнему допускает `ai.files.*` только через режим ACT — «выгрузи в Excel» следует за `m_mode_act` или sticky-группами.
+
+---
+
+## Цикл 3 — fail-closed классификация, единый контроль эффектов, телеметрия
+
+### Исправления (все воспроизведены тестами)
+
+| # | Дефект | Исправление |
+|---|---|---|
+| P1-1 | `_TOOL_READ_PREFIXES` — широкие префиксы: `office.mail.delete` мог стать `read` | Точный allowlist `_TOOL_READ_TOOLS` (аудит всех 100 id реестра); неизвестный id под любым префиксом → `unknown` (fail-closed). Тест на каждый id + негативные prefix-кейсы |
+| P1-2 | READ допускал `artifacts`/`kb_attachment_send` из ответа модели (обход `execute_bounded`) | Единый post-processing контроль: `artifacts`/`kb_attachment_send` обнуляются для CHAT **и** READ в `_execute_run`; ACT сохраняет генерацию файлов |
+| P2-1 | tool-mode: `_JEV_ALWAYS_KEEP_TOOLS` маскировал пустой выбор | CHAT определяется по core-выбору до добавления resolver-tools; JEV-фейл → fallback без chat; кэш хранит режим |
+| P2-2 | `routing_inputs` писал `trigger_message_id` под именем `run_id` | Передаётся настоящий `run_id`; единая строка `ai_run_profile` (intent, routed, expanded, specs, allowed, used, mode_denied) — без двойного суммирования (уровень run, не сумма вложенных этапов) |
+
+### Тесты: 322/322 PASS
+
+- `test_ai_jev_intent_modes.py`: **72/72** (+14: fail-closed prefix-кейсы, аудит per-id, tool-mode core/resolver/timeout).
+- Полный focused suite (routing, permissions, A3 injection, A4 serialization, A1 stability, mail lifecycle): **322/322**.
+
+### Проверки, которые не удалось выполнить (честно)
+
+- Реальные p50/p95 JEV/LLM и e2e через живой оркестратор: нет доступа к прод-моделям — не выдумываем. Готовность измерений обеспечена `ai_run_profile` + laps (`routing_inputs`, `tool_routing`, `context`, `tools`, LLM-стадии) — воспроизводимый staging-прогон требует только синтетические данные и включённый флаг.
+- Доказано тестами: классификация fail-closed, mode-only при ≤1 группе, отказ исполнения action/artifact/delivery в READ, подавление keyword/expansion в CHAT, tool-mode chat. Доказано статически: стрип `artifacts`/`kb_attachment_send` в CHAT+READ (интеграционный прогон — residual).
