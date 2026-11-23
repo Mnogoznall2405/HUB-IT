@@ -7,9 +7,18 @@
     "runId": "1795429349298-180",
     "passed": 5,
     "total": 5,
-    "mandatoryChecks": 49,
-    "checksByScenario": { "feed": 8, "tasks": 14, "chat": 9, "myFiles": 12, "adminUsers": 6 },
-    "observations": 1
+    "mandatoryChecks": 48,
+    "checksByScenario": {
+      "feed": 8,
+      "tasks": 14,
+      "chat": 9,
+      "myFiles": 11,
+      "adminUsers": 6
+    },
+    "observations": 1,
+    "totalChecks": 49,
+    "observationChecks": 1,
+    "correction": "Cycle19 sign-off: 48 mandatory + 1 observation (MyFiles 11+1); earlier mandatoryChecks=49 counted the non-mandatory previewArtifactDecodes check."
   },
   "negativeControls": {
     "cases": 10,
@@ -29,9 +38,30 @@
     ]
   },
   "strictRegressions": {
-    "FE-0232": { "checks": 11, "pass": true, "seedLinks": "0->1", "injected": "items:[] and links 1->0", "control": "links 1->1" },
-    "FE-0239": { "checks": 8, "pass": true, "put": "D2 [14]", "after": "D1 [14], D2 [14]" },
-    "FE-0259": { "checks": 11, "pass": true, "draftKinds": ["daily-summary", "weekly-plan"], "planPersisted": true, "beforeUnload": false, "draftsLost": true }
+    "FE-0232": {
+      "checks": 11,
+      "pass": true,
+      "seedLinks": "0->1",
+      "injected": "items:[] and links 1->0",
+      "control": "links 1->1"
+    },
+    "FE-0239": {
+      "checks": 8,
+      "pass": true,
+      "put": "D2 [14]",
+      "after": "D1 [14], D2 [14]"
+    },
+    "FE-0259": {
+      "checks": 11,
+      "pass": true,
+      "draftKinds": [
+        "daily-summary",
+        "weekly-plan"
+      ],
+      "planPersisted": true,
+      "beforeUnload": false,
+      "draftsLost": true
+    }
   },
   "FE-0230": {
     "status": "Suspected",
@@ -55,16 +85,32 @@
   },
   "registry": {
     "total": 324,
-    "statuses": { "Confirmed": 269, "Suspected": 12, "Fixed-externally": 2, "Rejected": 41 },
-    "severity": { "High": 12, "Medium": 124, "Low": 173, "Info": 15 },
+    "statuses": {
+      "Confirmed": 269,
+      "Suspected": 12,
+      "Fixed-externally": 2,
+      "Rejected": 41
+    },
+    "severity": {
+      "High": 12,
+      "Medium": 124,
+      "Low": 173,
+      "Info": 15
+    },
     "highBreakdown": {
       "historical": 12,
       "current": 11,
       "runtimeProven": 10,
       "unresolvedRuntime": 9,
-      "staticOnly": ["FE-0215"],
-      "runtimeNotReproduced": ["FE-0230"],
-      "suspectedHigh": ["FE-0230"]
+      "staticOnly": [
+        "FE-0215"
+      ],
+      "runtimeNotReproduced": [
+        "FE-0230"
+      ],
+      "suspectedHigh": [
+        "FE-0230"
+      ]
     }
   },
   "coverage": {

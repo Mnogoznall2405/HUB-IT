@@ -345,8 +345,8 @@ MSBuild/Roslyn-узлы простаивают, серверу не мешают
 ## Цикл 18 — достоверность тестов и проверка High (2026-11-23)
 
 - Чистый SHA 338912d9, отдельная SQLite .state-cycle18; five-e2e переписан:
-  сценарий PASS только при выполнении всех явных assertions (49 обязательных
-  проверок), а не при отсутствии исключения.
+  сценарий PASS только при выполнении всех явных assertions (48 mandatory
+  + 1 observation), а не при отсутствии исключения.
 - Negative controls 10/10 падают как должны: API error, missing save, wrong
   record, duplicates, hidden record, login timeout; положительный feed PASS.
 - FE-0232 strict: 11/11; links 0 -> 1, injected bulk 500 -> Save items:[] -> 0;
@@ -358,8 +358,9 @@ MSBuild/Roslyn-узлы простаивают, серверу не мешают
   severity High (potential impact, reachability unproven).
 - FE-0215: EWS-анализ; полный E2E невозможен без EWS test server; возможен
   только limited service-level контрактный тест.
-- Новый дефект FE-0326 (Medium): PNG preview artifact preview.png повреждён;
-  публичная ссылка на изображение показывает битое превью; оригинал скачивается.
+- Новый дефект FE-0326 (Medium; **опровергнут в цикле 19**): PNG preview artifact
+  preview.png повреждён; публичная ссылка на изображение показывает битое превью;
+  оригинал скачивается. Историческая запись цикла 18, см. цикл 19.
 - Реестр: 324 записи; 269 Confirmed / 12 Suspected / 2 Fixed / 41 Rejected;
   High 12, Medium 124, Low 173, Info 15. Валидатор 0 ошибок.
 
@@ -369,10 +370,11 @@ MSBuild/Roslyn-узлы простаивают, серверу не мешают
   preview worker; production не затрагивался.
 - FE-0326 ОТКЛОНЁН как false positive: повреждённым был тестовый 180-байтный
   PNG (IDAT CRC mismatch), а не артефакт приложения. Валидные small/medium/large
-  PNG дают валидные private/public preview; MyFiles E2E 12/12, 0 observations.
+  PNG дают валидные private/public preview; MyFiles E2E 11 mandatory
+  + 1 observation, 0 failed.
 - Negative controls усилены: 10/10 EXPECTED_FAILURE с конкретными checks;
   browser launch error = INFRA_FAILURE и не засчитан.
-- Positive five E2E 5/5, 49 checks; FE-0232 11/11; FE-0239 8/8; FE-0259 11/11;
+- Positive five E2E 5/5, 48 mandatory + 1 observation; FE-0232 11/11; FE-0239 8/8; FE-0259 11/11;
   refresh matrix A-D повторена на 9879be04.
 - FE-0194: mocked overview с target без name воспроизвёл split TypeError и
   error boundary; реальный триггер не доказан → Suspected.

@@ -3,9 +3,11 @@
 > **Cycle 19 correction (2026-11-23):** FE-0326 is **rejected** as a false positive.
 > The cycle-18 `preview.png` was the invalid test fixture itself (180-byte PNG,
 > IDAT CRC mismatch), not an app artifact. Valid small/medium/large PNGs preview
-> correctly. The test fixture is fixed. See `CYCLE_19_REVIEW.md` and
-> `AUDIT_FINAL_REVIEW.md`; the text below is preserved as the historical cycle-18
-> record.
+> correctly. The test fixture is fixed. Also, the cycle-18 check count is
+> **48 mandatory + 1 observation** (MyFiles 11+1), not 49 mandatory; the
+> observation was counted as mandatory in this report. See `CYCLE_19_REVIEW.md`
+> and `AUDIT_FINAL_REVIEW.md`; the text below is preserved as the historical
+> cycle-18 record.
 
 - Дата: 2026-11-23
 - База аудита: PR #9, `209611a3` (323 записи).
@@ -24,7 +26,7 @@
 | MyFiles | 12 | upload завершён; файл в API и после reload; поиск находит; preview worker ready; диалог и изображение; canvas pixel 64x64 (200,30,40); артефакт-наблюдение; уникальность |
 | Admin Users | 6 | пользователь создан; id есть; после reload/search найден; API ровно один; дублей нет |
 
-Positive control: **5/5 PASS**, **49 обязательных проверок**, 1 non-mandatory observation (см. FE-0326). Результат: `shots/results-1795429349298-180.json`.
+Positive control: **5/5 PASS**, **48 mandatory + 1 observation check** (MyFiles 11+1), 1 non-mandatory observation (см. FE-0326). Результат: `shots/results-1795429349298-180.json`.
 
 Ожидание событий вместо `sleep`: закрытие диалога (`waitFor detached`), ответы API, `pollApi` до появления записи, `waitForFunction` для сообщений чата и загрузки изображения.
 

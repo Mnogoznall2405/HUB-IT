@@ -7,7 +7,7 @@
 
 ## 1. Главный результат контроля качества
 
-**FE-0326 отклонён как false positive.** Цикл 18 сообщил о повреждённом `preview.png`; цикл 19 выяснил, что повреждённым был **тестовый PNG** (180 байт: IHDR валиден, IDAT CRC mismatch, 6 лишних байт, zlib «incorrect data check»), а не артефакт приложения. Приложение сохранило и отдало невалидный исходник; оптимизация изображения его пропустила. Валидные PNG (small 32x32, medium 512x512, large 1600x1200) дали валидные private/public preview (WebP или исходный PNG), Pillow и браузер декодировали, natural sizes 32/512/1600, ошибок нет, оригиналы скачиваются с совпадающим SHA. Фикстура исправлена на валидный 186-байтный PNG; MyFiles E2E — 12/12, 0 observations.
+**FE-0326 отклонён как false positive.** Цикл 18 сообщил о повреждённом `preview.png`; цикл 19 выяснил, что повреждённым был **тестовый PNG** (180 байт: IHDR валиден, IDAT CRC mismatch, 6 лишних байт, zlib «incorrect data check»), а не артефакт приложения. Приложение сохранило и отдало невалидный исходник; оптимизация изображения его пропустила. Валидные PNG (small 32x32, medium 512x512, large 1600x1200) дали валидные private/public preview (WebP или исходный PNG), Pillow и браузер декодировали, natural sizes 32/512/1600, ошибок нет, публичный download отдаёт сохранённое представление (WebP для оптимизированных small/large, исходный PNG для medium); приватный legacy GET — 410 by design, актуальный контракт — grant. Фикстура исправлена на валидный 186-байтный PNG; MyFiles E2E — 11 mandatory + 1 observation, 0 failed.
 
 Это не «ошибка приложения»; это ошибка аудиторского теста, исправленная в `audit/frontend/`.
 
@@ -15,7 +15,7 @@
 
 | Проверка | Результат |
 |---|---|
-| Positive five E2E на `9879be04` | **5/5 PASS**, **49 обязательных checks**, 0 observations |
+| Positive five E2E на `9879be04` | **5/5 PASS**, **48 обязательных checks + 1 observation check** (MyFiles 11 mandatory + 1 observation), 0 failed |
 | Negative controls | **10/10 EXPECTED_FAILURE** с конкретными failed checks; injection applied; start подтверждён |
 | Timeout control | `login_timeout` — EXPECTED_FAILURE по `waitForURL` timeout |
 | Meta browser launch error | **INFRA_FAILURE**, не засчитан как negative; `countedAsExpected=false` |
@@ -51,6 +51,8 @@ Negative controls больше не принимают ненулевой exit c
 **Актуальные High (11):** FE-0022, FE-0023, FE-0059, FE-0083, FE-0197, FE-0198, FE-0215, FE-0230, FE-0232, FE-0239, FE-0259.
 **Fixed High:** FE-0078.
 **Suspected High:** FE-0230.
+
+**Backlog coverage:** 19 REM-групп упоминают **23 FE-ID** (10 Confirmed + 12 Suspected + FE-0326 test-infra). Остальные **258 Confirmed** — deferred; **41 Rejected** и **2 Fixed-externally** не входят в приоритетный backlog. Полный индекс всех 324 ID — `REMEDIATION_COVERAGE.md`; ни одна запись не потеряна.
 
 ### Static vs browser/API
 
@@ -111,7 +113,7 @@ FE-0230 оставлен **Suspected**: 9 хуков до early return, 0 пос
 - `highBreakdown`: historical 12, active 11, fixed 1, runtime-proven 10, unresolved 9, static-only FE-0215, runtime-not-reproduced FE-0230, suspectedHigh FE-0230.
 - `ISSUES.md` перегенерирован; `COVERAGE_MATRIX.md` синхронизирован; `AUDIT_PROGRESS.md`/`NEXT_ACTIONS.md` обновлены.
 - Валидатор: **0 ошибок**.
-- Строгие тесты повторно прогнаны на `9879be04`: five E2E 5/5 (49 checks), FE-0232 11/11, FE-0239 8/8, FE-0259 11/11, refresh matrix A-D.
+- Строгие тесты повторно прогнаны на `9879be04`: five E2E 5/5 (48 mandatory + 1 observation), FE-0232 11/11, FE-0239 8/8, FE-0259 11/11, refresh matrix A-D.
 
 ## 8. Ограничения
 

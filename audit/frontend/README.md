@@ -34,6 +34,8 @@
 | `CYCLE_19_REVIEW.md` | Финальная верификация, FE-0326 false positive, hardened negative controls |
 | `AUDIT_FINAL_REVIEW.md` | Итоговый статус 324 записей, достоверность серьёзных дефектов, покрытие |
 | `REMEDIATION_BACKLOG.md` | План исправлений P0-P3, зависимости и регрессионные тесты |
+| `REMEDIATION_COVERAGE.md` | Индекс всех 324 ID: backlog / deferred / suspected / rejected / fixed |
+| `AUDIT_SIGNOFF.md` | Окончательный sign-off: SHA, показатели, ограничения, готовность к PR |
 | `evidence/` | Скриншоты, сводки субагентов, verdicts циклов 12–13 |
 
 ## Правила

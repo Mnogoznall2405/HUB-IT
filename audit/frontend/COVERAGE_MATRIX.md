@@ -101,7 +101,7 @@
 
 | Проверка | Результат |
 |---|---|
-| Five E2E assertions | 5/5 PASS; **49 обязательных** проверок (feed 8, tasks 14, chat 9, myFiles 12, admin 6) |
+| Five E2E assertions | 5/5 PASS; **48 mandatory + 1 observation** (feed 8, tasks 14, chat 9, myFiles 11+1, admin 6) |
 | Negative controls | **10/10 FAIL как ожидалось**: API error, missing save, wrong record, duplicates (tasks/chat/myFiles/admin), hidden records, login timeout; положительный feed — PASS |
 | FE-0232 strict test | 11/11 checks: links 0 -> 1, injected bulk 500 -> Save `items:[]` -> 0; control 1 -> 1 |
 | FE-0239 strict test | 8/8 checks: PUT D2 `[14]` after stale D1 response; D2 16 -> 14, D1 unchanged |
@@ -116,9 +116,9 @@
 | Проверка | Результат |
 |---|---|
 | Valid PNG matrix (FE-0326) | small 32x32, medium 512x512, large 1600x1200: private/public preview 200, WebP/PNG valid, Pillow/browser decode, no visual error, downloads match |
-| FE-0326 root cause | invalid 180-byte test PNG (IDAT CRC mismatch, zlib error), not the app; fixture fixed; MyFiles 12/12, 0 observations |
+| FE-0326 root cause | invalid 180-byte test PNG (IDAT CRC mismatch, zlib error), not the app; fixture fixed; MyFiles 11/11 mandatory + 1 observation, 0 failed |
 | Hardened negative controls | 10/10 EXPECTED_FAILURE with specific checks; positive PASS; browser launch error = INFRA_FAILURE, not counted |
-| Strict rerun 9879be04 | five E2E 5/5 (49 checks); FE-0232 11/11; FE-0239 8/8; FE-0259 11/11 |
+| Strict rerun 9879be04 | five E2E 5/5 (48 mandatory + 1 observation); FE-0232 11/11; FE-0239 8/8; FE-0259 11/11 |
 | Refresh matrix | A/B/C/D confirmed on 9879be04 |
 | FE-0194 | mocked overview with nameless target reproduces split TypeError/error boundary; real trigger unproven; Suspected |
 | Registry | 324: 268 Confirmed / 12 Suspected / 2 Fixed / 42 Rejected; validator 0 errors |

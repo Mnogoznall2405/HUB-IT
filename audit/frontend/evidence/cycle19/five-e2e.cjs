@@ -210,7 +210,7 @@ async function scenario(name, fn) {
     record.ms = Date.now() - started;
     await browser.close();
     results.push(record);
-    console.log(JSON.stringify({ name: record.name, pass: record.pass, checks: checks.length, failed: failed.length, failedChecks: failed.map((c) => c.name), controls: CONTROL, observations: record.observations.length, error: record.error, details: record.details }));
+    console.log(JSON.stringify({ name: record.name, pass: record.pass, checks: checks.length, mandatory: checks.filter((c) => c.mandatory).length, failed: failed.length, failedChecks: failed.map((c) => c.name), controls: CONTROL, observations: record.observations.length, error: record.error, details: record.details }));
   }
   return record;
 }
@@ -550,11 +550,12 @@ async function adminUsers(ctx, expect) {
     ['adminUsers', adminUsers],
   ].filter(([name]) => !only || only.includes(name));
   for (const [name, fn] of scenarios) await scenario(name, fn);
-  const summary = results.map((r) => ({ name: r.name, pass: r.pass, ms: r.ms, checks: r.checks.length, failed: r.failedChecks.length, observations: (r.observations || []).length, error: r.error }));
+  const summary = results.map((r) => ({ name: r.name, pass: r.pass, ms: r.ms, checks: r.checks.length, mandatory: r.checks.filter((c) => c.mandatory).length, failed: r.failedChecks.length, observations: (r.observations || []).length, error: r.error }));
   fs.writeFileSync(path.join(SHOT_DIR, `results-${runId}.json`), JSON.stringify({ base: BASE, runId, controls: CONTROL, results }, null, 2));
   console.log('SUMMARY ' + JSON.stringify(summary));
   process.exit(summary.some((s) => !s.pass) ? 1 : 0);
 })();
+
 
 
 

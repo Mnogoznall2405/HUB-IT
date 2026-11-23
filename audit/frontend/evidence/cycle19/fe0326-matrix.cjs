@@ -121,6 +121,10 @@ async function publicShare(page, itemId) {
       available: item.preview_available,
       kind: item.preview_kind,
       size: item.original_size_bytes,
+      storageMode: item.storage_mode,
+      downloadName: item.download_file_name,
+      downloadMime: item.download_mime_type,
+      storedSize: item.stored_size_bytes,
     };
     record.privatePreview = await privatePreview(page, item.id);
     const dialog = await openPrivateDialog(page, item.id);
@@ -146,14 +150,39 @@ async function publicShare(page, itemId) {
         page: publicImg,
         visualError: Boolean(publicImg && publicImg.complete && publicImg.naturalWidth === 0),
         preview: { status: publicPreviewRes.status(), type: publicPreviewRes.headers()['content-type'] || '', bytes: publicPreviewBody.length, sha256: sha(publicPreviewBody) },
-        download: { status: publicDownloadRes.status(), bytes: publicDownloadBody.length, sha256: sha(publicDownloadBody), matchesOriginal: sha(publicDownloadBody) === record.originalSha256 },
+        download: {
+          status: publicDownloadRes.status(),
+          type: publicDownloadRes.headers()['content-type'] || '',
+          bytes: publicDownloadBody.length,
+          sha256: sha(publicDownloadBody),
+          matchesStored: sha(publicDownloadBody) === sha(publicPreviewBody),
+          matchesOriginal: sha(publicDownloadBody) === record.originalSha256,
+        },
       };
       await pub.screenshot({ path: path.join(OUT, `fe0326-${file.key}-public.png`) }).catch(() => {});
       await publicCtx.close();
     }
-    const privateDownload = await page.request.get(`${BASE}/api/v1/my-files/${encodeURIComponent(item.id)}/download`);
-    const privateDownloadBody = await privateDownload.body();
-    record.privateDownload = { status: privateDownload.status(), bytes: privateDownloadBody.length, sha256: sha(privateDownloadBody), matchesOriginal: sha(privateDownloadBody) === record.originalSha256 };
+    // Current private download contract: one-time grant, not the disabled legacy path.
+    const grantRes = await page.request.post(`${BASE}/api/v1/my-files/${encodeURIComponent(item.id)}/download-grant`, {
+      headers: { Origin: BASE },
+    });
+    const grant = await grantRes.json().catch(() => ({}));
+    let privateDownload = { grantStatus: grantRes.status(), status: 0, type: '', bytes: 0, sha256: '', matchesStored: false, matchesOriginal: false };
+    if (grantRes.status() === 200 && grant.download_path) {
+      const downloadUrl = `${BASE}/api/v1${grant.download_path}`;
+      const download = await page.request.get(downloadUrl);
+      const downloadBody = await download.body();
+      privateDownload = {
+        grantStatus: grantRes.status(),
+        status: download.status(),
+        type: download.headers()['content-type'] || '',
+        bytes: downloadBody.length,
+        sha256: sha(downloadBody),
+        matchesStored: sha(downloadBody) === record.privatePreview.sha256,
+        matchesOriginal: sha(downloadBody) === record.originalSha256,
+      };
+    }
+    record.privateDownload = privateDownload;
     if (share.json?.token) {
       await page.evaluate(async (id) => { await fetch(`/api/v1/my-files/${id}/share`, { method: 'DELETE', credentials: 'include' }); }, item.id);
     }

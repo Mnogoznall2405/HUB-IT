@@ -9,17 +9,19 @@
 
 Цикл 18 сообщил о повреждённом `preview.png`. Цикл 19 проверил три валидных PNG:
 
-| Файл | Размер | Исходный SHA-256 | Preview | Браузер | Оригинал |
+| Файл | Размер | Исходный SHA-256 | Preview | Браузер | Download (stored) |
 |---|---|---|---|---|---|
-| small 32x32 solid | 117 B | `aac8...` | image/webp 80 B, Pillow OK | 32x32, no error | download SHA matches |
-| medium 512x512 gradient | 4 485 B | `f440...` | image/png 4 485 B, SHA = original, Pillow OK | 512x512, no error | SHA matches |
-| large 1600x1200 noise | 5 769 402 B | `9561...` | image/webp 1 437 182 B, Pillow OK | 1600x1200, no error | SHA matches |
+| small 32x32 solid | 117 B | `aac8...` | image/webp 80 B, Pillow OK | 32x32, no error | public WebP 80 B, matches preview |
+| medium 512x512 gradient | 4 485 B | `f440...` | image/png 4 485 B, SHA = original, Pillow OK | 512x512, no error | public PNG 4 485 B, SHA = original |
+| large 1600x1200 noise | 5 769 402 B | `9561...` | image/webp 1 437 182 B, Pillow OK | 1600x1200, no error | public WebP 1 437 182 B, matches preview |
 
 Private и public preview — 200, decode OK, visual errors нет. **Проблема не зависит от размера/формата/оптимизации.**
 
+Download contract: приватный `GET /my-files/{id}/download` — **410 by design** (legacy path disabled); актуальный приватный контракт — `POST /download-grant` + `GET /download-grant/{token}`. Public download отдаёт **сохранённое представление**: WebP для `optimized_media` (small/large), исходный PNG для `stored` (medium). Поэтому `matchesOriginal=false` для small/large — ожидаемо; сравнивать с оригиналом нужно только при `storage_mode=stored`. Тест цикла 19 использовал legacy endpoint и original-SHA — методологическая ошибка, не дефект приложения. Подробности: `evidence/cycle19/fe0326-download-contract.md`.
+
 Корень: тестовая фикстура cycle18 — 180-байтный PNG с валидным IHDR, но **IDAT CRC mismatch**, 6 лишних байт и zlib `incorrect data check`. Приложение сохранило невалидный исходник, оптимизация его пропустила, preview worker отдал тот же невалидный `preview.png`. Повреждение — в тестовой фикстуре, не в приложении.
 
-Действия: фикстура заменена валидным 186-байтным PNG; MyFiles E2E — 12/12, 0 observations. FE-0326 переведён в **Rejected** (false positive), исторические доказательства сохранены в `reverificationHistory`/`titleHistory`.
+Действия: фикстура заменена валидным 186-байтным PNG; MyFiles E2E — 11 mandatory + 1 observation, 0 failed. FE-0326 переведён в **Rejected** (false positive), исторические доказательства сохранены в `reverificationHistory`/`titleHistory`.
 
 ## 2. Negative controls — усилены
 
@@ -35,7 +37,7 @@ Private и public preview — 200, decode OK, visual errors нет. **Пробл
 
 ## 3. Повторный прогон строгих тестов на `9879be04`
 
-- five E2E: **5/5**, **49 checks**, 0 observations.
+- five E2E: **5/5**, **48 mandatory + 1 observation**, 0 failed.
 - FE-0232: 11/11, links 1→0 при injected bulk; control 1→1.
 - FE-0239: 8/8, PUT D2 `[14]`, D2 16→14.
 - FE-0259: 11/11, plan persisted; daily и weekly drafts lost on F5 without beforeunload.

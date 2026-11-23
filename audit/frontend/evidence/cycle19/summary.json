@@ -1,0 +1,76 @@
+{
+  "generatedAt": "2026-11-23",
+  "auditBase": "5a173ff6",
+  "auditHead": "1d6e624e",
+  "testedSha": "9879be04",
+  "fiveE2E": {
+    "runId": "1795431622192-63",
+    "passed": 5,
+    "total": 5,
+    "mandatoryChecks": 48,
+    "totalChecks": 49,
+    "observations": 1,
+    "checksByScenario": {
+      "feed": 8,
+      "tasks": 14,
+      "chat": 9,
+      "myFiles": 11,
+      "adminUsers": 6
+    },
+    "observationChecks": 1,
+    "note": "MyFiles has 11 mandatory checks + 1 non-mandatory previewArtifactDecodes observation; the earlier '49 mandatory' counted the observation."
+  },
+  "negativeControls": {
+    "validatedNegatives": 10,
+    "expectedFailure": 10,
+    "unexpected": 0,
+    "positivePass": true,
+    "infraMetaClassified": true,
+    "infraMetaCountedAsExpected": false
+  },
+  "strict": {
+    "FE-0232": "11/11",
+    "FE-0239": "8/8",
+    "FE-0259": "11/11",
+    "refreshMatrix": "A-D confirmed on 9879be04"
+  },
+  "FE-0326": {
+    "status": "Rejected",
+    "reason": "invalid 180-byte test fixture (IDAT CRC mismatch), not app corruption; valid PNG previews work",
+    "downloadContract": {
+      "privateLegacy": "GET /api/v1/my-files/{id}/download -> 410 by design",
+      "privateCurrent": "POST /download-grant -> GET /download-grant/{token}",
+      "public": "GET /api/v1/my-files/public/{token}/download",
+      "representation": "stored payload; WebP for optimized_media, original when stored",
+      "small": "public WebP 80 B, matches preview",
+      "medium": "public PNG 4,485 B, matches original",
+      "large": "public WebP 1,437,182 B, matches preview"
+    }
+  },
+  "registry": {
+    "total": 324,
+    "statuses": { "Confirmed": 268, "Suspected": 12, "Fixed-externally": 2, "Rejected": 42 },
+    "severity": { "High": 12, "Medium": 124, "Low": 173, "Info": 15 },
+    "high": {
+      "historical": 12,
+      "active": 11,
+      "fixed": ["FE-0078"],
+      "runtimeProven": 10,
+      "unresolvedRuntime": 9,
+      "staticOnly": ["FE-0215"],
+      "runtimeNotReproduced": ["FE-0230"],
+      "suspectedHigh": ["FE-0230"]
+    }
+  },
+  "coverage": {
+    "routeEntries": 51,
+    "userVisible": 46,
+    "E2E": 9,
+    "Functional": 27,
+    "Smoke": 2,
+    "Blocked": 8,
+    "Redirect": 5,
+    "functionalPlusE2E": 36,
+    "functionalPlusE2EPercent": 78.3
+  }
+}
