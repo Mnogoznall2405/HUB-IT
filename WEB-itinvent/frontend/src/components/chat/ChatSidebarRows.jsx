@@ -313,7 +313,7 @@ const ConversationRow = memo(function ConversationRow({
   skipEnterAnimation = false,
 }) {
   const density = getDensity(ui);
-  const { collapsed } = useChatSidebarSizing();
+  const { collapsed, compact } = useChatSidebarSizing();
   const longPressTimerRef = useRef(null);
   const unreadCount = Number(item?.unread_count || 0);
   const unread = unreadCount > 0;
@@ -385,12 +385,7 @@ const ConversationRow = memo(function ConversationRow({
     onOpenFolderMenu?.(item, event);
   };
 
-  return (
-    <motion.div
-      initial={reducedMotion || skipEnterAnimation ? false : { opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={reducedMotion || skipEnterAnimation ? { duration: 0 } : { duration: 0.18, delay: Math.min(index, 7) * 0.02 }}
-    >
+  const rowButton = (
       <button
         type="button"
         onClick={() => onOpenConversation(item.id)}
@@ -416,7 +411,7 @@ const ConversationRow = memo(function ConversationRow({
         onTouchMove={clearLongPress}
         aria-current={active ? 'page' : undefined}
         aria-label={collapsed ? `${taskTitle || item.title}${unreadCount ? `, непрочитанных: ${unreadCount}` : ''}${draftPreview ? ', есть черновик' : ''}` : undefined}
-        title={taskTitle || item.title}
+        title={collapsed ? undefined : taskTitle || item.title}
         data-chat-active={active ? 'true' : 'false'}
         data-chat-unread={unread ? 'true' : 'false'}
         className={joinClasses(
@@ -430,7 +425,7 @@ const ConversationRow = memo(function ConversationRow({
         )}
         style={{
           ...getSidebarRowStyle(density, compactMobile),
-          ...(collapsed ? { width: 'calc(100% - 8px)', margin: '2px 4px', padding: '8px', minHeight: 60 } : {}),
+          ...(collapsed || compact ? { width: 'calc(100% - 8px)', margin: '2px 4px', padding: '8px', minHeight: collapsed ? 60 : 56 } : {}),
           backgroundColor: active
             ? 'var(--chat-sidebar-row-active)'
             : (highlightUnread ? 'var(--chat-sidebar-row-unread)' : 'transparent'),
@@ -445,10 +440,10 @@ const ConversationRow = memo(function ConversationRow({
           <ConversationAvatar
             conversation={item}
             online={Boolean(item?.kind === 'direct' && item?.direct_peer?.presence?.is_online)}
-            size={collapsed ? 44 : getSidebarAvatarSize(density, compactMobile)}
+            size={collapsed ? 44 : compact ? 40 : getSidebarAvatarSize(density, compactMobile)}
           />
 
-          <div className="min-w-0 flex-1" hidden={collapsed}>
+          <div className="min-w-0 flex-1" hidden={collapsed || compact}>
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 items-center gap-1.5">
                 <p className={joinClasses(
@@ -543,10 +538,32 @@ const ConversationRow = memo(function ConversationRow({
               </div>
             )}
           </div>
+          {compact ? (
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center justify-between gap-1.5">
+                <p className={joinClasses('min-w-0 truncate text-[14px] leading-[1.2]', highlightUnread && !active ? 'font-bold text-[color:var(--chat-text-strong)]' : 'font-semibold')}>{taskConversation ? taskTitle : item.title}</p>
+                {unreadCount > 0 ? (
+                  <span aria-hidden="true" className="shrink-0 min-w-5 rounded-full px-1 text-center text-[11px] font-bold leading-5" style={{ backgroundColor: active ? 'var(--chat-unread-active-bg)' : (item?.is_muted ? 'var(--chat-unread-muted-bg)' : 'var(--chat-unread-bg)'), color: active ? 'var(--chat-unread-active-text)' : (item?.is_muted ? 'var(--chat-unread-muted-text)' : 'var(--chat-unread-text)') }}>{unreadCount > 99 ? '99+' : unreadCount}</span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
         {collapsed && unreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 min-w-5 rounded-full px-1 text-center text-[11px] font-bold" style={{ backgroundColor: item?.is_muted ? 'var(--chat-unread-muted-bg)' : 'var(--chat-unread-bg)', color: item?.is_muted ? 'var(--chat-unread-muted-text)' : 'var(--chat-unread-text)' }}>{unreadCount > 99 ? '99+' : unreadCount}</span> : null}
         {collapsed && draftPreview ? <span aria-hidden="true" className="absolute bottom-0.5 left-1 text-[10px]" style={{ color: 'var(--chat-draft-text)' }}><EditOutlinedIcon sx={{ fontSize: 12 }} /></span> : null}
       </button>
+  );
+  return (
+    <motion.div
+      initial={reducedMotion || skipEnterAnimation ? false : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reducedMotion || skipEnterAnimation ? { duration: 0 } : { duration: 0.18, delay: Math.min(index, 7) * 0.02 }}
+    >
+      {collapsed ? (
+        <Tooltip title={taskTitle || item.title} placement="right" enterDelay={350} arrow>
+          {rowButton}
+        </Tooltip>
+      ) : rowButton}
     </motion.div>
   );
 });
@@ -727,7 +744,7 @@ const AiConversationRow = memo(function AiConversationRow({
   reducedMotion = false,
 }) {
   const density = getDensity(ui);
-  const { collapsed } = useChatSidebarSizing();
+  const { collapsed, compact } = useChatSidebarSizing();
   const conversationId = String(bot?.conversation_id || '').trim();
   // AI8: conversation rows track "opening" by conversation id; the bot id is
   // only a fallback for rows without a conversation. Blank keys never match.
@@ -744,12 +761,7 @@ const AiConversationRow = memo(function AiConversationRow({
     ? `Черновик: ${draftPreview}`
     : (String(bot?.last_message_preview || '').trim() || String(bot?.description || '').trim() || 'Корпоративный AI-ассистент');
 
-  return (
-    <motion.div
-      initial={reducedMotion ? false : { opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={reducedMotion ? { duration: 0 } : { duration: 0.18, delay: Math.min(index, 7) * 0.02 }}
-    >
+  const rowButton = (
       <button
         type="button"
         onClick={() => {
@@ -787,7 +799,7 @@ const AiConversationRow = memo(function AiConversationRow({
         disabled={opening}
         aria-current={active ? 'page' : undefined}
         aria-label={collapsed ? `${bot?.title || 'ИИ'}${unreadCount ? `, непрочитанных: ${unreadCount}` : ''}${draftPreview ? ', есть черновик' : ''}` : undefined}
-        title={bot?.title || 'ИИ'}
+        title={collapsed ? undefined : bot?.title || 'ИИ'}
         data-chat-active={active ? 'true' : 'false'}
         data-chat-unread={unread ? 'true' : 'false'}
         className={joinClasses(
@@ -801,7 +813,7 @@ const AiConversationRow = memo(function AiConversationRow({
         )}
         style={{
           ...getSidebarRowStyle(density, compactMobile),
-          ...(collapsed ? { width: 'calc(100% - 8px)', margin: '2px 4px', padding: '8px', minHeight: 60 } : {}),
+          ...(collapsed || compact ? { width: 'calc(100% - 8px)', margin: '2px 4px', padding: '8px', minHeight: collapsed ? 60 : 56 } : {}),
           backgroundColor: active
             ? 'var(--chat-sidebar-row-active)'
             : (highlightUnread ? 'var(--chat-sidebar-row-unread)' : 'transparent'),
@@ -812,8 +824,8 @@ const AiConversationRow = memo(function AiConversationRow({
         }}
       >
         <div className={collapsed ? "flex items-center justify-center" : "flex items-center gap-2.5"}>
-          <AiConversationAvatar size={collapsed ? 44 : getSidebarAvatarSize(density, compactMobile)} />
-          <div className="min-w-0 flex-1" hidden={collapsed}>
+          <AiConversationAvatar size={collapsed ? 44 : compact ? 40 : getSidebarAvatarSize(density, compactMobile)} />
+          <div className="min-w-0 flex-1" hidden={collapsed || compact}>
             <div className="flex items-start justify-between gap-3">
               <p className={joinClasses(
                 'truncate leading-[1.15] tracking-[-0.01em]',
@@ -895,10 +907,32 @@ const AiConversationRow = memo(function AiConversationRow({
               ) : null}
             </div>
           </div>
+          {compact ? (
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center justify-between gap-1.5">
+                <p className={joinClasses('min-w-0 truncate text-[14px] leading-[1.2]', highlightUnread && !active ? 'font-bold text-[color:var(--chat-text-strong)]' : 'font-semibold')}>{bot?.title || 'ИИ'}</p>
+                {unreadCount > 0 ? (
+                  <span aria-hidden="true" className="shrink-0 min-w-5 rounded-full px-1 text-center text-[11px] font-bold leading-5" style={{ backgroundColor: active ? 'var(--chat-unread-active-bg)' : (bot?.is_muted ? 'var(--chat-unread-muted-bg)' : 'var(--chat-unread-bg)'), color: active ? 'var(--chat-unread-active-text)' : (bot?.is_muted ? 'var(--chat-unread-muted-text)' : 'var(--chat-unread-text)') }}>{unreadCount > 99 ? '99+' : unreadCount}</span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
         {collapsed && unreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 min-w-5 rounded-full px-1 text-center text-[11px] font-bold" style={{ backgroundColor: bot?.is_muted ? 'var(--chat-unread-muted-bg)' : 'var(--chat-unread-bg)', color: bot?.is_muted ? 'var(--chat-unread-muted-text)' : 'var(--chat-unread-text)' }}>{unreadCount > 99 ? '99+' : unreadCount}</span> : null}
         {collapsed && draftPreview ? <span aria-hidden="true" className="absolute bottom-0.5 left-1 text-[10px]" style={{ color: 'var(--chat-draft-text)' }}><EditOutlinedIcon sx={{ fontSize: 12 }} /></span> : null}
       </button>
+  );
+  return (
+    <motion.div
+      initial={reducedMotion ? false : { opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reducedMotion ? { duration: 0 } : { duration: 0.18, delay: Math.min(index, 7) * 0.02 }}
+    >
+      {collapsed ? (
+        <Tooltip title={bot?.title || 'ИИ'} placement="right" enterDelay={350} arrow>
+          {rowButton}
+        </Tooltip>
+      ) : rowButton}
     </motion.div>
   );
 });

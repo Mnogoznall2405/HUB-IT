@@ -1,23 +1,27 @@
 import { useRef } from 'react';
 import { Box } from '@mui/material';
-import { CHAT_SIDEBAR_MIN, CHAT_SIDEBAR_DEFAULT } from './chatSidebarSizing';
+import { CHAT_SIDEBAR_MIN, CHAT_SIDEBAR_DEFAULT, CHAT_SIDEBAR_COMPACT } from './chatSidebarSizing';
+
+// Ниже COMPACT-40 тянуть бессмысленно: <MIN sizing переводит в compact (176px),
+// ещё левее — только collapse (Enter / ArrowLeft из compact / кнопка ‹).
+const DRAG_MIN = CHAT_SIDEBAR_COMPACT - 40;
 
 export default function ChatSidebarResizeHandle({ width, maxWidth, onWidthChange, onCollapse }) {
   const drag = useRef(null);
-  const changeWidth = (next) => onWidthChange(Math.min(maxWidth, Math.max(CHAT_SIDEBAR_MIN, next)));
+  const changeWidth = (next) => onWidthChange(Math.min(maxWidth, Math.max(DRAG_MIN, next)));
   return (
     <Box
       role="separator"
       aria-label="Ширина списка чатов"
       aria-orientation="vertical"
-      aria-valuemin={CHAT_SIDEBAR_MIN}
+      aria-valuemin={DRAG_MIN}
       aria-valuemax={maxWidth}
       aria-valuenow={width}
       tabIndex={0}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.preventDefault();
-        event.currentTarget.setPointerCapture?.(event.pointerId);
+        try { event.currentTarget.setPointerCapture?.(event.pointerId); } catch { /* jsdom/старые движки */ }
         drag.current = { x: event.clientX, width };
       }}
       onPointerMove={(event) => {
@@ -31,7 +35,13 @@ export default function ChatSidebarResizeHandle({ width, maxWidth, onWidthChange
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter'].includes(event.key)) return;
         event.preventDefault();
         if (event.key === 'Enter') onCollapse(true);
-        else changeWidth(event.key === 'Home' ? CHAT_SIDEBAR_MIN : event.key === 'End' ? maxWidth : width + (event.key === 'ArrowLeft' ? -16 : 16));
+        else if (event.key === 'ArrowLeft') {
+          if (width < CHAT_SIDEBAR_MIN) onCollapse(true);
+          else changeWidth(width - 16);
+        } else if (event.key === 'ArrowRight') {
+          onWidthChange(width < CHAT_SIDEBAR_MIN ? CHAT_SIDEBAR_MIN : Math.min(maxWidth, width + 16));
+        } else if (event.key === 'Home') onWidthChange(CHAT_SIDEBAR_MIN);
+        else onWidthChange(maxWidth);
       }}
       sx={{
         position: 'absolute', right: -4, top: 0, bottom: 0, width: 8, zIndex: 4,
