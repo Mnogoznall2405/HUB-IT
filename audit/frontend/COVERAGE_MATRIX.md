@@ -1,4 +1,4 @@
-# COVERAGE MATRIX — route inventory (cycle 18)
+# COVERAGE MATRIX — route inventory (cycle 19)
 
 > Исторические таблицы ниже сохранены. Актуальная инвентаризация построена из `App.jsx`;
 > 36 action-сценариев циклов 13–15 не считаются 100% покрытием.
@@ -38,7 +38,7 @@
 | `/docflow` | Standalone | 1C/API | Functional | connect dialog |
 | `/passwords` | Standalone | API | Functional | new record dialog |
 | `/groups-access` | Standalone | AD/API | Functional | refresh |
-| `/my-files` | Standalone | API/storage | E2E | upload + search + reload + image preview (cycle18; preview worker); public image preview artifact bug FE-0326 |
+| `/my-files` | Standalone | API/storage | E2E | upload + search + reload + image preview (cycle18/19; preview worker); FE-0326 rejected (invalid test fixture) |
 | `/kb/manage` | Standalone | KB API | E2E | create article -> reload -> reopen (cycle17) |
 | `/help` | Standalone | — | Functional | open article |
 | `/profile` | Standalone | API | Functional | expand service data |
@@ -106,10 +106,22 @@
 | FE-0232 strict test | 11/11 checks: links 0 -> 1, injected bulk 500 -> Save `items:[]` -> 0; control 1 -> 1 |
 | FE-0239 strict test | 8/8 checks: PUT D2 `[14]` after stale D1 response; D2 16 -> 14, D1 unchanged |
 | FE-0259 strict test | 11/11 checks: plan PUT 200 + persisted; daily/weekly drafts dirty; F5 no beforeunload; both lost |
-| FE-0326 (new) | PNG preview artifact corrupt (180-byte `preview.png`, Pillow decode fails); public image share shows broken preview; original download works |
+| FE-0326 (corrected in cycle19) | **Rejected / false positive**: the cycle18 fixture was an invalid 180-byte PNG (IDAT CRC mismatch); valid small/medium/large PNGs preview correctly |
 | Preview worker | required for My Files previews (`WEB-itinvent/start_preview_worker.py`); without it status stays `queued` |
 | `/computers`, `/statistics` | still no data fixtures; smoke only |
 | EWS | FE-0215 analysis: full E2E blocked; service-level mock would be limited contract test |
+
+## Cycle 19 — финальная верификация
+
+| Проверка | Результат |
+|---|---|
+| Valid PNG matrix (FE-0326) | small 32x32, medium 512x512, large 1600x1200: private/public preview 200, WebP/PNG valid, Pillow/browser decode, no visual error, downloads match |
+| FE-0326 root cause | invalid 180-byte test PNG (IDAT CRC mismatch, zlib error), not the app; fixture fixed; MyFiles 12/12, 0 observations |
+| Hardened negative controls | 10/10 EXPECTED_FAILURE with specific checks; positive PASS; browser launch error = INFRA_FAILURE, not counted |
+| Strict rerun 9879be04 | five E2E 5/5 (49 checks); FE-0232 11/11; FE-0239 8/8; FE-0259 11/11 |
+| Refresh matrix | A/B/C/D confirmed on 9879be04 |
+| FE-0194 | mocked overview with nameless target reproduces split TypeError/error boundary; real trigger unproven; Suspected |
+| Registry | 324: 268 Confirmed / 12 Suspected / 2 Fixed / 42 Rejected; validator 0 errors |
 
 ## Явно не покрыто функционально
 

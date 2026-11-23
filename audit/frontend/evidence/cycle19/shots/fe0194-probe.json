@@ -1,0 +1,15 @@
+{
+  "test": "FE-0194",
+  "url": "http://127.0.0.1:5229/monitoring",
+  "pageErrors": [
+    "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+    "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+    "console: Failed to launch 'hubit://open/dashboard' because the scheme does not have a registered handler.",
+    "console: TypeError: Cannot read properties of undefined (reading 'split')\n    at http://127.0.0.1:5229/assets/MonitoringDeviceGrid-DZufR2_A.js:1:7539\n    at Array.map (<anonymous>)\n    at ee (http://127.0.0.1:5229/assets/MonitoringDeviceGrid-DZufR2_A.js:1:7307)\n    at Ti (http://127.0.0.1:5229/assets/vendor-",
+    "console: Route render failed: TypeError: Cannot read properties of undefined (reading 'split')\n    at http://127.0.0.1:5229/assets/MonitoringDeviceGrid-DZufR2_A.js:1:7539\n    at Array.map (<anonymous>)\n    at ee (http://127.0.0.1:5229/assets/MonitoringDeviceGrid-DZufR2_A.js:1:7307)\n    at Ti (http://127.0.0."
+  ],
+  "splitError": true,
+  "cards": 0,
+  "bodyStart": "Не удалось отобразить раздел | Раздел не удалось отобразить. Попробуйте ещё раз или откройте другой раздел. | Повторить",
+  "visualError": false
+}

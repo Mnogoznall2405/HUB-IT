@@ -20,8 +20,8 @@
     "info": 15,
     "suspected": 12,
     "fixedExternally": 2,
-    "rejected": 41,
-    "confirmed": 269,
+    "rejected": 42,
+    "confirmed": 268,
     "total": 324
   },
   "issues": [
@@ -7435,10 +7435,12 @@
       "evidence": [
         "статическая проверка по file:line (цикл 11, агент + ручная перепроверка)",
         "[cycle12:confirmed] На 34 target.name.split без защиты, хотя displayTargetName (monitoringFormat.js:28) использует ?. и fallback. name в БД NOT NULL (monitoring_models.py:29), но Monitoring.jsx:113 при отсутствии id добавляет частичный {id, summary} из patchTarget (198), и такая запись роняет сетку.",
-        "[cycle13:confirmed] Подтверждается как незащищённое обращение, а не как частый пользовательский сценарий: MonitoringDeviceGrid.jsx:34 вызывает target.name.split без ?., хотя displayTargetName рядом использует ?. и fallback. В БД name NOT NULL (monitoring_models.py:29), поэтому нормальный ответ API имя содержит; путь к записи без name даёт только частичный patchTarget({id, summary}) при сохранении интерфейса (Monitoring.jsx:198), если цели уже нет в списке (рассинхронизация списка и детали), после чего при возврате к сетке рендер падает. Падение ловит RouteErrorBoundary (App.jsx:308-338) — пользователь увидит экран ошибки маршрута, а не «белый экран»; сценарий редкий, поэтому Low оправдана, но guard в строке 34 нужен."
+        "[cycle13:confirmed] Подтверждается как незащищённое обращение, а не как частый пользовательский сценарий: MonitoringDeviceGrid.jsx:34 вызывает target.name.split без ?., хотя displayTargetName рядом использует ?. и fallback. В БД name NOT NULL (monitoring_models.py:29), поэтому нормальный ответ API имя содержит; путь к записи без name даёт только частичный patchTarget({id, summary}) при сохранении интерфейса (Monitoring.jsx:198), если цели уже нет в списке (рассинхронизация списка и детали), после чего при возврате к сетке рендер падает. Падение ловит RouteErrorBoundary (App.jsx:308-338) — пользователь увидит экран ошибки маршрута, а не «белый экран»; сценарий редкий, поэтому Low оправдана, но guard в строке 34 нужен.",
+        "[cycle19:mocked-browser] Route-mocked /monitoring/overview with one target without name: console TypeError at MonitoringDeviceGrid.jsx:29, \"Route render failed\", error boundary \"Не удалось отобразить раздел\". No real backend target without name was observed; status remains Suspected."
       ],
       "verification": [
-        "static-code"
+        "static-code",
+        "local-browser-mock"
       ],
       "originalClaim": "Monitoring: target.name.split без защиты — target без name роняет всю сетку",
       "originalEvidence": [
@@ -7457,6 +7459,13 @@
           "verdict": "confirmed",
           "note": "Подтверждается как незащищённое обращение, а не как частый пользовательский сценарий: MonitoringDeviceGrid.jsx:34 вызывает target.name.split без ?., хотя displayTargetName рядом использует ?. и fallback. В БД name NOT NULL (monitoring_models.py:29), поэтому нормальный ответ API имя содержит; путь к записи без name даёт только частичный patchTarget({id, summary}) при сохранении интерфейса (Monitoring.jsx:198), если цели уже нет в списке (рассинхронизация списка и детали), после чего при возврате к сетке рендер падает. Падение ловит RouteErrorBoundary (App.jsx:308-338) — пользователь увидит экран ошибки маршрута, а не «белый экран»; сценарий редкий, поэтому Low оправдана, но guard в строке 34 нужен.",
           "sourceFile": "verdicts_ui.json"
+        },
+        {
+          "cycle": 19,
+          "date": "2026-11-23",
+          "verdict": "inconclusive",
+          "note": "Mocked overview with a nameless target reproduces the split TypeError and error boundary; real backend trigger not proven. Suspected retained.",
+          "sourceFile": "evidence/cycle19/fe0194-probe.cjs"
         }
       ],
       "currentConclusion": "Подтверждается как незащищённое обращение, а не как частый пользовательский сценарий: MonitoringDeviceGrid.jsx:34 вызывает target.name.split без ?., хотя displayTargetName рядом использует ?. и fallback. В БД name NOT NULL (monitoring_models.py:29), поэтому нормальный ответ API имя содержит; путь к записи без name даёт только частичный patchTarget({id, summary}) при сохранении интерфейса (Monitoring.jsx:198), если цели уже нет в списке (рассинхронизация списка и детали), после чего при возврате к сетке рендер падает. Падение ловит RouteErrorBoundary (App.jsx:308-338) — пользователь увидит экран ошибки маршрута, а не «белый экран»; сценарий редкий, поэтому Low оправдана, но guard в строке 34 нужен.",
@@ -7465,7 +7474,8 @@
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Статический вердикт подтверждает отсутствие guard, но пользовательский краш требует частичного patchTarget без name при рассинхронизации списка и детали. Воспроизводимого пользовательского сценария нет — статус Suspected."
+      "statusRationale": "Static guard is missing. Cycle19 mocked overview with a target without name reproduces TypeError \"Cannot read properties of undefined (reading split)\" and the route error boundary. The real backend trigger (a partial target without name) is still unproven, so the record stays Suspected; the mocked reproduction confirms the code path, not the production data condition.",
+      "runtimeStatus": "mocked-browser-reproduced"
     },
     {
       "id": "FE-0195",
@@ -8251,15 +8261,22 @@
           "verdict": "blocked",
           "note": "Transport investigation: EWS, not IMAP/SMTP. No local EWS test server/mailbox; MAIL_MODULE_ENABLED=0. Live autosave/inline-image test not possible.",
           "sourceFile": "manual-live-mail-transport"
+        },
+        {
+          "cycle": 19,
+          "date": "2026-11-23",
+          "verdict": "blocked",
+          "note": "Current metadata corrected: EWS only; the old IMAP/SMTP fixture assumption is obsolete. Full E2E still requires an EWS test server; limited service-level mock is the only safe next step.",
+          "sourceFile": "evidence/cycle18/fe0215-ews-analysis.md"
         }
       ],
-      "currentConclusion": "Static remains confirmed. Full live verification is blocked: the backend uses Exchange EWS (exchangelib), the isolated stack disables the mail module, and no EWS test server/mailbox exists. A local IMAP/SMTP fixture is not applicable. A service-level mock could test the draft HTML/attachment payload only; it would be a limited contract test, not a full E2E.",
+      "currentConclusion": "Static remains confirmed. Live E2E is blocked: Exchange EWS, no EWS test server/mailbox, MAIL_MODULE_ENABLED=0. IMAP/SMTP is not applicable. A limited service-level contract test could check the draft HTML/attachments payload, but not UI->EWS autosave/reopen.",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Cycle 15 mailbox investigation: local_backend forcibly sets MAIL_MODULE_ENABLED=0; no IMAP/SMTP fixture or test mailbox exists. Route-mocking can validate UI only, not server-side autosave/attachment persistence, so live check remains blocked.",
+      "statusRationale": "Static mechanism confirmed. The mail transport is Exchange EWS (exchangelib), not IMAP/SMTP; no EWS test server or mailbox exists, and the isolated stack sets MAIL_MODULE_ENABLED=0. The cycle15 \"no IMAP/SMTP fixture\" blocker is obsolete: an IMAP/SMTP fixture would not exercise this backend. A full E2E remains blocked; only a limited service-level EWS contract test with a fake Account/Message is possible.",
       "runtimeStatus": "blocked-environment"
     },
     {
@@ -8899,6 +8916,13 @@
           "verdict": "confirmed",
           "note": "Strict 11-check test: seed 0->1, injected payload [] and links 1->0, control 1->1. Independent repeat passed.",
           "sourceFile": "evidence/cycle18/fe0232-delegates.cjs"
+        },
+        {
+          "cycle": 19,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Metadata sync: status remains Confirmed; runtimeStatus reproduced-live; old cycle15 blocker moved to history. No new runtime test was needed in cycle19.",
+          "sourceFile": "AUDIT_FINAL_REVIEW.md"
         }
       ],
       "currentConclusion": "Confirmed live with strict assertions: a failed bulk delegate load hides the links; saving the user sends an empty items array and erases all assistant/deputy links (1 -> 0). Control without the failure preserves the link (1 -> 1).",
@@ -8907,7 +8931,7 @@
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Cycle 15 account fixtures not prepared; no approved mutation of delegate links in the isolated DB. Static catch->empty merge->save chain remains confirmed.",
+      "statusRationale": "Live reproduced and revalidated with strict assertions (cycles 17-18). The cycle15 \"no fixtures/mutations\" blocker is historical and preserved in reverificationHistory; the scenario is now reproducible on the isolated stack.",
       "runtimeStatus": "reproduced-live"
     },
     {
@@ -9166,6 +9190,13 @@
           "verdict": "confirmed",
           "note": "Strict 8-check test: before D1 14/D2 16; stale D1 members shown under D2; PUT D2 [14]; after D2 [14]. Independent repeat passed.",
           "sourceFile": "evidence/cycle18/fe0239-departments.cjs"
+        },
+        {
+          "cycle": 19,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Metadata sync: status remains Confirmed; runtimeStatus reproduced-live; old cycle15 blocker moved to history. No new runtime test was needed in cycle19.",
+          "sourceFile": "AUDIT_FINAL_REVIEW.md"
         }
       ],
       "currentConclusion": "Confirmed live with strict assertions: a late members response from D1 overwrites the manager draft while D2 is selected; Save writes D1 managers into D2 (D2 16 -> 14), D1 unchanged. The PUT targets the selected D2 and contains the stale D1 manager id.",
@@ -9174,7 +9205,7 @@
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Cycle 15 department/user fixtures not prepared; no approved mutation. Static race remains confirmed.",
+      "statusRationale": "Live reproduced and revalidated with strict assertions (cycles 17-18). The cycle15 \"no fixtures/mutations\" blocker is historical and preserved in reverificationHistory; the scenario is now reproducible on the isolated stack.",
       "runtimeStatus": "reproduced-live"
     },
     {
@@ -9944,6 +9975,13 @@
           "verdict": "confirmed",
           "note": "Strict 11-check test: plan PUT 200 and persisted; daily and weekly drafts dirty; F5 no beforeunload; both values lost. Title corrected to daily summary + weekly plan.",
           "sourceFile": "evidence/cycle18/fe0259-construction.cjs"
+        },
+        {
+          "cycle": 19,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Metadata sync: status remains Confirmed; runtimeStatus reproduced-live; old cycle15 blocker moved to history. No new runtime test was needed in cycle19.",
+          "sourceFile": "AUDIT_FINAL_REVIEW.md"
         }
       ],
       "currentConclusion": "Confirmed live with strict assertions: the work plan saves and persists, but unsaved daily-summary and weekly-plan drafts are lost on F5 without a beforeunload prompt. useConstructionWorkLeaveGuard protects React Router navigation, not reload/close. The record title now names both affected drafts, not a non-existent \"weekly summary\" control.",
@@ -9952,7 +9990,7 @@
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Cycle 15 mocked construction attempt reached the page but the workspace requires a configured object/direction («сначала настройте объект»); mocked planning alone is insufficient. F5/close/unmount still blocked by missing configured construction fixture.",
+      "statusRationale": "Live reproduced and revalidated with strict assertions (cycles 17-18). The cycle15 \"no fixtures/mutations\" blocker is historical and preserved in reverificationHistory; the scenario is now reproducible on the isolated stack.",
       "runtimeStatus": "reproduced-live",
       "titleHistory": [
         {
@@ -12404,10 +12442,10 @@
     },
     {
       "id": "FE-0326",
-      "title": "My Files: PNG-превью отдаёт повреждённый артефакт (preview.png), публичная ссылка показывает битое изображение",
+      "title": "My Files: PNG-превью — отклонено (повреждённый тестовый PNG; valid PNG обрабатываются корректно)",
       "category": "MyFiles/Preview",
       "severity": "Medium",
-      "status": "Confirmed",
+      "status": "Rejected",
       "page": "/my-files, /shared-files/:token",
       "file": "WEB-itinvent/backend/services/my_files_service.py",
       "lines": "3568-3663",
@@ -12425,21 +12463,23 @@
         "local-browser",
         "local-api"
       ],
-      "runtimeStatus": "reproduced-live",
+      "runtimeStatus": "rejected-false-positive",
       "evidence": [
         "[cycle18:local-browser] Uploaded a 64x64 solid PNG (RGB 200,30,40). Authenticated preview dialog shows an image 64x64; canvas pixel (200,30,40) — the user-visible authenticated preview works.",
         "[cycle18:local-api] GET /api/v1/my-files/{id}/preview/content -> 200 image/png, 180 bytes; Pillow Image.open(...).load() raises OSError \"broken data stream\". The previews dir contains the corrupt preview.png (180 bytes). Another upload's preview.webp (88 bytes) and thumb.webp (86 bytes) load fine.",
         "[cycle18:local-browser] Public share: /shared-files/{token} renders <img src=/api/v1/my-files/public/{token}/preview/content>; the public preview endpoint returns 200 image/png 180 bytes and Pillow fails with the same broken stream. The original file download still works.",
-        "[cycle18:repeat] Reproduced on two uploads sharing blob 8726c036... (same PNG content); the uploaded original (186 bytes) opens fine in Pillow. Screenshot evidence/cycle18/shots/c18-public-preview.png."
+        "[cycle18:repeat] Reproduced on two uploads sharing blob 8726c036... (same PNG content); the uploaded original (186 bytes) opens fine in Pillow. Screenshot evidence/cycle18/shots/c18-public-preview.png.",
+        "[cycle19:matrix] Valid PNGs small 32x32 (117 B, SHA aac8...), medium 512x512 (4,485 B, SHA f440...), large 1600x1200 (5,769,402 B, SHA 9561...) uploaded via UI. Preview worker ready; private/public preview: small image/webp 80 B, medium image/png 4,485 B with SHA equal to the original, large image/webp 1,437,182 B. Browser img.complete true, natural sizes 32/512/1600, no visual error. Original private/public downloads matched the source SHA. No corruption.",
+        "[cycle19:root-cause] The cycle18 \"corrupt\" source was the 180-byte base64 fixture in five-e2e: IHDR valid, IDAT length 129 with CRC mismatch, 6 trailing bytes, zlib \"incorrect data check\"; Pillow failed on the source itself. The app stored the invalid source and served it as preview.png; the image optimization path skipped it. The exact corruption is in the test fixture, not in the app or the preview worker."
       ],
       "impact": "Публичная ссылка на изображение показывает битое превью; потребители /preview/content (публичный просмотр, печать/конвертация) получают невалидный PNG. Скачивание оригинала работает; аутентифицированный диалог использует WebP/thumb и выглядит корректно.",
-      "recommendation": "Валидировать сгенерированный PNG-артефакт (декодирование) или отдавать для image preview валидный WebP/thumb/оригинал; добавить тест декодирования артефакта в preview worker.",
+      "recommendation": "No app fix. Keep only validated PNG fixtures in audit tests; add a fixture-decode check to the E2E test bootstrap so an invalid source cannot be reported as an app defect.",
       "regressionRisk": "low",
       "originalClaim": "PNG-превью в My Files отдаёт повреждённый артефакт, публичная ссылка показывает битое изображение.",
       "originalEvidence": [
         "Cycle 18 strict E2E and public-share probe on the isolated stand; Pillow decode failure; authenticated UI canvas pixel correct."
       ],
-      "currentConclusion": "Confirmed live: the preview worker writes a corrupt preview.png for image blobs; /preview/content and the public preview endpoint return it. The authenticated dialog uses a valid WebP/thumb and works, but the public image preview is broken. Original download works.",
+      "currentConclusion": "Rejected / false positive: the corrupt preview was caused by an invalid test PNG, not by the app. Valid PNGs of different sizes/formats produce valid private/public previews and downloads. The test fixture is fixed; no remediation task for the app is required.",
       "reverificationHistory": [
         {
           "cycle": 18,
@@ -12447,8 +12487,24 @@
           "verdict": "confirmed",
           "note": "Authenticated canvas preview correct; preview.png 180 bytes fails Pillow; public preview endpoint returns the same corrupt PNG. Reproduced on two uploads (blob 8726c036...).",
           "sourceFile": "evidence/cycle18/fe_public_preview.cjs"
+        },
+        {
+          "cycle": 19,
+          "date": "2026-11-23",
+          "verdict": "rejected",
+          "note": "Matrix with valid small/medium/large PNGs: previews valid, browser/Pillow decode, public/private downloads intact. Cycle18 artifact traced to an invalid 180-byte test fixture (IDAT CRC mismatch); fixture fixed; MyFiles E2E 12/12, 0 observations.",
+          "sourceFile": "evidence/cycle19/fe0326-matrix.cjs"
         }
-      ]
+      ],
+      "titleHistory": [
+        {
+          "title": "My Files: PNG-превью отдаёт повреждённый артефакт (preview.png), публичная ссылка показывает битое изображение",
+          "changedInCycle": 19,
+          "date": "2026-11-23",
+          "reason": "Cycle19 refuted the claim: the cycle18 fixture was an invalid 180-byte PNG (IDAT CRC mismatch); the app did not corrupt it. The test fixture is now valid and the preview pipeline passes."
+        }
+      ],
+      "statusRationale": "Rejected as a false positive. Cycle19 matrix: valid small (32x32, 117 B), medium (512x512, 4,485 B) and large (1600x1200, 5.77 MB) PNGs were uploaded; private/public previews returned valid WebP or the original PNG (medium SHA matched the source), Pillow/browser decoded, natural sizes 32/512/1600, no visual errors, original downloads matched. The cycle18 artifact came from the test fixture: a 180-byte PNG with IHDR valid but IDAT CRC mismatch, 6 trailing bytes and zlib error; the app stored and served that invalid source unchanged. The image optimizer skipped it (Pillow could not decode it), so preview.png was the invalid source. No app corruption stage was found. The test fixture was fixed to a valid 186-byte 64x64 PNG; MyFiles E2E passes with 0 observations."
     }
   ],
   "sources": [
@@ -12506,8 +12562,22 @@
   },
   "highBreakdown": {
     "historical": 12,
+    "historicalHigh": [
+      "FE-0022",
+      "FE-0023",
+      "FE-0059",
+      "FE-0078",
+      "FE-0083",
+      "FE-0197",
+      "FE-0198",
+      "FE-0215",
+      "FE-0230",
+      "FE-0232",
+      "FE-0239",
+      "FE-0259"
+    ],
     "current": 11,
-    "allHigh": [
+    "activeHigh": [
       "FE-0022",
       "FE-0023",
       "FE-0059",
@@ -12519,6 +12589,9 @@
       "FE-0232",
       "FE-0239",
       "FE-0259"
+    ],
+    "fixedHigh": [
+      "FE-0078"
     ],
     "runtimeProven": [
       "FE-0022",

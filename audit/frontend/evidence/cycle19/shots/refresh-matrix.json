@@ -1,0 +1,52 @@
+{
+  "base": "http://127.0.0.1:18009/api/v1",
+  "graceSeconds": 15,
+  "maxHits": 1,
+  "scenarios": {
+    "A": {
+      "rotate": 200,
+      "staleRetry1": 200,
+      "firstNewAccess": 200,
+      "firstNewRefresh": 200,
+      "firstNewRefreshDetail": "{\"access_token\":null,\"refresh_token\":null,\"token_type\":\"bearer\",\"user\":{\"username\":\"e2e_admin\",\"email\":\"e2e_admin@exampl"
+    },
+    "B": {
+      "rotate": 200,
+      "staleRetry1": 200,
+      "staleRetry2": 401,
+      "secondRetryDetail": "{\"detail\":\"Refresh token is expired or already used\"}",
+      "firstNewAccess": 401,
+      "firstNewRefresh": 401,
+      "firstNewRefreshDetail": "{\"detail\":\"Refresh token has been revoked\"}"
+    },
+    "C": {
+      "statuses": [
+        200,
+        200,
+        401
+      ],
+      "details": [
+        "{\"access_token\":null,\"refresh_token\":null,\"token_type\":\"bearer\",\"user\":{\"username\":\"e2e_admin\",\"email\":\"e2e_admin@exampl",
+        "{\"access_token\":null,\"refresh_token\":null,\"token_type\":\"bearer\",\"user\":{\"username\":\"e2e_admin\",\"email\":\"e2e_admin@exampl",
+        "{\"detail\":\"Refresh token is expired or already used\"}"
+      ],
+      "winnerTokens": 2,
+      "winnerAccess": [
+        401,
+        401
+      ],
+      "winnerRefresh": [
+        401,
+        401
+      ]
+    },
+    "D": {
+      "rotate": 200,
+      "staleAfterGrace": 401,
+      "staleAfterGraceDetail": "{\"detail\":\"Refresh token has been revoked\"}",
+      "newAccessAfterOldRejection": 200,
+      "newRefreshAfterOldRejection": 200,
+      "newRefreshDetail": "{\"access_token\":null,\"refresh_token\":null,\"token_type\":\"bearer\",\"user\":{\"username\":\"e2e_admin\",\"email\":\"e2e_admin@exampl"
+    }
+  }
+}

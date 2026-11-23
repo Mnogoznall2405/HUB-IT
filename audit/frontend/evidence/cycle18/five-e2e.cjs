@@ -21,8 +21,9 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:5228';
 const SHOT_DIR = process.env.SHOT_DIR || path.join(process.cwd(), 'cycle18-shots');
 const USER = process.env.E2E_USER || 'e2e_admin';
 const PASS = process.env.E2E_PASS || 'e2e-local-admin-pass';
+const BROWSER_CHANNEL = process.env.BROWSER_CHANNEL || 'chrome';
 const PYTHON_BIN = process.env.PREVIEW_PYTHON || 'C:/Project/HUB-IT-main/.venv/Scripts/python.exe';
-const PNG_64_RED = 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAgUlEQVR4nNXOMREAIBDAsFIhzPhXgSxE/MA1CrLuPpRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMT5OzD1ACX1AY6ZEfHAAAAAAElFTkSuQmCC';
+const PNG_64_RED = 'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAgUlEQVR4nNXOMREAIBDAsFIhzPhXgSxE/MA1CrLuPpRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMT5OzD1ACX1AY6ZEfHAAAAAAElFTkSuQmCC';
 const CONTROL = String(process.env.NEGATIVE_CONTROL || '').split(',').map((s) => s.trim()).filter(Boolean);
 const runId = `${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 const state = {};
@@ -191,7 +192,7 @@ async function installControls(context) {
 async function scenario(name, fn) {
   const started = Date.now();
   const checks = [];
-  const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--disable-dev-shm-usage', '--disable-gpu'] });
+  const browser = await chromium.launch({ channel: BROWSER_CHANNEL, headless: true, args: ['--disable-dev-shm-usage', '--disable-gpu'] });
   const context = await browser.newContext({ baseURL: BASE, viewport: { width: 1440, height: 900 } });
   const record = { name, pass: false, ms: 0, checks, details: {}, error: null };
   try {
@@ -209,7 +210,7 @@ async function scenario(name, fn) {
     record.ms = Date.now() - started;
     await browser.close();
     results.push(record);
-    console.log(JSON.stringify({ name: record.name, pass: record.pass, checks: checks.length, failed: failed.length, observations: record.observations.length, error: record.error, details: record.details }));
+    console.log(JSON.stringify({ name: record.name, pass: record.pass, checks: checks.length, failed: failed.length, failedChecks: failed.map((c) => c.name), controls: CONTROL, observations: record.observations.length, error: record.error, details: record.details }));
   }
   return record;
 }
@@ -227,7 +228,7 @@ async function feed(ctx, expect) {
   await dialog.getByLabel(/Заголовок/).first().fill(token);
   await dialog.getByPlaceholder(/Расскажите подробнее/).first().fill(`Cycle18 body ${token}`);
   await dialog.getByRole('button', { name: 'Опубликовать' }).first().click();
-  await dialog.waitFor({ state: 'detached', timeout: 15000 });
+  try { await dialog.waitFor({ state: 'detached', timeout: 15000 }); } catch (e) {}
   expect('feed.dialogClosed', (await page.getByRole('dialog').count()) === 0);
   const afterPublish = await page.locator('body').innerText();
   expect('feed.visibleAfterPublish', afterPublish.includes(token));
@@ -554,5 +555,6 @@ async function adminUsers(ctx, expect) {
   console.log('SUMMARY ' + JSON.stringify(summary));
   process.exit(summary.some((s) => !s.pass) ? 1 : 0);
 })();
+
 
 

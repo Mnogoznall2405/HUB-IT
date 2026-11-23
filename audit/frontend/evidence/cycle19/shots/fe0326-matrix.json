@@ -1,0 +1,185 @@
+{
+  "base": "http://127.0.0.1:5229",
+  "files": [
+    {
+      "key": "small",
+      "name": "c19-png-small.png",
+      "originalBytes": 117,
+      "originalSha256": "aac8b4245f5965a092455dac12c8a1d0ab6680f7328da2465f235e9279b56366",
+      "item": {
+        "id": "208ac87641474dac8b140ef53d3a8f17",
+        "status": "ready",
+        "available": true,
+        "kind": "image",
+        "size": 117
+      },
+      "privatePreview": {
+        "status": 200,
+        "type": "image/webp",
+        "bytes": 80,
+        "sha256": "3f6f28efe8c41c8723899693554adcdb6f13447feec662ead567b87434d59e95"
+      },
+      "privateDialog": {
+        "opened": true,
+        "metrics": {
+          "complete": true,
+          "naturalWidth": 32,
+          "naturalHeight": 32,
+          "alt": "c19-png-small.webp",
+          "src": "blob:http://127.0.0.1:5229/9e049532-4fc8"
+        }
+      },
+      "share": {
+        "status": 200,
+        "tokenLength": 43
+      },
+      "public": {
+        "page": {
+          "complete": true,
+          "naturalWidth": 32,
+          "naturalHeight": 32,
+          "alt": "c19-png-small.webp"
+        },
+        "visualError": false,
+        "preview": {
+          "status": 200,
+          "type": "image/webp",
+          "bytes": 80,
+          "sha256": "3f6f28efe8c41c8723899693554adcdb6f13447feec662ead567b87434d59e95"
+        },
+        "download": {
+          "status": 200,
+          "bytes": 80,
+          "sha256": "3f6f28efe8c41c8723899693554adcdb6f13447feec662ead567b87434d59e95",
+          "matchesOriginal": false
+        }
+      },
+      "privateDownload": {
+        "status": 410,
+        "bytes": 97,
+        "sha256": "4e8aa1ea25ebea863fbb973391a4acd400ffd5b0bd2bd238bd5c2ed6a233e349",
+        "matchesOriginal": false
+      }
+    },
+    {
+      "key": "medium",
+      "name": "c19-png-medium.png",
+      "originalBytes": 4485,
+      "originalSha256": "f44083817bb06b274772186bdc48bf17f1ccfb6b11abd1a8d1afbdc87130e21c",
+      "item": {
+        "id": "e76e8c9f9b15494e9b535d12c8facaeb",
+        "status": "ready",
+        "available": true,
+        "kind": "image",
+        "size": 4485
+      },
+      "privatePreview": {
+        "status": 200,
+        "type": "image/png",
+        "bytes": 4485,
+        "sha256": "f44083817bb06b274772186bdc48bf17f1ccfb6b11abd1a8d1afbdc87130e21c"
+      },
+      "privateDialog": {
+        "opened": true,
+        "metrics": {
+          "complete": true,
+          "naturalWidth": 512,
+          "naturalHeight": 512,
+          "alt": "c19-png-medium.png",
+          "src": "blob:http://127.0.0.1:5229/88ce99b7-9c7f"
+        }
+      },
+      "share": {
+        "status": 200,
+        "tokenLength": 43
+      },
+      "public": {
+        "page": {
+          "complete": true,
+          "naturalWidth": 512,
+          "naturalHeight": 512,
+          "alt": "c19-png-medium.png"
+        },
+        "visualError": false,
+        "preview": {
+          "status": 200,
+          "type": "image/png",
+          "bytes": 4485,
+          "sha256": "f44083817bb06b274772186bdc48bf17f1ccfb6b11abd1a8d1afbdc87130e21c"
+        },
+        "download": {
+          "status": 200,
+          "bytes": 4485,
+          "sha256": "f44083817bb06b274772186bdc48bf17f1ccfb6b11abd1a8d1afbdc87130e21c",
+          "matchesOriginal": true
+        }
+      },
+      "privateDownload": {
+        "status": 410,
+        "bytes": 97,
+        "sha256": "4e8aa1ea25ebea863fbb973391a4acd400ffd5b0bd2bd238bd5c2ed6a233e349",
+        "matchesOriginal": false
+      }
+    },
+    {
+      "key": "large",
+      "name": "c19-png-large.png",
+      "originalBytes": 5769402,
+      "originalSha256": "9561cda6641fde9325be7c882c2256d8830151b74e1d9d0921769cd19f21dd07",
+      "item": {
+        "id": "ad443e0613264b24a137e48213868a46",
+        "status": "ready",
+        "available": true,
+        "kind": "image",
+        "size": 5769402
+      },
+      "privatePreview": {
+        "status": 200,
+        "type": "image/webp",
+        "bytes": 1437182,
+        "sha256": "bedb4dfc0bf56dbe2774efb67ca4c6ff0efc0dcdde542d68d5857b05942cfc88"
+      },
+      "privateDialog": {
+        "opened": true,
+        "metrics": {
+          "complete": true,
+          "naturalWidth": 1600,
+          "naturalHeight": 1200,
+          "alt": "c19-png-large.webp",
+          "src": "blob:http://127.0.0.1:5229/a7c6ef00-9003"
+        }
+      },
+      "share": {
+        "status": 200,
+        "tokenLength": 43
+      },
+      "public": {
+        "page": {
+          "complete": true,
+          "naturalWidth": 1600,
+          "naturalHeight": 1200,
+          "alt": "c19-png-large.webp"
+        },
+        "visualError": false,
+        "preview": {
+          "status": 200,
+          "type": "image/webp",
+          "bytes": 1437182,
+          "sha256": "bedb4dfc0bf56dbe2774efb67ca4c6ff0efc0dcdde542d68d5857b05942cfc88"
+        },
+        "download": {
+          "status": 200,
+          "bytes": 1437182,
+          "sha256": "bedb4dfc0bf56dbe2774efb67ca4c6ff0efc0dcdde542d68d5857b05942cfc88",
+          "matchesOriginal": false
+        }
+      },
+      "privateDownload": {
+        "status": 410,
+        "bytes": 97,
+        "sha256": "4e8aa1ea25ebea863fbb973391a4acd400ffd5b0bd2bd238bd5c2ed6a233e349",
+        "matchesOriginal": false
+      }
+    }
+  ]
+}

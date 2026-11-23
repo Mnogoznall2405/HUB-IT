@@ -31,6 +31,9 @@
 | `CYCLE_16_REVIEW.md` | Реальная инвентаризация маршрутов, 5 полных E2E, FE-0059/FE-0083 |
 | `CYCLE_17_REVIEW.md` | Воспроизводимость E2E, матрица refresh, три live High, WebView2/EWS |
 | `CYCLE_18_REVIEW.md` | Assertions, negative controls, строгие regression tests, FE-0230/FE-0215, FE-0326 |
+| `CYCLE_19_REVIEW.md` | Финальная верификация, FE-0326 false positive, hardened negative controls |
+| `AUDIT_FINAL_REVIEW.md` | Итоговый статус 324 записей, достоверность серьёзных дефектов, покрытие |
+| `REMEDIATION_BACKLOG.md` | План исправлений P0-P3, зависимости и регрессионные тесты |
 | `evidence/` | Скриншоты, сводки субагентов, verdicts циклов 12–13 |
 
 ## Правила

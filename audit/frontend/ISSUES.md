@@ -266,6 +266,10 @@ best-effort, пользовательские ошибки не глотаютс
 
 
 
+
+
+
+
 ## Карточки записей FE-0078…FE-0325 (перепроверка циклов 12–13)
 
 > Карточки перегенерированы из ISSUES.json; исходные утверждения, текущие выводы
@@ -937,7 +941,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: ErrorHandling/Monitoring | Серьёзность: Low | Статус: Suspected
 - Файл: `WEB-itinvent/frontend/src/pages/monitoring/MonitoringDeviceGrid.jsx` :34: displayTargetName защищает, но прямой вызов split — нет
 - Суть/механизм: белый экран списка устройств при неполной записи
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] На 34 target.name.split без защиты, хотя displayTargetName (monitoringFormat.js:28) использует ?. и fallback. name в БД NOT NULL (monitoring_models.py:29), но Monitoring.jsx:113 при отсутствии id добавляет частичный {id, summary} из patchTarget (198), и такая запись роняет сетку.; [cycle13:confirmed] Подтверждается как незащищённое обращение, а не как частый пользовательский сценарий: MonitoringDeviceGrid.jsx:34 вызывает target.name.split без ?., хотя displayTargetName рядом использует ?. и fallback. В БД name NOT NULL (monitoring_models.py:29), поэтому нормальный ответ API имя содержит; путь к записи без name даёт только частичный patchTarget({id, summary}) при сохранении интерфейса (Monitoring.jsx:198), если цели уже нет в списке (рассинхронизация списка и детали), после чего при возврате к сетке рендер падает. Падение ловит RouteErrorBoundary (App.jsx:308-338) — пользователь увидит экран ошибки маршрута, а не «белый экран»; сценарий редкий, поэтому Low оправдана, но guard в строке 34 нужен.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] На 34 target.name.split без защиты, хотя displayTargetName (monitoringFormat.js:28) использует ?. и fallback. name в БД NOT NULL (monitoring_models.py:29), но Monitoring.jsx:113 при отсутствии id добавляет частичный {id, summary} из patchTarget (198), и такая запись роняет сетку.; [cycle13:confirmed] Подтверждается как незащищённое обращение, а не как частый пользовательский сценарий: MonitoringDeviceGrid.jsx:34 вызывает target.name.split без ?., хотя displayTargetName рядом использует ?. и fallback. В БД name NOT NULL (monitoring_models.py:29), поэтому нормальный ответ API имя содержит; путь к записи без name даёт только частичный patchTarget({id, summary}) при сохранении интерфейса (Monitoring.jsx:198), если цели уже нет в списке (рассинхронизация списка и детали), после чего при возврате к сетке рендер падает. Падение ловит RouteErrorBoundary (App.jsx:308-338) — пользователь увидит экран ошибки маршрута, а не «белый экран»; сценарий редкий, поэтому Low оправдана, но guard в строке 34 нужен.; [cycle19:mocked-browser] Route-mocked /monitoring/overview with one target without name: console TypeError at MonitoringDeviceGrid.jsx:29, "Route render failed", error boundary "Не удалось отобразить раздел". No real backend target without name was observed; status remains Suspected.
 
 ### FE-0195 — Monitoring: диалог устройств — loadFree/change без mounted-флага
 - Категория: Leaks/Monitoring | Серьёзность: Low | Статус: Confirmed
@@ -1726,11 +1730,11 @@ best-effort, пользовательские ошибки не глотаютс
 - Доказательства: live local E2E (cycle 13): built app served by vite preview :5221, SW active and controls the page, app-shell/assets cached; offline reload /login stays on «Загружаем раздел… | Подготавливаем интерфейс HUB-IT» at 10/30/55/65 s.; AuthContext verifySession: error with HTTP status 0 (offline) is not a definitive 401/403, so scheduleRetry repeats forever with max 30 s delay; setLoading(false) is never called on this path (AuthContext.jsx:310-339).; SW itself serves the shell offline (200), so the hang is in auth recovery, not in the service worker navigation fallback.; [cycle14:live] PWA deep test on built app :5223: fresh offline reload stays on loader >50 s; only 2 refresh attempts during 50 s (no request storm); reconnect recovers to /login in ~2 s; offline reload with existing session shows /dashboard and «Нет подключения · Показываем сохранённые данные»; two tabs both show the loader.; [cycle15:live] Cycle 15 PWA: three offline/online reload cycles with existing session recovered to /dashboard each time (~2.6 s offline render, cached «Нет подключения» banner); stale-SW probe installed a new waiting worker while the old controller/caches stayed active and no settings update text appeared.
 - Связано: FE-0084, FE-0085, FE-0070
 
-### FE-0326 — My Files: PNG-превью отдаёт повреждённый артефакт (preview.png), публичная ссылка показывает битое изображение
-- Категория: MyFiles/Preview | Серьёзность: Medium | Статус: Confirmed
+### FE-0326 — My Files: PNG-превью — отклонено (повреждённый тестовый PNG; valid PNG обрабатываются корректно)
+- Категория: MyFiles/Preview | Серьёзность: Medium | Статус: Rejected
 - Страница: /my-files, /shared-files/:token
 - Файл: `WEB-itinvent/backend/services/my_files_service.py` :3568-3663
-- Доказательства: [cycle18:local-browser] Uploaded a 64x64 solid PNG (RGB 200,30,40). Authenticated preview dialog shows an image 64x64; canvas pixel (200,30,40) — the user-visible authenticated preview works.; [cycle18:local-api] GET /api/v1/my-files/{id}/preview/content -> 200 image/png, 180 bytes; Pillow Image.open(...).load() raises OSError "broken data stream". The previews dir contains the corrupt preview.png (180 bytes). Another upload's preview.webp (88 bytes) and thumb.webp (86 bytes) load fine.; [cycle18:local-browser] Public share: /shared-files/{token} renders <img src=/api/v1/my-files/public/{token}/preview/content>; the public preview endpoint returns 200 image/png 180 bytes and Pillow fails with the same broken stream. The original file download still works.; [cycle18:repeat] Reproduced on two uploads sharing blob 8726c036... (same PNG content); the uploaded original (186 bytes) opens fine in Pillow. Screenshot evidence/cycle18/shots/c18-public-preview.png.
+- Доказательства: [cycle18:local-browser] Uploaded a 64x64 solid PNG (RGB 200,30,40). Authenticated preview dialog shows an image 64x64; canvas pixel (200,30,40) — the user-visible authenticated preview works.; [cycle18:local-api] GET /api/v1/my-files/{id}/preview/content -> 200 image/png, 180 bytes; Pillow Image.open(...).load() raises OSError "broken data stream". The previews dir contains the corrupt preview.png (180 bytes). Another upload's preview.webp (88 bytes) and thumb.webp (86 bytes) load fine.; [cycle18:local-browser] Public share: /shared-files/{token} renders <img src=/api/v1/my-files/public/{token}/preview/content>; the public preview endpoint returns 200 image/png 180 bytes and Pillow fails with the same broken stream. The original file download still works.; [cycle18:repeat] Reproduced on two uploads sharing blob 8726c036... (same PNG content); the uploaded original (186 bytes) opens fine in Pillow. Screenshot evidence/cycle18/shots/c18-public-preview.png.; [cycle19:matrix] Valid PNGs small 32x32 (117 B, SHA aac8...), medium 512x512 (4,485 B, SHA f440...), large 1600x1200 (5,769,402 B, SHA 9561...) uploaded via UI. Preview worker ready; private/public preview: small image/webp 80 B, medium image/png 4,485 B with SHA equal to the original, large image/webp 1,437,182 B. Browser img.complete true, natural sizes 32/512/1600, no visual error. Original private/public downloads matched the source SHA. No corruption.; [cycle19:root-cause] The cycle18 "corrupt" source was the 180-byte base64 fixture in five-e2e: IHDR valid, IDAT length 129 with CRC mismatch, 6 trailing bytes, zlib "incorrect data check"; Pillow failed on the source itself. The app stored the invalid source and served it as preview.png; the image optimization path skipped it. The exact corruption is in the test fixture, not in the app or the preview worker.
 
 ## Счётчики (цикл 14, после runtime-проверок и очистки схемы verification)
 
@@ -1741,8 +1745,8 @@ best-effort, пользовательские ошибки не глотаютс
 | Medium | 124 |
 | Low | 173 |
 | Info | 15 |
-| Confirmed | 269 |
+| Confirmed | 268 |
 | Suspected (подмножество) | 12 |
 | Fixed-externally | 2 |
-| Rejected | 41 |
+| Rejected | 42 |
 | **Всего записей** | **324** |

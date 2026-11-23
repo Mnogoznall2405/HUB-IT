@@ -1,5 +1,12 @@
 # CYCLE 18 — независимая проверка аудиторских тестов и достоверности находок
 
+> **Cycle 19 correction (2026-11-23):** FE-0326 is **rejected** as a false positive.
+> The cycle-18 `preview.png` was the invalid test fixture itself (180-byte PNG,
+> IDAT CRC mismatch), not an app artifact. Valid small/medium/large PNGs preview
+> correctly. The test fixture is fixed. See `CYCLE_19_REVIEW.md` and
+> `AUDIT_FINAL_REVIEW.md`; the text below is preserved as the historical cycle-18
+> record.
+
 - Дата: 2026-11-23
 - База аудита: PR #9, `209611a3` (323 записи).
 - Проверенный код: чистый **`338912d9`**; frontend и backend из одного `git archive`, отдельная SQLite `.state-cycle18` (backend 18008, proxy 5228). Production не затрагивался.

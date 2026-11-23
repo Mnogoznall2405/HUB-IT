@@ -1,0 +1,87 @@
+{
+  "test": "FE-0239",
+  "pass": true,
+  "checks": [
+    {
+      "name": "before.d1Owner",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "managers": [
+          13
+        ],
+        "members": 3
+      }
+    },
+    {
+      "name": "before.d2ManagerB",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "managers": [
+          15
+        ],
+        "members": 3
+      }
+    },
+    {
+      "name": "race.selectedD2",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "race.staleD1MembersApplied",
+      "ok": true,
+      "detail": {
+        "showsOwner": true,
+        "showsDelegate": true
+      }
+    },
+    {
+      "name": "save.putTargetsSelectedD2",
+      "ok": true,
+      "detail": {
+        "path": "/api/v1/departments/dept-4b9ed64b343e12446414/managers",
+        "body": {
+          "manager_user_ids": [
+            13
+          ]
+        }
+      }
+    },
+    {
+      "name": "save.putHasStaleOwner",
+      "ok": true,
+      "detail": {
+        "path": "/api/v1/departments/dept-4b9ed64b343e12446414/managers",
+        "body": {
+          "manager_user_ids": [
+            13
+          ]
+        }
+      }
+    },
+    {
+      "name": "after.d1Unchanged",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "managers": [
+          13
+        ],
+        "members": 3
+      }
+    },
+    {
+      "name": "after.d2GotOwner",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "managers": [
+          13
+        ],
+        "members": 3
+      }
+    }
+  ]
+}

@@ -362,3 +362,20 @@ MSBuild/Roslyn-узлы простаивают, серверу не мешают
   публичная ссылка на изображение показывает битое превью; оригинал скачивается.
 - Реестр: 324 записи; 269 Confirmed / 12 Suspected / 2 Fixed / 41 Rejected;
   High 12, Medium 124, Low 173, Info 15. Валидатор 0 ошибок.
+
+## Цикл 19 — финальная верификация и контроль качества (2026-11-23)
+
+- Проверенный SHA 9879be04; чистый стенд .state-cycle19 (18009/5229) +
+  preview worker; production не затрагивался.
+- FE-0326 ОТКЛОНЁН как false positive: повреждённым был тестовый 180-байтный
+  PNG (IDAT CRC mismatch), а не артефакт приложения. Валидные small/medium/large
+  PNG дают валидные private/public preview; MyFiles E2E 12/12, 0 observations.
+- Negative controls усилены: 10/10 EXPECTED_FAILURE с конкретными checks;
+  browser launch error = INFRA_FAILURE и не засчитан.
+- Positive five E2E 5/5, 49 checks; FE-0232 11/11; FE-0239 8/8; FE-0259 11/11;
+  refresh matrix A-D повторена на 9879be04.
+- FE-0194: mocked overview с target без name воспроизвёл split TypeError и
+  error boundary; реальный триггер не доказан → Suspected.
+- Реестр: 324; 268 Confirmed / 12 Suspected / 2 Fixed / 42 Rejected;
+  High 12, Medium 124, Low 173, Info 15. Валидатор 0 ошибок.
+- Созданы AUDIT_FINAL_REVIEW.md и REMEDIATION_BACKLOG.md.

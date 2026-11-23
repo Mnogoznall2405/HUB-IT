@@ -225,3 +225,17 @@
   ONLYOFFICE — тестовый сервер.
 - 11 Suspected: FE-0004, FE-0051, FE-0076, FE-0110, FE-0115, FE-0161,
   FE-0194, FE-0265, FE-0300, FE-0323, FE-0324.
+
+## Цикл 19 — итоговая очередь (2026-11-23)
+
+- P0: FE-0197/FE-0198 (2FA/trusted-device), FE-0059/FE-0083 (refresh),
+  FE-0232 (delegates), FE-0239 (managers).
+- P1: FE-0259 (drafts), FE-0023 (mobile 10k ports).
+- P2: FE-0325 (PWA), FE-0215 (EWS, after test double), FE-0194 (monitoring),
+  FE-0110 (ONLYOFFICE).
+- P3: silent truncation family FE-0161/0300/0323/0324, FE-0051, FE-0076,
+  FE-0115, FE-0004, FE-0265.
+- Spike: FE-0230 — достижимый card-local re-render; без него не исправлять.
+- Test infra: PNG fixture validation, EWS double, ONLYOFFICE/SQL/mobile/PWA
+  harness, WebView2 harness.
+- FE-0326: приложение не чинить; false positive из-за невалидной фикстуры.

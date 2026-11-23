@@ -1,0 +1,81 @@
+[
+  {
+    "item_id": "208ac87641474dac8b140ef53d3a8f17",
+    "name": "c19-png-small.png",
+    "blob_id": "5c0b74305d6e4e60957b74b864f3cca0",
+    "status": "ready",
+    "preview_path": "C:\\Users\\\u0410\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0442\u043e\u0440\\AppData\\Local\\Temp\\2\\opencode\\c19-stand\\WEB-itinvent\\frontend\\e2e\\stack\\.state-cycle19\\my_files_previews\\5c\\5c0b74305d6e4e60957b74b864f3cca0\\preview.webp",
+    "preview_mime": "image/webp",
+    "preview_filename": "c19-png-small.webp",
+    "bytes": 80,
+    "sha256": "3f6f28efe8c41c8723899693554adcdb6f13447feec662ead567b87434d59e95",
+    "pillow": {
+      "ok": true,
+      "size": [
+        32,
+        32
+      ],
+      "mode": "RGB"
+    }
+  },
+  {
+    "item_id": "e76e8c9f9b15494e9b535d12c8facaeb",
+    "name": "c19-png-medium.png",
+    "blob_id": "eaf9626d2b4d433e86ef0a24b5931497",
+    "status": "ready",
+    "preview_path": "C:\\Users\\\u0410\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0442\u043e\u0440\\AppData\\Local\\Temp\\2\\opencode\\c19-stand\\WEB-itinvent\\frontend\\e2e\\stack\\.state-cycle19\\my_files_previews\\ea\\eaf9626d2b4d433e86ef0a24b5931497\\preview.png",
+    "preview_mime": "image/png",
+    "preview_filename": "c19-png-medium.png",
+    "bytes": 4485,
+    "sha256": "f44083817bb06b274772186bdc48bf17f1ccfb6b11abd1a8d1afbdc87130e21c",
+    "pillow": {
+      "ok": true,
+      "size": [
+        512,
+        512
+      ],
+      "mode": "RGB"
+    },
+    "png": {
+      "chunks": [
+        {
+          "type": "IHDR",
+          "length": 13,
+          "crc_ok": true
+        },
+        {
+          "type": "IDAT",
+          "length": 4428,
+          "crc_ok": true
+        },
+        {
+          "type": "IEND",
+          "length": 0,
+          "crc_ok": true
+        }
+      ],
+      "trailing_bytes": 0,
+      "idat_bytes": 4428,
+      "idat_decompressed": 786944
+    }
+  },
+  {
+    "item_id": "ad443e0613264b24a137e48213868a46",
+    "name": "c19-png-large.png",
+    "blob_id": "0fd99651d1b44a138287cb3691d71043",
+    "status": "ready",
+    "preview_path": "C:\\Users\\\u0410\u0434\u043c\u0438\u043d\u0438\u0441\u0442\u0440\u0430\u0442\u043e\u0440\\AppData\\Local\\Temp\\2\\opencode\\c19-stand\\WEB-itinvent\\frontend\\e2e\\stack\\.state-cycle19\\my_files_previews\\0f\\0fd99651d1b44a138287cb3691d71043\\preview.webp",
+    "preview_mime": "image/webp",
+    "preview_filename": "c19-png-large.webp",
+    "bytes": 1437182,
+    "sha256": "bedb4dfc0bf56dbe2774efb67ca4c6ff0efc0dcdde542d68d5857b05942cfc88",
+    "pillow": {
+      "ok": true,
+      "size": [
+        1600,
+        1200
+      ],
+      "mode": "RGB"
+    }
+  }
+]
