@@ -1,6 +1,7 @@
 """
 Database connection management with dynamic database switching support.
 """
+import contextvars
 import os
 import queue
 import threading
@@ -11,6 +12,33 @@ from typing import Generator, Optional
 import pyodbc
 
 from backend.config import config
+
+
+# A1: scoped SQL Server statement timeout. Set only by AI entry points (tool
+# registry, action-card confirms) so driver-level query deadlines apply to the
+# AI path while UI/API consumers keep the pyodbc default (unlimited).
+ai_sql_query_timeout: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "ai_sql_query_timeout", default=None
+)
+
+
+@contextmanager
+def sql_query_timeout_scope(seconds: Optional[float]) -> Generator[None, None, None]:
+    """Apply the scoped statement timeout for the duration of the block."""
+    if seconds is None:
+        yield
+        return
+    token = ai_sql_query_timeout.set(seconds)
+    try:
+        yield
+    finally:
+        ai_sql_query_timeout.reset(token)
+
+
+class SqlStatementTimeoutUnsupportedError(RuntimeError):
+    """A1 (P0-2): raised BEFORE any SQL runs when an AI-scoped statement
+    timeout was requested but the driver refused it — fail closed instead
+    of executing unbounded."""
 
 
 def get_database_config(db_id: Optional[str] = None) -> dict:
@@ -125,24 +153,66 @@ class _PyodbcConnectionPool:
         configure_pyodbc_encoding(conn)
         return conn
 
-    def acquire(self) -> pyodbc.Connection:
+    def _abandon(self, conn: pyodbc.Connection) -> None:
+        """Close + drop a conn from pool accounting (broken or unverifiable)."""
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with self._lock:
+            self._created = max(0, self._created - 1)
+
+    def _ping(self, conn: pyodbc.Connection, *, ping_timeout: Optional[float]) -> None:
+        """SELECT 1 health check. When ``ping_timeout`` is requested (AI path)
+        the driver timeout covers the ping itself — fail closed on refusal,
+        verify the restore, never run an unbounded statement."""
+        if ping_timeout is None:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT 1")
+            finally:
+                cursor.close()
+            return
+        try:
+            prev_timeout = conn.timeout
+            conn.timeout = int(ping_timeout)
+            if conn.timeout != int(ping_timeout):
+                raise RuntimeError("driver ignored statement timeout")
+        except Exception as exc:
+            self._abandon(conn)
+            raise SqlStatementTimeoutUnsupportedError(
+                "SQL driver rejected the ping timeout — соединение выброшено, "
+                "запрос не выполнялся."
+            ) from exc
+        try:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT 1")
+            finally:
+                cursor.close()
+        finally:
+            try:
+                conn.timeout = prev_timeout
+                if conn.timeout != prev_timeout:
+                    raise RuntimeError("ping timeout restore not reflected")
+            except Exception:
+                # Conn state unknown — let acquire's generic handler abandon
+                # it and continue with the next pooled connection.
+                raise
+
+    def acquire(self, *, ping_timeout: Optional[float] = None) -> pyodbc.Connection:
         try:
             conn, released_at = self._pool.get_nowait()
             try:
                 # Ping only when the connection sat idle long enough to risk a
                 # server-side/network timeout — a fresh borrow needs no SELECT 1.
                 if time.monotonic() - released_at > self._idle_ping_sec:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT 1")
-                    cursor.close()
+                    self._ping(conn, ping_timeout=ping_timeout)
                 return conn
+            except SqlStatementTimeoutUnsupportedError:
+                raise  # fail-closed: do NOT fall through to another connection
             except Exception:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                with self._lock:
-                    self._created = max(0, self._created - 1)
+                self._abandon(conn)
         except queue.Empty:
             pass
 
@@ -204,15 +274,19 @@ def _get_connection_pool(connection_string: str) -> _PyodbcConnectionPool:
 class DatabaseConnectionManager:
     """Manager for SQL Server database connections with dynamic switching."""
 
-    def __init__(self, db_id: Optional[str] = None):
+    def __init__(self, db_id: Optional[str] = None, *, query_timeout: Optional[float] = None):
         """
         Initialize database manager.
 
         Args:
             db_id: Database ID to use (None for default)
+            query_timeout: Optional pyodbc statement timeout (seconds) applied
+                to every connection checkout from this manager. The previous
+                value is restored before the connection returns to the pool.
         """
         self._pool_size = _env_pool_size()
         self._db_id = db_id
+        self._query_timeout = query_timeout
         self._db_config = get_database_config(db_id)
         self._connection_string = build_connection_string(self._db_config)
         self._pool = _get_connection_pool(self._connection_string)
@@ -233,8 +307,31 @@ class DatabaseConnectionManager:
         """
         conn = None
         broken = False
+        prev_timeout: Optional[float] = None
+        timeout_override = getattr(self, "_query_timeout", None)
+        if timeout_override is None:
+            timeout_override = ai_sql_query_timeout.get()
         try:
-            conn = self._pool.acquire()
+            # P0 (cycle 3): the AI-scoped timeout covers the idle SELECT 1
+            # ping inside acquire — it must not run unbounded either.
+            conn = self._pool.acquire(ping_timeout=timeout_override)
+            if timeout_override is not None:
+                # A1/P0-2 fail-closed: when a timeout was requested we must be
+                # sure the driver actually accepted it — abort before any SQL
+                # runs and discard the connection instead of executing
+                # unbounded. Non-AI callers (timeout_override is None) are
+                # untouched: they never reach this branch.
+                try:
+                    prev_timeout = conn.timeout
+                    conn.timeout = int(timeout_override)
+                    if conn.timeout != int(timeout_override):
+                        raise RuntimeError("driver ignored statement timeout")
+                except Exception as exc:
+                    broken = True
+                    raise SqlStatementTimeoutUnsupportedError(
+                        "SQL driver rejected the statement timeout "
+                        f"({timeout_override}s) — запрос отменён до выполнения."
+                    ) from exc
             yield conn
             conn.commit()
         except Exception:
@@ -248,6 +345,15 @@ class DatabaseConnectionManager:
             raise
         finally:
             if conn:
+                if prev_timeout is not None:
+                    try:
+                        conn.timeout = prev_timeout
+                        if conn.timeout != prev_timeout:
+                            raise RuntimeError("timeout restore not reflected")
+                    except Exception:
+                        # The connection is in an unknown state — never return
+                        # it to the pool carrying a mutated timeout.
+                        broken = True
                 if broken:
                     self._pool.discard(conn)
                 else:
@@ -310,17 +416,19 @@ class DatabaseConnectionManager:
 db_manager = DatabaseConnectionManager()
 
 
-def get_db(db_id: Optional[str] = None) -> DatabaseConnectionManager:
+def get_db(db_id: Optional[str] = None, *, query_timeout: Optional[float] = None) -> DatabaseConnectionManager:
     """
     Dependency function for FastAPI to get database manager.
 
     Args:
         db_id: Database ID to use (None for default)
+        query_timeout: Optional pyodbc statement timeout (seconds) for every
+            checkout of the returned manager
 
     Returns:
         DatabaseConnectionManager instance
     """
-    return DatabaseConnectionManager(db_id)
+    return DatabaseConnectionManager(db_id, query_timeout=query_timeout)
 
 
 # User database selection (in-memory for session)

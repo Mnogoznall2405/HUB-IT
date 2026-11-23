@@ -383,6 +383,9 @@ class MailSearchTool(AiTool):
     description = "Search the current user's mailboxes. Use for finding messages by sender, recipient, subject, body, folder, unread state or attachments."
     input_model = MailSearchArgs
     stage = "checking_office"
+    # A1: EWS chains several HTTP requests (autodiscover + query, 120s each) —
+    # bound the whole call above one request, below the full chain worst case.
+    timeout_sec = 180.0
 
     def execute(self, *, context: AiToolExecutionContext, args: MailSearchArgs) -> AiToolResult:
         _require_permission(context, PERM_MAIL_ACCESS)
@@ -425,6 +428,7 @@ class MailGetMessageTool(AiTool):
     description = "Open one mail message for the current user. Use after office.mail.search when the user needs full message details."
     input_model = MailGetMessageArgs
     stage = "checking_office"
+    timeout_sec = 180.0
 
     def execute(self, *, context: AiToolExecutionContext, args: MailGetMessageArgs) -> AiToolResult:
         _require_permission(context, PERM_MAIL_ACCESS)
@@ -441,6 +445,7 @@ class ContactsResolveTool(AiTool):
     description = "Resolve recipient names or email fragments in the current user's address book/GAL before drafting email."
     input_model = ContactsResolveArgs
     stage = "checking_office"
+    timeout_sec = 180.0
 
     def execute(self, *, context: AiToolExecutionContext, args: ContactsResolveArgs) -> AiToolResult:
         _require_permission(context, PERM_MAIL_ACCESS)
@@ -561,6 +566,8 @@ class TasksGetTool(AiTool):
 
 class WorkdaySummaryTool(AiTool):
     tool_id = OFFICE_TOOL_WORKDAY_SUMMARY
+    # A1: iterates mailboxes sequentially — allow the widest EWS bound.
+    timeout_sec = 300.0
     description = "Build a short workday summary from unread mail, urgent/overdue tasks and recent office notifications."
     input_model = WorkdaySummaryArgs
     stage = "checking_office"

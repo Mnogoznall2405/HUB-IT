@@ -174,6 +174,9 @@ class FilesReportArgs(BaseModel):
 
 class FilesCreateTool(AiTool):
     tool_id = AI_TOOL_FILES_CREATE
+    # A1: document generation (DOCX/XLSX/PDF + optional LLM assist) is heavier
+    # than a lookup — allow a longer bound before the call is abandoned.
+    timeout_sec = 300.0
     description = (
         "Create generated chat attachments requested by the user. Supports xlsx, csv, docx, pdf, txt, md and json. "
         "Omit format when the user did not choose one; HUB will show a format-choice card before creating the file. "
@@ -420,6 +423,7 @@ def _report_file_spec_v2(args: FilesReportArgs) -> dict[str, Any]:
 
 class FilesReportTool(AiTool):
     tool_id = AI_TOOL_FILES_REPORT
+    timeout_sec = 300.0
     description = (
         "Create a polished report file from structured title, summary, sections, sheets and tables. Supports xlsx, csv, docx, pdf, txt, md and json. "
         "Omit format when the user did not choose one; HUB will show a format-choice card. "
@@ -506,6 +510,9 @@ class FilesConvertDocumentArgs(BaseModel):
 
 class FilesConvertDocumentTool(AiTool):
     tool_id = AI_TOOL_FILES_CONVERT_DOCUMENT
+    # A1: conversion runs local parsers plus up to 10 vision-LLM page calls
+    # (120s each) — needs the widest bound in the registry.
+    timeout_sec = 600.0
     description = (
         "Convert attached scanned photos or PDF documents into Word/Text/Markdown/PDF/Excel "
         "while preserving structure via vision LLM. "

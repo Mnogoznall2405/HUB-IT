@@ -2326,6 +2326,12 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
         error = ValueError("Action database is not resolved")
         result = {"success": False, "message": str(error)}
     else:
+        # A1: SQL mutations executed from AI action cards get a scoped driver
+        # statement timeout so a hung ITINVENT write cannot block the request.
+        from backend.ai_chat.timeouts import ai_sql_mutation_timeout_sec
+        from backend.database.connection import ai_sql_query_timeout
+
+        _sql_timeout_token = ai_sql_query_timeout.set(ai_sql_mutation_timeout_sec())
         try:
             require_conversation_access(row.conversation_id, current_user_id)
             if row.action_type == ACTION_TRANSFER:
@@ -2424,6 +2430,8 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
                         send_outcome="unknown", error_code=code or "MAIL_SEND_UNKNOWN",
                         message="Не удалось подтвердить результат отправки. Письмо могло быть отправлено. Проверьте папку «Отправленные»; не отправляйте его повторно.",
                     )
+        finally:
+            ai_sql_query_timeout.reset(_sql_timeout_token)
 
     with app_session() as session:
         current = session.get(AppAiPendingAction, normalized_action_id)
