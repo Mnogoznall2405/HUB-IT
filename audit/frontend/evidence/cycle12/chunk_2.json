@@ -1,0 +1,464 @@
+[
+ {
+  "id": "FE-0043",
+  "title": "FeedCommentsPanel: опрос 15 c -> K+1 запрос при K раскрытых ветках",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/feed/FeedCommentsPanel.jsx",
+  "lines": "130-138",
+  "claim": "130-138 |  | "
+ },
+ {
+  "id": "FE-0044",
+  "title": "Безымянные tablist («Tab list») на страницах с несколькими наборами вкладок",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Tasks.jsx",
+  "lines": "n/a (Tab-наборы без aria-label)",
+  "claim": "n/a (Tab-наборы без aria-label) |  | "
+ },
+ {
+  "id": "FE-0045",
+  "title": "Tasks: каждая вкладка перезабирает список (rapid-switch: 7 кликов -> 10 запросов, 3x sort_by=due_at)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTasksListQuery.js",
+  "lines": "169 (focus_mode; перезапрос при смене режима)",
+  "claim": "169 (focus_mode; перезапрос при смене режима) |  | "
+ },
+ {
+  "id": "FE-0046",
+  "title": "ItObjectDetail: сводка «Пароли» без AbortSignal; passwordsAPI.getEntries не поддерживает signal",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/ItObjectDetail.jsx",
+  "lines": "58-60",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/api/passwords.js",
+    "lines": "6-9"
+   }
+  ],
+  "claim": "58-60 |  | "
+ },
+ {
+  "id": "FE-0047",
+  "title": "«Эпоха отказа auth» не сбрасывается входом passkey/trusted-device (окно <=12 мин)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/api/http.js",
+  "lines": "61-64,281-283",
+  "claim": "61-64,281-283 |  | цикл 9: агент аргументирует Medium — после silent-relogin вкладка остаётся в «эпохе отказа»; severity сохранён по решению независимой проверки, см. FE-0083"
+ },
+ {
+  "id": "FE-0048",
+  "title": "swrCache: force-чтение присоединяется к уже идущему обычному запросу — «Обновить» не гарантирует fetch",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/lib/swrCache.js",
+  "lines": "114-117",
+  "claim": "114-117 |  | "
+ },
+ {
+  "id": "FE-0049",
+  "title": "Computers: loadChangesDeferred без abort/cancelled (setState после unmount)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Computers.jsx",
+  "lines": "950-960",
+  "claim": "950-960 |  | "
+ },
+ {
+  "id": "FE-0050",
+  "title": "ChatOpen: createDirectConversation дважды в StrictMode dev",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/ChatOpen.jsx",
+  "lines": "56",
+  "claim": "56 |  | "
+ },
+ {
+  "id": "FE-0051",
+  "title": "swrCache: потребитель может применить «отсоединённый» ответ без перепроверки",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/lib/swrCache.js",
+  "lines": "63-77 (invalidateSWRCacheByPrefix: отсоединение in-flight), 120-129 (runDedupedFetch: отсоединённый fetch всё равно резолвится данными вызвавшему — публикация в кэш блокируется, возврат данных нет)",
+  "claim": "63-77 (invalidateSWRCacheByPrefix: отсоединение in-flight), 120-129 (runDedupedFetch: отсоединённый fetch всё равно резолвится данными вызвавшему — публикация в кэш блокируется, возврат данных нет) |  | "
+ },
+ {
+  "id": "FE-0052",
+  "title": "Мобильный заголовок /scan-center — «Scan Center» (английский), десктоп — «Контроль документов»",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx",
+  "lines": "2028",
+  "claim": "2028 |  | "
+ },
+ {
+  "id": "FE-0053",
+  "title": "Диалог создания задачи: пустой заголовок (ZWSP), доступное имя — дефолтное «Dialog»",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/hub/tasks/TasksCreateDialog.jsx",
+  "lines": "n/a (DialogTitle отсутствует/пуст)",
+  "claim": "n/a (DialogTitle отсутствует/пуст) |  | "
+ },
+ {
+  "id": "FE-0054",
+  "title": "При открытии диалога создания задачи — 2 идентичных GET /hub/users/controllers",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/hub/TaskWorkspacePanel.jsx",
+  "lines": "235",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTasksListQuery.js",
+    "lines": "72"
+   }
+  ],
+  "claim": "235 |  | "
+ },
+ {
+  "id": "FE-0056",
+  "title": "Удаление/перемещение черновика письма: API 400; путь ошибки в UI существует, но исходная проба его не зафиксировала",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/api/mailMessageActions.js",
+  "lines": "28-29",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/components/mail/useMailSelectedPreviewActions.js",
+    "lines": "28-31,41-46 (setError -> Alert)"
+   },
+   {
+    "file": "WEB-itinvent/backend/services/mail_message_actions.py",
+    "lines": "83-94 (resolve_folder/get -> Message not found)"
+   }
+  ],
+  "claim": "28-29 | Сценарий «удалить только что сохранённый черновик» ломается на уровне API; состояние самовосстанавливается синком | "
+ },
+ {
+  "id": "FE-0057",
+  "title": "Панель чтения письма: noWrap-дата наезжает на кнопки «Удалить»/«Ещё действия»",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/mail/MailPreviewHeader.jsx",
+  "lines": "398-400 (дата noWrap), 403-474 (тулбар)",
+  "claim": "398-400 (дата noWrap), 403-474 (тулбар) |  | "
+ },
+ {
+  "id": "FE-0058",
+  "title": "Нативные window.confirm для удалений (задачи и др.) vs MUI-диалоги в других местах — непоследовательный паттерн",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/hub/TaskWorkspacePanel.jsx",
+  "lines": "356",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js",
+    "lines": "750,873"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/pages/account/profile/ProfileTab.jsx",
+    "lines": "311"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceVoicesSection.jsx",
+    "lines": "118"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceVideoPage.jsx",
+    "lines": "455"
+   }
+  ],
+  "claim": "356 |  | "
+ },
+ {
+  "id": "FE-0059",
+  "title": "Обрыв сети >15 с во время ротации refresh-токена принудительно разлогинивает",
+  "severity": "High",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/backend/api/v1/auth.py",
+  "lines": "135,1648,1656-1687",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/contexts/AuthContext.jsx",
+    "lines": "171-174,256-258"
+   }
+  ],
+  "claim": "135,1648,1656-1687 | Пользователи нестабильных сетей (Wi-Fi-роуминг, мобильный интернет, VPN) теряют сессию и несохранённый ввод | "
+ },
+ {
+  "id": "FE-0060",
+  "title": "Чат: индикатор потери связи — исходное утверждение «не появляется» вероятно ошибочно",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/chat/ChatThreadHeader.jsx",
+  "lines": "37-61",
+  "claim": "37-61 |  | "
+ },
+ {
+  "id": "FE-0061",
+  "title": "Страница входа без landmark <main> (axe landmark-one-main)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+  "lines": "n/a (корень рендера Login — div-сеть без <main>)",
+  "claim": "n/a (корень рендера Login — div-сеть без <main>) |  | "
+ },
+ {
+  "id": "FE-0062",
+  "title": "Viewport-мета запрещает масштабирование (maximum-scale=1.0, user-scalable=no) — WCAG 1.4.4",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/index.html",
+  "lines": "7",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/indexHtml.test.js",
+    "lines": "10-11"
+   }
+  ],
+  "claim": "7 |  | "
+ },
+ {
+  "id": "FE-0063",
+  "title": "/robots.txt отдаёт SPA index.html (IIS fallback)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/public/web.config",
+  "lines": "150-161",
+  "claim": "150-161 |  | "
+ },
+ {
+  "id": "FE-0064",
+  "title": "Self-XSS через вставку: contentEditable редактор описания задачи (моб.) без перехвата paste",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/hub/tasks/MobileCreateDescriptionEditor.jsx",
+  "lines": "27-33,81-91",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/components/mail/MailRichTextEditor.jsx",
+    "lines": "161-192 (контраст: paste санируется)"
+   }
+  ],
+  "claim": "27-33,81-91 | Вектор — social engineering («скопируйте этот текст в описание задачи»): вставленный onerror исполняется в момент вставки; данные при сохранении нейтрализуются | "
+ },
+ {
+  "id": "FE-0065",
+  "title": "CSP только Report-Only; enforce сломает drawio (нет frame-src)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/public/web.config",
+  "lines": "186",
+  "claim": "186 |  | "
+ },
+ {
+  "id": "FE-0066",
+  "title": "Почтовые вложения: нет клиентских лимитов размера/типа/количества (IIS 64 МБ режет с неявной ошибкой)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx",
+  "lines": "993-1008",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/public/web.config",
+    "lines": "12-16"
+   }
+  ],
+  "claim": "993-1008 |  | "
+ },
+ {
+  "id": "FE-0067",
+  "title": "VoiceMeetingSummary: ReactMarkdown без rehype-sanitize",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceMeetingSummary.jsx",
+  "lines": "301",
+  "claim": "301 |  | "
+ },
+ {
+  "id": "FE-0068",
+  "title": "target=_blank из HTML-подписи без гарантированного rel=noopener",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/mail/mailHtmlContent.js",
+  "lines": "23-24,80-92",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/pages/chat/AiMailActionEditDialog.jsx",
+    "lines": "96,186"
+   }
+  ],
+  "claim": "23-24,80-92 |  | "
+ },
+ {
+  "id": "FE-0069",
+  "title": "Клиентские права — UX-слой; обязательна серверная сверка (alwaysGrantedPermissions, rolePermissionFallback, admin-bypass)",
+  "severity": "Info",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/contexts/AuthContext.jsx",
+  "lines": "17-34,132-141,698-707",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/App.jsx",
+    "lines": "108-149,260-273"
+   }
+  ],
+  "claim": "17-34,132-141,698-707 |  | "
+ },
+ {
+  "id": "FE-0070",
+  "title": "Нет глобального сбора ошибок (window.onerror/unhandledrejection) — только chunk-ошибки",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/main.jsx",
+  "lines": "44-54",
+  "claim": "44-54 |  | "
+ },
+ {
+  "id": "FE-0071",
+  "title": "Сырые axios-сообщения могут попасть в UI (fallback)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/mail/mailErrorModel.js",
+  "lines": "16-24,72-74",
+  "claim": "16-24,72-74 |  | "
+ },
+ {
+  "id": "FE-0072",
+  "title": "403 приравнен к «сессия отклонена» -> лишние logout",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/api/http.js",
+  "lines": "186-189",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/contexts/AuthContext.jsx",
+    "lines": "171-174"
+   }
+  ],
+  "claim": "186-189 |  | цикл 9: бизнес-403 подавляются отдельным путём — остаточный риск только для инфраструктурных 403 на auth-цепочке"
+ },
+ {
+  "id": "FE-0073",
+  "title": "quill 2.0.2 pin (история XSS); обвязка безопасна; npm audit не проводился",
+  "severity": "Info",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/package.json",
+  "lines": "42",
+  "claim": "42 |  | "
+ },
+ {
+  "id": "FE-0074",
+  "title": "MyFiles: window.open same-origin без noopener (единственное исключение из ~20 вызовов)",
+  "severity": "Info",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx",
+  "lines": "401",
+  "claim": "401 |  | "
+ },
+ {
+  "id": "FE-0075",
+  "title": "drawio postMessage: при невалидном конфиге ответ на '*' (fail-open edge)",
+  "severity": "Info",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/itObjects/ObjectNetmapTab.jsx",
+  "lines": "122-135",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/lib/drawio.js",
+    "lines": "72-79"
+   }
+  ],
+  "claim": "122-135 |  | "
+ },
+ {
+  "id": "FE-0076",
+  "title": "AI-письмо: plain-text body с is_html=true",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/chat/AiMailActionEditDialog.jsx",
+  "lines": "119-129",
+  "claim": "119-129 |  | "
+ },
+ {
+  "id": "FE-0077",
+  "title": "Почта: сохранение черновиков с вложениями (POST /drafts/upsert-multipart) местами 7-26 c (http.slow в логах backend)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/backend/services/mail_service.py",
+  "lines": "4777-4856 (save_draft -> upsert_draft)",
+  "claim": "4777-4856 (save_draft -> upsert_draft) | Пользователь ждёт сохранения черновика десятки секунд | "
+ },
+ {
+  "id": "FE-0078",
+  "title": "Чат: авто-реотправленное после офлайна сообщение исчезает из ленты отправителя до перезагрузки",
+  "severity": "High",
+  "status": "Confirmed (runtime)",
+  "file": "WEB-itinvent/frontend/src/lib/chatSocket.js",
+  "lines": "657,1107-1186 (offline queue + flushQueue); слияние в ленте — useChatThreadMessageMerge.js",
+  "claim": "657,1107-1186 (offline queue + flushQueue); слияние в ленте — useChatThreadMessageMerge.js |  | Авто-реотправка СУЩЕСТВУЕТ: WS outbox (enqueueOfflineMessage/flushQueue, request_id сохраняется, таймаут продлевается) — peer получил сообщение без ручного retry. НО e2e chat-realtime.spec.js:185 падает на :202: после resend в ленте ОТПРАВИТЕЛЯ токен найден 0 раз (ожидалось 1) — оптимистичный failed-пузырь снят, серверная копия не смержена (дедуп по client_message_id ломается). Получатель видит сообщение, отправитель — нет до reload. Первичная формулировка «нет авто-реотправки» по коду была ошибочна — перепроверка рантаймом."
+ },
+ {
+  "id": "FE-0079",
+  "title": "Чат: loadingOlder залипает true при смене диалога — дозагрузка истории мёртва",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/chat/useChatThreadController.js",
+  "lines": "591 (set true),855-859 (finally сбрасывает только если activeConversationIdRef===id),895",
+  "claim": "591 (set true),855-859 (finally сбрасывает только если activeConversationIdRef===id),895 |  | переключение диалога во время дозагрузки оставляет loadingOlder=true навсегда: кнопка «Показать ранние сообщения» уходит в loading и не возвращается до remount."
+ },
+ {
+  "id": "FE-0080",
+  "title": "Чат: мёртвый TCP-сокет → до ~50 c «подключено» без индикатора обрыва",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/lib/chatSocket.js",
+  "lines": "heartbeat 25s, maxMissedPongs=2; transport-healthy окно ~60s",
+  "claim": "heartbeat 25s, maxMissedPongs=2; transport-healthy окно ~60s |  | на half-open соединении (сеть упала без RST) индикатор появляется только после ~2 промахов pong; сглаживает FE-0060: порог баннера 2 c (ChatThreadHeader.jsx:35) есть, но упирается в transport-health gate."
+ },
+ {
+  "id": "FE-0081",
+  "title": "Чат: pending read-receipt IDs сбрасываются при переключении диалога",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/chat/useReadReceipts.js",
+  "lines": "112-124,139-172",
+  "claim": "112-124,139-172 |  | накопленные неотправленные mark-read ID стираются при смене conversationId — квитанции прочтения теряются молча."
+ },
+ {
+  "id": "FE-0082",
+  "title": "Чат: коллизия typing-таймаутов между диалогами — сброс чужого индикатора",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/chat/useChatSocketEvents.js",
+  "lines": "543-560",
+  "claim": "543-560 |  | перепроверка: ключ таймаутов `${conversationId}:${typingUserId}` — прямой коллизии нет; остаточный кейс: один и тот же пользователь «печатает» в двух диалогах — таймаут из старого диалога гасит индикатор в новом (список typingUsers общий). Доп. (цикл 11): таймеры/typingUsers не очищаются cleanup-ом эффекта — до 4 с на неактуальной беседе; два участника с одинаковым именем гасят индикатор друг друга."
+ },
+ {
+  "id": "FE-0083",
+  "title": "Межвкладочная гонка refresh → отзыв token family → разлогин ВСЕХ вкладок",
+  "severity": "High",
+  "status": "Confirmed (runtime)",
+  "file": "WEB-itinvent/frontend/src/api/http.js",
+  "relatedFiles": [
+   "WEB-itinvent/frontend/src/contexts/AuthContext.jsx:471-508 (silent refresh на каждый visibilitychange + интервал ~12 мин)",
+   "WEB-itinvent/backend/api/v1/auth.py:135,1648-1676"
+  ],
+  "claim": " |  | Триггер в реальности: silent refresh на каждый visibilitychange (AuthContext.jsx:471-508) — пробуждение ноутбука с N вкладок → гонка внутри grace-окна → массовый logout. Потеря несохранённых черновиков — да (принудительный logout). Grace/MAX_HITS не трогать (auth-политика)."
+ },
+ {
+  "id": "FE-0084",
+  "title": "Service Worker обновляется только полной перезагрузкой приложения; уведомление об обновлении — только в Settings",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/main.jsx",
+  "relatedFiles": [
+   "WEB-itinvent/frontend/src/lib/pwaInstall.js:198-260"
+  ],
+  "claim": " |  | нет периодического registration.update() и prompt на обновление виден лишь в карточке настроек — пользователи с долгоживущими сессиями работают на устаревшем бандле (объясняет часть «странных» репортов типа FE-0004)."
+ }
+]

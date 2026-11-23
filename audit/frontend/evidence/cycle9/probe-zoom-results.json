@@ -1,0 +1,118 @@
+[
+  {
+    "label": "dashboard@0.8",
+    "docScrollW": 1920,
+    "innerW": 1920,
+    "bodyScrollW": 2400,
+    "overflowed": false,
+    "wideEls": []
+  },
+  {
+    "label": "dashboard@1",
+    "docScrollW": 1920,
+    "innerW": 1920,
+    "bodyScrollW": 1920,
+    "overflowed": false,
+    "wideEls": []
+  },
+  {
+    "label": "dashboard@1.5",
+    "docScrollW": 1920,
+    "innerW": 1920,
+    "bodyScrollW": 1280,
+    "overflowed": false,
+    "wideEls": []
+  },
+  {
+    "label": "chat@0.8",
+    "docScrollW": 1920,
+    "innerW": 1920,
+    "bodyScrollW": 2400,
+    "overflowed": false,
+    "wideEls": []
+  },
+  {
+    "label": "chat@1",
+    "docScrollW": 1920,
+    "innerW": 1920,
+    "bodyScrollW": 1920,
+    "overflowed": false,
+    "wideEls": []
+  },
+  {
+    "label": "chat@1.5",
+    "docScrollW": 1920,
+    "innerW": 1920,
+    "bodyScrollW": 1280,
+    "overflowed": false,
+    "wideEls": []
+  },
+  {
+    "label": "scan-center@0.8",
+    "docScrollW": 1930,
+    "innerW": 1920,
+    "bodyScrollW": 2412,
+    "overflowed": true,
+    "wideEls": [
+      "html.",
+      "body.",
+      "div#root.",
+      "div.MuiBox-root css-irwvew",
+      "div.MuiBox-root css-etcn5x",
+      "main.MuiBox-root css-14h47ah",
+      "div.MuiBox-root css-rws6pg",
+      "div.MuiBox-root css-1rqjt25"
+    ]
+  },
+  {
+    "label": "scan-center@1",
+    "docScrollW": 1932,
+    "innerW": 1920,
+    "bodyScrollW": 1932,
+    "overflowed": true,
+    "wideEls": [
+      "html.",
+      "body.",
+      "div#root.",
+      "div.MuiBox-root css-irwvew",
+      "div.MuiBox-root css-etcn5x",
+      "main.MuiBox-root css-14h47ah",
+      "div.MuiBox-root css-rws6pg",
+      "div.MuiBox-root css-1rqjt25"
+    ]
+  },
+  {
+    "label": "scan-center@1.5",
+    "docScrollW": 1938,
+    "innerW": 1920,
+    "bodyScrollW": 1292,
+    "overflowed": true,
+    "wideEls": [
+      "html."
+    ]
+  },
+  {
+    "label": "my-files@0.8",
+    "docScrollW": 1920,
+    "innerW": 1920,
+    "bodyScrollW": 2400,
+    "overflowed": false,
+    "wideEls": []
+  },
+  {
+    "label": "my-files@1",
+    "docScrollW": 1920,
+    "innerW": 1920,
+    "bodyScrollW": 1920,
+    "overflowed": false,
+    "wideEls": []
+  },
+  {
+    "label": "my-files@1.5",
+    "docScrollW": 1920,
+    "innerW": 1920,
+    "bodyScrollW": 1280,
+    "overflowed": false,
+    "wideEls": []
+  }
+]

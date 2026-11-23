@@ -1,0 +1,207 @@
+[
+  {
+    "id": "FE-0167",
+    "verdict": "confirmed",
+    "note": "Эффект 140-166 зависит от items и при каждом фоновом полле (130-138, интервал 15 с) заново делает getComments по каждому root с ответами; отмены/seq нет, только .catch(() => undefined)."
+  },
+  {
+    "id": "FE-0168",
+    "verdict": "confirmed",
+    "note": "openArticle (265-279) после await безусловно пишет setDetail/setDetailLoading, без seq/abort, а ошибка гасится в setDetail(null); поздний ответ перетирает выбранную статью."
+  },
+  {
+    "id": "FE-0169",
+    "verdict": "confirmed",
+    "note": "На 224 запрашивается limit:300, total из ответа (kb_service.py:328) не используется, счётчик 308/330 считает только загруженные статьи; пагинации и предупреждения о срезе нет."
+  },
+  {
+    "id": "FE-0170",
+    "verdict": "confirmed",
+    "note": "warehouseRef уходит в запрос (834), а renderValue (1071) при отсутствии ref в facets рисует «Все склады», не сбрасывая warehouseRef; facets считаются до фильтра по складу (backend 1630-1638), поэтому расхождение возникает при поиске/смене снимка."
+  },
+  {
+    "id": "FE-0171",
+    "verdict": "confirmed",
+    "note": "RequestDetail при !request (669-681) возвращает «Выберите заявку» до рендера error (693); detailError, переданный на 1136, не виден, если заявки нет ни в списке, ни в detail."
+  },
+  {
+    "id": "FE-0172",
+    "verdict": "not-a-defect",
+    "note": "У openAnalytics (589-601) нет busy-guard, но единственный триггер — MenuItem FeedPostCard.jsx:269, а menuAction (145-147) сначала закрывает меню; повторный вызов практически недостижим."
+  },
+  {
+    "id": "FE-0173",
+    "verdict": "not-a-defect",
+    "note": "archive/delete получают тот же объект из items (Feed.jsx:677-679, selectedPost ищется в items 273-277), поэтому item.id !== post.id для этого элемента ложно при любом типе; String-нормализация в patchPost (358-361) — защитная."
+  },
+  {
+    "id": "FE-0174",
+    "verdict": "not-a-defect",
+    "note": "request_ref формируется как UUID из 36 символов (warehouse_1c_it_requests.py:131-144), слэшей и спецсимволов не бывает; navigate на 910/946 безопасен."
+  },
+  {
+    "id": "FE-0175",
+    "verdict": "confirmed",
+    "note": "В createObjectUrl (1745-1750) пишется previewObjectUrl.current, а в stale-ветке (1755-1758) URL отзывается без очистки .current; затем close/следующий preview отзывает мёртвый URL, а URL актуального превью может остаться неотозванным."
+  },
+  {
+    "id": "FE-0176",
+    "verdict": "confirmed",
+    "note": "runAction (132-142) хранит один actionBusyKey и в finally ставит null; параллельные действия с разными ключами (имя встречи 453-462, id задачи 828-848) перетирают друг друга, снимая блокировку с ещё идущего действия."
+  },
+  {
+    "id": "FE-0177",
+    "verdict": "confirmed",
+    "note": "retryTopics/retryAssignments/retryTranscript (980-1001) вызывают API без signal и без сверки base; cleanup (1003-1004) отменяет только transcriptAbortRef, поэтому ответ ретрая пишется в уже другую встречу."
+  },
+  {
+    "id": "FE-0178",
+    "verdict": "confirmed",
+    "note": "el.play?.() на 849, 864, 868 и 1268 не имеет .catch; AbortError при смене src или паузе даёт unhandled promise rejection."
+  },
+  {
+    "id": "FE-0179",
+    "verdict": "confirmed",
+    "note": "isTypingTarget (90-94) не относит button/a к полям ввода, а глобальный keydown делает preventDefault для Space (505-507) и удаляет сегмент по Delete (528-529)."
+  },
+  {
+    "id": "FE-0180",
+    "verdict": "confirmed",
+    "note": "Escape на 530-531 безусловно вызывает setSelectedId(null); проверки открытых Menu (884-938) или Dialog (841-882) нет."
+  },
+  {
+    "id": "FE-0181",
+    "verdict": "confirmed",
+    "note": "На Box (143-148) есть только onPointerDown/Move/Up (81-114), onPointerCancel отсутствует; pressRef и drag не сбрасываются при системной отмене жеста."
+  },
+  {
+    "id": "FE-0182",
+    "verdict": "wrong-evidence",
+    "note": "Факт неверен: navigator.clipboard?.writeText(...).then(...) при отсутствии clipboard не падает — опциональная цепочка короткозамыкает всё выражение (проверено в node). Реальный дефект рядом: у промиса writeText нет .catch (отказ на http/при запрете) и setTimeout на 169 не очищается."
+  },
+  {
+    "id": "FE-0183",
+    "verdict": "confirmed",
+    "note": "getSummary на 172-173 вызывает .then(setSummary) без проверки controller.signal.aborted, тогда как для статусов на 179 такая проверка есть; при смене base возможен показ старой сводки."
+  },
+  {
+    "id": "FE-0184",
+    "verdict": "not-a-defect",
+    "note": "Эндпоинт /voice/meetings/{base}/summary всегда возвращает decisions/open_questions/topics/participants массивами (voice_server/pipeline.py:256-264), поэтому .length на 221-222,234,348,355 не может упасть на текущем контракте."
+  },
+  {
+    "id": "FE-0185",
+    "verdict": "confirmed",
+    "note": "updateAssignmentStatus вызывается fire-and-forget с .catch(() => {}) (242-244) после успешного patchStatus; task_id на сервере не сохраняется, а UI уже показывает успех."
+  },
+  {
+    "id": "FE-0186",
+    "verdict": "confirmed",
+    "note": "removeVariant (82-89) без busy-состояния, кнопка удаления (149) не disabled ни во время запроса, ни при variantJobActive; второй DELETE даёт 404 и ошибку при уже выполненном удалении."
+  },
+  {
+    "id": "FE-0187",
+    "verdict": "confirmed",
+    "note": "load() в калибровке (78-92), качестве (54-64), лицах (118-126) и getAssignees в карточке (872-876) не имеют abort/mounted-проверок: два load могут перезаписать друг друга, setState идёт после размонтирования."
+  },
+  {
+    "id": "FE-0188",
+    "verdict": "confirmed",
+    "note": "Превью лиц — Box component=\"img\" с onClick и alt=\"\" (50-68), без role/tabIndex/onKeyDown; выбор лиц недоступен с клавиатуры."
+  },
+  {
+    "id": "FE-0189",
+    "verdict": "confirmed",
+    "note": "onOrderChange={setMeetingsOrder} на 790 не сбрасывает meetingsPage, тогда как остальные фильтры (394-414) вызывают setMeetingsPage(0); смена порядка оставляет страницу 3."
+  },
+  {
+    "id": "FE-0190",
+    "verdict": "confirmed",
+    "note": "addFiles (145-151) фильтрует только по расширению и добавляет файлы без сверки name/size; handleSubmit отправляет каждый элемент files (238-259), дубликат создаёт второй job."
+  },
+  {
+    "id": "FE-0191",
+    "verdict": "confirmed",
+    "note": "act (169-177) не имеет busy-состояния и не блокирует повторные клики по статусу/удалению. Часть про крах data.items.map (239) не подтверждается — backend всегда возвращает items (glossary_store.py:82), но отсутствие busy реально."
+  },
+  {
+    "id": "FE-0192",
+    "verdict": "confirmed",
+    "note": "isStale (17) при битой дате получает NaN, и сравнение NaN > seconds*1000 даёт false, поэтому повреждённый checked_at считается свежим."
+  },
+  {
+    "id": "FE-0193",
+    "verdict": "not-a-defect",
+    "note": "Tombstone deletedIds (72,112-113) может скрыть только тот же id, а id целей — uuid4 (network_monitor_store.py:145); переиспользование id после удаления невозможно, Set ограничен сессией и чистится при перезагрузке."
+  },
+  {
+    "id": "FE-0194",
+    "verdict": "confirmed",
+    "note": "На 34 target.name.split без защиты, хотя displayTargetName (monitoringFormat.js:28) использует ?. и fallback. name в БД NOT NULL (monitoring_models.py:29), но Monitoring.jsx:113 при отсутствии id добавляет частичный {id, summary} из patchTarget (198), и такая запись роняет сетку."
+  },
+  {
+    "id": "FE-0195",
+    "verdict": "confirmed",
+    "note": "loadFree (24-31), эффект открытия (33-38) и change (40-52) не имеют abort/mounted-флага; при быстром закрытии/переоткрытии возможен setState после unmount и запись устаревшего ответа."
+  },
+  {
+    "id": "FE-0196",
+    "verdict": "not-a-defect",
+    "note": "overview всегда возвращает targets (network_monitor_service.py:148), поэтому result.targets.filter на 148 не может получить undefined с текущим API; catch там маскирует только реальные сетевые ошибки."
+  },
+  {
+    "id": "FE-0197",
+    "verdict": "confirmed",
+    "note": "verifyTwoFactorSetup ставит user (AuthContext.jsx:557-568) до setStep('setup_complete') (Login.jsx:1514-1520); LoginRoute при isAuthenticated отдаёт PostAuthNavigate (App.jsx:237-253), Login размонтируется и renderSetupCompleteStep (2190-2219) не показывается."
+  },
+  {
+    "id": "FE-0198",
+    "verdict": "confirmed",
+    "note": "completeAuthenticatedRedirect (1404-1415) после установки user вызывает openRememberDevicePrompt → setRememberDeviceOpen(true) (1170-1181), но LoginRoute уже размонтировал Login (App.jsx:237-253), и sheet на 2342-2399 не рендерится — обязательная привязка пропускается."
+  },
+  {
+    "id": "FE-0199",
+    "verdict": "confirmed",
+    "note": "Кастомный role=\"dialog\" aria-modal (2342-2399) не имеет focus trap/autoFocus/Escape/aria-hidden фона; на 976-993 обрабатывается только overflow body."
+  },
+  {
+    "id": "FE-0200",
+    "verdict": "confirmed",
+    "note": "localStorage/sessionStorage используются без try/catch в интерцепторе (http.js:248,370), восстановлении сессии (AuthContext.jsx:270,293), route-функциях (aboutOnboarding.js:36,43,46 из App.jsx:244) и MainLayout.jsx:1121,1139,1762,1770,1937; при заблокированном хранилище это ломает запросы и рендер."
+  },
+  {
+    "id": "FE-0201",
+    "verdict": "confirmed",
+    "note": "redirectAfterAuthentication (1102-1115) делает window.location.assign, если pathname ещё /login; вызовы после passkey/trusted-device (1353, 1642) идут сразу после setUser, до коммита SPA-навигации LoginRoute, поэтому полный reload срабатывает."
+  },
+  {
+    "id": "FE-0202",
+    "verdict": "confirmed",
+    "note": "scheduleLoginPresentationRecovery (179-194) снимает слушатели только по visible-событию, а возвращённый cleanup в Login.jsx (1327, 1373-1390) нигде не вызывается; пара слушателей копится на каждую попытку."
+  },
+  {
+    "id": "FE-0203",
+    "verdict": "confirmed",
+    "note": "setInterval(markWebReady, 50) (50) очищается только при появлении API (34-37) или unmount; timeout на 52-56 лишь ставит timedOut, поэтому без PublicKeyCredential опрос идёт 20 раз/с всё время жизни страницы."
+  },
+  {
+    "id": "FE-0204",
+    "verdict": "confirmed",
+    "note": "isMailRoute добавлен в deps fetchUnreadCounts (1296), но в теле 1142-1298 не используется; смена /mail пересоздаёт колбэк и перезапускает эффект 1652-1661 — очистку/навешивание слушателей и внеочередной pollNotifications (1576)."
+  },
+  {
+    "id": "FE-0205",
+    "verdict": "confirmed",
+    "note": "refreshBellInbox (1327-1356) после Promise.allSettled безусловно вызывает setNotifications(nextHubItems) и setMailNotifications(nextMailItems); при отказе одного запроса его next* остаётся [], и секция колокольчика очищается."
+  },
+  {
+    "id": "FE-0206",
+    "verdict": "confirmed",
+    "note": "pendingNavigation снимается только при совпадении pathname с целью (607-623) или по таймауту 10 000 мс (1892-1899); PermissionRoute (App.jsx:265/272) может увести на другой путь, и оверлей висит до таймаута."
+  },
+  {
+    "id": "FE-0207",
+    "verdict": "confirmed",
+    "note": "handleOpenMailNotification (1827-1844) после markAsRead вызывает fetchUnreadCounts без forceMailUnread, а TTL-ветка (1191-1195) до 20 с (199) переиспользует старое mail_unread; дельту applyMailUnreadDelta никто не применяет."
+  }
+]

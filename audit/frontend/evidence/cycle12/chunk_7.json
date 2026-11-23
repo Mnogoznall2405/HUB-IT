@@ -1,0 +1,371 @@
+[
+ {
+  "id": "FE-0249",
+  "title": "Аккаунт: confirm «Отключить ящик…» при фактическом удалении ящика",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/profile/ProfileTab.jsx",
+  "lines": "311-314: текст «Отключить», а deleteMailbox удаляет",
+  "claim": "311-314: текст «Отключить», а deleteMailbox удаляет |  | непреднамеренное удаление подключённого ящика"
+ },
+ {
+  "id": "FE-0250",
+  "title": "Аккаунт: мёртвая конфигурация adminOnlyFallback + test-only resolveAvailableSettingsTabs",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/account/accountNavigationConfig.jsx",
+  "lines": "93,122,179-180; accountConstants.jsx:32",
+  "claim": "93,122,179-180; accountConstants.jsx:32 |  | ложная сложность конфигурации"
+ },
+ {
+  "id": "FE-0251",
+  "title": "Аккаунт: пакет пропусков подтверждений/гардов (avatar delete, mailbox busy, AiBalance threshold wipe, Enter-during-saving, syncFromAD, shared savingBotId, NaN fontScale)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/profile/ProfileTab.jsx",
+  "lines": "150,282-307; AiBalanceCard.jsx:42-45,95; MyFilesAdminTab.jsx:58-60,88-95; DepartmentsTab.jsx:144-159; BotSettingsWorkspace.jsx:48+useAccountSectionData.js:925,955; AppearanceTab.jsx:63+useAccountSectionData.js:113",
+  "claim": "150,282-307; AiBalanceCard.jsx:42-45,95; MyFilesAdminTab.jsx:58-60,88-95; DepartmentsTab.jsx:144-159; BotSettingsWorkspace.jsx:48+useAccountSectionData.js:925,955; AppearanceTab.jsx:63+useAccountSectionData.js:113 |  | совокупность мелких дефектов: удаление аватара без confirm, затирание порога при check, повторный PATCH по Enter во время saving, syncFromAD без confirm, параллельные save ботов, NaN в слайдере"
+ },
+ {
+  "id": "FE-0252",
+  "title": "Database: горизонтальное переполнение ~400px при масштабе 200%",
+  "severity": "Medium",
+  "status": "Confirmed (runtime)",
+  "file": "WEB-itinvent/frontend/src/pages/Database.jsx",
+  "lines": "страница /database",
+  "claim": "страница /database |  | замер в Chrome 1920x1080 + zoom 200%: docW=2320 против vw=1920 (+400px); /mail /tasks /help чисто при 150/200%"
+ },
+ {
+  "id": "FE-0253",
+  "title": "JS heap растёт при повторных переключениях страниц: 85→85→143MB за 3 раунда по 8 маршрутов",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src",
+  "lines": "роутинг",
+  "claim": "роутинг |  | CDP usedJSHeapSize после каждого раунда goto×8: +58MB на 3-м раунде; возможна легитимная инерция кэша чанков — нужен более длинный прогон/GC-профиль"
+ },
+ {
+  "id": "FE-0254",
+  "title": "hubit://open/dashboard protocol launch вызывает console-ошибку в обычном браузере",
+  "severity": "Info",
+  "status": "Confirmed (runtime)",
+  "file": "WEB-itinvent/frontend/src/lib/desktopProtocolHandoff.js",
+  "lines": "запуск hubit:// при загрузке",
+  "claim": "запуск hubit:// при загрузке |  | Chrome логирует «Failed to launch ... no registered handler» при каждой загрузке — шум в консоли, по сути детект Desktop-моста"
+ },
+ {
+  "id": "FE-0255",
+  "title": "Чат: revealMessage().then без .catch — unhandled rejection при падении поиска сообщения",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/chat/useChatActiveConversationLifecycleEffects.js",
+  "lines": "129: void revealMessage().then((found)=>...) без .catch",
+  "claim": "129: void revealMessage().then((found)=>...) без .catch |  | сетевой сбой reveal → unhandled rejection; revealKey не ставится"
+ },
+ {
+  "id": "FE-0256",
+  "title": "Voice: loadMeetings().then без .catch в эффекте фильтров",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceVideoPage.jsx",
+  "lines": "495: .then((ok)=>{if(ok===true)loadExportCount()}) без catch",
+  "claim": "495: .then((ok)=>{if(ok===true)loadExportCount()}) без catch |  | если loadMeetings бросит (не вернёт ok) → unhandled rejection"
+ },
+ {
+  "id": "FE-0257",
+  "title": "mobileOfflineCache: JSON.parse расшифрованного payload без обработки повреждённой записи",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/lib/mobileOfflineCache.js",
+  "lines": "192: decryptPayload → JSON.parse без try",
+  "claim": "192: decryptPayload → JSON.parse без try |  | битая запись в IndexedDB → reject во всех потребителях кэша"
+ },
+ {
+  "id": "FE-0258",
+  "title": "Чат: decodeTgsPayload JSON.parse без fallback — битый TGS-стикер",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/chat/ChatStickerMedia.jsx",
+  "lines": "35: JSON.parse(strFromU8(jsonBytes))",
+  "claim": "35: JSON.parse(strFromU8(jsonBytes)) |  | невалидный/gzip-TGS → reject; поведение зависит от catch вызывающего"
+ },
+ {
+  "id": "FE-0259",
+  "title": "Construction-workspace: нет beforeunload — черновики недельной сводки теряются при F5/закрытии",
+  "severity": "High",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.jsx",
+  "lines": "dirty/useConstructionWorkLeaveGuard(dirty||saving) без beforeunload; в Panel.jsx:163-168 и TaskCanvasWorkspace.jsx:342-350 он есть",
+  "claim": "dirty/useConstructionWorkLeaveGuard(dirty||saving) без beforeunload; в Panel.jsx:163-168 и TaskCanvasWorkspace.jsx:342-350 он есть |  | потеря несохранённой сводки/плана/посещаемости молча"
+ },
+ {
+  "id": "FE-0260",
+  "title": "Construction: data.items.find(id).version без fallback → TypeError при числовом id/исчезнувшем item",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/construction/ConstructionWorkPanel.jsx",
+  "lines": "193-195; аналог в save workspace",
+  "claim": "193-195; аналог в save workspace |  | Object.entries(draft) ключи — строки; числовой i.id → undefined.version → generic-ошибка, черновик «залипает»"
+ },
+ {
+  "id": "FE-0261",
+  "title": "Construction-panel: эффект перезагрузки при смене scope не проверяет dirty → осиротевшие ключи черновика",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/construction/ConstructionWorkPanel.jsx",
+  "lines": "157-160 (нет if(dirty) return в отличие от workspace)",
+  "claim": "157-160 (нет if(dirty) return в отличие от workspace) |  | setData(null)+load() при живом draft → stale-черновик поверх нового scope"
+ },
+ {
+  "id": "FE-0262",
+  "title": "Tasks: закрытие диалога создания молча стирает выбранные файлы и чек-лист (несогласованно с createData)",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskCreateForm.js",
+  "lines": "343-357 (Escape/backdrop/X чистит createFiles/createChecklistItems); useTaskEditForm.js:90-91 (pending-файлы чистятся на editOpen)",
+  "claim": "343-357 (Escape/backdrop/X чистит createFiles/createChecklistItems); useTaskEditForm.js:90-91 (pending-файлы чистятся на editOpen) |  | тихая потеря выбранных файлов/чек-листа при случайном закрытии"
+ },
+ {
+  "id": "FE-0263",
+  "title": "Tasks: workflow-конфликт по задаче B перебивает открытую деталь задачи A (detailsTask=B)",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskWorkflowActions.js",
+  "lines": "43-55 → useTaskDetails.jsx:187-200: handleWorkflowConflict зовёт loadTaskDetails для любой конфликтной задачи",
+  "claim": "43-55 → useTaskDetails.jsx:187-200: handleWorkflowConflict зовёт loadTaskDetails для любой конфликтной задачи |  | панель и URL/выделение расходятся — детали показывают чужую задачу"
+ },
+ {
+  "id": "FE-0264",
+  "title": "Tasks: loadTaskActivity глотает ошибку пустым catch — лента активности молча пуста",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskDetails.jsx",
+  "lines": "180-181: catch{} без индикации",
+  "claim": "180-181: catch{} без индикации |  | вкладка выглядит «без истории» при сетевом сбое"
+ },
+ {
+  "id": "FE-0265",
+  "title": "Tasks: единый Suspense(fallback=null) на весь dialogs-слой — suspend размонтирует все открытые диалоги",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/tasks/TasksDialogsLayer.jsx",
+  "lines": "28",
+  "claim": "28 |  | suspend любого lazy-диалога размонтирует остальные → потеря transient-состояния пикеров"
+ },
+ {
+  "id": "FE-0266",
+  "title": "CompanyStructure: loadTree без seq/abort-guard — устаревшее дерево побеждает и делает replaceState",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx",
+  "lines": "144-178: параллельные вызовы применяются в порядке resolve",
+  "claim": "144-178: параллельные вызовы применяются в порядке resolve |  | старший ответ перезаписывает дерево и выбор"
+ },
+ {
+  "id": "FE-0267",
+  "title": "CompanyStructure: updateUrlState через сырой history.pushState мимо роутера — ломаный back-стек",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx",
+  "lines": "117-125: pushState + window.history.state со старым idx",
+  "claim": "117-125: pushState + window.history.state со старым idx |  | router-location устаревает; idx-ориентированные гарды неверно считают delta"
+ },
+ {
+  "id": "FE-0268",
+  "title": "CompanyStructureOverview: ошибка layout/импорта ELK → перманентно пустой граф без ошибки и retry",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/company-structure/CompanyStructureOverview.jsx",
+  "lines": "45-52,316-381: .catch только гасит спиннер; elkInstancePromise остаётся rejected навсегда",
+  "claim": "45-52,316-381: .catch только гасит спиннер; elkInstancePromise остаётся rejected навсегда |  | мёртвый «Обзор» при сбое чанка — только reload помогает"
+ },
+ {
+  "id": "FE-0269",
+  "title": "CompanyStructure: ошибка getNodePeople → setPeople([]) — ложное «нет сотрудников»",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx",
+  "lines": "228-231",
+  "claim": "228-231 |  | панель сотрудников молча пуста при сбое"
+ },
+ {
+  "id": "FE-0270",
+  "title": "CompanyStructure: автокомплит — isOptionEqualToValue по kind+title, key без node_id → коллизия тёзок",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx",
+  "lines": "348,370",
+  "claim": "348,370 |  | выбор/подсветка чужой записи при одинаковых именах"
+ },
+ {
+  "id": "FE-0271",
+  "title": "Construction-workspace: Escape/backdrop молча сбрасывает форму бригады (при этом входит в dirty)",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.jsx",
+  "lines": "163: onClose=setCrewEditor(null) без confirm",
+  "claim": "163: onClose=setCrewEditor(null) без confirm |  | потеря введённых полей crew-формы"
+ },
+ {
+  "id": "FE-0272",
+  "title": "Construction-workspace: рендер истории без optional chain → TypeError на битой записи",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.jsx",
+  "lines": "164: entry.after.targets.length без guard (асимметрично entry.before?)",
+  "claim": "164: entry.after.targets.length без guard (асимметрично entry.before?) |  | диалог истории роняется на неполной записи"
+ },
+ {
+  "id": "FE-0273",
+  "title": "Construction-panel: data?.items.length===0 при необязательном data.items; entry.after.date без guard",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/construction/ConstructionWorkPanel.jsx",
+  "lines": "101,110",
+  "claim": "101,110 |  | TypeError на неполном ответе API"
+ },
+ {
+  "id": "FE-0274",
+  "title": "AddressBook: onComposeEmail продублирован в JSX — dev-предупреждение о дубле prop",
+  "severity": "Info",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/AddressBook.jsx",
+  "lines": "958-963,993-998",
+  "claim": "958-963,993-998 |  | мёртвый проп"
+ },
+ {
+  "id": "FE-0275",
+  "title": "Construction-workspace: нет лимита 300 записей на batch (в Panel есть с сообщением)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.jsx",
+  "lines": "editDay/setAttendance vs Panel.jsx:184-187",
+  "claim": "editDay/setAttendance vs Panel.jsx:184-187 |  | payload daily/attendance неограничен → потенциальный отказ сервера"
+ },
+ {
+  "id": "FE-0276",
+  "title": "useConstructionWorkLeaveGuard: activePopGuard — модульный синглтон → гард достаётся последнему подписчику",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/construction/useConstructionWorkLeaveGuard.js",
+  "lines": "14,129: push/replace/go мультиплексируются через Set, а popstate-гарда — только последний",
+  "claim": "14,129: push/replace/go мультиплексируются через Set, а popstate-гарда — только последний |  | Back уходит мимо гарда первого dirty-редактора при двух смонтированных"
+ },
+ {
+  "id": "FE-0277",
+  "title": "TaskCanvas: disabled читает pendingSceneRef.current в рендере — нереактивный ref",
+  "severity": "Info",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx",
+  "lines": "764: disabled={!pendingSceneRef.current} — работает лишь из-за парного setSaveState",
+  "claim": "764: disabled={!pendingSceneRef.current} — работает лишь из-за парного setSaveState |  | хрупкая инварианта — «залипшая» кнопка при рефакторе"
+ },
+ {
+  "id": "FE-0278",
+  "title": "TaskCanvas: forbidden/error выставляет can_edit=false, но pendingSceneRef не чистится → вечный dirty",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx",
+  "lines": "545-549",
+  "claim": "545-549 |  | «Есть несохранённые изменения» навсегда + бесконечный beforeunload у заблокированного"
+ },
+ {
+  "id": "FE-0279",
+  "title": "TaskCanvas: inert выставляется один раз — поздние порталы остаются фокусируемыми вне aria-modal",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx",
+  "lines": "367-398",
+  "claim": "367-398 |  | утечка фокуса из pseudo-fullscreen в Snackbars/Dialogs"
+ },
+ {
+  "id": "FE-0280",
+  "title": "AddressBook: scope-ключ request-guard конкатенирует cityFilter+listMode без разделителя",
+  "severity": "Info",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/AddressBook.jsx",
+  "lines": "213-214",
+  "claim": "213-214 |  | теоретическая коллизия контекста → гард пропустит чужой ответ"
+ },
+ {
+  "id": "FE-0281",
+  "title": "Computers: незащищённые localStorage.getItem в инициализаторах useState → крах страницы при заблокированном storage",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Computers.jsx",
+  "lines": "883,884,887,888,889; EmployeeHistoryPanel.jsx:155 — useState(()=>localStorage.getItem()) без try",
+  "claim": "883,884,887,888,889; EmployeeHistoryPanel.jsx:155 — useState(()=>localStorage.getItem()) без try |  | SecurityError в render-инициализаторе → белый экран; в том же файле readRecentSearches обёрнуты в try — несогласованность"
+ },
+ {
+  "id": "FE-0282",
+  "title": "Computers: незащищённые localStorage.setItem в эффектах (флаги/seen-карта до 500 записей)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Computers.jsx",
+  "lines": "1405,1409,1413,1417,1427,1455; EmployeeHistoryPanel.jsx:157",
+  "claim": "1405,1409,1413,1417,1427,1455; EmployeeHistoryPanel.jsx:157 |  | переполнение квоты/blocked storage → исключение из эффекта"
+ },
+ {
+  "id": "FE-0283",
+  "title": "Database: гонка openActFile — нет seq-guard + утечка blob-URL при клике по акту B во время загрузки A",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useEquipmentActFilePreview.js",
+  "lines": "47-165: objectUrlRef перетирается без revoke; ответ A может перезаписать preview чужим файлом",
+  "claim": "47-165: objectUrlRef перетирается без revoke; ответ A может перезаписать preview чужим файлом |  | показ не того акта + утечка object-URL (у useMovementDetail filePreviewSequenceRef есть) Подтверждено вторым агентом: revoke только для текущего URL — проигравший утекает."
+ },
+ {
+  "id": "FE-0284",
+  "title": "ItObjects: тихая потеря несохранённых правок матрицы доступа при сохранении соседней строки",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/itObjects/ObjectAccessMatrix.jsx",
+  "lines": "45-46: useEffect сбрасывает values при новой ссылке person.sections (каждый load создаёт новый)",
+  "claim": "45-46: useEffect сбрасывает values при новой ссылке person.sections (каждый load создаёт новый) |  | правки строки A стираются при save строки B или «Обновить»"
+ },
+ {
+  "id": "FE-0285",
+  "title": "ItObjects: отзыв всего доступа пользователя одним кликом без подтверждения",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/itObjects/ObjectAccessMatrix.jsx",
+  "lines": "61-70: IconButton → onSave(userId, all NONE)",
+  "claim": "61-70: IconButton → onSave(userId, all NONE) |  | случайный отзыв доступа без confirm"
+ },
+ {
+  "id": "FE-0286",
+  "title": "ItObjects: «Снять» ответственного объекта без подтверждения",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/ItObjectDetail.jsx",
+  "lines": "298-308: немедленный clearOwner (удаление объекта — через диалог)",
+  "claim": "298-308: немедленный clearOwner (удаление объекта — через диалог) |  | объект без владельца одним кликом"
+ },
+ {
+  "id": "FE-0287",
+  "title": "Database: stale loc_no остаётся в состоянии при «пустом» поле локации после смены филиала",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useTransferFormState.js",
+  "lines": "232-261 + LocationAutocompleteField.jsx:79-82: options.find→null (поле пустое), а transferLocationNo держит старый id → уходит в payload",
+  "claim": "232-261 + LocationAutocompleteField.jsx:79-82: options.find→null (поле пустое), а transferLocationNo держит старый id → уходит в payload |  | перемещение в неправильную локацию или ошибка сервера"
+ },
+ {
+  "id": "FE-0288",
+  "title": "ItObjects: панель паролей объекта тихо обрезана до 100 записей без индикатора",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/itObjects/ObjectPasswordsPanel.jsx",
+  "lines": "17,52: limit=100 без «показано N из M»",
+  "claim": "17,52: limit=100 без «показано N из M» |  | часть паролей невидима (в SectionSummary есть «100+» — несогласованность)"
+ },
+ {
+  "id": "FE-0289",
+  "title": "Statistics: обновление статистики после чистки обходит seq-guard → данные не того периода",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Statistics.jsx",
+  "lines": "598 (loadPcStats с isCurrent=()=>true) + :239-242",
+  "claim": "598 (loadPcStats с isCurrent=()=>true) + :239-242 |  | смена периода во время запроса → ответ старого периода перезаписывает; ошибка глотается .catch(()=>{})"
+ }
+]

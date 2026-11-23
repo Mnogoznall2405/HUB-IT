@@ -1,0 +1,400 @@
+[
+ {
+  "id": "FE-0085",
+  "title": "После применения SW-обновления соседние вкладки остаются на старом бандле",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/lib/pwaInstall.js",
+  "claim": " |  | controllerchange обрабатывается только во вкладке-инициаторе; остальные вкладки не уведомляются."
+ },
+ {
+  "id": "FE-0086",
+  "title": "Поздний suppressed-401 всё равно стирает localStorage.user → вкладки расходятся в auth-состоянии",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/api/http.js",
+  "claim": " |  | removeItem(user) безусловен даже когда auth-required подавлён: одна вкладка «выходит» локально, другие считают сессию живой."
+ },
+ {
+  "id": "FE-0087",
+  "title": "SW: фоновая ревалидация runtime-кэша не обёрнута в waitUntil — может не завершиться",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/public/sw.js",
+  "lines": "608-626",
+  "claim": "608-626 |  | "
+ },
+ {
+  "id": "FE-0088",
+  "title": "Scan Center: вкладки не синхронизированы с URL — нет deep-link, ломаны Back/Forward и reload",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx",
+  "lines": "522 (useState overview),2062-2076 (onChange/onNavigate без searchParams)",
+  "claim": "522 (useState overview),2062-2076 (onChange/onNavigate без searchParams) |  | перезагрузка на любой вкладке возвращает на «Обзор»; невозможно сослаться на конкретную секцию."
+ },
+ {
+  "id": "FE-0089",
+  "title": "Dashboard: ошибка ручного обновления стирает все карточки в empty-state",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Dashboard.jsx",
+  "lines": "736-745",
+  "claim": "736-745 |  | "
+ },
+ {
+  "id": "FE-0090",
+  "title": "Dashboard: ошибка загрузки показана дважды (верхний Alert + warning секции)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Dashboard.jsx",
+  "lines": "1046,1537",
+  "claim": "1046,1537 |  | "
+ },
+ {
+  "id": "FE-0091",
+  "title": "Dashboard: ошибка сохранения раскладки невидима за диалогом редактирования",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Dashboard.jsx",
+  "lines": "998-1008",
+  "claim": "998-1008 |  | "
+ },
+ {
+  "id": "FE-0092",
+  "title": "Dashboard импортирует hubAPI через legacy client.js-баррель (нарушение конвенции api/)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Dashboard.jsx",
+  "lines": "50",
+  "claim": "50 |  | "
+ },
+ {
+  "id": "FE-0093",
+  "title": "scanSSE-pulse перезапускает эффект активности → лишний getAgentsActivity на каждый SSE-event",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx",
+  "lines": "1423-1467",
+  "claim": "1423-1467 |  | "
+ },
+ {
+  "id": "FE-0094",
+  "title": "Scan Center: cleanup при unmount абортирует только 3 семейства запросов — остальные завершаются в фоне",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx",
+  "lines": "1339-1343",
+  "claim": "1339-1343 |  | "
+ },
+ {
+  "id": "FE-0095",
+  "title": "SharedFolder: download-guard молча глотает ошибку скачивания",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/SharedFolder.jsx",
+  "lines": "60,77",
+  "claim": "60,77 |  | "
+ },
+ {
+  "id": "FE-0096",
+  "title": "SharedFolder: ошибка скачивания мапится в «не удалось связаться» (неверное сообщение)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/SharedFolder.jsx",
+  "lines": "29-36,66-67,84-85",
+  "claim": "29-36,66-67,84-85 |  | "
+ },
+ {
+  "id": "FE-0097",
+  "title": "SharedFolder: состояние ошибки без кнопки повтора",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/SharedFolder.jsx",
+  "lines": "137-139",
+  "claim": "137-139 |  | "
+ },
+ {
+  "id": "FE-0098",
+  "title": "SharedFolder: полный список файлов рендерится без ограничений (лимит сервера неизвестен)",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/SharedFolder.jsx",
+  "lines": "93,207",
+  "claim": "93,207 |  | "
+ },
+ {
+  "id": "FE-0099",
+  "title": "Почта: двойной GET /mail/bootstrap на свежей вкладке (scope pending → resolved → повторная выборка)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Mail.jsx",
+  "relatedFiles": [
+   "WEB-itinvent/frontend/src/components/mail/useMailListDataController.js:188-223,343-357"
+  ],
+  "claim": " |  | закрывает открытый вопрос PERFORMANCE.md о дубле bootstrap."
+ },
+ {
+  "id": "FE-0100",
+  "title": "Почта: ссылки без target уводят внешний сайт ВНУТРИ sandbox-iframe чтения",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/mailHtmlContent.js",
+  "relatedFiles": [
+   "mailHtmlSandboxDocument.js: allow-popups…-escape-sandbox, без allow-top-navigation"
+  ],
+  "claim": " |  | навигация происходит в самом фрейме: фишинговая ссылка открывается «внутри» письма под хромом приложения. Нужен base target=_blank или перехват навигации."
+ },
+ {
+  "id": "FE-0101",
+  "title": "Почта: превью вложения без индикатора загрузки; повторный клик молча проглатывается; abort нет",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/useMailMessageFileActions.js",
+  "lines": "237-252,373-394",
+  "claim": "237-252,373-394 |  | "
+ },
+ {
+  "id": "FE-0102",
+  "title": "Почта: optimistic-откат mark-read опирается только на refetch — при его сбое счётчики расходятся",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/useMailReadMutations.js",
+  "relatedFiles": [
+   "useMailListDataController.js:468-481"
+  ],
+  "claim": " |  | "
+ },
+ {
+  "id": "FE-0103",
+  "title": "Почта: «Сохранить черновик?» спрашивается даже при синхронизированном состоянии → дубль upsert",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx",
+  "lines": "484-561,641-677",
+  "claim": "484-561,641-677 |  | "
+ },
+ {
+  "id": "FE-0104",
+  "title": "Почта: черновик быстрого ответа теряется при переключении писем",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/MailQuickReplyDraftField.jsx",
+  "relatedFiles": [
+   "WEB-itinvent/frontend/src/pages/Mail.jsx:2223,2286"
+  ],
+  "claim": " |  | "
+ },
+ {
+  "id": "FE-0105",
+  "title": "Почта: автосохранение черновика multipart без AbortSignal и индикации прогресса",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx",
+  "lines": "505-521",
+  "claim": "505-521 |  | "
+ },
+ {
+  "id": "FE-0106",
+  "title": "/my-files/edit/:fileId без hubBare: портальный хром + рабочая область 100dvh уходит под фолд",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/App.jsx",
+  "relatedFiles": [
+   "components/layout/MainLayoutRouteShell.jsx:9-16 (паттерна нет)",
+   "MainLayout.jsx:378",
+   "pages/MyFilesEditorWorkspace.jsx:137 (height:100dvh)"
+  ],
+  "claim": " |  | в HUB_BARE_PATTERNS маршрут отсутствует — поверх шапки/сайдбара и padding вьюпорт редактора обрезается снизу; часть контента недоступна без прокрутки."
+ },
+ {
+  "id": "FE-0107",
+  "title": "Повторный ?compare= молча игнорируется для уже открытого документа",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/myFiles/MyFilesEditorWorkspace.jsx",
+  "relatedFiles": [
+   "hooks/useMyFilesEditorSession.js:103,183-186,459",
+   "MyFilesEditorShell.jsx:78"
+  ],
+  "claim": " |  | дедупликация открытого документа срабатывает до диспатча compare; startCompare не проброшен через imperative handle — повторный запрос сравнения теряется."
+ },
+ {
+  "id": "FE-0108",
+  "title": "Desktop: isValidWorkspaceEditorRoute отклоняет ?compare= → деградация до in-window диалога",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/lib/desktopBridge.js",
+  "relatedFiles": [
+   "WEB-itinvent/frontend/src/pages/MyFiles.jsx:392-396"
+  ],
+  "claim": " |  | "
+ },
+ {
+  "id": "FE-0109",
+  "title": "Desktop: нативная лента вкладок отклоняется целиком при >16 документов или заголовке >128 символов",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/lib/desktopBridge.js",
+  "claim": " |  | payload выбрасывается молча — вкладки «замирают» без диагностики."
+ },
+ {
+  "id": "FE-0110",
+  "title": "Закрытие редактора может зависнуть, если iframe DocSpace упал — editor.requestClose() не отвечает",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/myFiles/useMyFilesEditorSession.js",
+  "lines": "436-440",
+  "claim": "436-440 |  | требуется рантайм-проверка с убитым renderer процессом."
+ },
+ {
+  "id": "FE-0111",
+  "title": "Восстановление версии при открытом редакторе — живой сеанс может перезаписать восстановленную версию",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/myfiles/MyFilesVersionHistory.jsx",
+  "relatedFiles": [
+   "MyFilesEditorShell.jsx:92-95"
+  ],
+  "claim": " |  | "
+ },
+ {
+  "id": "FE-0112",
+  "title": "Устаревший DocsAPI SDK переиспользуется при смене settings.public_path",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/myFiles/useMyFilesEditorSession.js",
+  "lines": "22-24,259",
+  "claim": "22-24,259 |  | "
+ },
+ {
+  "id": "FE-0113",
+  "title": "officeUiTheme зафиксирован на mount на весь сеанс — смена темы во время редактирования не применяется",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/myFiles/useMyFilesEditorSession.js",
+  "lines": "69,459",
+  "claim": "69,459 |  | "
+ },
+ {
+  "id": "FE-0114",
+  "title": "Почтовый office-просмотр не передаёт ui_theme — превью игнорирует тёмную тему",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/useMailMessageFileActions.js",
+  "relatedFiles": [
+   "lib/officeAttachmentPreview.js:18"
+  ],
+  "claim": " |  | "
+ },
+ {
+  "id": "FE-0115",
+  "title": "Синхронный revokeObjectURL сразу после click — хрупко на iOS Safari (5 мест)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/useMailMessageFileActions.js",
+  "relatedFiles": [
+   "MyFiles.jsx:674-681",
+   "Statistics.jsx:324-331",
+   "pages/tasks/useTasksPageController.jsx:464",
+   "tasks/hooks/useTaskDetails.jsx:406-417"
+  ],
+  "claim": " |  |  Ещё 2 точки: networksHelpers.js:75-84, ObjectNetmapTab.jsx:402-413 (в Networks.jsx:1237 для оригинала сделан setTimeout — несогласованность). +MyFiles.jsx:handleExportPdf (~:676) — тот же паттерн revoke сразу после click()."
+ },
+ {
+  "id": "FE-0116",
+  "title": "block() не снимает readyTimer → устаревшее предупреждение «редактор грузится долго»",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/myFiles/useMyFilesEditorSession.js",
+  "lines": "147-152",
+  "claim": "147-152 |  | "
+ },
+ {
+  "id": "FE-0117",
+  "title": "Почтовый office-view: цепочка fetch без AbortSignal (контроллер страницы абортит, путь почты — нет)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/useMailMessageFileActions.js",
+  "relatedFiles": [
+   "components/myfiles/useMyFilesPreviewController.js:73-120"
+  ],
+  "claim": " |  | "
+ },
+ {
+  "id": "FE-0118",
+  "title": "MyFilesVersionHistory: async-действия без защиты от unmount",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/myfiles/MyFilesVersionHistory.jsx",
+  "lines": "107-135",
+  "claim": "107-135 |  | "
+ },
+ {
+  "id": "FE-0119",
+  "title": "Начальный конфиг редактора не валидирует key/token (путь refresh — валидирует)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/myFiles/useMyFilesEditorSession.js",
+  "lines": "263-266 vs 311-335",
+  "claim": "263-266 vs 311-335 |  | "
+ },
+ {
+  "id": "FE-0120",
+  "title": "Мёртвый код: MailOfficeAttachmentInlinePreview + buildOfficeInlinePreviewState не используются",
+  "severity": "Info",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/mail/MailOfficeAttachmentInlinePreview.jsx",
+  "relatedFiles": [
+   "lib/mailOfficePreviewState.js"
+  ],
+  "claim": " |  | "
+ },
+ {
+  "id": "FE-0121",
+  "title": "History-view: проверка аккаунта строже, чем у сессии — user без id всегда «invalid»",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/myfiles/MyFilesOfficeHistoryView.jsx",
+  "lines": "13,82",
+  "claim": "13,82 |  | "
+ },
+ {
+  "id": "FE-0122",
+  "title": "Deep-link ?edit= обходит проверки preferredWindow/opening",
+  "severity": "Info",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx",
+  "lines": "365-372",
+  "claim": "365-372 |  | "
+ },
+ {
+  "id": "FE-0123",
+  "title": "MyFiles: drop файлов на строку папки во время активной загрузки запускает параллельную очередь",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx",
+  "relatedFiles": [
+   "hooks/useMyFilesUpload.js:150-155,258-265,269-305,337-416,445"
+  ],
+  "claim": " |  | guard активной загрузки обходится: stopPropagation на строке не даёт сработать глобальному guard — две очереди аплоада конкурируют."
+ },
+ {
+  "id": "FE-0124",
+  "title": "MyFiles: выделение не сбрасывается при смене библиотеки — действия применяются к невидимым файлам",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx",
+  "lines": "1097-1099,1153-1155",
+  "claim": "1097-1099,1153-1155 |  | перепроверка: clearSelection-эффект зависит от [currentFolderId, viewParam, searchQuery, typeFilter, dateFilter] — если переключение библиотеки меняет viewParam, выделение сбрасывается корректно; дефект есть только если библиотека переключается без смены viewParam — требует рантайм-пробы."
+ },
+ {
+  "id": "FE-0125",
+  "title": "MyFiles: deep-link на удалённую/чужую папку — только тост; ?folder= остаётся → повторные ошибки",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx",
+  "lines": "320-322",
+  "claim": "320-322 |  | "
+ }
+]

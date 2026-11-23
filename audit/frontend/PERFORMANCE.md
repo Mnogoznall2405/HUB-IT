@@ -64,3 +64,8 @@ network capture, статический анализ (агент C: evidence/age
 
 Холодный кэш, throttling, heap/утечки при многочасовой сессии, Lighthouse LCP/TBT,
 реальные объёмы портов/розеток на филиалах.
+
+- Цикл 9: mail bootstrap ×2 подтверждён → FE-0098 (scope pending→resolved).
+- Цикл 9: scanSSE-pulse → лишний getAgentsActivity на событие → FE-0092.
+- Цикл 9: MyFiles bulk delete/move — N последовательных запросов без прогресса → FE-0126.
+

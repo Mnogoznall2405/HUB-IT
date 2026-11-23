@@ -57,3 +57,19 @@ service worker.
   FE-0054 (users/controllers): нет общего дедупа по (url, params).
 - Кликабельные TableRow без клавиатуры — FE-0022 (Warehouse1C), FE-0035 (Networks).
 - Диалоги без заголовка/имени — FE-0053 (create task) vs корректные в MyFiles/чате.
+
+## Цикл 9 — добавления
+
+- FE-0082 (H): refresh — синглтон внутри вкладки; нет межвкладочной
+  координации (locks/BroadcastChannel) → семейная отозванность при N>1 вкладок.
+- FE-0083 (M): SW update только полной перезагрузкой; нет периодического
+  registration.update(); stale-bundle риск (вероятная причина FE-0004).
+- FE-0091 (L): Dashboard → hubAPI через legacy client.js-баррель (конвенция
+  api/ нарушена).
+- FE-0120 (Info): мёртвый код MailOfficeAttachmentInlinePreview +
+  buildOfficeInlinePreviewState.
+- FE-0127 (M): очередь мутаций чек-листа сериализует toggle, но add её
+  обходит — два пути записи одного ресурса.
+- FE-0136 (M): e2e auth-guards расходится с политикой прав (scan.tasks ↔
+  ADMIN_AREA_PERMISSIONS) — тестовый долг.
+

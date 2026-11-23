@@ -1,0 +1,479 @@
+[
+ {
+  "id": "FE-0001",
+  "title": "Ошибка входа на английском при русском интерфейсе",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+  "lines": "593-616",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/backend/api/v1/auth.py",
+    "lines": "801,818"
+   }
+  ],
+  "claim": "593-616 | Пользователь не понимает причину отказа | "
+ },
+ {
+  "id": "FE-0002",
+  "title": "Вложенные live-регионы role=status в уведомлении входа (двойное объявление)",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+  "lines": "282-294,416-439",
+  "claim": "282-294,416-439 | Скринридеры объявляют сообщение дважды; live-region в live-region — ARIA-антипаттерн | "
+ },
+ {
+  "id": "FE-0003",
+  "title": "Кнопка показа пароля 25x25px (< минимума 36px)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+  "lines": "1919-1936",
+  "claim": "1919-1936 | Сложное попадание на тач-устройствах | "
+ },
+ {
+  "id": "FE-0004",
+  "title": "Анонимный /shared-folders/:invalid показал экран входа вместо ошибки — в одном долгоживущем профиле Chrome; в чистом профиле НЕ воспроизводится",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/SharedFolder.jsx",
+  "lines": "47-57",
+  "claim": "47-57 | Вероятная причина: устаревший service-worker app-shell в долгоживущем профиле (skipWaiting только по явному сообщению — agent E, раздел SW) — пользователи со старым shell после деплоев могут видеть устаревшие маршруты до перезагрузки | цикл 9/10: ведущая гипотеза — устаревший app-shell/SW в долгоживущем профиле (SW обновляется только полной перезагрузкой, FE-0084); согласуется с «не воспроизводится в чистом профиле»"
+ },
+ {
+  "id": "FE-0005",
+  "title": "Дубли идентичных poll-запросов уведомлений на загрузке",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
+  "lines": "1413-1611 (tick 1577-1588, onVisible 1589-1593)",
+  "claim": "1413-1611 (tick 1577-1588, onVisible 1589-1593) | Лишняя нагрузка на backend | "
+ },
+ {
+  "id": "FE-0006",
+  "title": "Мёртвый whitelist публичных my-files URL в 401-перехватчике",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/api/http.js",
+  "lines": "176-184",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/api/myFiles.js",
+    "lines": "353,360,368,381 (public-folders), 682-696 (public)"
+   }
+  ],
+  "claim": "176-184 | Любой 401 на public-folder запросе запустит refresh-цепочку/auth-required, чего нет у public-file | "
+ },
+ {
+  "id": "FE-0007",
+  "title": "Сломанные вложения публикаций ленты (410 Gone) — 8 шт. за загрузку, UI не показывает заглушку",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/feed/FeedPostCard.jsx",
+  "lines": "40-82",
+  "claim": "40-82 | Битые вложения у старых новостей; шум ошибок в консоли | "
+ },
+ {
+  "id": "FE-0008",
+  "title": "Computers: поиск scope=all 3.2 c на загрузке; дубли имён в алерте изменений",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/api/equipmentComputers.js",
+  "lines": "84",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/pages/Computers.jsx",
+    "lines": "950-960 (loadChangesDeferred)"
+   }
+  ],
+  "claim": "84 | Медленная загрузка дашборда; возможен дедуп-пропуск при слиянии баз | "
+ },
+ {
+  "id": "FE-0009",
+  "title": "Безымянные combobox-фильтры (ZWSP) на нескольких страницах",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/tickets/TicketRequestList.jsx",
+  "lines": "151-166",
+  "claim": "151-166 | Скринридер объявляет безымянные фильтры | "
+ },
+ {
+  "id": "FE-0010",
+  "title": "Английские MUI-лейблы/aria в русском UI («Open», «Loading...», «toggle password visibility»)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+  "lines": "1930 (aria-label \"toggle password visibility\")",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/pages/Warehouse1C.jsx",
+    "lines": "955 (Autocomplete, popup «Open»)"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/App.jsx",
+    "lines": "164-166 (\"Loading...\")"
+   }
+  ],
+  "claim": "1930 (aria-label \"toggle password visibility\") | Непоследовательная локализация, англ. фразы для скринридеров | "
+ },
+ {
+  "id": "FE-0011",
+  "title": "Scan Center: переполнение 12px при 1920 и 1536 (=125% масштаб) -> горизонтальный скролл; при 1366/1280 чисто",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterOverview.jsx",
+  "lines": "159-160",
+  "claim": "159-160 | Горизонтальная прокрутка всей страницы на широких экранах | "
+ },
+ {
+  "id": "FE-0012",
+  "title": "Docflow: дубль идентичных tasks?scope=inbox на загрузке",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Docflow.jsx",
+  "lines": "1296",
+  "claim": "1296 | Лишний запрос | "
+ },
+ {
+  "id": "FE-0013",
+  "title": "Address book: два запроса docflow/absences по 3.4-3.8 c на загрузке (общий + по сотруднику)",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/addressBook/useDocflowAbsenceMarks.js",
+  "lines": "15",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/components/docflow/DocflowAbsencesPanel.jsx",
+    "lines": "24"
+   }
+  ],
+  "claim": "15 | Загрузка адресной книги тянет два тяжёлых запроса | "
+ },
+ {
+  "id": "FE-0014",
+  "title": "Панель уведомлений без семантики диалога (role=presentation на корне Drawer)",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
+  "lines": "2810-2870 (Drawer-блоки)",
+  "claim": "2810-2870 (Drawer-блоки) | Скринридер не объявляет открытие панели | "
+ },
+ {
+  "id": "FE-0015",
+  "title": "Сессия сброшена при смене UA (mobile-эмуляция) — вероятнее всего экземпляр FE-0059 (ротация в окне перезагрузки)",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/contexts/AuthContext.jsx",
+  "lines": "171-174,256-258",
+  "claim": "171-174,256-258 |  | "
+ },
+ {
+  "id": "FE-0016",
+  "title": "Транзиентные 5x401 в консоли при rapid-switch вкладок /tasks (при повторе не воспроизведены)",
+  "severity": "Low",
+  "status": "Suspected",
+  "claim": " |  | "
+ },
+ {
+  "id": "FE-0017",
+  "title": "ESLint: 1 error + 1143/735 warnings (chat/mail)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/chat/chatRegressionFlows.test.jsx",
+  "lines": "426:1",
+  "claim": "426:1 | Шум скрывает реальные проблемы | "
+ },
+ {
+  "id": "FE-0018",
+  "title": "Voice: три медленных запроса ~1.2-1.3 c на загрузку",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceVideoPage.jsx",
+  "lines": "146,151,178,220",
+  "claim": "146,151,178,220 | Медленное открытие раздела | "
+ },
+ {
+  "id": "FE-0019",
+  "title": "Admin: 30 API-вызовов на загрузку, auth/sessions 1.1 c",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/api/authSessions.js",
+  "lines": "5",
+  "claim": "5 | Тяжёлая загрузка админки | "
+ },
+ {
+  "id": "FE-0020",
+  "title": "Возраст снимка 1С в сырых секундах; интеграция отстаёт на ~2 дня",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/ConstructionObjects.jsx",
+  "lines": "604",
+  "claim": "604 | Нечитаемое сообщение; симптом отстающей интеграции 1С | "
+ },
+ {
+  "id": "FE-0022",
+  "title": "Warehouse1C: кликабельные строки недоступны с клавиатуры (desktop)",
+  "severity": "High",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Warehouse1C.jsx",
+  "lines": "2163-2216,1975-1980",
+  "claim": "2163-2216,1975-1980 | Пользователи клавиатуры/скринридеров не могут открыть документы и сопоставления | "
+ },
+ {
+  "id": "FE-0023",
+  "title": "Networks: мобильная вкладка «Оборудование» без виртуализации (до 10000 карточек); SocketsTab аналогично",
+  "severity": "High",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/networks/EquipmentTab.jsx",
+  "lines": "351-433",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+    "lines": "871 (getBranchPorts limit 10000); 765 (sockets limit 10000)"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/components/networks/SocketsTab.jsx",
+    "lines": "220-229"
+   }
+  ],
+  "claim": "351-433 | На филиале с тысячами портов мобильная вкладка фризит/падает | "
+ },
+ {
+  "id": "FE-0024",
+  "title": "Networks: 16+ IconButton без aria-label",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "2132,2214,2704,2712,2748,3006",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/components/networks/EquipmentTab.jsx",
+    "lines": "249,313,320,417,513,568"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/components/networks/SocketsTab.jsx",
+    "lines": "198,285,381"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx",
+    "lines": "409,414,419"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/components/networks/BranchDialogs.jsx",
+    "lines": "146"
+   }
+  ],
+  "claim": "2132,2214,2704,2712,2748,3006 |  | "
+ },
+ {
+  "id": "FE-0025",
+  "title": "TaskCard: Открыть/Редактировать/Скопировать без доступного имени",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/hub/tasks/TaskCard.jsx",
+  "lines": "322,335,363",
+  "claim": "322,335,363 |  | "
+ },
+ {
+  "id": "FE-0026",
+  "title": "Невидимый фокус: ChatBubble (кнопка выделения), ToastHistoryList (role=button)",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/chat/ChatBubble.jsx",
+  "lines": "1820-1856 (outline none: 1853-1856)",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/components/layout/ToastHistoryList.jsx",
+    "lines": "70-86"
+   }
+  ],
+  "claim": "1820-1856 (outline none: 1853-1856) |  | "
+ },
+ {
+  "id": "FE-0027",
+  "title": "VoiceLogViewer: «Загрузка…» тёмное на тёмном",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceLogViewer.jsx",
+  "lines": "240-242",
+  "claim": "240-242 |  | "
+ },
+ {
+  "id": "FE-0028",
+  "title": "Mfu: Drawer 360px шире экранов <360px",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Mfu.jsx",
+  "lines": "1297-1298",
+  "claim": "1297-1298 |  | "
+ },
+ {
+  "id": "FE-0029",
+  "title": "Networks: keydown-листенер переустанавливается на каждый рендер",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "2055-2074",
+  "claim": "2055-2074 |  | "
+ },
+ {
+  "id": "FE-0030",
+  "title": "Networks.jsx: ~80 useState (3300 строк) — god-component",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "138-311",
+  "claim": "138-311 |  | "
+ },
+ {
+  "id": "FE-0031",
+  "title": "InteractiveMapCanvas: полный ре-рендер карты на каждый pointermove",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx",
+  "lines": "530-544,55-105",
+  "claim": "530-544,55-105 |  | "
+ },
+ {
+  "id": "FE-0032",
+  "title": "MyFiles: массовое скачивание без очереди/лимита параллельности",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx",
+  "lines": "1332-1337",
+  "claim": "1332-1337 |  | "
+ },
+ {
+  "id": "FE-0033",
+  "title": "Warehouse1C: списки 200-1000 строк без виртуализации/memo",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Warehouse1C.jsx",
+  "lines": "903,923,1922,1970,2121,2162",
+  "claim": "903,923,1922,1970,2121,2162 |  | "
+ },
+ {
+  "id": "FE-0034",
+  "title": "IconButton без aria-label: SharedFolder (публичная!), Mail, Voice, Passwords, Vcs, Mfu, UsersTab",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/SharedFolder.jsx",
+  "lines": "231,248",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/components/mail/MailTemplatesDialog.jsx",
+    "lines": "183,190,196"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceLogViewer.jsx",
+    "lines": "229,234"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/pages/Passwords.jsx",
+    "lines": "900"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/components/passwords/PasswordFiltersPanel.jsx",
+    "lines": "39"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/pages/Vcs.jsx",
+    "lines": "686"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/pages/Mfu.jsx",
+    "lines": "990"
+   },
+   {
+    "file": "WEB-itinvent/frontend/src/pages/account/admin/UsersTab.jsx",
+    "lines": "321"
+   }
+  ],
+  "claim": "231,248 |  | "
+ },
+ {
+  "id": "FE-0035",
+  "title": "Networks: кликабельные TableRow без клавиатуры",
+  "severity": "Medium",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "2243",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/components/networks/SocketsTab.jsx",
+    "lines": "351"
+   }
+  ],
+  "claim": "2243 |  | "
+ },
+ {
+  "id": "FE-0036",
+  "title": "Мёртвые состояния loading в Networks (сеттеры не вызываются)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "302-304",
+  "claim": "302-304 |  | "
+ },
+ {
+  "id": "FE-0037",
+  "title": "Вечно disabled кнопка-индикатор «Установлена»",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/HubDesktopDeploySection.jsx",
+  "lines": "422",
+  "claim": "422 |  | "
+ },
+ {
+  "id": "FE-0038",
+  "title": "Двойная система стилей: Tailwind (Login/чат) vs MUI sx (остальное)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/vite.config.js",
+  "lines": "3 (import), ~30 (plugins: tailwindcss())",
+  "claim": "3 (import), ~30 (plugins: tailwindcss()) |  | "
+ },
+ {
+  "id": "FE-0039",
+  "title": "Тема light-only; AGENTS.md требует dark theme — противоречие",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/theme/index.js",
+  "lines": "31",
+  "claim": "31 |  | "
+ },
+ {
+  "id": "FE-0040",
+  "title": "qrcode статически в чанке Login/Passwords (нужен только для TOTP-QR)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+  "lines": "3",
+  "relatedFiles": [
+   {
+    "file": "WEB-itinvent/frontend/src/components/passwords/PasswordUnlockDialog.jsx",
+    "lines": "2"
+   }
+  ],
+  "claim": "3 |  | "
+ },
+ {
+  "id": "FE-0041",
+  "title": "SharedFile: ежесекундный setNowMs безусловно",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/SharedFile.jsx",
+  "lines": "576-579",
+  "claim": "576-579 |  | "
+ },
+ {
+  "id": "FE-0042",
+  "title": "Statistics: повторный fetch при переключении вкладки/периода (без swrCache)",
+  "severity": "Low",
+  "status": "Confirmed",
+  "file": "WEB-itinvent/frontend/src/pages/Statistics.jsx",
+  "lines": "290-296",
+  "claim": "290-296 |  | "
+ }
+]

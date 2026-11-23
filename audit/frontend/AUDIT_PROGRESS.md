@@ -3,23 +3,23 @@
 ## Текущий этап: Цикл 6–7 завершены; следующий — перекрёстная проверка (цикл 8)
 
 ```text
-Текущий этап: Цикл 9 — независимая проверка отчётов (DONE 2026-11-23); результаты — AUDIT_REVIEW.md
-Дата и время: 2026-11-23
-Проверенные страницы: 36/36 маршрутов; мутационные сценарии выполнены и зачищены;
+Текущий этап: Цикл 8 (перекрёстная проверка) — завершается; точка продолжения в NEXT_ACTIONS.md
+Дата и время: 2026-11-22, ~23:45
+Проверенные страницы: 36/36 маршрутов открыты; мутационные сценарии выполнены и зачищены;
   мобильная вёрстка 15 страниц (375×812 viewport-only), 1366/1280/1536/1920
 Проверенные компоненты глубоко: Login, MainLayout (poller/drawer), диалоги создания
   (задача/папка), композер письма, автокомплиты, контекстное меню чата, вкладки MyFiles
-Дефекты после независимой проверки: High 3 (FE-0022, FE-0023, FE-0059), Medium 26, Low 42, Info 4;
-  статусы: Confirmed 66 / Suspected 9; итого 75 записей
-Неподтверждённые гипотезы: FE-0004 (профиль-специфично), FE-0015/0016 (связаны с FE-0059),
-  FE-0050/0051, FE-0060 (вероятно опровергнуто), FE-0072/0075/0076, PWA-баннер, несвежий список задач
-Сохранённые доказательства: evidence/ (полные отчёты A/C/D/E, сводки, скриншоты),
-  Lighthouse по /login, замеры PERFORMANCE.md, логи backend (FE-0077), network/console в журнале сессии
+Подтверждённые дефекты: High 4 (FE-0004, FE-0022, FE-0023, FE-0059), Medium 24, Low 33
+Неподтверждённые гипотезы: FE-0016 (транзиентные 401), FE-0050/0051 (агент D),
+  FE-0060 (индикатор офлайна), PWA-баннер, несвежий список задач после создания
+Сохранённые доказательства: evidence/screenshots (3), сводки агентов A/C/D,
+  Lighthouse по /login, замеры PERFORMANCE.md, network/console в журнале сессии
 Непроверенные области: /about, /dlp//file-egress//groups-access//kb/manage (права),
   /my-files/edit/:fileId (ONLYOFFICE), zoom 80/150%, heap/долгие сессии, холодный кэш
-Ограничения: production (мутации — только тестовые данные, зачищены); security-пробы
-  только статически (runtime — на тестовом окружении по политике)
-Следующая задача: мерж PR #9 за владельцем; порядок фиксов — AUDIT_REVIEW.md
+Ограничения: production (мутации — только тестовые данные, зачищены); отчёт агента E
+  (безопасность) не получен — стоп-запрос отправлен, ответ ожидается
+Следующая задача: по желанию владельца — инкогнито-тест FE-0004, отчёт агента E,
+  точечные Playwright-спеки; список в NEXT_ACTIONS.md
 ```
 
 ## Журнал циклов
@@ -74,30 +74,7 @@
   виртуализируется :203/:218; лимит 10000 — Networks.jsx:871), FE-0026 (ChatBubble:1853–1856
   outline:none), FE-0027 (путь исправлен на pages/voice-video/), FE-0046 (ItObjectDetail:58–60
   signal не передаётся в passwordsAPI.getEntries). ISSUES.json валиден (74 записи).
-- Итог цикла 8 (до независимой проверки): High 4, Medium 25, Low 41, Info 4 — 74 записи.
-
-### Цикл 9 — Независимая проверка отчётов (DONE 2026-11-23)
-
-Выполнена вторым проходом (ведущий QA): скриптовый аудит ISSUES.json (75 записей,
-валидность, пути от корня репо, отсутствующие поля), заполнение file/lines/evidence по
-исходникам, переклассификация по фактическим доказательствам. Ключевые результаты:
-- **FE-0004 понижен High/Confirmed → Medium/Suspected**: в чистом профиле (включая
-  точную последовательность исходного наблюдения) воспроизводится КОРРЕКТНАЯ ошибка;
-  деплой в окне наблюдения исключён (файлы IIS-сайта не менялись с 20.11 15:10);
-  вероятная причина исходного наблюдения — устаревший SW app-shell в долгоживущем профиле.
-- **FE-0056 скорректирован**: «UI молчит» не подтверждено — путь ошибки существует
-  (useMailSelectedPreviewActions.js:28–46, setError → Alert); API 400 остаётся Confirmed;
-  вероятная причина — backend `mail_message_actions.py:83–94` «Message not found».
-- **FE-0060 вероятно опровергнут**: индикатор «Нет сети» существует
-  (ChatThreadHeader.jsx:37–61); исходная проба использовала нерелевантный шаблон.
-- **Счётчик Suspected исходно был некорректен** (заявлено 9, фактически 8) — пересчитан
-  скриптом; после переклассификации FE-0004 фактических Suspected — 9.
-- Новая находка FE-0077 (логи backend): POST /drafts/upsert-multipart 7–26 с.
-- Проверены своими глазами: FE-0022, FE-0023 (+лимит 10000, desktop-виртуализация),
-  FE-0026, FE-0027 (исправлен путь), FE-0046, FE-0064 (contentEditable без onPaste;
-  контраст с MailRichTextEditor), FE-0059 (auth.py:1648 + документация).
-- Итог после проверки: **High 3, Medium 26, Low 42, Info 4; Confirmed 66 / Suspected 9;
-  всего 75 записей.** Детали и порядок исправлений — AUDIT_REVIEW.md.
+- Итог: **High 4, Medium 25, Low 41, Info 4, Suspected 9 — всего 74 записи.**
 
 
 
@@ -112,3 +89,152 @@ MSBuild/Roslyn-узлы простаивают, серверу не мешают
 потроган, содержимое идентично HEAD.
 Меры: сохранять отчёты после каждого цикла; критичные артефакты дублировать вне репо
 (`audit/` в .gitignore).
+
+### Цикл 9 — Шесть субагентов + локальный стек (DONE)
+
+- Запущено 6 независимых explore-агентов: ONLYOFFICE/редактор, почта, чат-realtime,
+  PWA/auth/сессия, dashboard/scan/public-shares, myfiles/statistics/tasks.
+  Все завершились; находки перепроверены вручную по file:line.
+- Локальный стек (E2E_LOCAL=1): auth-guards 5/6 PASS — единственный FAIL
+  («non-admin is redirected out of the admin area») разобран: operator легитимно
+  имеет scan.tasks → canAccessAdminArea=true. Ожидание теста устарело → FE-0136
+  (техдолг: красный набор маскирует регрессии).
+- Runtime zoom-пробник (probe_zoom.mjs, локальный стек): dashboard/chat/my-files
+  без переполнений при 80/100/150%; scan-center — docW 1930-1938>1920 на ВСЕХ
+  масштабах (подтверждение FE-0011 вживую). Консоль: hubit://open/dashboard
+  без обработчика → FE-0138; 404 scan-* — особенность сида, не дефект.
+- /about: e2e_fresh логинится → штатный гейт онбординга на /about; скриншоты
+  1920/375 — страница целостна. Ранее наблюдавшееся «/login→/about у анонима»
+  признано артефактом среды (зомби-профиль Chrome/межпрогонные артефакты),
+  продуктовым дефектом НЕ является; побочный вывод оформлен как FE-0137.
+- PWA-гипотеза «Banner not shown» ОПРОВЕРГНУТА: осознанная подавленка +
+  install-CTA в карточке настроек.
+- Новые записи: FE-0077…FE-0138 (61 шт.). Из них High +2:
+  FE-0077 (нет авто-реотправки failed-сообщений чата — противоречит коду и
+  e2e-спецификации), FE-0082 (межвкладочная гонка refresh → family revoke →
+  разлогин всех вкладок).
+- Поднят: FE-0047 Low→Medium (passkey/trusted-device не сбрасывают эпоху).
+- Обновлены заметки: FE-0004 (вероятная причина — устаревший бандл/SW, FE-0083),
+  FE-0011 (zoom-подтверждение), FE-0060 (порог 2 c + gate ~60 c → FE-0079),
+  FE-0072 (уточнено: бизнес-403 подавляются, остаток — инфра-403).
+- Итог реестра: **135 записей — High 6, Medium 42, Low 79, Info 8,
+  Suspected 15.**
+
+
+### Цикл 10 — Контроль качества + runtime-верификация (DONE)
+
+- **Слияние с audit/frontend-2026-11-22:** удалённый реестр (75 записей, PR-ревью)
+  взят за базу для FE-0001…FE-0077; локальные цикл-9 находки перенумерованы
+  +1 → FE-0078…FE-0138. Конфликт FE-0077 разрешён: почтовая находка сохранена.
+  Резервная копия вне репо: C:\audit-backup-frontend-20261123-004048 (SHA256SUMS).
+- Расхождение 135/136 объяснено: локальный срез потерял FE-0077 (медленный
+  draft-save) — восстановлена; итоговый счёт **136 записей**.
+- **FE-0078 (chat) — переформулирован после рантайм-пробы:** авто-реотправка
+  существует (WS outbox flushQueue). Реальный дефект: после resend сообщение
+  исчезает из ленты отправителя до reload (e2e :202 FAIL, received 0).
+- **FE-0083 (refresh-race) — ПОДТВЕРЖДЁН рантаймом:** 3 параллельных refresh
+  с одной кукой → [200,200,401] → family revoked → /auth/me 401 в обеих
+  вкладках (общий cookie jar). Реальный триггер: silent-refresh на
+  visibilitychange при пробуждении N вкладок.
+- Выборочная перепроверка 24 записей: FE-0079/0080/0081/0082(уточнён)/
+  0085/0087/0088/0089/0090/0091/0093/0095/0097/0106/0107/0108/0109/0115/
+  0123/0124(→Suspected)/0127/0129/0130/0131/0133 — механизмы подтверждены
+  по file:line; пути исправлены (agents указали неверные каталоги).
+- FE-0136 (auth-guards спека) переклассифицировано: техдолг теста, Low —
+  не дефект приложения.
+- Валидатор (audit/frontend-2026-11-22) прогнан: 0 ошибок; схема
+  evidence/verification приведена к конвенции ветки.
+- Итог: **136 записей — High 5, Medium 41, Low 82, Info 8, Suspected 17**
+  (Confirmed 119, Suspected 17 по статусам).
+
+### Цикл 11 — Волна субагентов ×6: глубокое покрытие страниц (DONE)
+
+- 6 независимых read-only субагентов: Networks, Tickets/KB/Feed/Docflow,
+  Voice/Monitoring, Login/Auth/Layout, Chat/Mail-libs, Account/Admin.
+- **+113 новых записей: FE-0139…FE-0251.** Итог **249 записей** —
+  High 11, Medium 97, Low 132, Info 9; Confirmed 214 / Suspected 35.
+- Новые High (+6): FE-0208 backup-коды 2FA недостижимы (LoginRoute unmount
+  до setStep), FE-0209 required trusted-device недостижим, FE-0217
+  inline-изображение письма теряется после autosave, FE-0229 ранний return
+  до хуков → крах настроек в Desktop, FE-0231 стирание делегатов при
+  bulk-загрузке, FE-0237 гонка менеджеров отделов → порча ролей.
+- Перепроверено вручную: drawio saveThenClose (FE-0139), networks
+  sync-on-read (FE-0143), backup-codes race (FE-0208), delegates wipe
+  (FE-0231), hooks-order (FE-0229) — все подтверждены.
+- Merge-доработки: FE-0082 дополнен (typing cleanup), FE-0115 дополнен
+  (+2 точки revokeObjectURL).
+- Валидатор: 0 ошибок; 1 неверный путь исправлен (FE-0152).
+- «Проверено корректно» от агентов: useRequestGuard, swrCache,
+  read-receipts, upload-resume, livekit-сессия, drawer AbortController,
+  MyFilesAdminBrowser (эталон), SWR requestSeq, командная палитра ARIA.
+
+### Цикл 11 (продолжение) — волна ×4 + рантайм-пробы (в работе)
+
+- Дополнительные субагенты: Tasks/Construction/Company/AddressBook,
+  Computers/Transfer/DLP/Statistics, MyFiles+Chat-остатки, Scan/Database.
+- **+78 записей: FE-0252…FE-0302** (включая рантайм FE-0252/0253/0254).
+  Итог на момент фиксации: **300 записей — High 12, Medium 113,
+  Low 162, Info 13; Confirmed 246 / Suspected 54**.
+- Новые High: FE-0259 — нет beforeunload в construction-workspace
+  (потеря черновиков при F5, в Panel/Canvas он есть).
+- Рантайм-подтверждено: /database +400px overflow при zoom 200%
+  (FE-0252), heap 85→85→143MB за 3 раунда ×8 маршрутов (FE-0253,
+  Suspected), validateDOMNesting <button> на /networks вживую
+  (FE-0155 повышен до Confirmed runtime), hubit:// console-ошибка
+  в браузере (FE-0254 Info).
+- Матрица 500: /tasks|/mail|/database под сплошным 500 — layout и
+  alert-ы показываются (деградация работает, дефекта «белый экран» нет).
+- Отмечено verified-fixed (не дефект): CompanyStructureOverview
+  getElk().then — .catch присутствует (:379-381).
+- CLAUDE.md устарел: Search.jsx/Transfer.jsx/Work.jsx — несуществуют
+  (информация агента Computers).
+- Волна ×4 завершена: Tasks/Construction/Company (22), Computers/Transfer/DLP
+  (22), Scan/Database (20), ручная доработка MyFiles/ChatContextPanel (3),
+  revealMessage/loadMeetings/offlineCache/TGS (4), рантайм (3).
+- **ИТОГ ЦИКЛА: 322 записи — High 12, Medium 122, Low 174, Info 14;
+  Confirmed 266 / Suspected 56.** Цель «≥300» перевыполнена.
+- Dedup при мерже: Statistics-revoke→FE-0291, openActFile→FE-0283,
+  export-movements→FE-0302 (повышен до Confirmed).
+- Runtime: офлайн-баннер «Нет подключения» работает; dino-страница при
+  document-навигации офлайн — артефакт vite-dev (SW только PROD, а
+  handleNavigationRequest в sw.js имеет network+cache+fallback — корректно).
+- Агент MyFiles deep (c5d05716) упал на rate-limit дважды — область
+  покрыта частично ручным проходом (FE-0303/0304) — дочитать в цикле 12.
+
+## Цикл 12 — перепроверка всех 322 записей (2026-11-23)
+
+- Проверены все 322 записи: чанки 1–8 (chunk_1..8.json), вердикты в
+  evidence/cycle12/verdicts_1..8.json. Чанк 2 перезапущен после падения
+  агента; чанк 3 доверифицирован вручную и сверен с отдельным агентом;
+  High-12 проверены отдельно.
+- Вердикты: confirmed 290 / not-a-defect 17 / unverifiable 10 /
+  wrong-evidence 4 / fixed-externally 1; missing 0, дублей id 0.
+- После слияния: Confirmed 254, Suspected 50, Fixed-externally 1,
+  Rejected 17; всего 322. Severity не менялась: High 12, Medium 122,
+  Low 174, Info 14.
+- Rejected (17): FE-0025, FE-0037, FE-0060, FE-0106, FE-0111, FE-0116,
+  FE-0136, FE-0172, FE-0173, FE-0174, FE-0184, FE-0193, FE-0196,
+  FE-0210, FE-0211, FE-0212, FE-0231 — ложные срабатывания/намеренное
+  поведение, обоснования в evidence каждой записи.
+- Fixed-externally (1): FE-0225 — отправка стикера уже использует
+  ref-guard и client_message_id (useChatStickerSending.js:17-50).
+- Wrong-evidence (4): FE-0034 (Tooltip даёт aria-label; реальные случаи
+  Vcs/Mfu/UsersTab), FE-0115 (revoke находится в mailMessageFileActions.js:357-359),
+  FE-0182 и FE-0250 (уточнены file/lines/формулировка).
+- Unverifiable (10): FE-0004, FE-0015, FE-0016, FE-0051, FE-0075,
+  FE-0076, FE-0157, FE-0253, FE-0323, FE-0324 — переведены в
+  Suspected с пояснением.
+- High-12 подтверждены: FE-0022, FE-0023, FE-0059, FE-0078, FE-0083,
+  FE-0197, FE-0198, FE-0215, FE-0230, FE-0232, FE-0239, FE-0259.
+  FE-0197/0198: verifyTwoFactorSetup/Login вызывают applyAuthenticatedPayload
+  (setUser) до setStep('setup_complete')/remember-device, LoginRoute
+  (App.jsx:237-252) размонтирует Login раньше — экран backup-кодов и
+  обязательная привязка устройства недостижимы.
+- FE-0230: ChatNotificationsSettingsCard переехал в
+  pages/account/settings/notifications/; ранний return null до хуков
+  сохранён, путь в реестре обновлён.
+- Бэкап перед слиянием: audit/frontend/backups/ISSUES-20261123-093910.json
+  (и .md). Валидатор: 0 ошибок. ISSUES.md перегенерирован (247 карточек
+  FE-0078+; карточки FE-0025/0034 обновлены вручную).
+- Ограничения: перепроверка статическая по коду + ранее снятые runtime-
+  доказательства; production не трогали, новые живые пробы не выполнялись.

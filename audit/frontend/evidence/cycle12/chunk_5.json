@@ -1,0 +1,371 @@
+[
+ {
+  "id": "FE-0167",
+  "title": "Feed: hash-эффект комментария повторно дёргает N запросов на каждый 15-с полл",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/feed/FeedCommentsPanel.jsx",
+  "lines": "130-138,140-166: эффект зависит от items → каждый полл перезапускает; нет cancelled",
+  "claim": "130-138,140-166: эффект зависит от items → каждый полл перезапускает; нет cancelled |  | при битой ссылке — всплески запросов каждые 15 с"
+ },
+ {
+  "id": "FE-0168",
+  "title": "KB Help: открытие статьи без упорядочивания ответов → показ чужой статьи",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/help/KbHelpSection.jsx",
+  "lines": "265-279: openArticle без seq/abort/cancelled; ошибка глотается в setDetail(null)",
+  "claim": "265-279: openArticle без seq/abort/cancelled; ошибка глотается в setDetail(null) |  | быстрые клики по статьям → побеждает поздний ОТВЕТ"
+ },
+ {
+  "id": "FE-0169",
+  "title": "KB Help: жёсткий лимит 300 статей без пагинации — тихое усечение базы",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/help/KbHelpSection.jsx",
+  "lines": "222-225: limit:300, total игнорируется, индикатора усечения нет",
+  "claim": "222-225: limit:300, total игнорируется, индикатора усечения нет |  | часть базы знаний невидима без предупреждения"
+ },
+ {
+  "id": "FE-0170",
+  "title": "IT-заявки: устаревший фильтр склада фильтрует, пока Select рисует «Все склады»",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/ItPurchaseRequests.jsx",
+  "lines": "834 (warehouseRef в запросе),1060-1085 (renderValue показывает «Все склады» при отсутствии в фасетах)",
+  "claim": "834 (warehouseRef в запросе),1060-1085 (renderValue показывает «Все склады» при отсутствии в фасетах) |  | пустой список при визуально сброшенном фильтре"
+ },
+ {
+  "id": "FE-0171",
+  "title": "IT-заявки: ошибка загрузки детали невидима, когда заявки нет в списке",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/ItPurchaseRequests.jsx",
+  "lines": "665-681 (RequestDetail),1136: {error} рендерится только внутри ветки с request",
+  "claim": "665-681 (RequestDetail),1136: {error} рендерится только внутри ветки с request |  | неудачная загрузка выглядит как «ничего не выбрано»"
+ },
+ {
+  "id": "FE-0172",
+  "title": "Feed: openAnalytics без busy-guard → дубли запросов",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Feed.jsx",
+  "lines": "589-601",
+  "claim": "589-601 |  | двойной клик → два getAnalytics"
+ },
+ {
+  "id": "FE-0173",
+  "title": "Feed: архив/удаление поста — сравнение id без нормализации типов",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/Feed.jsx",
+  "lines": "555,577 (item.id !== post.id) vs patchPost:358-361 (String-нормализация)",
+  "claim": "555,577 (item.id !== post.id) vs patchPost:358-361 (String-нормализация) |  | при number/string-расхождении элемент останется до перезагрузки"
+ },
+ {
+  "id": "FE-0174",
+  "title": "IT-заявки: request_ref подставляется в URL без encodeURIComponent",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/ItPurchaseRequests.jsx",
+  "lines": "910,946: navigate(`/it/requests/${ref}`)",
+  "claim": "910,946: navigate(`/it/requests/${ref}`) |  | ref с / или спецсимволами сломает маршрут"
+ },
+ {
+  "id": "FE-0175",
+  "title": "Docflow: dangling previewObjectUrl.current после отозванного URL",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/Docflow.jsx",
+  "lines": "1749+1757-1758",
+  "claim": "1749+1757-1758 |  | после устаревшей последовательности .current указывает на мёртвый URL"
+ },
+ {
+  "id": "FE-0176",
+  "title": "Voice: единый actionBusyKey затирается параллельными действиями → двойной сабмит",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceVideoPage.jsx",
+  "lines": "132-142 (runAction без «уже занято»),828-845; VoiceJobsSection.jsx:368,451; VoiceLabelingSection.jsx:196-205",
+  "claim": "132-142 (runAction без «уже занято»),828-845; VoiceJobsSection.jsx:368,451; VoiceLabelingSection.jsx:196-205 |  | finally первого действия обнуляет ключ пока второе в полёте"
+ },
+ {
+  "id": "FE-0177",
+  "title": "Voice: ретраи в карточке встречи обходят AbortController → stale-запись чужой встречи",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceMeetingDrawer.jsx",
+  "lines": "980-1004 (retry* без signal и без base-проверки), cleanup отменяет только transcriptAbortRef",
+  "claim": "980-1004 (retry* без signal и без base-проверки), cleanup отменяет только transcriptAbortRef |  | запоздавший ответ ретрая заполняет карточку новой встречи данными старой"
+ },
+ {
+  "id": "FE-0178",
+  "title": "Voice: el.play() без .catch → unhandled promise rejection",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceMeetingDrawer.jsx",
+  "lines": "849,864,868,~1268",
+  "claim": "849,864,868,~1268 |  | частые сики/смена src → AbortError в консоль/мониторинг"
+ },
+ {
+  "id": "FE-0179",
+  "title": "Voice: Space и Delete перехватываются глобально при фокусе на кнопках — кнопки не активируются, Delete удаляет сегмент",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceLabelEditor.jsx",
+  "lines": "90-94 (isTypingTarget без BUTTON/A),505-529",
+  "claim": "90-94 (isTypingTarget без BUTTON/A),505-529 |  | клавиатурный пользователь не может активировать кнопки Space-ом; случайное удаление сегмента"
+ },
+ {
+  "id": "FE-0180",
+  "title": "Voice: Escape в редакторе сбрасывает выделение даже при открытых меню/диалогах",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceLabelEditor.jsx",
+  "lines": "530-531: window keydown без проверки Menu/Dialog (ср. защита Monitoring.jsx:131-142)",
+  "claim": "530-531: window keydown без проверки Menu/Dialog (ср. защита Monitoring.jsx:131-142) |  | закрытие меню спикера снимает выделение сегмента"
+ },
+ {
+  "id": "FE-0181",
+  "title": "Voice: waveform без pointercancel — застрявший drag на тач-устройствах",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceLabelWaveform.jsx",
+  "lines": "81-114,146-148: нет onPointerCancel",
+  "claim": "81-114,146-148: нет onPointerCancel |  | системная отмена жеста оставляет drag/pressRef — ложный seek при следующем касании"
+ },
+ {
+  "id": "FE-0182",
+  "title": "Voice: navigator.clipboard?.writeText().then — TypeError без Clipboard API",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceLogViewer.jsx",
+  "lines": "166-171: ?. защищает только доступ к методу; undefined.then падает; setTimeout не очищается",
+  "claim": "166-171: ?. защищает только доступ к методу; undefined.then падает; setTimeout не очищается |  | кнопка «Копировать» молча падает на http/старом браузере"
+ },
+ {
+  "id": "FE-0183",
+  "title": "Voice: getSummary .then без проверки abort → чужая сводка при смене встречи",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceMeetingSummary.jsx",
+  "lines": "167-184: signal передан, но then(setSummary) не проверяет aborted (в отличие от :179)",
+  "claim": "167-184: signal передан, но then(setSummary) не проверяет aborted (в отличие от :179) |  | мигание сводки предыдущей встречи"
+ },
+ {
+  "id": "FE-0184",
+  "title": "Voice: summary.decisions/open_questions/participants без защиты .length → крах вкладки",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceMeetingSummary.jsx",
+  "lines": "221-222,234,313,348,355 (topics защищён :213, остальные — нет)",
+  "claim": "221-222,234,313,348,355 (topics защищён :213, остальные — нет) |  | TypeError при частичном ответе API"
+ },
+ {
+  "id": "FE-0185",
+  "title": "Voice: связь поручения с задачей сохраняется с .catch(()=>{}) — тихая потеря task_id",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceAssignmentsTab.jsx",
+  "lines": "242-244",
+  "claim": "242-244 |  | UI показывает «задача создана», связь не сохранена → дубль задачи после перезагрузки"
+ },
+ {
+  "id": "FE-0186",
+  "title": "Voice: removeVariant без busy-защиты — двойной DELETE → ложная ошибка",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceLabelQualityPanel.jsx",
+  "lines": "82-89,148-152",
+  "claim": "82-89,148-152 |  | второй клик → 404 «Не удалось удалить» при выполненном удалении; можно удалять во время variant-job"
+ },
+ {
+  "id": "FE-0187",
+  "title": "Voice: панели калибровки/качества/лиц — load() без abort и mounted-флага",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceLabelCalibrationPanel.jsx",
+  "lines": "78-92; VoiceLabelQualityPanel.jsx:54-68; VoiceLabelFacesPanel.jsx:118-126; VoiceMeetingDrawer.jsx:872-876",
+  "claim": "78-92; VoiceLabelQualityPanel.jsx:54-68; VoiceLabelFacesPanel.jsx:118-126; VoiceMeetingDrawer.jsx:872-876 |  | setState на размонтированном компоненте; race двух load"
+ },
+ {
+  "id": "FE-0188",
+  "title": "Voice: превью лиц кликабельны только мышью — <img onClick> с пустым alt",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceLabelFacesPanel.jsx",
+  "lines": "50-68: Box component=img без role/tabIndex/onKeyDown, alt=''",
+  "claim": "50-68: Box component=img без role/tabIndex/onKeyDown, alt='' |  | клавиатурный пользователь не может исключить лишние лица"
+ },
+ {
+  "id": "FE-0189",
+  "title": "Voice: смена порядка сортировки встреч не сбрасывает страницу",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceVideoPage.jsx",
+  "lines": "789-790 (onOrderChange=setMeetingsOrder без setMeetingsPage(0)) vs :394-416",
+  "claim": "789-790 (onOrderChange=setMeetingsOrder без setMeetingsPage(0)) vs :394-416 |  | страница 3 другого порядка — «пропадающие» встречи"
+ },
+ {
+  "id": "FE-0190",
+  "title": "Voice: загрузка файлов без дедупликации — один файл можно отправить дважды",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceUploadDialog.jsx",
+  "lines": "145-150: addFiles фильтрует только расширение",
+  "claim": "145-150: addFiles фильтрует только расширение |  | два одинаковых job и две карточки встречи"
+ },
+ {
+  "id": "FE-0191",
+  "title": "Voice: glossary — мутации без busy-защиты + data.items без guard",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceGlossarySection.jsx",
+  "lines": "169-185 (нет busy),239 (items.map без ?.)",
+  "claim": "169-185 (нет busy),239 (items.map без ?.) |  | лавина запросов; крах при отсутствии items"
+ },
+ {
+  "id": "FE-0192",
+  "title": "Monitoring: isStale считает повреждённую дату «свежей» (NaN > x → false)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/monitoring/monitoringFormat.js",
+  "lines": "17: new Date(value).getTime() NaN → не устарело",
+  "claim": "17: new Date(value).getTime() NaN → не устарело |  | битый checked_at отображается как свежие данные"
+ },
+ {
+  "id": "FE-0193",
+  "title": "Monitoring: deletedIds — вечный tombstone; устройство с переиспользованным id не появится",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Monitoring.jsx",
+  "lines": "72,112-113,227-231: Set без очистки по времени/событию",
+  "claim": "72,112-113,227-231: Set без очистки по времени/событию |  | «невидимое» устройство после удаления+пересоздания в одной сессии"
+ },
+ {
+  "id": "FE-0194",
+  "title": "Monitoring: target.name.split без защиты — target без name роняет всю сетку",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/monitoring/MonitoringDeviceGrid.jsx",
+  "lines": "34: displayTargetName защищает, но прямой вызов split — нет",
+  "claim": "34: displayTargetName защищает, но прямой вызов split — нет |  | белый экран списка устройств при неполной записи"
+ },
+ {
+  "id": "FE-0195",
+  "title": "Monitoring: диалог устройств — loadFree/change без mounted-флага",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/itObjects/ObjectMonitoringDevicesDialog.jsx",
+  "lines": "24-31,33-38,40-52",
+  "claim": "24-31,33-38,40-52 |  | setState на размонтированном диалоге; stale-write при быстром переоткрытии"
+ },
+ {
+  "id": "FE-0196",
+  "title": "Monitoring: result.targets.filter без проверки поля — TypeError маскируется generic-ошибкой",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/Monitoring.jsx",
+  "lines": "148",
+  "claim": "148 |  | ошибка формы ответа маскируется «Не удалось обновить данные»"
+ },
+ {
+  "id": "FE-0197",
+  "title": "Login: экран backup-кодов после первичной настройки 2FA недостижим — Login размонтируется раньше",
+  "severity": "High",
+  "status": "Confirmed (код, перепроверено)",
+  "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+  "lines": "1505-1521 (submitTwoFactorSetup→verifyTwoFactorSetup→applyAuthenticatedPayload→setUser, AuthContext.jsx:557-568) → LoginRoute (App.jsx:237-239) отдаёт PostAuthNavigate → Login unmount ДО setStep(setup_complete); renderSetupCompleteStep — мёртвый код в проде",
+  "claim": "1505-1521 (submitTwoFactorSetup→verifyTwoFactorSetup→applyAuthenticatedPayload→setUser, AuthContext.jsx:557-568) → LoginRoute (App.jsx:237-239) отдаёт PostAuthNavigate → Login unmount ДО setStep(setup_complete); renderSetupCompleteStep — мёртвый код в проде |  | пользователь не видит backup-коды при обязательной 2FA — риск блокировки при потере TOTP-устройства; тест Login.test.jsx:503 маскирует дефект (рендерит без LoginRoute)"
+ },
+ {
+  "id": "FE-0198",
+  "title": "Login: обязательная привязка trusted-device (remember-device sheet) недостижима — тот же routing race",
+  "severity": "High",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+  "lines": "1394-1415,1137-1153,1170-1181,2342-2399: setRememberDeviceOpen(true) при уже установленном user → sheet не рендерится",
+  "claim": "1394-1415,1137-1153,1170-1181,2342-2399: setRememberDeviceOpen(true) при уже установленном user → sheet не рендерится |  | required-enrollment молча пропускается — фича фактически отключена"
+ },
+ {
+  "id": "FE-0199",
+  "title": "Login: кастомный диалог «Запомнить устройство» без управления фокусом/Escape/inert",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+  "lines": "2342-2399: role=dialog aria-modal без focus trap/autofocus/Escape/aria-hidden фона",
+  "claim": "2342-2399: role=dialog aria-modal без focus trap/autofocus/Escape/aria-hidden фона |  | при появлении sheet фокус уходит на элементы под оверлеем"
+ },
+ {
+  "id": "FE-0200",
+  "title": "Незащищённые Web Storage в горячих путях: интерцептор, restore сессии, route-функции",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/api/http.js",
+  "lines": "248 (getItem в request-интерцепторе — ломает КАЖДЫЙ запрос),370; AuthContext.jsx:201,225,270,293; aboutOnboarding.js:36,43,46 из render-функций App.jsx:169,186,244; MainLayout.jsx:1121,1139,1762,1770,1937",
+  "claim": "248 (getItem в request-интерцепторе — ломает КАЖДЫЙ запрос),370; AuthContext.jsx:201,225,270,293; aboutOnboarding.js:36,43,46 из render-функций App.jsx:169,186,244; MainLayout.jsx:1121,1139,1762,1770,1937 |  | при заблокированном хранилище (корп-политики, приватные режимы): от вечного спиннера до падения API-слоя и невозможности входа"
+ },
+ {
+  "id": "FE-0201",
+  "title": "Login: полный reload вместо SPA-навигации после passkey-входа",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+  "lines": "1642,1102-1115: window.location.assign параллельно SPA-навигации PostAuthNavigate",
+  "claim": "1642,1102-1115: window.location.assign параллельно SPA-навигации PostAuthNavigate |  | лишний полный цикл загрузки приложения при каждом passkey/trusted-device входе"
+ },
+ {
+  "id": "FE-0202",
+  "title": "Login: утечка window-слушателей в scheduleLoginPresentationRecovery",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/lib/loginPagePresentation.js",
+  "lines": "179-195: visibilitychange+pageshow снимаются только при visible-событии; cleanup не вызывается (Login.jsx:1327,1373-1376,1385-1389)",
+  "claim": "179-195: visibilitychange+pageshow снимаются только при visible-событии; cleanup не вызывается (Login.jsx:1327,1373-1376,1385-1389) |  | пара слушателей на каждую попытку passkey-входа"
+ },
+ {
+  "id": "FE-0203",
+  "title": "Login: 50-мс опрос WebAuthn API работает бесконечно",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/lib/useWebAuthnAvailability.js",
+  "lines": "50: setInterval останавливается только при появлении API или unmount",
+  "claim": "50: setInterval останавливается только при появлении API или unmount |  | 20 вызовов/сек вечно на машинах без PublicKeyCredential"
+ },
+ {
+  "id": "FE-0204",
+  "title": "Layout: мёртвая зависимость isMailRoute перезапускает весь цикл поллинга",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
+  "lines": "374,1290-1298,1652-1661: isMailRoute в deps, но в теле не используется",
+  "claim": "374,1290-1298,1652-1661: isMailRoute в deps, но в теле не используется |  | пересоздание fetchUnreadCounts → рестарт интервала и 6 слушателей + внеочередной опрос"
+ },
+ {
+  "id": "FE-0205",
+  "title": "Layout: частичный сбой refreshBellInbox визуально очищает колокольчик",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
+  "lines": "1327-1359: Promise.allSettled + безусловные setNotifications/setMailNotifications",
+  "claim": "1327-1359: Promise.allSettled + безусловные setNotifications/setMailNotifications |  | транзиентная ошибка одного канала опустошает секцию"
+ },
+ {
+  "id": "FE-0206",
+  "title": "Layout: оверлей pendingNavigation зависает до 10 с при редиректе целевого роута",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
+  "lines": "607-623,1886-1899: сброс только при pathname===targetPath или таймаут 10 с; PermissionRoute/AboutOnboardingRoute могут перенаправить",
+  "claim": "607-623,1886-1899: сброс только при pathname===targetPath или таймаут 10 с; PermissionRoute/AboutOnboardingRoute могут перенаправить |  | клик по пункту с устаревшими правами → брендированный лоадер 10 с поверх страницы"
+ },
+ {
+  "id": "FE-0207",
+  "title": "Layout: бейдж непрочитанной почты завышен до 20 с после прочтения из колокольчика",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
+  "lines": "199 (TTL 20s),1191-1201,1827-1843: markAsRead без applyMailUnreadDelta + без forceMailUnread",
+  "claim": "199 (TTL 20s),1191-1201,1827-1843: markAsRead без applyMailUnreadDelta + без forceMailUnread |  | бейдж врёт до 20 с после действия пользователя"
+ }
+]

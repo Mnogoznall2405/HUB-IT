@@ -1,0 +1,317 @@
+[
+ {
+  "id": "FE-0290",
+  "title": "Statistics: немедленный revokeObjectURL после anchor.click() при экспорте Excel",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Statistics.jsx",
+  "lines": "324-331 (нет задержки, у useTransferActJob:147-148 — 60 с)",
+  "claim": "324-331 (нет задержки, у useTransferActJob:147-148 — 60 с) |  | пустой/битый xlsx в части браузеров"
+ },
+ {
+  "id": "FE-0291",
+  "title": "ItObjects: loadFree в диалоге мониторинг-устройств без abort/seq — stale список",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/itObjects/ObjectMonitoringDevicesDialog.jsx",
+  "lines": "24-38",
+  "claim": "24-38 |  | устаревший список свободных устройств при переоткрытии Особенно критично для Desktop (WPF/WebView2 использует тот же фронтенд)."
+ },
+ {
+  "id": "FE-0292",
+  "title": "ItObjects: тихий провал загрузки филиалов в диалоге создания → объект создаётся без привязки",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/itObjects/ObjectCreateDialog.jsx",
+  "lines": "22-24: catch→setBranches([])",
+  "claim": "22-24: catch→setBranches([]) |  | пользователь видит только «Без привязки» без признака сбоя"
+ },
+ {
+  "id": "FE-0293",
+  "title": "Database: unhandled rejection при провале копирования расхождений",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useDiscrepanciesCopy.js",
+  "lines": "55-64 + lib/clipboard.js:28: handleCopy без try/catch",
+  "claim": "55-64 + lib/clipboard.js:28: handleCopy без try/catch |  | кнопка молчит без объяснения (актуально WebView2/HTTP)"
+ },
+ {
+  "id": "FE-0294",
+  "title": "Database: список ошибок перемещения обрезан до 5 без пометки «и ещё N»",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/TransferActionContent.jsx",
+  "lines": "344: result.failed.slice(0,5)",
+  "claim": "344: result.failed.slice(0,5) |  | retry идёт по полному списку — пользователь видит меньше ошибок"
+ },
+ {
+  "id": "FE-0295",
+  "title": "Database: ошибка поиска принтеров неотличима от «не найдено»",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useConsumableQrPrinterPicker.js",
+  "lines": "161-163: catch→setSearchResults([])",
+  "claim": "161-163: catch→setSearchResults([]) |  | сетевой сбой выглядит как пустой результат"
+ },
+ {
+  "id": "FE-0296",
+  "title": "DLP: «Обновить»/«Актуальный отчёт» без busy-guard — дубли запросов/отчётов",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/FileEgress.jsx",
+  "lines": "163-178,253-262,308",
+  "claim": "163-178,253-262,308 |  | параллельные load; двойной клик = два отчёта"
+ },
+ {
+  "id": "FE-0297",
+  "title": "DLP: тихий провал загрузки скриншота браузерного визита",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/dlp/BrowserVisitsPanel.jsx",
+  "lines": "205-206: catch{setUrl(\"\")}",
+  "claim": "205-206: catch{setUrl(\"\")} |  | кнопка «Снимок» возвращается в исходное без объяснения"
+ },
+ {
+  "id": "FE-0298",
+  "title": "DLP: строки таблицы хостов/доменов доступны только мышью (без tabIndex/onKeyDown)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/dlp/DlpHostList.jsx",
+  "lines": "412-416 + BrowserVisitsPanel.jsx:629-635",
+  "claim": "412-416 + BrowserVisitsPanel.jsx:629-635 |  | клавиатурный пользователь не откроет хост/домен"
+ },
+ {
+  "id": "FE-0299",
+  "title": "Statistics: setItems после cancelled в reloadRemaining — запись на размонтированном диалоге",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/statistics/PcRemainingDialog.jsx",
+  "lines": "82-90: .then пишет без проверки cancelled (есть только в catch/finally)",
+  "claim": "82-90: .then пишет без проверки cancelled (есть только в catch/finally) |  | устаревший список при переоткрытии"
+ },
+ {
+  "id": "FE-0300",
+  "title": "DLP: список telegram/max-чатов обрезан limit=200 без индикатора",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/FileEgress.jsx",
+  "lines": "220-235",
+  "claim": "220-235 |  | >200 диалогов → хвост молча невидим"
+ },
+ {
+  "id": "FE-0301",
+  "title": "Database: поиск получателя/сотрудника без AbortController + устаревшие options при ошибке",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/database/useTransferEmail.js",
+  "lines": "50-58 + useTransferFormState.js:129-144",
+  "claim": "50-58 + useTransferFormState.js:129-144 |  | старый запрос грузит сеть; ошибка → только console.error, options устаревают"
+ },
+ {
+  "id": "FE-0302",
+  "title": "Database: экспорт оборудования без листа перемещений при падении prefetch — только console.warn",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useEmployeeEquipmentExport.js",
+  "lines": "41-53",
+  "claim": "41-53 |  | пользователь получает неполный Excel без предупреждения Доп.: movements грузятся limit:500 — флаг усечения в файл не пишется."
+ },
+ {
+  "id": "FE-0303",
+  "title": "Чат: groupActionBusy — единый слот на все действия группы; повторный запуск в одном кадре проходит",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/chat/ChatContextPanel.jsx",
+  "lines": "1660,1931-1944: runGroupAction не проверяет busy перед стартом; кнопки disabled в UI, но два вызова до ре-рендера возможны",
+  "claim": "1660,1931-1944: runGroupAction не проверяет busy перед стартом; кнопки disabled в UI, но два вызова до ре-рендера возможны |  | finally первого обнуляет флаг до конца второго — то же окно, что FE-0180"
+ },
+ {
+  "id": "FE-0304",
+  "title": "Чат: loadAddMembersUsers без seq-guard — устаревшие результаты поиска при быстром вводе",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/chat/ChatContextPanel.jsx",
+  "lines": "1957-1967: getUsers без requestId/abort",
+  "claim": "1957-1967: getUsers без requestId/abort |  | поздний ответ старого запроса перезаписывает список нового"
+ },
+ {
+  "id": "FE-0305",
+  "title": "Database: crypto.randomUUID() без fallback — перенос в другую БД падает на HTTP-развёртывании",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useDatabaseDbTransfer.js",
+  "lines": "58: crypto.randomUUID() внутри try — нет в не-secure context (HTTP IIS); useTransferActJob.js:32-37 имеет fallback — несогласованность",
+  "claim": "58: crypto.randomUUID() внутри try — нет в не-secure context (HTTP IIS); useTransferActJob.js:32-37 имеет fallback — несогласованность |  | перенос оборудования всегда падает TypeError на HTTP-интранете"
+ },
+ {
+  "id": "FE-0306",
+  "title": "Database: storm-ретрай догрузки списка при падении эндпоинта — бесконечный поток запросов без backoff",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useDatabaseEquipmentData.js",
+  "lines": "344-349,407-414: catch только console.error; nextEquipmentPage не сдвигается → sentinel пересоздаётся и вызывает onLoadMore снова",
+  "claim": "344-349,407-414: catch только console.error; nextEquipmentPage не сдвигается → sentinel пересоздаётся и вызывает onLoadMore снова |  | при 500-эндпоинте непрерывные падающие запросы + вечный спиннер"
+ },
+ {
+  "id": "FE-0307",
+  "title": "Database: тот же storm-ретрай для универсального поиска (осознанный механизм без предохранителя)",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useDatabaseSearch.js",
+  "lines": "313-315: .catch(()=>{}) «next sentinel retries» без backoff/лимита/ошибки в UI",
+  "claim": "313-315: .catch(()=>{}) «next sentinel retries» без backoff/лимита/ошибки в UI |  | при постоянной ошибке searchUniversal — непрерывные повторные запросы"
+ },
+ {
+  "id": "FE-0308",
+  "title": "Database: метаданные (типы/статусы/филиалы) без generation-защиты — чужие справочники под новой БД",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useDatabaseEquipmentData.js",
+  "lines": "168-232: setEquipmentTypes/Branches/Statuses без isCurrent; refreshCurrentDbData:430-441 проверяет generation только для fetchAllEquipment",
+  "claim": "168-232: setEquipmentTypes/Branches/Statuses без isCurrent; refreshCurrentDbData:430-441 проверяет generation только для fetchAllEquipment |  | две быстрые смены БД → справочники старой БД; persisted-филиал валидируется по чужому списку"
+ },
+ {
+  "id": "FE-0309",
+  "title": "Database: ошибка первичной загрузки проглатывается — пустая база без индикации",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useDatabaseEquipmentData.js",
+  "lines": "416-418: fetchAllEquipment catch только console.error; состояния ошибки нет",
+  "claim": "416-418: fetchAllEquipment catch только console.error; состояния ошибки нет |  | пользователь принимает упавшую загрузку за пустую базу"
+ },
+ {
+  "id": "FE-0310",
+  "title": "Database: «недавние карточки» без scope-защиты — чужие карточки при смене БД",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useDatabaseRecentCards.js",
+  "lines": "30-50,52-72,99-130: refreshRecentCards/touchRecentCard без requestId; список не чистится при dbName (в recentActs есть)",
+  "claim": "30-50,52-72,99-130: refreshRecentCards/touchRecentCard без requestId; список не чистится при dbName (в recentActs есть) |  | touch старой БД добавляет её позицию в список новой"
+ },
+ {
+  "id": "FE-0311",
+  "title": "Database: смена БД без busy-guard + откат селекта к stale-значению при ошибке",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useDatabaseSelection.js",
+  "lines": "79-99: параллельные switchDatabase → двойной database-changed-рефетч; catch откатывает к захваченному previousDbId",
+  "claim": "79-99: параллельные switchDatabase → двойной database-changed-рефетч; catch откатывает к захваченному previousDbId |  | рассинхрон UI-селекта с реальной БД при частичном отказе"
+ },
+ {
+  "id": "FE-0312",
+  "title": "ScanCenter: ошибка observations кэшируется как «пусто» — ретрай навсегда заблокирован",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx",
+  "lines": "1130,1148-1155: не-append ошибка пишет {total:0,items:[]}; входной dedupe по currentBucket блокирует повтор",
+  "claim": "1130,1148-1155: не-append ошибка пишет {total:0,items:[]}; входной dedupe по currentBucket блокирует повтор |  | run показывает «изменения не найдены» до перезагрузки"
+ },
+ {
+  "id": "FE-0313",
+  "title": "Database: transfer-job поллинг продолжается ~10 мин после unmount страницы",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useTransferActJob.js",
+  "lines": "155-229,39-44: хук без useEffect; seq инвалидируется только reset/новым poll",
+  "claim": "155-229,39-44: хук без useEffect; seq инвалидируется только reset/новым poll |  | фоновый трафик после ухода со страницы"
+ },
+ {
+  "id": "FE-0314",
+  "title": "Database: setTimeout(300мс) setSelectedItems без cleanup — галочки на чужой контекст",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useDatabaseWorkspaceIdentity.js",
+  "lines": "30-32",
+  "claim": "30-32 |  | смена БД в окне таймера → выделение inv_no другого контекста"
+ },
+ {
+  "id": "FE-0315",
+  "title": "Database: long-press таймер карточки без unmount-cleanup — «призрачное» выделение",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/ModernEquipmentCard.jsx",
+  "lines": "184-200: 500мс таймер не очищается",
+  "claim": "184-200: 500мс таймер не очищается |  | срабатывание на размонтированной карточке → выделение невидимого элемента"
+ },
+ {
+  "id": "FE-0316",
+  "title": "Database: мёртвый prefetch чанков диалогов — guard !allEquipment?.length всегда истинен",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useDatabaseListController.js",
+  "lines": "154-168: allEquipment — grouped-объект, .length===undefined → import() никогда не выполняется",
+  "claim": "154-168: allEquipment — grouped-объект, .length===undefined → import() никогда не выполняется |  | первое открытие карточки всегда платит chunk-load задержку"
+ },
+ {
+  "id": "FE-0317",
+  "title": "ScanCenter: busyIncident/busyTaskAgent — одиночный слот без входного guard",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx",
+  "lines": "1486-1508,1773-1823: finally первого снимает busy второго",
+  "claim": "1486-1508,1773-1823: finally первого снимает busy второго |  | повторный ack до конца запроса; лишние refresh-волны"
+ },
+ {
+  "id": "FE-0318",
+  "title": "Scan: refreshFirstPage без AbortSignal — запросы наслаиваются на медленном бэкенде",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/hooks/useScanIncidentInbox.js",
+  "lines": "121-152 vs 95-104 (loadFirstPage/loadMore с signal)",
+  "claim": "121-152 vs 95-104 (loadFirstPage/loadMore с signal) |  | отменённый запрос дочитывает трафик"
+ },
+ {
+  "id": "FE-0319",
+  "title": "ScanCenter: drawer-запросы (host incidents/runs) без abort — живут после закрытия",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx",
+  "lines": "992-997,1034-1047,1090-1093 + scanIncidents.js:20-25 (getHostScanRuns без options)",
+  "claim": "992-997,1034-1047,1090-1093 + scanIncidents.js:20-25 (getHostScanRuns без options) |  | лишний трафик после смены хоста"
+ },
+ {
+  "id": "FE-0320",
+  "title": "Database: загрузчики истории обслуживания без canceled-флага — чужая история при переоткрытии",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useDatabaseMaintenanceData.js",
+  "lines": "86-141,162-197: loadWorkConsumables/loadCartridgeHistory и далее пишут после await",
+  "claim": "86-141,162-197: loadWorkConsumables/loadCartridgeHistory и далее пишут после await |  | окно показа истории другого оборудования"
+ },
+ {
+  "id": "FE-0321",
+  "title": "Database: deep-link openLinkedConsumable без отмены — модалка не того deeplink",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/database/useConsumableCard.js",
+  "lines": "242-289",
+  "claim": "242-289 |  | быстрая навигация → last-resolved-wins модалки"
+ },
+ {
+  "id": "FE-0322",
+  "title": "Scan/UI: таймеры вспышек без cleanup (flash 120мс, pathCopied 1500мс)",
+  "severity": "Info",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/scan-center/HostDrawer.jsx",
+  "lines": "192; QuickCameraDialog.jsx:71; IncidentsInboxSection.jsx:122",
+  "claim": "192; QuickCameraDialog.jsx:71; IncidentsInboxSection.jsx:122 |  | setState после unmount — косметический техдолг"
+ },
+ {
+  "id": "FE-0323",
+  "title": "API: getHostsFallbackFromIncidents молча усекает список хостов до incidentLimit (латентный)",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/api/scanHosts.js",
+  "lines": "123-148: метод в проде не вызывается (только тесты) — латентный риск подключения",
+  "claim": "123-148: метод в проде не вызывается (только тесты) — латентный риск подключения |  | если метод подключат — неполный список хостов без индикации"
+ },
+ {
+  "id": "FE-0324",
+  "title": "Database: справочники departments/movements с limit 500/1000 — переполнение зависит от данных",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/database/useDatabaseLookups.js",
+  "lines": "28-39 + useTransferFormState.js",
+  "claim": "28-39 + useTransferFormState.js |  | при справочнике >лимита хвост молча недоступен в форме"
+ }
+]

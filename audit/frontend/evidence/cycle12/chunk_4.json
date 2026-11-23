@@ -1,0 +1,377 @@
+[
+ {
+  "id": "FE-0126",
+  "title": "MyFiles: массовые delete/move — по запросу на элемент, последовательно, без прогресса",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx",
+  "lines": "1292-1309,1354-1371",
+  "claim": "1292-1309,1354-1371 |  | "
+ },
+ {
+  "id": "FE-0127",
+  "title": "Tasks: добавление пункта чек-листа идёт в обход очереди мутаций → гонка toggle/add теряет обновления",
+  "severity": "Medium",
+  "status": "Confirmed (код, перепроверено)",
+  "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskDetails.jsx",
+  "lines": "729-767",
+  "claim": "729-767 |  | toggle сериализуется через checklistMutationRef (items из existing), add читает stale task.checklist_items и шлёт updateTask напрямую — возможен lost update."
+ },
+ {
+  "id": "FE-0128",
+  "title": "Tasks: чекбокс чек-листа без optimistic-отклика; мёртвый проп updatingItemId",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/hub/TaskChecklist.jsx",
+  "relatedFiles": [
+   "TaskDetailChecklist.jsx:10-15"
+  ],
+  "claim": " |  | "
+ },
+ {
+  "id": "FE-0129",
+  "title": "Tasks: ensureTaskDiscussion с устаревшим completion → переход к ранее активной задаче",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskDetails.jsx",
+  "lines": "483-495",
+  "claim": "483-495 |  | "
+ },
+ {
+  "id": "FE-0130",
+  "title": "Tasks: устаревший ответ getTaskComments затирает только что добавленный комментарий",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskDetails.jsx",
+  "lines": "161-163,462",
+  "claim": "161-163,462 |  | "
+ },
+ {
+  "id": "FE-0131",
+  "title": "Tasks: openTaskDetails без зависимости visibleTaskItems → открывает устаревшую позицию списка",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskDetails.jsx",
+  "lines": "329,353",
+  "claim": "329,353 |  | "
+ },
+ {
+  "id": "FE-0132",
+  "title": "Tasks: несохранённые изменения canvas теряются при unmount во время in-flight save",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx",
+  "lines": "332-340",
+  "claim": "332-340 |  | "
+ },
+ {
+  "id": "FE-0133",
+  "title": "Tasks: handleDeleteTask без busy-guard → двойной confirm даёт ложный тост ошибки; ref мутируется в render",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskWorkflowActions.js",
+  "lines": "158-176",
+  "claim": "158-176 |  | "
+ },
+ {
+  "id": "FE-0134",
+  "title": "Tasks: переключение вкладок деталей задачи пушит записи в history — Back циклит по вкладкам",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskDetails.jsx",
+  "lines": "373-378",
+  "claim": "373-378 |  | "
+ },
+ {
+  "id": "FE-0135",
+  "title": "Statistics: текст ошибки blob-ответа нечитаем в тосте экспорта",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/Statistics.jsx",
+  "lines": "333-335",
+  "claim": "333-335 |  | "
+ },
+ {
+  "id": "FE-0136",
+  "title": "E2E auth-guards: ожидание редиректа оператора из /admin устарело — техдолг теста, не дефект приложения",
+  "severity": "Low",
+  "status": "Confirmed (runtime)",
+  "file": "WEB-itinvent/frontend/e2e/auth-guards.spec.js",
+  "relatedFiles": [
+   "WEB-itinvent/frontend/src/lib/accountNavigationConfig.jsx:18-30,165-169",
+   "WEB-itinvent/backend/services/authorization_service.py"
+  ],
+  "claim": " |  | поведение приложения корректно по текущей политике прав (operator + scan.tasks ∈ ADMIN_AREA_PERMISSIONS); падение спеки — устаревшее ожидание, красный набор маскирует регрессии. Не дефект продукта."
+ },
+ {
+  "id": "FE-0137",
+  "title": "Маршрутизация доверяет кэшированному localStorage.user до валидации сессии — вспышка чужого экрана",
+  "severity": "Info",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/contexts/AuthContext.jsx",
+  "relatedFiles": [
+   "App.jsx LoginRoute"
+  ],
+  "claim": " |  | offline-session tradeoff: /login мгновенно уводит на landing/about по устаревшему user, затем 401-валидация возвращает; наблюдалось в probe при сохранившейся сессии e2e_fresh."
+ },
+ {
+  "id": "FE-0138",
+  "title": "Попытка запуска hubit:// протокола при браузерном входе — console-ошибка «scheme does not have a registered handler»",
+  "severity": "Info",
+  "status": "Confirmed (runtime)",
+  "file": "WEB-itinvent/frontend/src/lib/desktopProtocolHandoff.js",
+  "claim": " |  | механизм handoff ожидаем, но ошибка засоряет консоль и путает диагностику."
+ },
+ {
+  "id": "FE-0139",
+  "title": "Drawio-редактор: при ошибке сохранения диалог закрывается и несохранённые правки теряются",
+  "severity": "Medium",
+  "status": "Confirmed (код, перепроверено)",
+  "file": "WEB-itinvent/frontend/src/components/itObjects/ObjectNetmapTab.jsx",
+  "lines": "104-108: save(pending) возвращает false при ошибке, но onCloseRef.current() вызывается безусловно; saveError видна уже закрытому диалогу",
+  "claim": "104-108: save(pending) возвращает false при ошибке, но onCloseRef.current() вызывается безусловно; saveError видна уже закрытому диалогу |  | сетевой сбой/409 → правки схемы стёрты без предупреждения; pendingXmlRef теряется"
+ },
+ {
+  "id": "FE-0140",
+  "title": "Networks: «Отмена» редактирования точки карты не откатывает локальные изменения mapPoints",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "2576-2603,3106-3108,3226-3228: поля мутируют mapPoints на каждый ввод; Отмена делает только setPointEditMode(false)",
+  "claim": "2576-2603,3106-3108,3226-3228: поля мутируют mapPoints на каждый ввод; Отмена делает только setPointEditMode(false) |  | черновых полей нет; маркеры/таблица показывают несохранённые значения до refreshBranchContext"
+ },
+ {
+  "id": "FE-0141",
+  "title": "Networks: мобильный режим размещения точки не работает — клики по карте игнорируются",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "2872-2873 (onPointDrop/onCanvasClick только при mobileMapEditMode); 1340-1352,337-347 ставят placingMarker, но не mobileMapEditMode; InteractiveMapCanvas.jsx:311",
+  "claim": "2872-2873 (onPointDrop/onCanvasClick только при mobileMapEditMode); 1340-1352,337-347 ставят placingMarker, но не mobileMapEditMode; InteractiveMapCanvas.jsx:311 |  | на телефоне размещение выглядит сломанным — требуется неочевидное нажатие «замка»"
+ },
+ {
+  "id": "FE-0142",
+  "title": "Networks: первый жест панорамы карты после касания маркера «съедается»",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx",
+  "lines": "519/646 (isPointPointerDownRef на marker down),305-307 (сброс только в container pointerup),547/677 (stopPropagation у маркера),205",
+  "claim": "519/646 (isPointPointerDownRef на marker down),305-307 (сброс только в container pointerup),547/677 (stopPropagation у маркера),205 |  | застрявший ref блокирует инициализацию следующего жеста панорамы/пинча"
+ },
+ {
+  "id": "FE-0143",
+  "title": "Networks: автосинк MAC/ФИО дёргает write-эндпоинт у read-only пользователей → 403-тосты",
+  "severity": "Medium",
+  "status": "Confirmed (код, перепроверено)",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "1562-1590: syncSocketHostContext без проверки canEdit; backend networks.py:410 требует PERM_NETWORKS_WRITE",
+  "claim": "1562-1590: syncSocketHostContext без проверки canEdit; backend networks.py:410 требует PERM_NETWORKS_WRITE |  | каждый заход read-only пользователя → гарантированный 403 + notifyWarning + console.error"
+ },
+ {
+  "id": "FE-0144",
+  "title": "Networks: устаревшее изображение карты при смене/ошибке загрузки — точки новой карты поверх старой",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "1079-1112: mapBlobUrl/mapIsPdf/mapRenderedFrom не сбрасываются до завершения downloadMapFile; при ошибке остаётся прежний URL",
+  "claim": "1079-1112: mapBlobUrl/mapIsPdf/mapRenderedFrom не сбрасываются до завершения downloadMapFile; при ошибке остаётся прежний URL |  | <img> с revoked-URL + точки новой карты → ложное позиционирование"
+ },
+ {
+  "id": "FE-0145",
+  "title": "Networks: нет busy-guards на saveMap/commitPendingPoint/saveSelectedPoint/removeSelectedPoint/removeMap",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "1259-1290,1354-1390,1413-1448; кнопки MapDialog.jsx:77,:2467-2475,:2605-2607,:3110-3113,:3230-3232",
+  "claim": "1259-1290,1354-1390,1413-1448; кнопки MapDialog.jsx:77,:2467-2475,:2605-2607,:3110-3113,:3230-3232 |  | двойной клик → две карты/две точки/повторный DELETE с ложным тостом ошибки"
+ },
+ {
+  "id": "FE-0146",
+  "title": "Networks: site_name карты захардкожен в «Первомайская 19/21»",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "1267,1278: site_name = p21 ? Первомайская 21 : Первомайская 19 — для любого другого site пишется неверное имя",
+  "claim": "1267,1278: site_name = p21 ? Первомайская 21 : Первомайская 19 — для любого другого site пишется неверное имя |  | неверное имя сайта в БД и выгрузках для всех не-«Первомайская» локаций"
+ },
+ {
+  "id": "FE-0147",
+  "title": "Networks: Escape глобально отменяет редактирование порта поверх любых диалогов",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "2055-2074: window keydown Escape→cancelEditPort без проверки открытых Dialog/Drawer; Ctrl+S аналогично; listener перевешивается каждый рендер",
+  "claim": "2055-2074: window keydown Escape→cancelEditPort без проверки открытых Dialog/Drawer; Ctrl+S аналогично; listener перевешивается каждый рендер |  | Escape в диалоге дополнительно уничтожает несохранённый draft порта"
+ },
+ {
+  "id": "FE-0148",
+  "title": "Networks: read-only пользователь попадает в режим размещения точки → серия 403",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "1477-1492,2086-2114 → startSocketPointCreation:1450-1475 → applySocketPointDraft:1340-1352 — ни один не проверяет canEdit",
+  "claim": "1477-1492,2086-2114 → startSocketPointCreation:1450-1475 → applySocketPointDraft:1340-1352 — ни один не проверяет canEdit |  | UX «разрешил, потом отказал»: панель размещения активна, каждый клик → 403-тост"
+ },
+ {
+  "id": "FE-0149",
+  "title": "Networks: гонка загрузки db-mapping при быстром переоткрытии диалога филиала",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "1737-1753: openEditBranchDialog грузит getBranchDbMapping без seq/abort-guard",
+  "claim": "1737-1753: openEditBranchDialog грузит getBranchDbMapping без seq/abort-guard |  | ответ по филиалу A может прийти после открытия B → в диалоге B чужая БД, сохранение запишет её в B"
+ },
+ {
+  "id": "FE-0150",
+  "title": "Networks/SWR: протухшие данные показываются бессрочно — фоновая ревалидация не доходит до UI",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/lib/swrCache.js",
+  "lines": "151-165: stale-запись → фоновой fetch пишет только в кэш; loadBranchContext применяет только синхронный data",
+  "claim": "151-165: stale-запись → фоновой fetch пишет только в кэш; loadBranchContext применяет только синхронный data |  | повторный заход показывает устаревший снапшот до полного перезахода"
+ },
+ {
+  "id": "FE-0151",
+  "title": "Networks: панорама карты не ограничена — карту можно утащить за экран",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx",
+  "lines": "274-277 (setOffset без clamp),463; zoomBy:161 клампит только scale",
+  "claim": "274-277 (setOffset без clamp),463; zoomBy:161 клампит только scale |  | «потерянная» карта до нажатия сброса"
+ },
+ {
+  "id": "FE-0152",
+  "title": "Networks: виртуализация — stale scrollTop после размонтирования контейнера → «пустая» таблица",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/networks/useVirtualizedTableWindow.js",
+  "lines": "41-67 + EquipmentTab.jsx:339-344: state scrollTop переживает размонтирование TableContainer",
+  "claim": "41-67 + EquipmentTab.jsx:339-344: state scrollTop переживает размонтирование TableContainer |  | после поиска — гигантский topSpacer + пустая таблица до первого scroll"
+ },
+ {
+  "id": "FE-0153",
+  "title": "Networks: удаление точки карты и устройства без подтверждения",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "1436-1448 (removeSelectedPoint DELETE сразу),1989-2009 (deleteDevice без confirm); у карты/розетки/филиала подтверждения есть",
+  "claim": "1436-1448 (removeSelectedPoint DELETE сразу),1989-2009 (deleteDevice без confirm); у карты/розетки/филиала подтверждения есть |  | удаление устройства каскадно забирает порты/привязки — нет пути назад"
+ },
+ {
+  "id": "FE-0154",
+  "title": "Networks: CSV-экспорт портов — data-URI без кавычек/экранирования; возможна CSV formula-injection",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/networks/EquipmentTab.jsx",
+  "lines": "180-201: encodeURI не кодирует # ; + & =; поля без кавычек; значения =/+/- в начале → формулы в Excel",
+  "claim": "180-201: encodeURI не кодирует # ; + & =; поля без кавычек; значения =/+/- в начале → формулы в Excel |  | битый CSV при спецсимволах; потенциальная formula-injection"
+ },
+ {
+  "id": "FE-0155",
+  "title": "Networks: вложенные <button> внутри CardActionArea — невалидный DOM",
+  "severity": "Low",
+  "status": "Confirmed (код + runtime)",
+  "file": "WEB-itinvent/frontend/src/components/networks/BranchList.jsx",
+  "lines": "50-88 (IconButton ×2 внутри CardActionArea=button); SocketsTab.jsx:241-301; EquipmentTab.jsx:376-430",
+  "claim": "50-88 (IconButton ×2 внутри CardActionArea=button); SocketsTab.jsx:241-301; EquipmentTab.jsx:376-430 |  | невалидный HTML, запутанный фокус/screen reader Runtime-подтверждено цикл 11: React выводит validateDOMNesting warning на живой странице."
+ },
+ {
+  "id": "FE-0156",
+  "title": "Networks: маркеры карты недоступны с клавиатуры",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx",
+  "lines": "516-565,644-695: <Box onClick> без role/tabIndex/onKeyDown",
+  "claim": "516-565,644-695: <Box onClick> без role/tabIndex/onKeyDown |  | точки нельзя выбрать/переместить без мыши"
+ },
+ {
+  "id": "FE-0157",
+  "title": "Networks: клик после перетаскивания точки может «просочиться» на canvas",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx",
+  "lines": "530-544 (pointDragRef.moved но не dragRef.moved),310-329 (handleCanvasClick проверяет только dragRef)",
+  "claim": "530-544 (pointDragRef.moved но не dragRef.moved),310-329 (handleCanvasClick проверяет только dragRef) |  | спорадические лишние точки/деселект после drag — зависит от click-target после pointer capture"
+ },
+ {
+  "id": "FE-0158",
+  "title": "Networks: openMapDialogCreate игнорирует default_site_code филиала",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "1217: setMapSiteCode(p19) жёстко vs диалог устройства :1895 использует selectedBranch.default_site_code",
+  "claim": "1217: setMapSiteCode(p19) жёстко vs диалог устройства :1895 использует selectedBranch.default_site_code |  | создание карты для не-p19 филиала требует ручного исправления"
+ },
+ {
+  "id": "FE-0159",
+  "title": "Networks: город филиала захардкожен в «tmn» + мёртвый createBranchCity",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "217 (createBranchCity без UI),1637 (city_code fallback tmn),747 (getBranches tmn)",
+  "claim": "217 (createBranchCity без UI),1637 (city_code fallback tmn),747 (getBranches tmn) |  | невозможно создать/увидеть филиал другого города — фича недорезана"
+ },
+ {
+  "id": "FE-0160",
+  "title": "Networks: пакет мёртвого кода (ImportDialog, mobilePortEditorOpen, equipmentLoading, hasBranchDbChanges, focusPointId, containerWidth)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/networks/ImportDialog.jsx",
+  "lines": "весь файл не импортируется; Networks.jsx:204,302-304,491-494,1714-1735,732-742; SocketsTab prop pointEditMode; useVirtualizedTableWindow.js:35",
+  "claim": "весь файл не импортируется; Networks.jsx:204,302-304,491-494,1714-1735,732-742; SocketsTab prop pointEditMode; useVirtualizedTableWindow.js:35 |  | мёртвый код раздувает god-component"
+ },
+ {
+  "id": "FE-0161",
+  "title": "Networks: молчаливое усечение выборок по limit (10000/5000) — неверные счётчики и «не найдено»",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "765 (sockets limit 10000),871 (ports limit 10000),1059/2030 (поиск limit 5000) — UI не сигнализирует о неполноте",
+  "claim": "765 (sockets limit 10000),871 (ports limit 10000),1059/2030 (поиск limit 5000) — UI не сигнализирует о неполноте |  | для крупных филиалов — тихая потеря части данных во всех производных"
+ },
+ {
+  "id": "FE-0162",
+  "title": "Networks: мелкие хронометражи — setTimeout(0) без очистки, expectedRef безусловный, setPointerCapture без try, ключ AuditTab",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
+  "lines": "1467-1468; ObjectNetmapTab.jsx:72 (expectedVersion безусловно → lost-update); InteractiveMapCanvas.jsx:528,657; AuditTab.jsx:84",
+  "claim": "1467-1468; ObjectNetmapTab.jsx:72 (expectedVersion безусловно → lost-update); InteractiveMapCanvas.jsx:528,657; AuditTab.jsx:84 |  | совокупность узких edge-кейсов"
+ },
+ {
+  "id": "FE-0163",
+  "title": "KnowledgeBase: клик по элементу списка перезагружает весь список и дублирует загрузку детали",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/KnowledgeBase.jsx",
+  "lines": "679,710,742 (selectedXId в deps useCallback),749-759 (эффекты перезапускаются),666-669,697-700,729-732",
+  "claim": "679,710,742 (selectedXId в deps useCallback),749-759 (эффекты перезапускаются),666-669,697-700,729-732 |  | каждый выбор → лишний запрос списка + мерцание + до 2 запросов детали"
+ },
+ {
+  "id": "FE-0164",
+  "title": "Feed: автосохранение создаёт пустой черновик при простом открытии композера",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/feed/FeedComposerDialog.jsx",
+  "lines": "318-335 (эффект без dirty-проверки),183,326",
+  "claim": "318-335 (эффект без dirty-проверки),183,326 |  | каждый «открыл и закрыл» → пустой черновик на сервере"
+ },
+ {
+  "id": "FE-0165",
+  "title": "Feed: параллельные автосохранения плодят дубли черновиков",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/feed/FeedComposerDialog.jsx",
+  "lines": "320-334: таймер читает draftId из замыкания без отмены in-flight запроса",
+  "claim": "320-334: таймер читает draftId из замыкания без отмены in-flight запроса |  | дубли черновиков при быстром вводе; setState после закрытия"
+ },
+ {
+  "id": "FE-0166",
+  "title": "Docflow: objectURL предпросмотра утекает при уходе; out-of-order ответ ломает учёт URL",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/Docflow.jsx",
+  "lines": "1225-1226,1665-1670,1745-1758: нет unmount-cleanup; .current присваивается ДО проверки sequence",
+  "claim": "1225-1226,1665-1670,1745-1758: нет unmount-cleanup; .current присваивается ДО проверки sequence |  | утечка blob-памяти за сессию; отозванный URL теряет владельца"
+ }
+]

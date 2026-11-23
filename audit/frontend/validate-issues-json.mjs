@@ -26,8 +26,9 @@ const repoRoot = resolve(scriptDir, '..', '..');
 const issuesPath = resolve(scriptDir, 'ISSUES.json');
 
 const SEVERITIES = new Set(['Critical', 'High', 'Medium', 'Low', 'Info']);
-const STATUSES = new Set(['Confirmed', 'Suspected']);
+const STATUSES = new Set(['Confirmed', 'Suspected', 'Fixed-externally', 'Rejected']);
 const VERIFICATION_PREFIXES = ['static', 'live-production', 'tooling'];
+const VERIFICATION_EXACT = new Set(['перепроверено (цикл 12)']);
 const ID_PATTERN = /^FE-\d{4}$/;
 const REQUIRED_FIELDS = ['id', 'title', 'category', 'severity', 'status', 'evidence', 'verification'];
 
@@ -59,7 +60,7 @@ if (!Array.isArray(parsed.issues)) {
 
 const seenIds = new Set();
 const severityCounts = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
-const statusCounts = { Confirmed: 0, Suspected: 0 };
+const statusCounts = { Confirmed: 0, Suspected: 0, 'Fixed-externally': 0, Rejected: 0 };
 
 for (const issue of parsed.issues) {
   const id = issue?.id ?? '(без id)';
@@ -81,7 +82,7 @@ for (const issue of parsed.issues) {
   if (Array.isArray(verification)) {
     if (verification.length === 0) pushError(id, 'verification пуст');
     for (const value of verification) {
-      if (!VERIFICATION_PREFIXES.some((prefix) => String(value).startsWith(prefix))) {
+      if (!VERIFICATION_EXACT.has(String(value)) && !VERIFICATION_PREFIXES.some((prefix) => String(value).startsWith(prefix))) {
         pushError(id, `verification вне допустимых префиксов (${VERIFICATION_PREFIXES.join('/')}): ${value}`);
       }
     }

@@ -1,0 +1,371 @@
+[
+ {
+  "id": "FE-0208",
+  "title": "Notifications: побочный эффект внутри setState-апдейтера — очередь чат-тостов",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/contexts/NotificationContext.jsx",
+  "lines": "347-380: мутация chatSerialQueueRef в чистом апдейтере",
+  "claim": "347-380: мутация chatSerialQueueRef в чистом апдейтере |  | в StrictMode dev — дубли/потери тостов; хрупкий паттерн для concurrent"
+ },
+ {
+  "id": "FE-0209",
+  "title": "Notifications: seen-маркеры не синхронизируются между вкладками → дубли уведомлений",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/contexts/NotificationContext.jsx",
+  "lines": "194-196,433-449: чтение один раз, без storage-слушателя; windowsNotifications.js read-then-write без lock",
+  "claim": "194-196,433-449: чтение один раз, без storage-слушателя; windowsNotifications.js read-then-write без lock |  | дублирующиеся тосты/системные уведомления в мультитабе"
+ },
+ {
+  "id": "FE-0210",
+  "title": "Смена selected_database в одной вкладке молча меняет контекст остальных",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/api/http.js",
+  "lines": "248-251: X-Database-ID из localStorage на каждый запрос; storage-слушатель фильтрует только user (AuthContext.jsx:427-430)",
+  "claim": "248-251: X-Database-ID из localStorage на каждый запрос; storage-слушатель фильтрует только user (AuthContext.jsx:427-430) |  | вкладка B шлёт новую БД со старым именем в шапке"
+ },
+ {
+  "id": "FE-0211",
+  "title": "SW регистрируется по абсолютному пути; pathname-проверки игнорируют basename",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/main.jsx",
+  "lines": "68 (register /sw.js),24-25 (pathname !== /my-files)",
+  "claim": "68 (register /sw.js),24-25 (pathname !== /my-files) |  | при хостинге под виртуальным каталогом — промах scope / пропущенная миграционная перезагрузка"
+ },
+ {
+  "id": "FE-0212",
+  "title": "Пользователь с нулевым набором прав после логина попадает в пустой редирект",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/App.jsx",
+  "lines": "152-155,237-252: resolveFirstAccessiblePath→/login→PostAuthNavigate→Navigate на тот же путь",
+  "claim": "152-155,237-252: resolveFirstAccessiblePath→/login→PostAuthNavigate→Navigate на тот же путь |  | пустой /login вместо осмысленного экрана/выхода"
+ },
+ {
+  "id": "FE-0213",
+  "title": "Login: преждевременный авто-submit backup-кода при length>=6 (формат 8-9 символов)",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
+  "lines": "82-88,1579-1603: isCompleteBackupInput принимает >=6",
+  "claim": "82-88,1579-1603: isCompleteBackupInput принимает >=6 |  | ложная ошибка «неверный код» при медленном вводе"
+ },
+ {
+  "id": "FE-0214",
+  "title": "Layout: маркер «соединение восстановлено» теряется при StrictMode-двойном init",
+  "severity": "Info",
+  "status": "Confirmed (код, dev-only)",
+  "file": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
+  "lines": "284: useState(consumeConnectionRestoredMarker) — инициализатор с побочным эффектом",
+  "claim": "284: useState(consumeConnectionRestoredMarker) — инициализатор с побочным эффектом |  | в dev баннер не показывается; прод корректен"
+ },
+ {
+  "id": "FE-0215",
+  "title": "Почта: inline-изображение теряется из письма после autosave черновика",
+  "severity": "High",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx",
+  "lines": "524-539 + MailRichTextEditor.jsx:151-157,228-242 + mailComposeHtml.js:138-145: после saveDraftMultipart blob: отозван, DOM Quill не переписан (эффект выходит по nextValue===valueRef), buildPortableComposeHtml удаляет img как не-cid",
+  "claim": "524-539 + MailRichTextEditor.jsx:151-157,228-242 + mailComposeHtml.js:138-145: после saveDraftMultipart blob: отозван, DOM Quill не переписан (эффект выходит по nextValue===valueRef), buildPortableComposeHtml удаляет img как не-cid |  | вставленная картинка молча выпадает при следующем autosave/отправке"
+ },
+ {
+  "id": "FE-0216",
+  "title": "Почта: редактор стрипает inline-превью с data:/абсолютным URL при синхронизации значения",
+  "severity": "Medium",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/mail/MailRichTextEditor.jsx",
+  "lines": "45-58 + mailComposeHtml.js:50-54 (REMOTE_RESOURCE_RE https?:|data:)",
+  "claim": "45-58 + mailComposeHtml.js:50-54 (REMOTE_RESOURCE_RE https?:|data:) |  | если бэкенд отдаёт абсолютный inline_src/data: — восстановленные картинки исчезают"
+ },
+ {
+  "id": "FE-0217",
+  "title": "Почта: localDraftDirtyRef засоряется служебными патчами → межвкладочная синхронизация черновика мертва",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx",
+  "lines": "144-152,503,527-538,547,848-853,916-926,978 + mailComposeState.js:150-161 + :465-468",
+  "claim": "144-152,503,527-538,547,848-853,916-926,978 + mailComposeState.js:150-161 + :465-468 |  | patchComposeState метит dirty на патчах сервера/прогресса → saved_at-guard никогда не доходит; last-writer-wins затирает свежий черновик соседней вкладки"
+ },
+ {
+  "id": "FE-0218",
+  "title": "Почта: получатели письма читаются из снапшота до ожидания автосохранения — уходит старый список",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx",
+  "lines": "782-784 (to/cc/bcc до lock) vs 802-814 (тело/вложения из sendState после)",
+  "claim": "782-784 (to/cc/bcc до lock) vs 802-814 (тело/вложения из sendState после) |  | правка «Кому» во время ожидания черновика → письмо на старые адреса (окно ~30 с)"
+ },
+ {
+  "id": "FE-0219",
+  "title": "Почта: автодополнение получателей — searchContacts без .catch → unhandled rejection",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx",
+  "lines": "173-181",
+  "claim": "173-181 |  | сбой сети → необработанный rejection, опции устаревают без уведомления"
+ },
+ {
+  "id": "FE-0220",
+  "title": "Чат: гонка подготовки файлов — guard на render-state теряет уже подготовленные файлы",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/chat/useChatFileSending.js",
+  "lines": "112-119,137,202-237; аналогично applySelectedImageEdit/resetSelectedImageEdit 274-312,324-355",
+  "claim": "112-119,137,202-237; аналогично applySelectedImageEdit/resetSelectedImageEdit 274-312,324-355 |  | два вызова до ре-рендера проходят guard; оба строят nextItems из stale → поздний перезаписывает ранний"
+ },
+ {
+  "id": "FE-0221",
+  "title": "Чат: инвертированный guard touchCancel/pointerCancel → «призрачный» long-press",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/chat/useChatBubbleGestures.js",
+  "lines": "189-199 (+таймер 93-97): resetLongPressGesture только при !mobileMessageInteractionsEnabled",
+  "claim": "189-199 (+таймер 93-97): resetLongPressGesture только при !mobileMessageInteractionsEnabled |  | после отмены касания таймер 420 мс срабатывает на устаревшем target → ложное меню/выделение"
+ },
+ {
+  "id": "FE-0222",
+  "title": "Чат: retryFailedMessage без busy-guard → параллельные повторные отправки (файлы — полный re-upload)",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/chat/useChatComposerSending.js",
+  "lines": "344-409 + useChatFileSending.js:503,538-541 (uploadAttempt не сохраняется)",
+  "claim": "344-409 + useChatFileSending.js:503,538-541 (uploadAttempt не сохраняется) |  | текст спасает client_message_id; файлы гоняют все чанки заново"
+ },
+ {
+  "id": "FE-0223",
+  "title": "Чат: отправка голосового не отменяется и не координируется с отправкой файлов",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/chat/useChatFileSending.js",
+  "lines": "634-651: sendVoiceFile без AbortController и вне fileUploadAbortRef/sendingFiles",
+  "claim": "634-651: sendVoiceFile без AbortController и вне fileUploadAbortRef/sendingFiles |  | «отмена загрузки» не действует; параллельная отмена тронет не ту загрузку"
+ },
+ {
+  "id": "FE-0224",
+  "title": "Чат: chat-sticker-packs-changed перезагружает паки без guard на размонтирование",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/chat/TelegramStickersTab.jsx",
+  "lines": "156-164 vs 139-154 (первичная загрузка с cancelled)",
+  "claim": "156-164 vs 139-154 (первичная загрузка с cancelled) |  | setState на размонтированном компоненте"
+ },
+ {
+  "id": "FE-0225",
+  "title": "Чат: отправка стикера — guard через render-state → возможен двойной send без client_message_id",
+  "severity": "Low",
+  "status": "Suspected",
+  "file": "WEB-itinvent/frontend/src/components/chat/TelegramStickersTab.jsx",
+  "lines": "354-369,685-728",
+  "claim": "354-369,685-728 |  | два клика в одном кадре проходят; дедуп только сервером"
+ },
+ {
+  "id": "FE-0226",
+  "title": "API: getCachedGet не принимает AbortSignal — кэшированные GET неотменяемы",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/api/http.js",
+  "lines": "388-419",
+  "claim": "388-419 |  | кэшированные справочники не отменяются при размонтировании — трафик в фоне"
+ },
+ {
+  "id": "FE-0227",
+  "title": "Чат: video-стикер перекачивается при возврате во viewport (src+preload=auto)",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/chat/ChatStickerMedia.jsx",
+  "lines": "213-227 + useChatStickerMediaActivity.js:97-111",
+  "claim": "213-227 + useChatStickerMediaActivity.js:97-111 |  | range-запросы webm при каждом проходе ленты"
+ },
+ {
+  "id": "FE-0228",
+  "title": "Почта: дубли файлов при повторном выборе/drag-drop в композере",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx",
+  "lines": "993-1007: без проверки имени/размера/lastModified",
+  "claim": "993-1007: без проверки имени/размера/lastModified |  | один файл прикрепляется и отправляется дважды"
+ },
+ {
+  "id": "FE-0229",
+  "title": "Чат: контекстное меню сообщения декларирует role=menu/menuitem без клавиатурной навигации",
+  "severity": "Low",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/chat/ChatMessageContextMenu.jsx",
+  "lines": "375-509: нет ArrowUp/Down/roving tabindex",
+  "claim": "375-509: нет ArrowUp/Down/roving tabindex |  | screen reader объявляет меню без ожидаемого управления"
+ },
+ {
+  "id": "FE-0230",
+  "title": "Аккаунт: ранний return null до хуков при runtime-флаге Desktop → крах рендера «Rendered fewer hooks»",
+  "severity": "High",
+  "status": "Confirmed (код, перепроверено)",
+  "file": "WEB-itinvent/frontend/src/pages/account/settings/HubItPwaSettingsCard.jsx",
+  "lines": "36 (if(isNativeShellRuntime()) return null до хуков 38-117); ChatNotificationsSettingsCard.jsx:30; platform.js:14-16; desktopBridge.js:905-907 (bridgeReady асинхронный)",
+  "claim": "36 (if(isNativeShellRuntime()) return null до хуков 38-117); ChatNotificationsSettingsCard.jsx:30; platform.js:14-16; desktopBridge.js:905-907 (bridgeReady асинхронный) |  | при готовности моста WebView2 карточка возвращает null до хуков → React crash страницы настроек в HUB Desktop; вспышка PWA-карточки в десктопе"
+ },
+ {
+  "id": "FE-0231",
+  "title": "Аккаунт: isAdmin в useAccountSectionData без toLowerCase → пустые admin-разделы при роли «Admin»",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js",
+  "lines": "69 (=== 'admin' без нормализации) vs accountNavigationConfig.jsx:161-163 (toLowerCase), UserDraftFields.jsx:39",
+  "claim": "69 (=== 'admin' без нормализации) vs accountNavigationConfig.jsx:161-163 (toLowerCase), UserDraftFields.jsx:39 |  | роут-гейт и навигация показывают разделы, а canManage*/loadEnv/loadAppSettings молча выходят — пустые админ-вкладки"
+ },
+ {
+  "id": "FE-0232",
+  "title": "Аккаунт: падение bulk-загрузки делегатов → сохранение пользователя стирает все связи помощник/зам",
+  "severity": "High",
+  "status": "Confirmed (код, перепроверено)",
+  "file": "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js",
+  "lines": "244-251 (catch→merge с items:[] + console.error),637-644 (updateTaskDelegates из черновика); accountUserModel.js:27-39",
+  "claim": "244-251 (catch→merge с items:[] + console.error),637-644 (updateTaskDelegates из черновика); accountUserModel.js:27-39 |  | временный сбой одного эндпоинта → при любом сохранении карточки связи удаляются на сервере без предупреждения"
+ },
+ {
+  "id": "FE-0233",
+  "title": "Аккаунт: частичный успех create/update пользователя показывается как полный провал",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js",
+  "lines": "586-605,636-666: user создан/обновлён, но падение updateTaskDelegates → «Не удалось создать/обновить» + ok:false",
+  "claim": "586-605,636-666: user создан/обновлён, но падение updateTaskDelegates → «Не удалось создать/обновить» + ok:false |  | повторный «Сохранить» → 409 duplicate или повторный PUT; делегаты теряются"
+ },
+ {
+  "id": "FE-0234",
+  "title": "Аккаунт: удаление пользователя без busy-guard → повторный DELETE и ложная 404-ошибка",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/UsersTab.jsx",
+  "lines": "592-618 (кнопка не disabled) + useAccountSectionData.js:672-686 (нет deleting-state)",
+  "claim": "592-618 (кнопка не disabled) + useAccountSectionData.js:672-686 (нет deleting-state) |  | двойной клик → ложный тост «Не удалось удалить», диалог остаётся"
+ },
+ {
+  "id": "FE-0235",
+  "title": "Аккаунт: тихие отказы валидации в handleSaveDraft — «Сохранить» ничего не делает без объяснения",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/UsersTab.jsx",
+  "lines": "208-210: username<3, нецелый telegram_id, невалидная квота → return без подсветки",
+  "claim": "208-210: username<3, нецелый telegram_id, невалидная квота → return без подсветки |  | админ не понимает причину неработающей кнопки"
+ },
+ {
+  "id": "FE-0236",
+  "title": "Аккаунт: завершение сессии без подтверждения, включая собственную сессию админа",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/SessionsTab.jsx",
+  "lines": "149-156: onTerminate из меню строки, без диалога и маркировки текущей сессии",
+  "claim": "149-156: onTerminate из меню строки, без диалога и маркировки текущей сессии |  | один клик → мгновенный логаут себя или чужой сессии"
+ },
+ {
+  "id": "FE-0237",
+  "title": "Аккаунт: массовые операции над сессиями без подтверждения (несогласованно с normalize+confirm)",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/SessionsTab.jsx",
+  "lines": "44-60 (Очистить устаревшие/Удалить неактивные без confirm) vs useAccountSectionData.js:749-753 (normalize с confirm)",
+  "claim": "44-60 (Очистить устаревшие/Удалить неактивные без confirm) vs useAccountSectionData.js:749-753 (normalize с confirm) |  | массовое закрытие сессий одним случайным кликом"
+ },
+ {
+  "id": "FE-0238",
+  "title": "Аккаунт: loadingMore навсегда застревает при гонке loadMore↔reload — пагинация ломается",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/FeedbackAdminSection.jsx",
+  "lines": "133-151 (reload бампает requestRef),157-173 (finally сбрасывает loadingMore только при совпадении requestId)",
+  "claim": "133-151 (reload бампает requestRef),157-173 (finally сбрасывает loadingMore только при совпадении requestId) |  | смена фильтра во время «Показать ещё» → кнопка навсегда disabled"
+ },
+ {
+  "id": "FE-0239",
+  "title": "Аккаунт: гонка loadMembers между отделами → «Сохранить начальников» пишет роли в чужой отдел",
+  "severity": "High",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/DepartmentsTab.jsx",
+  "lines": "58-89 (loadMembers без seq-guard),129-142 (handleSaveManagers шлёт draftManagerIds в selectedDepartmentId)",
+  "claim": "58-89 (loadMembers без seq-guard),129-142 (handleSaveManagers шлёт draftManagerIds в selectedDepartmentId) |  | быстрый A→B → ответ по A перезаписывает memberships/draftManagerIds → роли отдела A уходят в отдел B"
+ },
+ {
+  "id": "FE-0240",
+  "title": "Аккаунт: loadLookups без seq-защиты → устаревшие справочники под новой базой",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/ItinventReferencesTab.jsx",
+  "lines": "349-364 (нет loadSeq в отличие от loadRows 328-345)",
+  "claim": "349-364 (нет loadSeq в отличие от loadRows 328-345) |  | создание записи с чужими id типов/производителей при быстрой смене БД"
+ },
+ {
+  "id": "FE-0241",
+  "title": "Аккаунт: гонка openDelete — usage другой записи в диалоге удаления",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/ItinventReferencesTab.jsx",
+  "lines": "452-464 (openDelete без seq),220,252 (disabled по usage)",
+  "claim": "452-464 (openDelete без seq),220,252 (disabled по usage) |  | диалог для B показывает проверку A → лишний запрет или попытка удалить используемое"
+ },
+ {
+  "id": "FE-0242",
+  "title": "Аккаунт: сброс графика работы филиала без подтверждения",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/WorkSchedulesAdminSection.jsx",
+  "lines": "158-170,293-299: иконка сразу вызывает reset→deleteSchedule",
+  "claim": "158-170,293-299: иконка сразу вызывает reset→deleteSchedule |  | случайное удаление настроек рабочего времени"
+ },
+ {
+  "id": "FE-0243",
+  "title": "Аккаунт: «Обновить»/повторный вход в раздел стирает несохранённые правки .env",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/EnvVariablesTab.jsx",
+  "lines": "39-46 (эффект сбрасывает draftValues на новый items),232 (onRefresh без dirtyCount) + useAccountSectionData.js:400-404",
+  "claim": "39-46 (эффект сбрасывает draftValues на новый items),232 (onRefresh без dirtyCount) + useAccountSectionData.js:400-404 |  | один клик «Обновить» → потеря всех правок без предупреждения"
+ },
+ {
+  "id": "FE-0244",
+  "title": "Аккаунт: черновик IP-allowlist стирается сохранением соседней карточки",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/AdminLoginAllowlistSettingsCard.jsx",
+  "lines": "24-32 (useEffect по currentIps-новому массиву) + appSettingsModel.js:18 + TransferActReminderSettingsCard.jsx:85",
+  "claim": "24-32 (useEffect по currentIps-новому массиву) + appSettingsModel.js:18 + TransferActReminderSettingsCard.jsx:85 |  | сохранение reminder-карточки молча сносит набранный allowlist"
+ },
+ {
+  "id": "FE-0245",
+  "title": "Аккаунт: псевдо-автосохранение групп паролей затирается любым рефрешем",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js",
+  "lines": "845-856 (autosave→return true БЕЗ запроса) + PasswordVaultGroupsSettingsCard.jsx:69,78,29,92",
+  "claim": "845-856 (autosave→return true БЕЗ запроса) + PasswordVaultGroupsSettingsCard.jsx:69,78,29,92 |  | иллюзия автосохранения — правки исчезают при «Обновить»/переходе"
+ },
+ {
+  "id": "FE-0246",
+  "title": "Аккаунт: раздел «Пользователи AD» доступен по ad_users.read, но эндпоинты admin-only → гарантированный 403",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/components/account/accountNavigationConfig.jsx",
+  "lines": "88-94 (ad_users.read) vs AdUsers.jsx:135,152-154 (getImportCandidates) vs backend ad_users.py:79-86 (admin-only)",
+  "claim": "88-94 (ad_users.read) vs AdUsers.jsx:135,152-154 (getImportCandidates) vs backend ad_users.py:79-86 (admin-only) |  | нерабочий пункт меню для держателей ad_users.read"
+ },
+ {
+  "id": "FE-0247",
+  "title": "Аккаунт: шесть загрузчиков хука без seq/unmount-защиты (databases/env/appSettings/passwordGroups/aiBots/security)",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js",
+  "lines": "202-217,283-302,304-317,319-332,334-361,363-376 (защищены только beginUsers/beginSessions 219-281)",
+  "claim": "202-217,283-302,304-317,319-332,334-361,363-376 (защищены только beginUsers/beginSessions 219-281) |  | setState после unmount; ответ старого запроса перезаписывает свежий"
+ },
+ {
+  "id": "FE-0248",
+  "title": "Аккаунт: MyFilesStats.load без seq-защиты → старый поиск перезаписывает новый",
+  "severity": "Medium",
+  "status": "Confirmed (код)",
+  "file": "WEB-itinvent/frontend/src/pages/account/admin/MyFilesAdminTab.jsx",
+  "lines": "111-125,129-132,140,204",
+  "claim": "111-125,129-132,140,204 |  | таблица показывает статистику под чужой запрос"
+ }
+]

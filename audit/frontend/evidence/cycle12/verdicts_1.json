@@ -1,0 +1,207 @@
+[
+ {
+  "id": "FE-0001",
+  "verdict": "confirmed",
+  "note": "Backend отдаёт detail=\"Incorrect username or password\" (auth.py:801,818); фронтенд показывает его без перевода (Login.jsx:593-616)."
+ },
+ {
+  "id": "FE-0002",
+  "verdict": "confirmed",
+  "note": "InfoBanner имеет role=status (Login.jsx:282-294) и вложен в оболочку с role=status aria-live=polite (416-439) — двойное объявление."
+ },
+ {
+  "id": "FE-0003",
+  "verdict": "confirmed",
+  "note": "Кнопка глаза: класс p-1 + иконка h-5/w-5 даёт ~28px, ниже минимума 36px (Login.jsx:1927-1934)."
+ },
+ {
+  "id": "FE-0004",
+  "verdict": "unverifiable",
+  "note": "В чистом профиле ошибка корректна; воспроизводилось только в одном долгоживущем профиле, код SharedFolder.jsx:47-57 обрабатывает ошибку. Отдельный дефект не доказан."
+ },
+ {
+  "id": "FE-0005",
+  "verdict": "confirmed",
+  "note": "Начальный forceFull-poll и visibility/tick не дедуплицируются по аргументам; guard hubPollInFlightRef только сериализует (MainLayout.jsx:1416-1432,1576-1592), runtime фиксировал 2 одинаковых запроса."
+ },
+ {
+  "id": "FE-0006",
+  "verdict": "confirmed",
+  "note": "isMyFilesPublicRequestUrl ищет \"/my-files/public/\" и \"/my-files/public?\", реальные публичные URL — /my-files/public-folders/... (myFiles.js:352-381), поэтому whitelist в 401-перехватчике мёртв (http.js:176-184)."
+ },
+ {
+  "id": "FE-0007",
+  "verdict": "confirmed",
+  "note": "Вложения с 410 исключаются из галереи через failedMediaIds без видимой заглушки/сообщения (FeedPostCard.jsx:75,113,294); runtime 8x410 за загрузку /feed."
+ },
+ {
+  "id": "FE-0008",
+  "verdict": "confirmed",
+  "note": "Запрос /inventory/computers/search с scope=all подтверждён (equipmentComputers.js:84); измерение 3250ms и дубли имён — в runtime-доказательствах."
+ },
+ {
+  "id": "FE-0009",
+  "verdict": "confirmed",
+  "note": "MUI Select без labelId/id при InputLabel (TicketRequestList.jsx:151-166) не связывает label с combobox; a11y-снимки фиксируют безымянные combobox на 6+ страницах."
+ },
+ {
+  "id": "FE-0010",
+  "verdict": "confirmed",
+  "note": "Английский aria-label \"toggle password visibility\" (Login.jsx:1930); английские \"Open\" подтверждены a11y-снимками страниц."
+ },
+ {
+  "id": "FE-0011",
+  "verdict": "confirmed",
+  "note": "Grid container spacing=1.5 (ScanCenterOverview.jsx:159) даёт горизонтальное переполнение; runtime 1920/1536 и cycle9-замеры подтверждают."
+ },
+ {
+  "id": "FE-0012",
+  "verdict": "confirmed",
+  "note": "Loader listTasks вызывается двумя триггерами; runtime фиксировал 2 одинаковых GET /docflow/tasks?scope=inbox (Docflow.jsx:1296)."
+ },
+ {
+  "id": "FE-0013",
+  "verdict": "confirmed",
+  "note": "useDocflowAbsenceMarks делает общий запрос /docflow/absences (строка 15), панель отсутствий — второй запрос с employee_code; runtime 3.4-3.8 c каждый."
+ },
+ {
+  "id": "FE-0014",
+  "verdict": "confirmed",
+  "note": "Drawer уведомлений (MainLayout.jsx:3078-3084) не задаёт role=dialog/aria-modal/aria-label; MUI Modal root остаётся role=presentation."
+ },
+ {
+  "id": "FE-0015",
+  "verdict": "unverifiable",
+  "note": "Сброс сессии после смены UA объясняется ротацией refresh (FE-0059); отдельного UA-пиннинга в коде нет. Как самостоятельный дефект не подтверждён."
+ },
+ {
+  "id": "FE-0016",
+  "verdict": "unverifiable",
+  "note": "URL 401 не сохранены, повторная проба без 4xx/5xx; fileNote честно фиксирует отсутствие источника. Кодовой привязки нет."
+ },
+ {
+  "id": "FE-0017",
+  "verdict": "confirmed",
+  "note": "chatRegressionFlows.test.jsx использует describe без импорта (строка 5 импортирует afterEach/beforeEach/expect/it/vi); ESLint-конфиг для components/chat не добавляет vitest-globals — no-undef."
+ },
+ {
+  "id": "FE-0018",
+  "verdict": "confirmed",
+  "note": "Три запроса voice jobs/meetings подтверждены кодом (VoiceVideoPage.jsx:151,178,220); runtime 1.2-1.3 c каждый."
+ },
+ {
+  "id": "FE-0019",
+  "verdict": "confirmed",
+  "note": "30 API-вызовов и 1090ms /auth/sessions — runtime; обёртка authSessions.js:5 соответствует."
+ },
+ {
+  "id": "FE-0020",
+  "verdict": "confirmed",
+  "note": "Alert выводит cache.age_seconds в сырых секундах (ConstructionObjects.jsx:604); runtime 169979 сек."
+ },
+ {
+  "id": "FE-0022",
+  "verdict": "confirmed",
+  "note": "High, ручная проверка: TableRow onClick без role/tabIndex/onKeyDown (Warehouse1C.jsx:2163-2167), TableCell onClick (1975-1980); мобильная строка :487 имеет клавиатурную семантику."
+ },
+ {
+  "id": "FE-0023",
+  "verdict": "confirmed",
+  "note": "High, ручная проверка: isMobile-ветка рендерит displayedPorts.map -> Card без виртуализации (EquipmentTab.jsx:351-433); desktop использует slice/virtualization (203,218); лимит 10000."
+ },
+ {
+  "id": "FE-0024",
+  "verdict": "confirmed",
+  "note": "Подтверждено для IconButton без Tooltip: Networks.jsx:2132,2214,2704,2712,2748,3006; EquipmentTab.jsx:249; BranchDialogs.jsx:146. Уточнение: обёрнутые в MUI Tooltip со строковым title получают aria-label и дефектом не являются."
+ },
+ {
+  "id": "FE-0025",
+  "verdict": "not-a-defect",
+  "note": "Все три IconButton обёрнуты в Tooltip с строковым title (TaskCard.jsx:321,334,362). MUI Tooltip при describeChild=false выставляет aria-label на child (Tooltip.js:453-460), имена «Открыть»/«Редактировать»/«Скопировать ссылку» есть."
+ },
+ {
+  "id": "FE-0026",
+  "verdict": "confirmed",
+  "note": "Кнопка выделения сообщения задаёт outline:none и для :focus, :focus-visible (ChatBubble.jsx:1853-1856) при наличии aria-label."
+ },
+ {
+  "id": "FE-0027",
+  "verdict": "confirmed",
+  "note": "DialogContent bgcolor #1a1b23, loading-текст color text.secondary (VoiceLogViewer.jsx:240-242); тема light-only даёт тёмный текст на тёмном фоне."
+ },
+ {
+  "id": "FE-0028",
+  "verdict": "confirmed",
+  "note": "Drawer Box width xs:360 (Mfu.jsx:1297-1298) шире экранов <360px."
+ },
+ {
+  "id": "FE-0029",
+  "verdict": "confirmed",
+  "note": "Effect keydown зависит от displayedPorts и не замемоизированных cancelEditPort/savePortEdit (Networks.jsx:1862,2011,2055-2074) — листенер переустанавливается на каждый рендер."
+ },
+ {
+  "id": "FE-0030",
+  "verdict": "confirmed",
+  "note": "Networks.jsx содержит ~80 useState в диапазоне 138-311 при ~3300 строках — god-component; любой ввод перерисовывает страницу."
+ },
+ {
+  "id": "FE-0031",
+  "verdict": "confirmed",
+  "note": "onPointerMove вызывает setDraggedPoint без троттлинга (InteractiveMapCanvas.jsx:530-544), useMemo кластеризации зависит от draggedPoint (55-105) — пересчёт всех точек на каждое движение."
+ },
+ {
+  "id": "FE-0032",
+  "verdict": "confirmed",
+  "note": "handleBulkDownload запускает void handleDownload для каждого файла без очереди/лимита (MyFiles.jsx:1332-1337)."
+ },
+ {
+  "id": "FE-0033",
+  "verdict": "confirmed",
+  "note": "Списки balances/warehouses рендерятся map без виртуализации (Warehouse1C.jsx:903,923,1922,1970); объём 200-1000 строк."
+ },
+ {
+  "id": "FE-0034",
+  "verdict": "wrong-evidence",
+  "note": "Цитируемые SharedFolder.jsx:231,248, VoiceLogViewer.jsx:229,234, PasswordFiltersPanel.jsx:39, Vcs.jsx:686-698, Mfu.jsx:988-994 — все обёрнуты Tooltip со строковым title (MUI выставляет aria-label), не дефект. Реальный случай без имени из цитируемых: только UsersTab.jsx:321."
+ },
+ {
+  "id": "FE-0035",
+  "verdict": "confirmed",
+  "note": "TableRow с onClick и cursor:pointer без role/tabIndex/onKeyDown (Networks.jsx:2243-2248)."
+ },
+ {
+  "id": "FE-0036",
+  "verdict": "confirmed",
+  "note": "equipmentLoading/socketsLoading/mapsLoading объявлены (Networks.jsx:302-304), их сеттеры нигде не вызываются; состояние мёртвое."
+ },
+ {
+  "id": "FE-0037",
+  "verdict": "not-a-defect",
+  "note": "Строка 422 — намеренно disabled кнопка «Установить» для агента старше MIN_INSTALL_AGENT_VERSION с поясняющим Tooltip (HubDesktopDeploySection.jsx:419-424). Индикатора «Установлена» в коде нет; поведения, описанного заголовком, не существует."
+ },
+ {
+  "id": "FE-0038",
+  "verdict": "confirmed",
+  "note": "Tailwind подключён в vite.config.js:3 и используется Login/чатом, остальной портал — MUI sx; двойная система стилей подтверждена."
+ },
+ {
+  "id": "FE-0039",
+  "verdict": "confirmed",
+  "note": "Тема создаётся с palette.mode='light' (theme/index.js:31); требование dark theme из AGENTS.md не выполнено."
+ },
+ {
+  "id": "FE-0040",
+  "verdict": "confirmed",
+  "note": "QRCode импортируется статически в Login.jsx:3, попадая в чанк входа, хотя нужен только для TOTP-QR."
+ },
+ {
+  "id": "FE-0041",
+  "verdict": "confirmed",
+  "note": "setInterval(...,1000) безусловно обновляет nowMs (SharedFile.jsx:576-579) без проверки видимости/статуса."
+ },
+ {
+  "id": "FE-0042",
+  "verdict": "confirmed",
+  "note": "loadActiveStats зависит от tab (useCallback deps, Statistics.jsx:259-282) и вызывается effect-ом (294-296) — при переключении вкладки запрос повторяется."
+ }
+]

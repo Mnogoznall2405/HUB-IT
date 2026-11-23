@@ -1,0 +1,210 @@
+[
+ {
+  "id": "FE-0208",
+  "verdict": "confirmed",
+  "note": "Мутация chatSerialQueueRef выполняется внутри setState-апдейтера (NotificationContext.jsx:347-380); в StrictMode апдейтер может вызываться дважды, очередь меняется повторно."
+ },
+ {
+  "id": "FE-0209",
+  "verdict": "confirmed",
+  "note": "Seen-маркеры читаются один раз (NotificationContext.jsx:194-196,433-449), storage-слушателя нет; запись read-then-write без lock — две вкладки дают дубли."
+ },
+ {
+  "id": "FE-0210",
+  "verdict": "not-a-defect",
+  "note": "selected_database — намеренно общий контекст пользователя: X-Database-ID читается из localStorage на каждый запрос (http.js:248-251). Смена БД в одной вкладке обязана менять контекст остальных, отдельного per-tab состояния продукт не заявляет."
+ },
+ {
+  "id": "FE-0211",
+  "verdict": "not-a-defect",
+  "note": "Приложение публикуется в корень IIS-сайта (web.config в public, Vite base='/'), поэтому абсолютные /sw.js и pathname /my-files корректны; basename-деплой не поддерживается и не заявлен."
+ },
+ {
+  "id": "FE-0212",
+  "verdict": "not-a-defect",
+  "note": "alwaysGrantedPermissions гарантирует dashboard.read и другие базовые права (AuthContext.jsx:17-34), поэтому resolveFirstAccessiblePath не может вернуть пустой набор у аутентифицированного пользователя."
+ },
+ {
+  "id": "FE-0213",
+  "verdict": "confirmed",
+  "note": "isCompleteBackupInput возвращает true для любой строки длиной >=6 (Login.jsx:82-88), авто-submit срабатывает через 650 мс (1584-1601), хотя backup-код 8-9 символов — часть кода уходит на проверку."
+ },
+ {
+  "id": "FE-0214",
+  "verdict": "confirmed",
+  "note": "useState(consumeConnectionRestoredMarker) выполняет побочный эффект в инициализаторе (MainLayout.jsx:284); в StrictMode dev инициализатор вызывается дважды и маркер теряется. Production не затронут."
+ },
+ {
+  "id": "FE-0215",
+  "verdict": "confirmed",
+  "note": "После autosave blob-URL inline-превью отзываются (MailComposeHost.jsx:524-539), DOM Quill не переписывается (эффект выходит по nextValue===valueRef, MailRichTextEditor.jsx:228-242), а buildPortableComposeHtml удаляет img с не-cid src (mailComposeHtml.js:138-145)."
+ },
+ {
+  "id": "FE-0216",
+  "verdict": "confirmed",
+  "note": "REMOTE_RESOURCE_RE включает https?: и data: (mailComposeHtml.js:50-54), синхронизация значения вычищает такие img (MailRichTextEditor.jsx:45-58) — inline-превью с data:/абсолютным URL стрипается."
+ },
+ {
+  "id": "FE-0217",
+  "verdict": "confirmed",
+  "note": "localDraftDirtyRef выставляется служебными патчами autosave/синхронизации (MailComposeHost.jsx:144-152,503,527-538,547,848-853,916-926,978), поэтому межвкладочная синхронизация считает черновик изменённым и не применяет чужой."
+ },
+ {
+  "id": "FE-0218",
+  "verdict": "confirmed",
+  "note": "to/cc/bcc читаются из снапшота до ожидания draftSaveInFlight (MailComposeHost.jsx:782-784), тело и вложения — из sendState после ожидания (802-814); правки получателей во время ожидания не попадут в отправку."
+ },
+ {
+  "id": "FE-0219",
+  "verdict": "confirmed",
+  "note": "searchContacts имеет только .then/.finally без .catch (MailComposeHost.jsx:173-181) — отклонённый запрос даёт unhandled rejection."
+ },
+ {
+  "id": "FE-0220",
+  "verdict": "confirmed",
+  "note": "Guard подготовки файлов опирается на render-state (useChatFileSending.js:112-119,137,202-237); повторный вызов до ре-рендера теряет уже подготовленные файлы. Аналогично для image edit (274-312,324-355)."
+ },
+ {
+  "id": "FE-0221",
+  "verdict": "confirmed",
+  "note": "handleTouchCancel/pointerCancel сбрасывают long-press только при !mobileMessageInteractionsEnabled (useChatBubbleGestures.js:189-199), тогда как long-press активен при включённых интеракциях — «призрачный» жест."
+ },
+ {
+  "id": "FE-0222",
+  "verdict": "confirmed",
+  "note": "retryFailedMessage не имеет busy-guard (useChatComposerSending.js:344-409); uploadAttempt не сохраняется (useChatFileSending.js:503,538-541), повторный retry запускает параллельную отправку и полный re-upload."
+ },
+ {
+  "id": "FE-0223",
+  "verdict": "confirmed",
+  "note": "sendVoiceFile не использует AbortController и не входит в fileUploadAbortRef/sendingFiles (useChatFileSending.js:634-651) — голосовое нельзя отменить и оно не координируется с отправкой файлов."
+ },
+ {
+  "id": "FE-0224",
+  "verdict": "confirmed",
+  "note": "Обработчик chat-sticker-packs-changed перезагружает паки без cancelled/cleanup (TelegramStickersTab.jsx:156-164), в отличие от первичной загрузки (139-154)."
+ },
+ {
+  "id": "FE-0225",
+  "verdict": "fixed-externally",
+  "note": "useChatStickerSending.js:17-26 — ref-based in-flight guard; :37-49 — client_message_id всегда → двойной send исключён ниже по стеку, дедуп есть",
+  "actualFile": "WEB-itinvent/frontend/src/pages/chat/useChatStickerSending.js"
+ },
+ {
+  "id": "FE-0226",
+  "verdict": "confirmed",
+  "note": "getCachedGet не принимает signal и вызывает apiClient.get без него (http.js:388-419) — кэшированные GET неотменяемы."
+ },
+ {
+  "id": "FE-0227",
+  "verdict": "confirmed",
+  "note": "Video-стикер использует src + preload=auto (ChatStickerMedia.jsx:213-227); при возврате в viewport активность снова включает загрузку (useChatStickerMediaActivity.js:97-111)."
+ },
+ {
+  "id": "FE-0228",
+  "verdict": "confirmed",
+  "note": "onDrop/onFileChange добавляют файлы без дедупликации по имени/размеру/lastModified (MailComposeHost.jsx:993-1007) — повторный выбор создаёт дубли."
+ },
+ {
+  "id": "FE-0229",
+  "verdict": "confirmed",
+  "note": "Контейнер объявляет role=menu, пункты role=menuitem (ChatMessageContextMenu.jsx:376,83,520), но обработчиков ArrowUp/Down/Home/End и roving tabindex нет."
+ },
+ {
+  "id": "FE-0230",
+  "verdict": "confirmed",
+  "note": "High, ручная проверка: isNativeShellRuntime() возвращает null до хуков (HubItPwaSettingsCard.jsx:36-38; ChatNotificationsSettingsCard.jsx:30-32, файл переехал в pages/account/settings/notifications/). Флаг зависит от асинхронного desktopBridgeReady (platform.js:14-16), поэтому смена false→true меняет число хуков и роняет рендер.",
+  "actualFile": "WEB-itinvent/frontend/src/pages/account/settings/notifications/ChatNotificationsSettingsCard.jsx"
+ },
+ {
+  "id": "FE-0231",
+  "verdict": "not-a-defect",
+  "note": "user.role нормализуется в нижний регистр в normalizeUserWithPermissions (AuthContext.jsx:134) до попадания в useAccountSectionData (строка 69); значение «Admin» в этот хук не приходит."
+ },
+ {
+  "id": "FE-0232",
+  "verdict": "confirmed",
+  "note": "High, ручная проверка: при ошибке bulk-загрузки делегатов users остаются с task_delegate_links=[] (useAccountSectionData.js:244-251, accountUserModel.js:27-39); сохранение пользователя отправляет этот пустой список в updateTaskDelegates (637-644) и стирает связи."
+ },
+ {
+  "id": "FE-0233",
+  "verdict": "confirmed",
+  "note": "Пользователь создан/обновлён, затем падение updateTaskDelegates уходит в общий catch и возвращает ok:false с текстом «Не удалось создать/обновить» (useAccountSectionData.js:586-605,636-666) — частичный успех показан как полный провал."
+ },
+ {
+  "id": "FE-0234",
+  "verdict": "confirmed",
+  "note": "Кнопка удаления в диалоге не disabled во время запроса (UsersTab.jsx:601-617), handleDeleteUser не имеет deleting-state (useAccountSectionData.js:672-686) — повторный DELETE даёт 404 и ложную ошибку."
+ },
+ {
+  "id": "FE-0235",
+  "verdict": "confirmed",
+  "note": "handleSaveDraft делает return при username<3, нецелом telegram_id или невалидной квоте без подсветки полей (UsersTab.jsx:208-210) — «Сохранить» молчит."
+ },
+ {
+  "id": "FE-0236",
+  "verdict": "confirmed",
+  "note": "Завершение сессии из меню строки вызывает onTerminate без confirm (SessionsTab.jsx:149-156); текущая сессия не помечена."
+ },
+ {
+  "id": "FE-0237",
+  "verdict": "confirmed",
+  "note": "«Очистить устаревшие»/«Удалить неактивные» выполняются без подтверждения (SessionsTab.jsx:44-60), тогда как normalize использует confirm (useAccountSectionData.js:749-753)."
+ },
+ {
+  "id": "FE-0238",
+  "verdict": "confirmed",
+  "note": "reload бампает requestRef (FeedbackAdminSection.jsx:133-151), а finally сбрасывает loadingMore только при совпадении requestId (157-173) — при гонке флаг залипает."
+ },
+ {
+  "id": "FE-0239",
+  "verdict": "confirmed",
+  "note": "High, ручная проверка: loadMembers без seq-guard (DepartmentsTab.jsx:58-89) может применить ответ старого отдела; handleSaveManagers отправляет draftManagerIds в текущий selectedDepartmentId (129-142)."
+ },
+ {
+  "id": "FE-0240",
+  "verdict": "confirmed",
+  "note": "loadLookups не имеет loadSeq, в отличие от loadRows (ItinventReferencesTab.jsx:328-364) — устаревший ответ может перезаписать справочники новой базы."
+ },
+ {
+  "id": "FE-0241",
+  "verdict": "confirmed",
+  "note": "openDelete не защищён seq-проверкой (ItinventReferencesTab.jsx:452-464), usage приходит асинхронно; диалог может показать usage другой записи (220,252)."
+ },
+ {
+  "id": "FE-0242",
+  "verdict": "confirmed",
+  "note": "Иконка сброса сразу вызывает reset→deleteSchedule без confirm (WorkSchedulesAdminSection.jsx:158-170,293-299)."
+ },
+ {
+  "id": "FE-0243",
+  "verdict": "confirmed",
+  "note": "Эффект сбрасывает draftValues на новый items (EnvVariablesTab.jsx:39-46), onRefresh не учитывает dirtyCount (232) — несохранённые правки .env теряются."
+ },
+ {
+  "id": "FE-0244",
+  "verdict": "confirmed",
+  "note": "useEffect по новому массиву currentIps перезаписывает черновик IP-allowlist (AdminLoginAllowlistSettingsCard.jsx:24-32) при сохранении соседней карточки."
+ },
+ {
+  "id": "FE-0245",
+  "verdict": "confirmed",
+  "note": "autosave обновляет только локальный state и возвращает true без запроса (useAccountSectionData.js:845-856); любой loadPasswordGroups затирает псевдо-сохранение серверными значениями."
+ },
+ {
+  "id": "FE-0246",
+  "verdict": "confirmed",
+  "note": "Навигация пускает по ad_users.read (accountNavigationConfig.jsx:88-94), а getImportCandidates и другие эндпоинты требуют get_current_admin_user (backend/api/v1/ad_users.py:79-86 и далее) — гарантированный 403 для не-админа с этим правом.",
+  "actualFile": "WEB-itinvent/frontend/src/pages/AdUsers.jsx"
+ },
+ {
+  "id": "FE-0247",
+  "verdict": "confirmed",
+  "note": "Шесть загрузчиков (databases/env/appSettings/passwordGroups/aiBots/security) не имеют seq/unmount-защиты (useAccountSectionData.js:202-217,283-376), защищены только beginUsers/beginSessions (219-281)."
+ },
+ {
+  "id": "FE-0248",
+  "verdict": "confirmed",
+  "note": "MyFilesStats.load не имеет seq-защиты (MyFilesAdminTab.jsx:111-125,129-132,140,204) — ответ старого поиска может перезаписать новый."
+ }
+]

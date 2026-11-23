@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+const p = 'C:/Project/HUB-IT-main/audit/frontend/evidence/cycle12/verdicts_3.json';
+const a = JSON.parse(fs.readFileSync(p, 'utf8'));
+const byId = new Map(a.map((x) => [x.id, x]));
+byId.get('FE-0111').verdict = 'not-a-defect';
+byId.get('FE-0111').note = 'Факт не подтверждён: бэкенд после restore чистит office_session_key (my_files_collab_service.py:844) и отклоняет save старой сессии как stale (199-211,512-514), поэтому живой сеанс не может перезаписать восстановленную версию.';
+byId.get('FE-0116').verdict = 'not-a-defect';
+byId.get('FE-0116').note = 'block() действительно не очищает readyTimer (useMyFilesEditorSession.js:147-152), но при phase=blocked поверхность показывает статус блокировки (MyFilesEditorSurface.jsx:21-24), а не устаревшее «редактор грузится долго» — пользовательского дефекта нет.';
+byId.get('FE-0125').verdict = 'confirmed';
+byId.get('FE-0125').note = 'При невалидном ?folder= catch 320-322 только показывает toast (notifyApiError); параметр не удаляется (currentFolderId читается из searchParams, MyFiles.jsx:163), поэтому reload/повторные действия снова дают ошибку.';
+fs.writeFileSync(p, JSON.stringify(a, null, 1) + '\n', 'utf8');
+console.log('updated', a.length);

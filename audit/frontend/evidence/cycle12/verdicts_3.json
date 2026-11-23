@@ -1,0 +1,207 @@
+[
+ {
+  "id": "FE-0085",
+  "verdict": "confirmed",
+  "note": "После skipWaiting новая SW обслуживает новые запросы, но уже открытые вкладки остаются на старом бандле до перезагрузки; механизма broadcast/reload в pwaInstall.js нет."
+ },
+ {
+  "id": "FE-0086",
+  "verdict": "confirmed",
+  "note": "http.js:370 удаляет localStorage.user при 401 независимо от suppressAuthRequired; поздний ответ подавленного запроса расходится с состоянием вкладки."
+ },
+ {
+  "id": "FE-0087",
+  "verdict": "confirmed",
+  "note": "handleStaticAssetRequest запускает fetch и cache.put в фоне (sw.js:608-626), не оборачивая networkPromise в event.waitUntil — SW может быть остановлен до записи."
+ },
+ {
+  "id": "FE-0088",
+  "verdict": "confirmed",
+  "note": "activeSection хранится только в useState (ScanCenterPage.jsx:522), onChange/onNavigate вызывают setActiveSection (2062,2076) без searchParams — deep-link, Back/Forward и reload не работают."
+ },
+ {
+  "id": "FE-0089",
+  "verdict": "confirmed",
+  "note": "При ошибке не-silent загрузки Dashboard делает setPayload(EMPTY_DASHBOARD) (Dashboard.jsx:736-743), стирая ранее показанные карточки."
+ },
+ {
+  "id": "FE-0090",
+  "verdict": "confirmed",
+  "note": "Ошибка показывается верхним Alert (Dashboard.jsx:1537) и warning-пленкой секции внимания (1046) — дубль."
+ },
+ {
+  "id": "FE-0091",
+  "verdict": "confirmed",
+  "note": "handleSaveSections пишет ошибку через setError (Dashboard.jsx:1003-1004), не закрывая диалог customizeOpen, — текст скрыт за диалогом."
+ },
+ {
+  "id": "FE-0092",
+  "verdict": "confirmed",
+  "note": "Dashboard.jsx:50 импортирует hubAPI из legacy-барреля ../api/client вместо отдельного api-файла."
+ },
+ {
+  "id": "FE-0093",
+  "verdict": "confirmed",
+  "note": "Эффект активности зависит от scanSsePulse (ScanCenterPage.jsx:1467), поэтому каждый SSE-pulse перезапускает tick и делает лишний getAgentsActivity."
+ },
+ {
+  "id": "FE-0094",
+  "verdict": "confirmed",
+  "note": "Unmount-cleanup абортирует только review/agents/hosts (ScanCenterPage.jsx:1339-1343); остальные fetch-семейства продолжаются в фоне."
+ },
+ {
+  "id": "FE-0095",
+  "verdict": "confirmed",
+  "note": "handleDownload/handleDownloadAll при активной загрузке делают return без сообщения (SharedFolder.jsx:60,77) — повторный клик молча игнорируется."
+ },
+ {
+  "id": "FE-0096",
+  "verdict": "confirmed",
+  "note": "resolveError для любого 4xx возвращает «Папка недоступна — ссылка отключена…» (SharedFolder.jsx:29-36), хотя ошибка скачивания файла может быть иной."
+ },
+ {
+  "id": "FE-0097",
+  "verdict": "confirmed",
+  "note": "Состояние ошибки — только Alert без кнопки повтора (SharedFolder.jsx:137-139)."
+ },
+ {
+  "id": "FE-0098",
+  "verdict": "confirmed",
+  "note": "items берётся из payload и рендерится полным map без лимита/пагинации (SharedFolder.jsx:93,207); серверный лимит не документирован."
+ },
+ {
+  "id": "FE-0099",
+  "verdict": "confirmed",
+  "note": "Mail.jsx повторно грузит bootstrap при переходе scope pending→resolved; код Mail.jsx после 1a94d39a не менялся, прежний network-захват 2× GET /mail/bootstrap остаётся в силе."
+ },
+ {
+  "id": "FE-0100",
+  "verdict": "confirmed",
+  "note": "buildMailSandboxSrcDoc не добавляет base target=_blank и не переписывает ссылки (mailHtmlSandboxDocument.js:36-63); ссылка без target навигирует сам sandbox-iframe, уводя внешний сайт внутрь панели чтения."
+ },
+ {
+  "id": "FE-0101",
+  "verdict": "confirmed",
+  "note": "Для обычного превью loading не выставляется до await (useMailMessageFileActions.js:373-388), повторный клик не блокируется, AbortSignal нет — только generation-guard."
+ },
+ {
+  "id": "FE-0102",
+  "verdict": "confirmed",
+  "note": "Optimistic mark-read откатывается только через refetch; при его сбое счётчики остаются рассинхронизированными (useMailReadMutations.js)."
+ },
+ {
+  "id": "FE-0103",
+  "verdict": "confirmed",
+  "note": "closeCompose при наличии контента всегда открывает «Сохранить черновик?» (MailComposeHost.jsx:641-677), не проверяя draftSyncState==='synced' — повторный upsert."
+ },
+ {
+  "id": "FE-0104",
+  "verdict": "confirmed",
+  "note": "Черновик быстрого ответа хранится в состоянии поля и теряется при переключении письма; отдельного per-message хранилища нет (MailQuickReplyDraftField.jsx)."
+ },
+ {
+  "id": "FE-0105",
+  "verdict": "confirmed",
+  "note": "saveDraftMultipart вызывается без AbortSignal (MailComposeHost.jsx:505-521); прогресс ограничен draftSyncState='saving', отмены нет."
+ },
+ {
+  "id": "FE-0106",
+  "verdict": "not-a-defect",
+  "note": "Запись уже опровергнута перепроверкой (статус в реестре): /my-files/edit/:fileId обслуживается отдельным MyFilesEditor и не наследует портальный chrome; текущий App.jsx:600-602 это подтверждает."
+ },
+ {
+  "id": "FE-0107",
+  "verdict": "confirmed",
+  "note": "compareVersion передаётся только активному документу (MyFilesEditorWorkspace.jsx:173), а workspace создаёт документ один раз (25-28); повторный ?compare= для уже открытого fileId не переинициализирует сравнение."
+ },
+ {
+  "id": "FE-0108",
+  "verdict": "confirmed",
+  "note": "isValidWorkspaceEditorRoute требует точный путь /my-files/edit/<id> без query (desktopBridge.js:540-542), поэтому route с ?compare= отклоняется и редактор деградирует до in-window диалога."
+ },
+ {
+  "id": "FE-0109",
+  "verdict": "confirmed",
+  "note": "Лимиты MAXIMUM_WORKSPACE_DOCUMENTS=16 и MAXIMUM_WORKSPACE_DOCUMENT_TITLE_LENGTH=128 (desktopBridge.js:46-47) отбрасывают всю нативную ленту при превышении."
+ },
+ {
+  "id": "FE-0110",
+  "verdict": "confirmed",
+  "note": "close() вызывает editor.requestClose() без таймаута/fallback (useMyFilesEditorSession.js:436-440); если iframe DocSpace не отвечает, закрытие зависает. Статус остаётся Suspected."
+ },
+ {
+  "id": "FE-0111",
+  "verdict": "not-a-defect",
+  "note": "Факт не подтверждён: бэкенд после restore чистит office_session_key (my_files_collab_service.py:844) и отклоняет save старой сессии как stale (199-211,512-514), поэтому живой сеанс не может перезаписать восстановленную версию."
+ },
+ {
+  "id": "FE-0112",
+  "verdict": "confirmed",
+  "note": "loadDocsApi возвращает уже загруженный window.DocsAPI.DocEditor, игнорируя новый publicPath (useMyFilesEditorSession.js:22-24); смена settings.public_path не перезагружает SDK."
+ },
+ {
+  "id": "FE-0113",
+  "verdict": "confirmed",
+  "note": "officeUiTheme вычисляется один раз при вызове хука (useMyFilesEditorSession.js:69), а эффект создания редактора зависит от fileId/accountKey/restart (459), не от темы."
+ },
+ {
+  "id": "FE-0114",
+  "verdict": "confirmed",
+  "note": "В useMailMessageFileActions.js нет передачи ui_theme/theme в office-view конфиг — превью не учитывает тёмную тему."
+ },
+ {
+  "id": "FE-0115",
+  "verdict": "wrong-evidence",
+  "note": "Синхронный revoke после click находится не в useMailMessageFileActions.js, а в downloadBlobFile: link.click(); URL.revokeObjectURL(url) сразу (mailMessageFileActions.js:357-359); для popup-ветки там же стоит задержка 60 с."
+ },
+ {
+  "id": "FE-0116",
+  "verdict": "not-a-defect",
+  "note": "block() действительно не очищает readyTimer (useMyFilesEditorSession.js:147-152), но при phase=blocked поверхность показывает статус блокировки (MyFilesEditorSurface.jsx:21-24), а не устаревшее «редактор грузится долго» — пользовательского дефекта нет."
+ },
+ {
+  "id": "FE-0117",
+  "verdict": "confirmed",
+  "note": "Цепочка mail office-view в useMailMessageFileActions.js не принимает AbortSignal; отмена ограничена previewGenerationRef, сетевой запрос продолжается."
+ },
+ {
+  "id": "FE-0118",
+  "verdict": "confirmed",
+  "note": "download/restore в MyFilesVersionHistory.jsx:107-135 пишут busyId/error после await без mounted/cancelled-проверки."
+ },
+ {
+  "id": "FE-0119",
+  "verdict": "confirmed",
+  "note": "Начальный config передаётся в DocEditor без проверки key/token (useMyFilesEditorSession.js:306-335); refresh-путь такую проверку делает (263-266)."
+ },
+ {
+  "id": "FE-0120",
+  "verdict": "confirmed",
+  "note": "MailOfficeAttachmentInlinePreview и buildOfficeInlinePreviewState определены, но нигде не импортируются/вызываются (поиск по components/mail и Mail.jsx — только определения)."
+ },
+ {
+  "id": "FE-0121",
+  "verdict": "confirmed",
+  "note": "History-view сравнивает editorConfig.user.id только с id (MyFilesOfficeHistoryView.jsx:13,82), тогда как сессия допускает fallback на username — user без id всегда invalid."
+ },
+ {
+  "id": "FE-0122",
+  "verdict": "confirmed",
+  "note": "Deep-link ?edit= сразу вызывает setOfficeEditorFile (MyFiles.jsx:365-372) без проверок preferredWindow/opening, которые есть у обычного открытия."
+ },
+ {
+  "id": "FE-0123",
+  "verdict": "confirmed",
+  "note": "Drop на строку папки не проверяет активную загрузку и запускает собственную очередь (MyFiles.jsx, обработчик drop папки); параллельная очередь с основной загрузкой."
+ },
+ {
+  "id": "FE-0124",
+  "verdict": "confirmed",
+  "note": "Эффект очистки выделения зависит от currentFolderId/view/search/type/date (MyFiles.jsx:1097-1099), но не от libraryId; при смене библиотеки без смены folder выделение сохраняется."
+ },
+ {
+  "id": "FE-0125",
+  "verdict": "confirmed",
+  "note": "При невалидном ?folder= catch 320-322 только показывает toast (notifyApiError); параметр не удаляется (currentFolderId читается из searchParams, MyFiles.jsx:163), поэтому reload/повторные действия снова дают ошибку."
+ }
+]

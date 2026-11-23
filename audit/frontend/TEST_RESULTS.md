@@ -38,3 +38,19 @@
 - Playwright E2E — не запускались (полный прогон требует стенда; отдельные spec —
   в NEXT_ACTIONS).
 - Lighthouse — не запускался (см. NEXT_ACTIONS).
+
+## Цикл 9 (локальный стек E2E_LOCAL=1, 23.11.2026)
+
+- `npx playwright test e2e/auth-guards.spec.js`: **5/6 PASS**.
+  FAIL: «non-admin is redirected out of the admin area» — expected /dashboard,
+  received /admin. Разбор: не дефект продукта — operator имеет scan.tasks
+  (authorization_service.py), scan.tasks ∈ ADMIN_AREA_PERMISSIONS →
+  canAccessAdminArea=true. Ожидание спеки устарело → FE-0136.
+- probe_zoom.mjs (прямой playwright, Chrome): dashboard/chat/my-files — без
+  переполнений при 80/100/150%; scan-center — переполнение ~10-18px на всех
+  масштабах (FE-0011). Evidence: probe-zoom-results.json, zoom-*.png.
+- probe_cookies.mjs: свежий контекст — куки пустые, /login чист (гипотеза
+  шаринга сессии между запусками опровергнута).
+- probe_spy2.mjs: POST /auth/login для e2e_fresh → 200 → /about — штатный
+  гейт онбординга (не дефект).
+
