@@ -11,6 +11,7 @@ const {
   mockVerifyPasskeyLogin,
   mockRefreshTrustedDeviceAuth,
   mockVerifyTrustedDeviceAuth,
+  mockSetPostAuthUiHold,
   mockGetLoginMode,
   mockGetTrustedDeviceRegistrationOptions,
   mockVerifyTrustedDeviceRegistration,
@@ -31,6 +32,7 @@ const {
   mockVerifyPasskeyLogin: vi.fn(),
   mockRefreshTrustedDeviceAuth: vi.fn(),
   mockVerifyTrustedDeviceAuth: vi.fn(),
+  mockSetPostAuthUiHold: vi.fn(),
   mockGetLoginMode: vi.fn(),
   mockGetTrustedDeviceRegistrationOptions: vi.fn(),
   mockVerifyTrustedDeviceRegistration: vi.fn(),
@@ -68,6 +70,7 @@ vi.mock('../contexts/AuthContext', () => ({
     verifyPasskeyLogin: mockVerifyPasskeyLogin,
     refreshTrustedDeviceAuth: mockRefreshTrustedDeviceAuth,
     verifyTrustedDeviceAuth: mockVerifyTrustedDeviceAuth,
+    setPostAuthUiHold: mockSetPostAuthUiHold,
   }),
 }));
 
@@ -212,6 +215,7 @@ describe('Login hybrid internal/external flow', () => {
     mockVerifyPasskeyLogin.mockReset();
     mockRefreshTrustedDeviceAuth.mockReset();
     mockVerifyTrustedDeviceAuth.mockReset();
+    mockSetPostAuthUiHold.mockReset();
     mockGetLoginMode.mockReset();
     mockGetTrustedDeviceRegistrationOptions.mockReset();
     mockVerifyTrustedDeviceRegistration.mockReset();
