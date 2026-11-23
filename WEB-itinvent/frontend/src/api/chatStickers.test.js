@@ -12,6 +12,7 @@ import {
   chatStickersAPI,
   invalidateStickerPacksCache,
   peekStickerPacksCache,
+  primeStickerPacksCache,
 } from './chatStickers';
 
 describe('chatStickersAPI', () => {
@@ -107,6 +108,88 @@ describe('chatStickersAPI', () => {
     const fresh = await chatStickersAPI.listPacks({ userId: 'user-a' });
     expect(fresh.items[0].id).toBe('fresh');
     expect(apiClientMock.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('A → invalidate → B → A resolves last: fresh B wins, stale A dropped', async () => {
+    const resolvers = [];
+    apiClientMock.get.mockImplementation(
+      () => new Promise((resolve) => { resolvers.push(resolve); }),
+    );
+
+    const a = chatStickersAPI.listPacks({ userId: 'u' });
+    invalidateStickerPacksCache();
+    const b = chatStickersAPI.listPacks({ userId: 'u' });
+    expect(apiClientMock.get).toHaveBeenCalledTimes(2);
+
+    resolvers[1]({ data: { items: [{ id: 'fresh-b' }] } });
+    await b;
+    resolvers[0]({ data: { items: [{ id: 'stale-a' }] } });
+    await a;
+
+    expect(peekStickerPacksCache({ userId: 'u' }).items[0].id).toBe('fresh-b');
+  });
+
+  it('A → invalidate → B starts → A resolves first: A cannot clear B in-flight', async () => {
+    const resolvers = [];
+    apiClientMock.get.mockImplementation(
+      () => new Promise((resolve) => { resolvers.push(resolve); }),
+    );
+
+    const a = chatStickersAPI.listPacks({ userId: 'u' });
+    invalidateStickerPacksCache();
+    const b = chatStickersAPI.listPacks({ userId: 'u' });
+
+    resolvers[0]({ data: { items: [{ id: 'stale-a' }] } });
+    await a;
+
+    // finally устаревшего A не должен снять in-flight запись B —
+    // повторный вызов дедуплицируется без третьего сетевого запроса.
+    const b2 = chatStickersAPI.listPacks({ userId: 'u' });
+    expect(apiClientMock.get).toHaveBeenCalledTimes(2);
+    expect(peekStickerPacksCache({ userId: 'u' })).toBeNull();
+
+    resolvers[1]({ data: { items: [{ id: 'fresh-b' }] } });
+    await b;
+    await b2;
+    expect(peekStickerPacksCache({ userId: 'u' }).items[0].id).toBe('fresh-b');
+  });
+
+  it('logout during an in-flight request: late response never re-populates cache', async () => {
+    const resolvers = [];
+    apiClientMock.get.mockImplementation(
+      () => new Promise((resolve) => { resolvers.push(resolve); }),
+    );
+
+    const pending = chatStickersAPI.listPacks({ userId: 'u' });
+    invalidateStickerPacksCache(); // logout / account switch
+    resolvers[0]({ data: { items: [{ id: 'stale' }] } });
+    await pending;
+
+    expect(peekStickerPacksCache({ userId: 'u' })).toBeNull();
+    // Прямая запись старым поколением тоже блокируется.
+    primeStickerPacksCache({ userId: 'u' }, { items: [{ id: 'stale' }] }, 0);
+    expect(peekStickerPacksCache({ userId: 'u' })).toBeNull();
+    primeStickerPacksCache({ userId: 'u' }, { items: [{ id: 'manual' }] });
+    expect(peekStickerPacksCache({ userId: 'u' }).items[0].id).toBe('manual');
+  });
+
+  it('import during an in-flight list: the stale list reply cannot hide the new pack', async () => {
+    const resolvers = [];
+    apiClientMock.get.mockImplementation(
+      () => new Promise((resolve) => { resolvers.push(resolve); }),
+    );
+    apiClientMock.post.mockResolvedValue({ data: { items: [{ id: 'imported' }] } });
+
+    const pending = chatStickersAPI.listPacks({ userId: 'u' });
+    await chatStickersAPI.importPack('pack_link');
+    // importPack инвалидирует кэш — ответ A уже устарел.
+    resolvers[0]({ data: { items: [{ id: 'stale-pre-import' }] } });
+    await pending;
+
+    expect(peekStickerPacksCache({ userId: 'u' })).toBeNull();
+    apiClientMock.get.mockResolvedValue({ data: { items: [{ id: 'post-import' }] } });
+    const fresh = await chatStickersAPI.listPacks({ userId: 'u' });
+    expect(fresh.items[0].id).toBe('post-import');
   });
 
   it('invalidateStickerPacksCache clears every scope (logout/account switch)', async () => {

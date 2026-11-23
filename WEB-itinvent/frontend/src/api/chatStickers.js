@@ -28,7 +28,11 @@ const resolveStickerPacksScope = (options) => (
 export const peekStickerPacksCache = (options) => (
   stickerPacksCacheByScope.get(resolveStickerPacksScope(options)) || null
 );
-export const primeStickerPacksCache = (options, payload) => {
+export const getStickerPacksEpoch = () => stickerPacksEpoch;
+export const primeStickerPacksCache = (options, payload, expectedEpoch) => {
+  // Epoch guard — компонент, получивший ответ устаревшего запроса, не может
+  // им репопулировать кэш: запись пропускается, payload возвращается вызвавшему.
+  if (expectedEpoch !== undefined && expectedEpoch !== stickerPacksEpoch) return payload;
   stickerPacksCacheByScope.set(resolveStickerPacksScope(options), payload);
   return payload;
 };
@@ -52,12 +56,16 @@ export const chatStickersAPI = {
           stickerPacksCacheByScope.set(scope, response.data);
         }
         return response.data;
-      })
-      .finally(() => {
-        stickerPacksInFlightByScope.delete(scope);
       });
-    stickerPacksInFlightByScope.set(scope, request);
-    return request;
+    const tracked = request.finally(() => {
+      // Identity-check: после инвалидации слот мог занять более новый
+      // запрос того же scope — устаревший finally не должен его снимать.
+      if (stickerPacksInFlightByScope.get(scope) === tracked) {
+        stickerPacksInFlightByScope.delete(scope);
+      }
+    });
+    stickerPacksInFlightByScope.set(scope, tracked);
+    return tracked;
   },
 
   previewPack: async (shortName, options = {}) => {
@@ -80,6 +88,10 @@ export const chatStickersAPI = {
         timeout: 120000,
       },
     );
+    // Список наборов изменился: сбрасываем кэш всех scope и повышаем epoch,
+    // чтобы запрос listPacks, летевший во время импорта, не перезаписал
+    // свежий список ответом без нового набора.
+    invalidateStickerPacksCache();
     return response.data;
   },
 

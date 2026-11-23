@@ -84,6 +84,11 @@ test('hover opens preview, leaving closes it; click pins the right dock', async 
   await button.hover();
   await expect(popover).toBeVisible({ timeout: 5000 });
   await expect(dock).toBeHidden();
+  // Холодное открытие: lazy-чанк грузится за спиннером — контрольный кадр
+  // делаем только когда в превью уже есть реальные эмодзи, иначе на
+  // скриншоте пустая панель.
+  await expect(popover.locator('.EmojiPickerReact button.epr-emoji').first())
+    .toBeVisible({ timeout: 20_000 });
   await page.screenshot({ path: `${SHOTS}/emoji-hover-preview.png` });
 
   // Курсор уходит в панель — не закрывается; уходит совсем — закрывается.
@@ -288,6 +293,9 @@ test('sticker delivery A→B over WebSocket, dedup and persistence', async ({ br
     await apiLogin(pageB, USERNAME2, PASSWORD2);
     const conversationId = await ensureDirectConversation(pageA, USERNAME2);
     expect(conversationId, 'direct conversation id').toBeTruthy();
+    // Вторую беседу создаём до загрузки /chat: сайдбар не обязан живо
+    // перечитывать список — строка «E2E Новый» уже будет в исходной выдаче.
+    const otherConvId = await ensureDirectConversation(pageA, 'e2e_fresh');
 
     const openChat = async (page, peerTitle) => {
       await page.goto('/chat');
@@ -335,7 +343,28 @@ test('sticker delivery A→B over WebSocket, dedup and persistence', async ({ br
     await expect(stickerImgs(pageB)).toHaveCount(baseB + 2, { timeout: 20_000 });
 
     // 3) Двойной клик по третьему стикеру — один запрос, без дубликата.
+    //    Лок живёт лишь пока запрос в полёте: на локальном backend он
+    //    завершается за миллисекунды и между двумя Playwright-кликами
+    //    успевает сняться — тогда второй клик честно отправляет дубликат.
+    //    Удерживаем первый запрос, чтобы оба клика попали в окно in-flight.
+    let releaseFirstSend;
+    const firstSendHeld = new Promise((resolve) => { releaseFirstSend = resolve; });
+    let holdFirstSend = true;
+    await pageA.route('**/messages/sticker', async (route) => {
+      try {
+        if (holdFirstSend) {
+          holdFirstSend = false;
+          await firstSendHeld;
+        }
+        // Редирект повторно вызывает хендлер на уже обработанном route.
+        await route.continue();
+      } catch { /* route already handled on redirect */ }
+    });
     await Promise.all([stickerButtons.nth(2).click(), stickerButtons.nth(2).click()]);
+    // Оба клика уже обработаны обработчиком — можно отпускать запрос.
+    await pageA.waitForTimeout(300);
+    releaseFirstSend();
+    await pageA.unroute('**/messages/sticker');
     await expect(stickerImgs(pageA)).toHaveCount(baseA + 3, { timeout: 15_000 });
     await pageA.waitForTimeout(800);
     await expect(stickerImgs(pageA)).toHaveCount(baseA + 3);
@@ -372,12 +401,14 @@ test('sticker delivery A→B over WebSocket, dedup and persistence', async ({ br
     //    кнопкой пузыря (тот же client_message_id, замена на месте).
     let abortOnce = true;
     await pageA.route('**/messages/sticker', async (route) => {
-      if (abortOnce) {
-        abortOnce = false;
-        await route.abort();
-        return;
-      }
-      await route.continue();
+      try {
+        if (abortOnce) {
+          abortOnce = false;
+          await route.abort();
+          return;
+        }
+        await route.continue();
+      } catch { /* route already handled on redirect */ }
     });
     await stickerButtons.nth(0).click();
     const failedAction = pageA.getByTestId('chat-message-failed-action').first();
@@ -398,37 +429,45 @@ test('sticker delivery A→B over WebSocket, dedup and persistence', async ({ br
     const held = new Promise((resolve) => { holdRelease = resolve; });
     let heldOnce = true;
     await pageA.route('**/messages/sticker', async (route) => {
-      if (heldOnce) {
-        heldOnce = false;
-        await held;
+      try {
+        if (heldOnce) {
+          heldOnce = false;
+          await held;
+          await route.continue();
+          return;
+        }
         await route.continue();
-        return;
-      }
-      await route.continue();
+      } catch { /* route already handled on redirect */ }
     });
     const pendingSend = stickerButtons.nth(1).click();
-    // Создаём вторую беседу и переключаемся.
-    const otherConvId = await ensureDirectConversation(pageA, 'e2e_fresh');
+    // Переключаемся на вторую беседу — её строка уже в списке.
     if (otherConvId) {
       const namedRow = pageA.locator('[data-chat-active]:has-text("E2E Новый")').first();
-      try {
-        await namedRow.click({ timeout: 8000 });
-      } catch {
-        await pageA.locator('[data-chat-active]').first().click();
-      }
+      await expect(namedRow).toBeVisible({ timeout: 20_000 });
+      await namedRow.click();
       await expect(pageA.getByTestId('chat-composer-textarea')).toBeVisible();
+      // Смена диалога может закрыть док — тогда переоткрываем вкладку.
+      if (!(await dock.isVisible())) {
+        await pageA.getByTestId('chat-composer-emoji-button').click();
+        await expect(dock).toBeVisible();
+        await dock.getByRole('tab', { name: 'Стикеры' }).click();
+        await expect(stickerButtons.first()).toBeVisible({ timeout: 20_000 });
+      }
       // Тот же стикер в другом чате не ждёт освобождения лока.
-      const sendOther = stickerButtons.nth(1).click();
+      const sendOther = stickerButtons.nth(1).click({ timeout: 15_000 });
       holdRelease();
       await Promise.all([pendingSend, sendOther]);
-      const otherListResp = await pageA.request.get(
-        `/api/v1/chat/conversations/${otherConvId}/messages?limit=10`,
-      );
-      const otherJson = await otherListResp.json();
-      const otherItems = otherJson.items || (Array.isArray(otherJson) ? otherJson : []);
-      expect(
-        otherItems.some((m) => (m.attachments || []).some((a) => a.kind === 'sticker' || a.media_kind === 'sticker')),
-      ).toBeTruthy();
+      // click() завершается раньше сетевого запроса — ждём пузырь в ленте
+      // второй беседы, затем подтверждение записи через API.
+      await expect(stickerImgs(pageA)).toHaveCount(1, { timeout: 15_000 });
+      await expect.poll(async () => {
+        const resp = await pageA.request.get(
+          `/api/v1/chat/conversations/${otherConvId}/messages?limit=10`,
+        );
+        const json = await resp.json();
+        const items = json.items || (Array.isArray(json) ? json : []);
+        return items.some((m) => (m.attachments || []).some((a) => a.kind === 'sticker' || a.media_kind === 'sticker'));
+      }, { timeout: 15_000 }).toBeTruthy();
     } else {
       holdRelease();
       await pendingSend;
@@ -515,14 +554,35 @@ test('pinned dock and overlay render correctly in the dark theme', async ({ page
   try {
     expect((await patchTheme('dark')).ok()).toBeTruthy();
     await openConversation(page);
-    // Открытая страница могла закэшировать тему — обновляем.
+    // PATCH пишет только серверную настройку — локальный кэш
+    // web_preferences_cache обновляет исключительно savePreferences, а
+    // refresh на /chat отложен на 3.5c: без записи в кэш приложение
+    // загрузится светлым и успешный PATCH ничего не докажет.
+    await page.evaluate(() => {
+      const key = 'web_preferences_cache';
+      const raw = window.localStorage.getItem(key);
+      const prefs = raw ? JSON.parse(raw) : {};
+      prefs.theme_mode = 'dark';
+      window.localStorage.setItem(key, JSON.stringify(prefs));
+    });
     await page.reload();
+    // Тема должна реально примениться: body в тёмной палитре (#0f1115),
+    // иначе кадры "dark" оказались бы светлыми при зелёном тесте.
+    await expect
+      .poll(
+        () => page.evaluate(() => window.getComputedStyle(document.body).backgroundColor),
+        { timeout: 20_000 },
+      )
+      .toBe('rgb(15, 17, 21)');
     await page.locator('[data-chat-active]').first().click();
     await expect(page.getByTestId('chat-composer-textarea')).toBeVisible();
 
     await page.getByTestId('chat-composer-emoji-button').click();
     const dock = page.getByTestId('chat-emoji-dock');
     await expect(dock).toBeVisible();
+    // Белый фон дока здесь означал бы светлую тему.
+    const dockBg = await dock.evaluate((node) => window.getComputedStyle(node).backgroundColor);
+    expect(dockBg).not.toBe('rgb(255, 255, 255)');
     const emojiButtons = dock.locator('.EmojiPickerReact button.epr-emoji');
     await expect(emojiButtons.first()).toBeVisible({ timeout: 20_000 });
     mkdirSync(SHOTS, { recursive: true });

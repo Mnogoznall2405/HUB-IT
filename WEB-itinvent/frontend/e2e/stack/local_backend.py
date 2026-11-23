@@ -32,7 +32,68 @@ CHAT_DB = STATE_DIR / "chat.sqlite3"
 # .codex_tmp) — тогда путь вложения стикера упирается в MAX_PATH=260 и
 # backend не может скопировать файл в чат. Для таких запусков каталог
 # данных выносится наружу через E2E_HUB_DATA_DIR (например C:\Temp\...).
-HUB_DATA_DIR = Path(os.environ["E2E_HUB_DATA_DIR"]) if os.environ.get("E2E_HUB_DATA_DIR") else STATE_DIR / "hub_data"
+# E2E_HUB_DATA_DIR — это *корневой* каталог, выделенный под тестовые
+# данные: реальные файлы живут в уникальной поддиректории вида
+# ``hub_data-<state>`` с маркером владения, сам корень никогда не удаляется.
+HUB_DATA_MARKER = ".hub-it-e2e-owned"
+
+
+def _resolve_hub_data_dir() -> Path:
+    raw = os.environ.get("E2E_HUB_DATA_DIR")
+    if not raw:
+        return STATE_DIR / "hub_data"
+    root = Path(raw).expanduser()
+    if not root.is_dir():
+        raise RuntimeError(
+            "E2E_HUB_DATA_DIR must be an existing directory designated for "
+            f"test data; got: {root}"
+        )
+    resolved_root = root.resolve()
+    state_dir = STATE_DIR.resolve()
+    if resolved_root == state_dir or state_dir in resolved_root.parents:
+        raise RuntimeError(
+            f"E2E_HUB_DATA_DIR must not point inside the E2E state dir: {resolved_root}"
+        )
+    if resolved_root.parent == resolved_root:
+        raise RuntimeError(
+            f"E2E_HUB_DATA_DIR must not be a filesystem root: {resolved_root}"
+        )
+    child = (resolved_root / f"hub_data-{STATE_NAME.lstrip('.')}").resolve()
+    if child.parent != resolved_root:
+        raise RuntimeError(f"E2E data dir escaped its designated root: {child}")
+    return child
+
+
+def _reset_hub_data_dir(target: Path) -> None:
+    """Пересоздать каталог данных — только если он явно принадлежит E2E.
+
+    Вне .state удаляется исключительно директория ``hub_data-state*`` с
+    маркером ``HUB_DATA_MARKER`` и ожидаемым содержимым. Любая другая цель
+    завершает запуск ошибкой, ничего не изменив на диске.
+    """
+    resolved = target.resolve()
+    if resolved == (STATE_DIR / "hub_data").resolve():
+        return  # внутри .state — удаляется вместе с ним
+    if not resolved.name.startswith("hub_data-state"):
+        raise RuntimeError(
+            f"E2E refuses to manage an unmanaged data path: {resolved}"
+        )
+    if resolved.exists():
+        marker = resolved / HUB_DATA_MARKER
+        expected = f"hub-it-e2e {STATE_NAME}"
+        actual = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
+        if actual != expected:
+            raise RuntimeError(
+                "E2E refuses to delete an unmarked directory "
+                f"{resolved}: expected {HUB_DATA_MARKER} containing {expected!r}; "
+                "remove it manually if the directory is disposable"
+            )
+        shutil.rmtree(resolved)
+    resolved.mkdir(parents=True, exist_ok=True)
+    (resolved / HUB_DATA_MARKER).write_text(f"hub-it-e2e {STATE_NAME}", encoding="utf-8")
+
+
+HUB_DATA_DIR = _resolve_hub_data_dir()
 
 BACKEND_PORT = int(os.environ.get("E2E_BACKEND_PORT", "18001"))
 
@@ -121,9 +182,10 @@ if str(WEB_ROOT) not in sys.path:
 
 def _seed() -> None:
     """Fresh schema + deterministic fixtures for the browser flows."""
+    # Внешний каталог проверяется и пересоздаётся до .state — при ошибке
+    # владения запуск падает до любого удаления.
+    _reset_hub_data_dir(HUB_DATA_DIR)
     shutil.rmtree(STATE_DIR, ignore_errors=True)
-    if HUB_DATA_DIR != STATE_DIR / "hub_data":
-        shutil.rmtree(HUB_DATA_DIR, ignore_errors=True)
     if APP_DB.exists() or CHAT_DB.exists():
         raise RuntimeError("E2E SQLite files are busy; choose an unused E2E_STATE_NAME")
     STATE_DIR.mkdir(parents=True, exist_ok=True)

@@ -18,6 +18,7 @@ import TelegramIcon from '@mui/icons-material/Telegram';
 
 import {
   chatStickersAPI,
+  getStickerPacksEpoch,
   invalidateStickerPacksCache,
   peekStickerPacksCache,
   primeStickerPacksCache,
@@ -136,9 +137,13 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     return () => window.removeEventListener('keydown', handleEscape);
   }, [closeHoldPreview, previewSticker]);
 
-  const applyPackPayload = useCallback((payload, preferredPackId = '') => {
+  const applyPackPayload = useCallback((payload, preferredPackId = '', requestEpoch) => {
+    // requestEpoch — эпоха кэша на момент старта запроса. Если за время
+    // запроса кэш инвалидировали (logout, смена аккаунта, импорт), ответ
+    // устарел: ни кэш, ни состояние трогать нельзя.
+    if (requestEpoch !== undefined && requestEpoch !== getStickerPacksEpoch()) return;
     const nextPacks = Array.isArray(payload?.items) ? payload.items : [];
-    primeStickerPacksCache(cacheScope, payload);
+    primeStickerPacksCache(cacheScope, payload, requestEpoch);
     setPacks(nextPacks);
     const preferred = String(preferredPackId || '').trim();
     if (preferred && nextPacks.some((item) => item.id === preferred)) {
@@ -153,12 +158,13 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
 
   useEffect(() => {
     let cancelled = false;
+    const requestEpoch = getStickerPacksEpoch();
     // При тёплом кэше спиннер не показываем — список уже отрисован.
     if (!Array.isArray(peekStickerPacksCache(cacheScope)?.items)) setLoading(true);
     setLoadError('');
     chatStickersAPI.listPacks(cacheScope)
       .then((payload) => {
-        if (!cancelled) applyPackPayload(payload);
+        if (!cancelled) applyPackPayload(payload, '', requestEpoch);
       })
       .catch((error) => {
         if (!cancelled) setLoadError(getApiError(error, 'Не удалось загрузить наборы стикеров.'));
@@ -172,8 +178,9 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   useEffect(() => {
     const refreshPacks = () => {
       invalidateStickerPacksCache();
+      const requestEpoch = getStickerPacksEpoch();
       chatStickersAPI.listPacks({ ...cacheScope, force: true })
-        .then((payload) => applyPackPayload(payload))
+        .then((payload) => applyPackPayload(payload, '', requestEpoch))
         .catch(() => {});
     };
     window.addEventListener('chat-sticker-packs-changed', refreshPacks);
@@ -361,12 +368,15 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     setStatusText('');
     try {
       const payload = await chatStickersAPI.importPack(normalizedSource);
+      // importPack уже инвалидировал кэш — захватываем свежую эпоху, чтобы
+      // результат импорта мог быть записан как актуальный.
+      const postImportEpoch = getStickerPacksEpoch();
       const nextPacks = Array.isArray(payload?.items) ? payload.items : [];
       const importedShortName = normalizedSource.split('/').filter(Boolean).pop()?.split('?')[0] || '';
       const importedPack = nextPacks.find(
         (item) => String(item?.short_name || '').toLowerCase() === importedShortName.toLowerCase(),
       ) || nextPacks[nextPacks.length - 1];
-      applyPackPayload(payload, importedPack?.id);
+      applyPackPayload(payload, importedPack?.id, postImportEpoch);
       setSource('');
       setImportOpen(false);
       setStatusText(`Набор «${importedPack?.title || 'Telegram'}» добавлен.`);
