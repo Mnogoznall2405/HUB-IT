@@ -33,13 +33,26 @@ def _normalize_text(value: object) -> str:
 
 
 def run_coroutine(coro) -> Any:
-    """Run a coroutine from synchronous tool code, also when this thread already runs a loop."""
+    """Run a coroutine from synchronous tool code, also when this thread already runs a loop.
+
+    A1: bounded wait — the inner 1C call has its own ~45s budget, this is the
+    outer backstop so a wedged bridge call returns a controlled error instead
+    of blocking the tool thread forever.
+    """
+    from backend.ai_chat.timeouts import ai_warehouse_call_timeout_sec
+
+    timeout = ai_warehouse_call_timeout_sec()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(asyncio.run, coro).result()
+        return executor.submit(asyncio.run, coro).result(timeout=timeout)
+    except concurrent.futures.TimeoutError as exc:
+        raise TimeoutError(
+            f"Сервис 1С не ответил за {int(timeout)} с — операция могла не выполниться."
+        ) from exc
+    finally:
+        # Do not wait for a still-running inner call: it has its own internal
+        # deadline and the daemon thread may finish on its own.
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _warehouse_service():

@@ -6,11 +6,15 @@ Exchange dependency and is safe to exercise with unit tests.
 """
 from __future__ import annotations
 
+import logging
+
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Event, RLock
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -207,7 +211,16 @@ class SingleflightGroup:
                     on_hit(1)
 
         if not leader:
-            call.event.wait()
+            # A1: never wait on a leader forever — if the leader hangs, run
+            # the producer ourselves instead of blocking the caller.
+            from backend.ai_chat.timeouts import mail_singleflight_wait_sec
+
+            if not call.event.wait(timeout=mail_singleflight_wait_sec()):
+                logger.warning(
+                    "mail_singleflight_leader_timeout key=%s — running own call",
+                    key,
+                )
+                return producer()
             if call.error is not None:
                 raise call.error
             return call.result

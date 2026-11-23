@@ -59,6 +59,16 @@ _TEXT_EXTENSIONS = {
 
 
 def _read_bytes(path: Path) -> bytes:
+    # A1: cap bytes read into memory — a multi-GB attachment must not turn a
+    # tool call into an unbounded read/alloc.
+    from backend.ai_chat.timeouts import ai_doc_extract_max_bytes
+
+    size = path.stat().st_size
+    limit = ai_doc_extract_max_bytes()
+    if size > limit:
+        raise ValueError(
+            f"Файл слишком большой для извлечения текста: {size} байт (лимит {limit})."
+        )
     return path.read_bytes()
 
 

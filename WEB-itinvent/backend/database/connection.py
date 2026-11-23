@@ -1,6 +1,7 @@
 """
 Database connection management with dynamic database switching support.
 """
+import contextvars
 import os
 import queue
 import threading
@@ -11,6 +12,27 @@ from typing import Generator, Optional
 import pyodbc
 
 from backend.config import config
+
+
+# A1: scoped SQL Server statement timeout. Set only by AI entry points (tool
+# registry, action-card confirms) so driver-level query deadlines apply to the
+# AI path while UI/API consumers keep the pyodbc default (unlimited).
+ai_sql_query_timeout: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "ai_sql_query_timeout", default=None
+)
+
+
+@contextmanager
+def sql_query_timeout_scope(seconds: Optional[float]) -> Generator[None, None, None]:
+    """Apply the scoped statement timeout for the duration of the block."""
+    if seconds is None:
+        yield
+        return
+    token = ai_sql_query_timeout.set(seconds)
+    try:
+        yield
+    finally:
+        ai_sql_query_timeout.reset(token)
 
 
 def get_database_config(db_id: Optional[str] = None) -> dict:
@@ -204,15 +226,19 @@ def _get_connection_pool(connection_string: str) -> _PyodbcConnectionPool:
 class DatabaseConnectionManager:
     """Manager for SQL Server database connections with dynamic switching."""
 
-    def __init__(self, db_id: Optional[str] = None):
+    def __init__(self, db_id: Optional[str] = None, *, query_timeout: Optional[float] = None):
         """
         Initialize database manager.
 
         Args:
             db_id: Database ID to use (None for default)
+            query_timeout: Optional pyodbc statement timeout (seconds) applied
+                to every connection checkout from this manager. The previous
+                value is restored before the connection returns to the pool.
         """
         self._pool_size = _env_pool_size()
         self._db_id = db_id
+        self._query_timeout = query_timeout
         self._db_config = get_database_config(db_id)
         self._connection_string = build_connection_string(self._db_config)
         self._pool = _get_connection_pool(self._connection_string)
@@ -233,8 +259,20 @@ class DatabaseConnectionManager:
         """
         conn = None
         broken = False
+        prev_timeout: Optional[float] = None
         try:
             conn = self._pool.acquire()
+            timeout_override = getattr(self, "_query_timeout", None)
+            if timeout_override is None:
+                timeout_override = ai_sql_query_timeout.get()
+            if timeout_override is not None:
+                try:
+                    prev_timeout = conn.timeout
+                    conn.timeout = int(timeout_override)
+                except Exception:
+                    # Driver without a settable timeout: proceed unbounded
+                    # rather than breaking the query path.
+                    prev_timeout = None
             yield conn
             conn.commit()
         except Exception:
@@ -248,6 +286,13 @@ class DatabaseConnectionManager:
             raise
         finally:
             if conn:
+                if prev_timeout is not None:
+                    try:
+                        conn.timeout = prev_timeout
+                    except Exception:
+                        # The connection is in an unknown state — never return
+                        # it to the pool carrying a mutated timeout.
+                        broken = True
                 if broken:
                     self._pool.discard(conn)
                 else:
@@ -310,17 +355,19 @@ class DatabaseConnectionManager:
 db_manager = DatabaseConnectionManager()
 
 
-def get_db(db_id: Optional[str] = None) -> DatabaseConnectionManager:
+def get_db(db_id: Optional[str] = None, *, query_timeout: Optional[float] = None) -> DatabaseConnectionManager:
     """
     Dependency function for FastAPI to get database manager.
 
     Args:
         db_id: Database ID to use (None for default)
+        query_timeout: Optional pyodbc statement timeout (seconds) for every
+            checkout of the returned manager
 
     Returns:
         DatabaseConnectionManager instance
     """
-    return DatabaseConnectionManager(db_id)
+    return DatabaseConnectionManager(db_id, query_timeout=query_timeout)
 
 
 # User database selection (in-memory for session)

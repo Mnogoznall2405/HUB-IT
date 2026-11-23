@@ -39,6 +39,26 @@ def ldap_security_mode() -> str:
     return mode if mode in {"ldaps", "starttls"} | _INSECURE_MODES else "ldaps"
 
 
+def _env_seconds(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = str(os.getenv(name, "") or "").strip()
+    try:
+        value = float(raw) if raw else float(default)
+    except (TypeError, ValueError):
+        value = float(default)
+    return max(minimum, min(maximum, value))
+
+
+def ldap_connect_timeout() -> float:
+    """Socket connect timeout for every ``Server`` (A1; default 10s)."""
+    return _env_seconds("LDAP_CONNECT_TIMEOUT", 10.0, 1.0, 120.0)
+
+
+def ldap_receive_timeout() -> float:
+    """Per-response wait for every ``Connection`` (bind/search/modify; A1;
+    default 30s). Paged searches are bounded per page, not in total."""
+    return _env_seconds("LDAP_RECEIVE_TIMEOUT", 30.0, 1.0, 600.0)
+
+
 def _tls_valid_names() -> List[str]:
     raw = os.getenv("LDAP_TLS_VALID_NAMES", _DEFAULT_TLS_VALID_NAMES)
     return [part.strip() for part in str(raw or "").split(",") if part.strip()]
@@ -50,7 +70,7 @@ def build_ldap_server(host: str) -> Server:
     mode = ldap_security_mode()
     if mode in _INSECURE_MODES:
         logger.warning("LDAP_SECURITY=%s: directory traffic is NOT encrypted", mode)
-        return Server(host, get_info=ALL)
+        return Server(host, get_info=ALL, connect_timeout=ldap_connect_timeout())
     valid_names = _tls_valid_names()
     tls = Tls(
         validate=ssl.CERT_REQUIRED,
@@ -59,8 +79,8 @@ def build_ldap_server(host: str) -> Server:
         valid_names=valid_names or None,
     )
     if mode == "starttls":
-        return Server(host, get_info=ALL, tls=tls)
-    return Server(host, port=636, use_ssl=True, get_info=ALL, tls=tls)
+        return Server(host, get_info=ALL, tls=tls, connect_timeout=ldap_connect_timeout())
+    return Server(host, port=636, use_ssl=True, get_info=ALL, tls=tls, connect_timeout=ldap_connect_timeout())
 
 
 def open_ldap_connection(host: str, *, user: str = "", password: str = "") -> Connection:
@@ -68,7 +88,7 @@ def open_ldap_connection(host: str, *, user: str = "", password: str = "") -> Co
     server = build_ldap_server(host)
     credentials = {"user": user, "password": password} if user else {}
     if ldap_security_mode() == "starttls":
-        conn = Connection(server, **credentials)
+        conn = Connection(server, receive_timeout=ldap_receive_timeout(), **credentials)
         conn.open()
         if not conn.start_tls():
             conn.unbind()
@@ -79,4 +99,4 @@ def open_ldap_connection(host: str, *, user: str = "", password: str = "") -> Co
                 f"LDAP bind failed after StartTLS: {result.get('description') or 'unknown'}"
             )
         return conn
-    return Connection(server, auto_bind=True, **credentials)
+    return Connection(server, auto_bind=True, receive_timeout=ldap_receive_timeout(), **credentials)

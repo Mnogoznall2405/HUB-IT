@@ -18,7 +18,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import UploadFile
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError, TimeoutError as DatabaseTimeoutError
 
 from backend.ai_chat.balance import INSUFFICIENT_FUNDS_USER_TEXT, ai_balance_service
@@ -166,6 +166,12 @@ AI_RUN_STAGE_STATUS_TEXTS = {
 
 class AiRunCancelled(RuntimeError):
     """Raised cooperatively when a user stops an active AI run."""
+
+
+class AiRunDeadlineExceeded(RuntimeError):
+    """A1: raised at cooperative checkpoints when the run exceeds
+    AI_RUN_TIMEOUT_SEC. Not an AiRunCancelled subclass: the terminal status
+    must be 'failed', not 'cancelled'."""
 
 
 class AiRunConflictError(RuntimeError):
@@ -3752,15 +3758,25 @@ class AiChatService:
                 .limit(1)
             ).scalar_one_or_none()
             if row is not None:
-                row.status = "cancelled"
-                row.stage = AI_RUN_STAGE_CANCELLED
-                row.status_text = _resolve_run_status_text(status="cancelled", stage=AI_RUN_STAGE_CANCELLED)
-                row.error_text = None
-                row.completed_at = now
-                row.updated_at = now
-                run_id = row.id
-                run_created_at = _iso(row.created_at)
-                status_text = row.status_text
+                # A1: conditional claim — never overwrite a status the worker
+                # finalized between our SELECT and this UPDATE.
+                claimed = session.execute(
+                    update(AppAiBotRun).where(
+                        AppAiBotRun.id == row.id,
+                        AppAiBotRun.status.in_(["queued", "running"]),
+                    ).values(
+                        status="cancelled",
+                        stage=AI_RUN_STAGE_CANCELLED,
+                        status_text=_resolve_run_status_text(status="cancelled", stage=AI_RUN_STAGE_CANCELLED),
+                        error_text=None,
+                        completed_at=now,
+                        updated_at=now,
+                    ).execution_options(synchronize_session=False)
+                )
+                if int(claimed.rowcount or 0) == 1:
+                    run_id = row.id
+                    run_created_at = _iso(row.created_at)
+                    status_text = _resolve_run_status_text(status="cancelled", stage=AI_RUN_STAGE_CANCELLED)
 
         if run_id is None:
             return self.get_conversation_status(
@@ -3792,16 +3808,39 @@ class AiChatService:
         }
 
     def _raise_if_run_cancelled(self, run_id: str) -> None:
+        now = _utc_now()
         with app_session() as session:
             run = session.get(AppAiBotRun, _normalize_text(run_id))
             status = run.status if run else None
+            normalized_status = _normalize_text(status)
+            if normalized_status in {"cancelled", "failed"}:
+                raise AiRunCancelled("AI run was stopped")
             if run is not None:
+                if normalized_status in {"queued", "running"}:
+                    # A1 heartbeat: every cooperative checkpoint refreshes
+                    # updated_at so the watchdog tells live runs apart from
+                    # orphaned ones between stage transitions.
+                    session.execute(
+                        update(AppAiBotRun).where(
+                            AppAiBotRun.id == run.id,
+                            AppAiBotRun.status.in_(("queued", "running")),
+                        ).values(updated_at=now).execution_options(synchronize_session=False)
+                    )
                 from backend.ai_chat.access import can_use_bot
                 bot = session.get(AppAiBot, run.bot_id)
                 if bot is None or not can_use_bot(session, bot, run.user_id):
                     raise AiRunCancelled('Agent access revoked')
-        if _normalize_text(status) in {"cancelled", "failed"}:
-            raise AiRunCancelled("AI run was stopped")
+                # A1 run deadline: checked only at checkpoints (never inside a
+                # driver call — that is what Layer-1 timeouts are for).
+                from backend.ai_chat.timeouts import ai_run_timeout_sec
+
+                started_at = _as_utc(run.started_at)
+                if started_at is not None:
+                    elapsed = (now - started_at).total_seconds()
+                    if elapsed > ai_run_timeout_sec():
+                        raise AiRunDeadlineExceeded(
+                            f"Превышено время выполнения запроса ({int(elapsed)} с)."
+                        )
 
     def queue_run_for_message(
         self,
@@ -4556,7 +4595,15 @@ class AiChatService:
             else os.environ.get("AI_RUN_WATCHDOG_BATCH_SIZE", "50") or 50
         )
         limit = max(1, min(500, limit))
-        cutoff = _utc_now() - timedelta(seconds=stale_after)
+        from backend.ai_chat.timeouts import watchdog_queued_stale_sec
+
+        # A1: queued rows use a separate, longer threshold. A live worker with
+        # backlog legitimately holds queued runs for a while — only a dead
+        # worker leaves them unclaimed for queued_stale_after seconds.
+        queued_stale_after = max(stale_after, watchdog_queued_stale_sec())
+        now_utc = _utc_now()
+        cutoff = now_utc - timedelta(seconds=stale_after)
+        queued_cutoff = now_utc - timedelta(seconds=queued_stale_after)
         # Detach snapshot fields inside the session: rows expire on commit and
         # publishing after the session must not touch ORM attributes.
         reaped: list[dict[str, Any]] = []
@@ -4564,8 +4611,18 @@ class AiChatService:
             rows = list(
                 session.execute(
                     select(AppAiBotRun)
-                    .where(AppAiBotRun.status.in_(["queued", "running"]))
-                    .where(AppAiBotRun.updated_at < cutoff)
+                    .where(
+                        or_(
+                            and_(
+                                AppAiBotRun.status == "running",
+                                AppAiBotRun.updated_at < cutoff,
+                            ),
+                            and_(
+                                AppAiBotRun.status == "queued",
+                                AppAiBotRun.updated_at < queued_cutoff,
+                            ),
+                        )
+                    )
                     .order_by(AppAiBotRun.updated_at.asc())
                     .limit(limit)
                 ).scalars()
@@ -4573,6 +4630,7 @@ class AiChatService:
             for run in rows:
                 bot = session.get(AppAiBot, run.bot_id)
                 error_text = _normalize_text(run.error_text)
+                run_cutoff = queued_cutoff if _normalize_text(run.status) == "queued" else cutoff
                 if not dry_run:
                     now = _utc_now()
                     error_text = (
@@ -4584,7 +4642,7 @@ class AiChatService:
                             AppAiBotRun.id == run.id,
                             AppAiBotRun.status.in_(["queued", "running"]),
                             AppAiBotRun.updated_at == run.updated_at,
-                            AppAiBotRun.updated_at < cutoff,
+                            AppAiBotRun.updated_at < run_cutoff,
                         ).values(
                             status="failed", stage=AI_RUN_STAGE_FAILED,
                             status_text=_resolve_run_status_text(status="failed", stage=AI_RUN_STAGE_FAILED),
@@ -5202,7 +5260,7 @@ class AiChatService:
                 report_step = getattr(report_stage, "report_step", None)
                 if callable(report_step):
                     report_step({"id": step_id, "tool_id": tool_id, "label": step_label, "state": "running"})
-                result, audit_row = ai_tool_registry.execute(
+                result, audit_row = ai_tool_registry.execute_bounded(
                     tool_id=tool_id,
                     raw_args=prepared_args,
                     context=tool_context,
@@ -5231,7 +5289,7 @@ class AiChatService:
                     trace["comparison_status"] = comparison.get("status")
                     trace["comparison_error_code"] = comparison.get("reason_code")
                 return payload, trace
-            except AiRunCancelled:
+            except (AiRunCancelled, AiRunDeadlineExceeded):
                 raise
             except AiToolValidationError as exc:
                 error_text = _truncate(exc, limit=400)
@@ -5343,14 +5401,14 @@ class AiChatService:
                         for idx in group:
                             result_payload, result_trace = _execute_single_call(limited_calls[idx])
                             indexed_results[idx] = (result_payload, result_trace)
-                    except AiRunCancelled:
+                    except (AiRunCancelled, AiRunDeadlineExceeded):
                         raise
                     except RuntimeError:
                         # No running loop — safe to use asyncio.run
                         parallel_results = asyncio.run(_run_parallel(group))
                         for idx, (result_payload, result_trace) in parallel_results:
                             indexed_results[idx] = (result_payload, result_trace)
-                except AiRunCancelled:
+                except (AiRunCancelled, AiRunDeadlineExceeded):
                     raise
                 except Exception as exc:
                     # Fallback: if parallel execution fails for any reason, run sequentially

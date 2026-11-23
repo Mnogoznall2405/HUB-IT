@@ -1,16 +1,51 @@
 from __future__ import annotations
 
+import contextvars
+import functools
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any
 
 from pydantic import ValidationError
 
 from backend.ai_chat.tools.base import AiTool, AiToolResult, AiToolValidationError
 from backend.ai_chat.tools.context import AiToolExecutionContext
+from backend.ai_chat.timeouts import (
+    ai_sql_query_timeout_sec,
+    ai_tool_executor_workers,
+    ai_tool_wall_timeout_sec,
+)
 
 
 logger = logging.getLogger(__name__)
+
+_tool_executor_lock = threading.Lock()
+_tool_executor_pool: ThreadPoolExecutor | None = None
+
+_leaked_lock = threading.Lock()
+_leaked_tool_calls = 0
+
+
+def _tool_executor() -> ThreadPoolExecutor:
+    """Dedicated executor for tool calls (A1). Kept separate from the asyncio
+    default executor so abandoned calls never starve the worker's own
+    to_thread slots; daemon threads let the process exit on shutdown."""
+    global _tool_executor_pool
+    with _tool_executor_lock:
+        if _tool_executor_pool is None:
+            _tool_executor_pool = ThreadPoolExecutor(
+                max_workers=ai_tool_executor_workers(),
+                thread_name_prefix="ai-tool",
+            )
+    return _tool_executor_pool
+
+
+def ai_tool_leaked_count() -> int:
+    """Tool calls that timed out and were abandoned while still running."""
+    with _leaked_lock:
+        return _leaked_tool_calls
 
 
 def _normalize_text(value: object) -> str:
@@ -92,7 +127,15 @@ class AiToolRegistry:
             err.field_path = field_path  # type: ignore[attr-defined]
             err.detail = detail  # type: ignore[attr-defined]
             raise err from exc
-        result = tool.execute(context=context, args=args)
+        # A1: scope the SQL Server statement timeout to this tool call so a
+        # hung ITINVENT query dies at the driver instead of blocking the run.
+        from backend.database.connection import ai_sql_query_timeout
+
+        sql_timeout_token = ai_sql_query_timeout.set(ai_sql_query_timeout_sec())
+        try:
+            result = tool.execute(context=context, args=args)
+        finally:
+            ai_sql_query_timeout.reset(sql_timeout_token)
         latency_ms = max(0, int((time.perf_counter() - started_at) * 1000))
         audit_row = {
             "tool_id": normalized_tool_id,
@@ -114,6 +157,78 @@ class AiToolRegistry:
             audit_row["latency_ms"],
         )
         return result, audit_row
+
+    def execute_bounded(
+        self,
+        *,
+        tool_id: str,
+        raw_args: Any,
+        context: AiToolExecutionContext,
+    ) -> tuple[AiToolResult, dict[str, Any]]:
+        """Execute a tool call under the wall-clock bound (A1, Layer 2).
+
+        Returns a controlled error result on timeout — the run continues with
+        a tool error the model can report. The abandoned call keeps running
+        inside the dedicated executor until driver timeouts free it; that
+        leaked call is counted so operators can see unreclaimed capacity.
+        """
+        global _leaked_tool_calls
+        normalized_tool_id = _normalize_text(tool_id)
+        tool = self.get(normalized_tool_id)
+        timeout_sec = ai_tool_wall_timeout_sec()
+        tool_timeout = getattr(tool, "timeout_sec", None) if tool is not None else None
+        if tool_timeout:
+            timeout_sec = max(1.0, min(1800.0, float(tool_timeout)))
+        # copy_context: preserve contextvars (SQL timeout scope is set inside
+        # execute() anyway; this keeps any other request-scoped vars intact).
+        ctx = contextvars.copy_context()
+        call = functools.partial(
+            self.execute,
+            tool_id=tool_id,
+            raw_args=raw_args,
+            context=context,
+        )
+        future = _tool_executor().submit(ctx.run, call)
+        try:
+            return future.result(timeout=timeout_sec)
+        except FutureTimeoutError:
+            future.cancel()  # no-op if already running — threads cannot be killed
+            with _leaked_lock:
+                _leaked_tool_calls += 1
+            latency_ms = int(timeout_sec * 1000)
+            logger.error(
+                "ai_tool_timeout run_id=%s conversation_id=%s tool_id=%s timeout_sec=%s leaked=%s",
+                getattr(context, "run_id", None) or "-",
+                getattr(context, "conversation_id", None) or "-",
+                normalized_tool_id or "-",
+                timeout_sec,
+                _leaked_tool_calls,
+            )
+            result = AiToolResult(
+                tool_id=normalized_tool_id or "unknown",
+                ok=False,
+                data={
+                    "diagnostic": {
+                        "error_code": "tool_timeout",
+                        "message": (
+                            f"Инструмент не ответил за {int(timeout_sec)} с. "
+                            "Операция могла завершиться на стороне внешней системы — "
+                            "результат неизвестен, повторный запрос допустим только после проверки."
+                        ),
+                    }
+                },
+                error=f"Инструмент не ответил за {int(timeout_sec)} с (таймаут).",
+            )
+            audit_row = {
+                "tool_id": normalized_tool_id or "unknown",
+                "database_id": _normalize_text(getattr(context, "effective_database_id", None)) or None,
+                "status": "error",
+                "latency_ms": latency_ms,
+                "conversation_id": getattr(context, "conversation_id", None),
+                "bot_id": getattr(context, "bot_id", None),
+                "user_id": int(getattr(context, "user_id", 0) or 0),
+            }
+            return result, audit_row
 
 
 ai_tool_registry = AiToolRegistry()

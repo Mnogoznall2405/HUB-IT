@@ -45,20 +45,39 @@ def _voicevideo_root() -> Optional[Path]:
 
 
 def _iter_report_files(root: Path):
+    """A1: bounded scan — newest first, capped by count so a huge output dir
+    cannot turn one tool call into an unbounded filesystem walk."""
+    from backend.ai_chat.timeouts import ai_voice_report_max_files
+
     output = root / "output"
     if not output.exists():
         return
+    max_files = ai_voice_report_max_files()
+    candidates: list[Path] = []
     for entry in sorted(output.iterdir(), key=lambda p: p.name.lower()):
         if entry.is_dir():
             for report in sorted(entry.glob("*_report.json")):
                 if report.is_file():
-                    yield report
+                    candidates.append(report)
         elif entry.is_file() and entry.name.endswith("_report.json"):
-            yield entry
+            candidates.append(entry)
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    candidates.sort(key=_mtime, reverse=True)
+    for report in candidates[:max_files]:
+        yield report
 
 
 def _load_report(path: Path) -> Optional[dict]:
+    from backend.ai_chat.timeouts import ai_voice_report_max_bytes
+
     try:
+        if path.stat().st_size > ai_voice_report_max_bytes():
+            return None
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None

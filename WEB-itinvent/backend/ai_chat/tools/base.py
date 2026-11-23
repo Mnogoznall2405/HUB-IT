@@ -39,6 +39,10 @@ class AiTool(ABC):
     input_model: type[BaseModel] = BaseModel
     admin_only: bool = False
     stage: str = "checking_itinvent"
+    # A1: optional per-tool wall-clock bound (seconds) for the bounded executor.
+    # None -> AI_TOOL_WALL_TIMEOUT_SEC default. This bounds how long a run
+    # waits; the abandoned worker thread is freed by driver timeouts instead.
+    timeout_sec: float | None = None
 
     def validate_args(self, raw_args: Any) -> BaseModel:
         payload = raw_args if isinstance(raw_args, dict) else {}
