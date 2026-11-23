@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import pydantic
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 import conftest
@@ -853,21 +853,27 @@ def test_cancelled_run_still_raises_cancelled_not_deadline(database, monkeypatch
         svc._raise_if_run_cancelled("r-cancelled")
 
 
-def test_watchdog_queued_uses_longer_threshold(database, monkeypatch):
+def test_watchdog_queued_never_reaped_age_is_diagnostic_only(database, monkeypatch):
+    """P0 (cycle 4): queued rows are NEVER reaped — a live claim loop may
+    legitimately hold backlog older than any threshold. Age surfaces only as
+    a diagnostic warning; running rows still reap normally."""
     session, svc, _published, now = database
     mid = now - timedelta(minutes=20)  # >stale_after(60s), <queued_stale(1800s)
     ancient = now - timedelta(hours=2)
     _add_run(session, run_id="q-backlog", status="queued", updated_at=mid, created_at=mid)
-    _add_run(session, run_id="q-dead", status="queued", updated_at=ancient, created_at=ancient)
+    _add_run(session, run_id="q-old", status="queued", updated_at=ancient, created_at=ancient)
     _add_run(session, run_id="r-stale", status="running", updated_at=mid,
              started_at=mid, created_at=mid)
     monkeypatch.setenv("AI_RUN_WATCHDOG_QUEUED_STALE_SEC", "1800")
-    svc.worker_heartbeat()  # live claim loop — queued reap is allowed
+    svc.worker_heartbeat()  # live claim loop with a big old backlog
     result = svc.reap_stale_runs(stale_after_sec=60)
-    assert sorted(result["reaped_run_ids"]) == ["q-dead", "r-stale"]
+    assert result["reaped_run_ids"] == ["r-stale"]
+    assert result["stale_queued_run_ids"] == ["q-old"]  # diagnostic, not a reap
+    assert result["skipped_queued"] == 1
     with session() as db:
-        assert db.get(AppAiBotRun, "q-backlog").status == "queued"  # backlog is not a hang
-        assert db.get(AppAiBotRun, "q-dead").status == "failed"
+        # Both queued rows stay claimable — fresh heartbeat + age ≠ loss.
+        assert db.get(AppAiBotRun, "q-backlog").status == "queued"
+        assert db.get(AppAiBotRun, "q-old").status == "queued"
         assert db.get(AppAiBotRun, "r-stale").status == "failed"
 
 
@@ -885,9 +891,8 @@ def test_watchdog_second_run_is_idempotent(database, monkeypatch):
 
 
 def test_watchdog_preserves_queued_backlog_without_worker_heartbeat(database, monkeypatch):
-    """Cycle-3 P1: row age alone is not proof of loss — a wedged/missing
-    claim loop stops the heartbeat and queued rows stay queued for the
-    future worker, while stale running rows are still reaped."""
+    """No heartbeat (wedged/missing claim loop): queued rows stay queued —
+    and now they stay queued in EVERY case since queued is never reaped."""
     session, svc, _published, now = database
     ancient = now - timedelta(hours=2)
     _add_run(session, run_id="q-old", status="queued", updated_at=ancient, created_at=ancient)
@@ -902,23 +907,34 @@ def test_watchdog_preserves_queued_backlog_without_worker_heartbeat(database, mo
         assert db.get(AppAiBotRun, "r-old").status == "failed"
 
 
-def test_watchdog_reaps_queued_only_with_fresh_heartbeat(database, monkeypatch):
-    """Cycle-3 P1: fresh heartbeat + row still unclaimed past the queued
-    threshold = broken claim path → the row is genuinely lost and reaped."""
+def test_watchdog_queued_survives_fresh_heartbeat_and_gets_processed(database, monkeypatch):
+    """P0 required case (cycle 4): live worker, fresh heartbeat, large queue,
+    queued row older than the threshold — it stays `queued` and remains
+    claimable by the normal claim query (status == 'queued')."""
     session, svc, _published, now = database
     ancient = now - timedelta(hours=2)
-    _add_run(session, run_id="q-stuck", status="queued", updated_at=ancient, created_at=ancient)
+    _add_run(session, run_id="q-old", status="queued", updated_at=ancient, created_at=ancient)
     svc.worker_heartbeat()
     result = svc.reap_stale_runs(stale_after_sec=60)
     assert result["worker_alive"] is True
-    assert result["reaped_run_ids"] == ["q-stuck"]
+    assert result["reaped_run_ids"] == []
     with session() as db:
-        assert db.get(AppAiBotRun, "q-stuck").status == "failed"
+        run = db.get(AppAiBotRun, "q-old")
+        assert run.status == "queued"
+        # The row is still picked up by the claim predicate — a live worker
+        # processes it normally on its next claim.
+        claimable = db.execute(
+            select(AppAiBotRun.id).where(
+                AppAiBotRun.status == "queued",
+                AppAiBotRun.id == "q-old",
+            )
+        ).scalar_one_or_none()
+        assert claimable == "q-old"
 
 
 def test_watchdog_stale_heartbeat_is_conservative(database, monkeypatch):
-    """Cycle-3 P1: a heartbeat older than the freshness window is treated
-    like no heartbeat — crash/restart cannot reap the backlog."""
+    """A heartbeat older than the freshness window is reported as not-alive —
+    diagnostic only; queued rows are untouched regardless."""
     session, svc, _published, now = database
     ancient = now - timedelta(hours=2)
     _add_run(session, run_id="q-old", status="queued", updated_at=ancient, created_at=ancient)
@@ -983,6 +999,59 @@ def test_singleflight_waiter_falls_back_when_leader_hangs(monkeypatch):
     assert result == "own-result"  # bounded wait -> own producer, not a hang
     gate.set()
     leader_thread.join(timeout=5)
+
+
+def test_singleflight_consistent_result_when_leader_wins_race(monkeypatch):
+    """P2 (cycle 4): leader finishes AFTER the fallback started. The fallback
+    must not overwrite the leader's published result — every caller observes
+    the same value, no waiter is woken by a result that is then replaced."""
+    from backend.services.mail_runtime_cache import SingleflightGroup
+    from backend.ai_chat import timeouts as timeouts_module
+
+    monkeypatch.setattr(timeouts_module, "mail_singleflight_wait_sec", lambda: 0.15)
+    leader_gate = threading.Event()
+    fallback_gate = threading.Event()
+    group = SingleflightGroup()
+    produced: list[str] = []
+
+    def leader_producer():
+        produced.append("leader")
+        leader_gate.wait(timeout=15)
+        return "leader-result"
+
+    leader_out: list = []
+    leader = threading.Thread(
+        target=lambda: leader_out.append(group.run(key="k", producer=leader_producer)),
+        daemon=True,
+    )
+    leader.start()
+    time.sleep(0.05)
+
+    def fallback_producer():
+        produced.append("fallback")
+        fallback_gate.wait(timeout=15)
+        return "fallback-result"
+
+    follower_out: list = []
+    follower = threading.Thread(
+        target=lambda: follower_out.append(group.run(key="k", producer=fallback_producer)),
+        daemon=True,
+    )
+    follower.start()
+    # Fallback claims the slot and blocks inside its producer.
+    assert _wait_for(lambda: "fallback" in produced)
+    # Leader finishes now — it publishes "leader-result" and wakes waiters.
+    leader_gate.set()
+    leader.join(timeout=10)
+    # Fallback's producer returns afterwards — it must NOT overwrite.
+    fallback_gate.set()
+    follower.join(timeout=10)
+
+    assert produced == ["leader", "fallback"]  # both producers ran (read-only)
+    assert leader_out == ["leader-result"]
+    assert follower_out == ["leader-result"]  # consistent shared result
+    # Next request starts a fresh call normally.
+    assert group.run(key="k", producer=lambda: "fresh") == "fresh"
 
 
 def test_warehouse_coroutine_has_bounded_wait(monkeypatch):
@@ -1115,6 +1184,112 @@ def test_submit_failure_between_reserve_and_callback_is_safe(monkeypatch):
     stats = ai_tool_executor_stats()
     assert stats["in_flight"] == 0
     assert stats["leaked_now"] == 0
+
+
+def test_callback_failure_on_running_future_keeps_capacity_until_done(monkeypatch):
+    """P1 (cycle 4): submit() ok + add_done_callback raises while the task is
+    already RUNNING (cancel() -> False). The call must NOT be reported as
+    'never ran' and capacity must be held until actual completion — a monitor
+    thread performs the release the missing callback would have done."""
+    gate = threading.Event()
+
+    class _RunningFuture:
+        def __init__(self):
+            self._done = threading.Event()
+            self._value = None
+
+        def cancel(self):
+            return False  # already running — cannot be un-queued
+
+        def done(self):
+            return self._done.is_set()
+
+        def result(self, timeout=None):
+            assert self._done.wait(timeout)
+            return self._value
+
+        def add_done_callback(self, _fn):
+            raise RuntimeError("callback registry wedged")
+
+        def finish(self, value):
+            self._value = value
+            self._done.set()
+
+    future = _RunningFuture()
+
+    class _Executor:
+        def submit(self, fn, *a, **k):
+            return future
+
+    monkeypatch.setattr(registry_module, "_tool_executor", lambda: _Executor())
+    registry = _make_registry(_QuickTool())
+    context = _tool_context(["a1.test.quick"])
+
+    outcome: list = []
+    caller = threading.Thread(
+        target=lambda: outcome.append(
+            registry.execute_bounded(
+                tool_id="a1.test.quick", raw_args={}, context=context
+            )[0]
+        ),
+        daemon=True,
+    )
+    caller.start()
+    time.sleep(0.05)
+    # Task "running": capacity still held — not freed early by the failed
+    # callback registration.
+    assert ai_tool_executor_stats()["in_flight"] == 1
+    finish_result = (AiToolResult(tool_id="a1.test.quick", ok=True, data={"answer": 42}), {})
+    future.finish(finish_result)
+    caller.join(timeout=5)
+    assert outcome[0].ok is True  # real result delivered, not "never ran"
+    assert _wait_for(lambda: ai_tool_executor_stats()["in_flight"] == 0)
+    stats = ai_tool_executor_stats()
+    assert stats["leaked_now"] == 0
+
+
+def test_callback_failure_monitor_spawn_failure_holds_capacity_as_leaked(monkeypatch):
+    """P1 (cycle 4): cancel()=False AND even the done-monitor cannot start —
+    capacity is held (marked leaked), outcome reported unknown, never
+    'never ran'."""
+
+    class _RunningFuture:
+        def cancel(self):
+            return False
+
+        def done(self):
+            return False
+
+        def result(self, timeout=None):
+            raise TimeoutError
+
+        def add_done_callback(self, _fn):
+            raise RuntimeError("wedged")
+
+    future = _RunningFuture()
+
+    class _Executor:
+        def submit(self, fn, *a, **k):
+            return future
+
+    monkeypatch.setattr(registry_module, "_tool_executor", lambda: _Executor())
+    monkeypatch.setattr(
+        registry_module.threading,
+        "Thread",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no threads left")),
+    )
+    registry = _make_registry(_QuickTool())
+    context = _tool_context(["a1.test.quick"])
+    result, _ = registry.execute_bounded(
+        tool_id="a1.test.quick", raw_args={}, context=context
+    )
+    assert result.ok is False
+    assert result.data["diagnostic"]["error_code"] == "tool_submit_incomplete"
+    assert "неизвестен" in result.data["diagnostic"]["message"]
+    assert "не выполнялся" not in result.data["diagnostic"]["message"]
+    stats = ai_tool_executor_stats()
+    assert stats["in_flight"] == 1  # held — the task may still be running
+    assert stats["leaked_now"] == 1
 
 
 def test_shut_down_executor_rejects_without_negative_counters(monkeypatch):

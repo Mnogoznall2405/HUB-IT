@@ -60,17 +60,19 @@ def test_reap_stale_runs_marks_failed_and_publishes(database):
     session, svc, published = database
     result = svc.reap_stale_runs(stale_after_sec=900)
     assert result['dry_run'] is False
-    assert sorted(result['reaped_run_ids']) == ['stale-queued', 'stale-running']
+    # A1 (cycle 4): queued rows are never reaped — only stale running rows.
+    assert result['reaped_run_ids'] == ['stale-running']
+    assert result['stale_queued_run_ids'] == ['stale-queued']
     with session() as db:
-        for run_id in ('stale-queued', 'stale-running'):
-            run = db.get(AppAiBotRun, run_id)
-            assert run.status == 'failed'
-            assert run.completed_at is not None
-            assert 'прерван' in (run.error_text or '')
+        run = db.get(AppAiBotRun, 'stale-running')
+        assert run.status == 'failed'
+        assert run.completed_at is not None
+        assert 'прерван' in (run.error_text or '')
+        assert db.get(AppAiBotRun, 'stale-queued').status == 'queued'  # backlog preserved
         assert db.get(AppAiBotRun, 'fresh-queued').status == 'queued'
         assert db.get(AppAiBotRun, 'old-done').status == 'completed'
         assert db.get(AppAiBotRun, 'old-failed').status == 'failed'
-    assert sorted(event['run_id'] for event in published) == ['stale-queued', 'stale-running']
+    assert [event['run_id'] for event in published] == ['stale-running']
     assert all(event['status'] == 'failed' for event in published)
     assert all(event['conversation_id'] == 'conv' for event in published)
 
@@ -79,7 +81,7 @@ def test_reap_stale_runs_dry_run_changes_nothing(database):
     session, svc, published = database
     result = svc.reap_stale_runs(dry_run=True, stale_after_sec=900)
     assert result['dry_run'] is True
-    assert result['reaped_count'] == 2
+    assert result['reaped_count'] == 1
     with session() as db:
         assert db.get(AppAiBotRun, 'stale-queued').status == 'queued'
         assert db.get(AppAiBotRun, 'stale-running').status == 'running'
@@ -96,7 +98,7 @@ def test_reap_stale_runs_respects_batch_size(database):
             run_id for run_id in ('stale-queued', 'stale-running')
             if db.get(AppAiBotRun, run_id).status in ('queued', 'running')
         ]
-    assert len(remaining) == 1
+    assert len(remaining) == 1  # stale-queued is diagnostic-only, never a reap candidate
 
 
 def test_reap_stale_runs_keeps_existing_error_text(database):
@@ -136,7 +138,7 @@ def test_watchdog_does_not_overwrite_completed_or_refreshed_run(database, monkey
                 if isinstance(statement, Update) and not changed:
                     changed = True
                     now = datetime.now(timezone.utc)
-                    original_execute(update(AppAiBotRun).where(AppAiBotRun.id == 'stale-queued').values(
+                    original_execute(update(AppAiBotRun).where(AppAiBotRun.id == 'stale-running').values(
                         status=next_status, updated_at=now,
                         completed_at=now if next_status == 'completed' else None,
                     ).execution_options(synchronize_session=False))
@@ -146,12 +148,12 @@ def test_watchdog_does_not_overwrite_completed_or_refreshed_run(database, monkey
 
     monkeypatch.setattr(service_module, 'app_session', racing_session)
     result = svc.reap_stale_runs(stale_after_sec=900)
-    assert result['reaped_run_ids'] == ['stale-running']
+    assert result['reaped_run_ids'] == []
     with session() as db:
-        row = db.get(AppAiBotRun, 'stale-queued')
+        row = db.get(AppAiBotRun, 'stale-running')
         assert row.status == next_status
         assert row.error_text is None
-    assert [event['run_id'] for event in published] == ['stale-running']
+    assert [event['run_id'] for event in published] == []
 
 
 @pytest.mark.parametrize('terminal_status', ['failed', 'cancelled', 'completed'])

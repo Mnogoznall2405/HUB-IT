@@ -4600,9 +4600,11 @@ class AiChatService:
             watchdog_queued_stale_sec,
         )
 
-        # A1: queued rows use a separate, longer threshold. A live worker with
-        # backlog legitimately holds queued runs for a while — only a dead
-        # worker leaves them unclaimed for queued_stale_after seconds.
+        # A1 (cycle 3/4): queued rows are NEVER reaped. A live claim loop may
+        # legitimately hold backlog older than any threshold — row age (plus a
+        # fresh heartbeat) is not proof a queued run is unprocessable. Age is
+        # reported as a diagnostic warning only; a future worker claim or an
+        # explicit cancel remains the only way out of `queued`.
         queued_stale_after = max(stale_after, watchdog_queued_stale_sec())
         now_utc = _utc_now()
         cutoff = now_utc - timedelta(seconds=stale_after)
@@ -4611,41 +4613,38 @@ class AiChatService:
         # publishing after the session must not touch ORM attributes.
         reaped: list[dict[str, Any]] = []
         with app_session() as session:
-            # A1 (cycle 3): row age alone never proves a queued run is lost.
-            # Reap queued rows ONLY when the claim loop demonstrably lives —
-            # its heartbeat is fresh AND the row stayed unclaimed anyway,
-            # which is genuinely abnormal. Absent/stale heartbeat = unknown →
-            # leave the backlog alone; a future worker can still claim it.
             heartbeat_age = self._worker_heartbeat_age_sec(session)
             heartbeat_fresh = ai_worker_heartbeat_fresh_sec()
             worker_alive = heartbeat_age is not None and heartbeat_age <= heartbeat_fresh
-            skipped_queued = 0
+            # Diagnostic-only: stale queued rows — never claimed, never reaped.
+            stale_queued_ids = [
+                str(run_id)
+                for run_id in session.execute(
+                    select(AppAiBotRun.id)
+                    .where(
+                        AppAiBotRun.status == "queued",
+                        AppAiBotRun.updated_at < queued_cutoff,
+                    )
+                    .order_by(AppAiBotRun.updated_at.asc())
+                    .limit(limit)
+                ).scalars()
+            ]
+            skipped_queued = len(stale_queued_ids)
             rows = list(
                 session.execute(
                     select(AppAiBotRun)
                     .where(
-                        or_(
-                            and_(
-                                AppAiBotRun.status == "running",
-                                AppAiBotRun.updated_at < cutoff,
-                            ),
-                            and_(
-                                AppAiBotRun.status == "queued",
-                                AppAiBotRun.updated_at < queued_cutoff,
-                            ),
-                        )
+                        AppAiBotRun.status == "running",
+                        AppAiBotRun.updated_at < cutoff,
                     )
                     .order_by(AppAiBotRun.updated_at.asc())
                     .limit(limit)
                 ).scalars()
             )
             for run in rows:
-                if _normalize_text(run.status) == "queued" and not worker_alive:
-                    skipped_queued += 1
-                    continue
                 bot = session.get(AppAiBot, run.bot_id)
                 error_text = _normalize_text(run.error_text)
-                run_cutoff = queued_cutoff if _normalize_text(run.status) == "queued" else cutoff
+                run_cutoff = cutoff
                 if not dry_run:
                     now = _utc_now()
                     error_text = (
@@ -4677,11 +4676,14 @@ class AiChatService:
                 })
         reaped_ids = [item["run_id"] for item in reaped]
         if skipped_queued:
-            logger.info(
-                "ai_run_watchdog: skipped %d stale queued run(s) — worker heartbeat "
-                "absent or older than %ss (age=%s), backlog preserved",
+            # Diagnostic warning only — age is not proof of loss, the backlog
+            # stays claimable by a live or future worker.
+            logger.warning(
+                "ai_run_watchdog: %d queued run(s) older than %ss — backlog "
+                "diagnostic (worker_alive=%s, heartbeat_age=%s); NOT reaped",
                 skipped_queued,
-                int(heartbeat_fresh),
+                int(queued_stale_after),
+                worker_alive,
                 None if heartbeat_age is None else int(heartbeat_age),
             )
         if dry_run:
@@ -4694,6 +4696,7 @@ class AiChatService:
                 "worker_alive": worker_alive,
                 "worker_heartbeat_age_sec": heartbeat_age,
                 "skipped_queued": skipped_queued,
+                "stale_queued_run_ids": stale_queued_ids,
                 "reaped_count": len(reaped_ids),
                 "reaped_run_ids": reaped_ids,
             }
@@ -4723,6 +4726,7 @@ class AiChatService:
             "worker_alive": worker_alive,
             "worker_heartbeat_age_sec": heartbeat_age,
             "skipped_queued": skipped_queued,
+            "stale_queued_run_ids": stale_queued_ids,
             "reaped_count": len(reaped_ids),
             "reaped_run_ids": reaped_ids,
         }

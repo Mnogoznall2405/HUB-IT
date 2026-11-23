@@ -236,17 +236,24 @@ class SingleflightGroup:
                         "mail_singleflight_fallback_leader key=%s — running producer",
                         key,
                     )
+                    produced = None
+                    produced_error: BaseException | None = None
                     try:
-                        call.result = producer()
+                        produced = producer()
                     except BaseException as exc:
-                        call.error = exc
-                    finally:
-                        call.event.set()
-                        # Remove the call so the NEXT request starts a fresh
-                        # leader instead of waiting on a stale event/result.
-                        with self._lock:
-                            if self._calls.get(key) is call:
-                                self._calls.pop(key, None)
+                        produced_error = exc
+                    # P2 (cycle 4): publish under the lock and ONLY if the
+                    # leader has not already published — otherwise the shared
+                    # result would be overwritten after waiters were woken.
+                    # Whichever producer publishes first wins; every caller
+                    # then observes the same result.
+                    with self._lock:
+                        if not call.event.is_set():
+                            call.result = produced
+                            call.error = produced_error
+                            call.event.set()
+                        if self._calls.get(key) is call:
+                            self._calls.pop(key, None)
                     if call.error is not None:
                         raise call.error
                     return call.result
@@ -265,17 +272,25 @@ class SingleflightGroup:
                 raise call.error
             return call.result
 
+        # Leader path — same publish rule as the fallback: write result/error
+        # under the lock only while the event is still unset, so a fallback
+        # that finished first cannot be overwritten after waking waiters.
+        produced = None
+        produced_error: BaseException | None = None
         try:
-            call.result = producer()
-            return call.result
+            produced = producer()
         except BaseException as exc:
             # A non-Exception failure (e.g. KeyboardInterrupt inside the worker)
             # must still release waiters with the error instead of handing them
             # a None "result" below.
-            call.error = exc
-            raise
-        finally:
-            call.event.set()
-            with self._lock:
-                if self._calls.get(key) is call:
-                    self._calls.pop(key, None)
+            produced_error = exc
+        with self._lock:
+            if not call.event.is_set():
+                call.result = produced
+                call.error = produced_error
+                call.event.set()
+            if self._calls.get(key) is call:
+                self._calls.pop(key, None)
+        if call.error is not None:
+            raise call.error
+        return call.result

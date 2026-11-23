@@ -295,17 +295,31 @@ class AiToolRegistry:
                 if _state["leaked"]:
                     _leaked_now -= 1
 
-        # P1 (cycle 3): submit()/callback registration may raise (shut-down or
-        # wedged executor, thread spawn failure). The capacity was reserved
-        # above — release it deterministically here; a created-but-running
-        # future has no callback attached, so nothing will double-release.
+        # P1 (cycle 3/4): submit()/callback registration may raise. Three
+        # distinct failure shapes, handled differently:
+        #  - submit() raised: nothing was queued — release the reservation,
+        #    "never ran" is safe to claim;
+        #  - callback raised AND future.cancel() succeeded: the task was still
+        #    queued — same "never ran" handling;
+        #  - callback raised AND cancel() failed: the task is RUNNING (or
+        #    done). It must keep its reserved capacity until actual completion
+        #    and the caller must NOT hear "never ran". A daemon monitor thread
+        #    then performs the capacity release the missing callback would
+        #    have done; if the monitor itself cannot start, the capacity is
+        #    held as leaked and the outcome is reported as unknown.
         future = None
+        submit_failed = False
+        callback_failed = False
         try:
             future = _tool_executor().submit(ctx.run, call)
-            future.add_done_callback(_on_done)
         except Exception:
-            if future is not None:
-                future.cancel()
+            submit_failed = True
+        else:
+            try:
+                future.add_done_callback(_on_done)
+            except Exception:
+                callback_failed = True
+        if submit_failed or (callback_failed and future.cancel()):
             with _capacity_lock:
                 _in_flight -= 1
                 _rejected_total += 1
@@ -324,6 +338,53 @@ class AiToolRegistry:
                     "запущен и гарантированно не выполнялся. Повтор безопасен."
                 ),
                 latency_ms=0,
+            )
+        if callback_failed:
+            # The task is already running/finished without our callback.
+            def _release_when_done(fut, _state=state) -> None:
+                try:
+                    fut.result()
+                except BaseException:
+                    pass
+                _on_done(fut, _state=_state)
+
+            try:
+                monitor = threading.Thread(
+                    target=_release_when_done,
+                    args=(future,),
+                    daemon=True,
+                    name="ai-tool-done-monitor",
+                )
+                monitor.start()
+            except Exception:
+                # Cannot even observe completion — hold the capacity as
+                # leaked so stats stay honest; do NOT claim it never ran.
+                with _capacity_lock:
+                    state["leaked"] = True
+                    _leaked_now += 1
+                    _leaked_total += 1
+                logger.exception(
+                    "ai_tool_submit_monitor_failed run_id=%s tool_id=%s — "
+                    "task running unobserved, capacity held as leaked",
+                    getattr(context, "run_id", None) or "-",
+                    normalized_tool_id or "-",
+                )
+                return self._error_result(
+                    tool_id=normalized_tool_id,
+                    context=context,
+                    error_code="tool_submit_incomplete",
+                    error_text="Не удалось зарегистрировать завершение вызова инструмента — результат неизвестен.",
+                    message=(
+                        "Внутренняя ошибка планировщика: операция МОГЛА быть "
+                        "выполнена — результат неизвестен, повтор допустим "
+                        "только после проверки."
+                    ),
+                    latency_ms=0,
+                )
+            logger.warning(
+                "ai_tool_callback_failed run_id=%s tool_id=%s — done-monitor attached",
+                getattr(context, "run_id", None) or "-",
+                normalized_tool_id or "-",
             )
         try:
             return future.result(timeout=timeout_sec)

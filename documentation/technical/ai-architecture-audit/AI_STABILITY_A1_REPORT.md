@@ -60,26 +60,30 @@ fake-драйвером/заглушкой; **[static]** — статическ�
    (12 workers + 24 pending, `AI_TOOL_WALL_TIMEOUT_SEC=120`, per-tool override).
    **Admission control (цикл 2, P0-1):** отказ `tool_capacity_exceeded` сверх ёмкости —
    вызов гарантированно не стартовал (проверено `tool.started` в тесте).
-   **submit()-safety (цикл 3, P1):** резервирование ёмкости обёрнуто в
-   try/except вокруг `submit()` + `add_done_callback` — любой сбой (shut-down
-   executor, RuntimeError, отказ регистрации callback) отменяет будущий future,
-   освобождает резерв ровно один раз и возвращает `tool_submit_failed`
-   («не выполнялся, повтор безопасен»). Счётчики не уходят в минус.
+   **submit()-safety (цикл 3/4, P1):** три различных сбоя. submit() упал или
+   `future.cancel()` успешен (ещё в очереди) → ёмкость освобождена,
+   `tool_submit_failed` («не выполнялся»). Callback-registration упала И
+   `cancel()=False` (задача уже RUNNING): ёмкость удерживается до фактического
+   завершения — daemon done-monitor выполняет освобождение, которое сделал бы
+   callback; «не выполнялся» НЕ утверждается — вызов получает реальный
+   результат через `future.result()`. Если и monitor не стартует — ёмкость
+   остаётся занятой как leaked, `tool_submit_incomplete` («результат
+   неизвестен»). Счётчики не уходят в минус.
    Таймаут в очереди → `tool_queue_timeout`; в работе → `tool_timeout` + leak.
    `leaked_now` — gauge по факту завершения потока; `_generation`-guard защищает
    от stale-callback после тестового reset.
 3. **Run.** `AiRunDeadlineExceeded` на checkpoint'ах (`AI_RUN_TIMEOUT_SEC=900`) →
    терминальный `failed`. Каждый checkpoint heartbeat'ит `updated_at` (CAS).
 4. **Восстановление.** Watchdog opt-in. `running` > 900s reap'ится как раньше.
-   **Liveness-доказательство для queued (цикл 3, P1):** claim-loop воркера пишет
-   heartbeat в `app_settings` (`ai_worker.heartbeat`, throttle `AI_WORKER_HEARTBEAT_SEC=15`,
-   upsert — без миграций). `queued`-строки reap'ятся ТОЛЬКО если heartbeat свежее
-   `AI_WORKER_HEARTBEAT_FRESH_SEC=120` — живой цикл + строка всё ещё не claimed за
-   `AI_RUN_WATCHDOG_QUEUED_STALE_SEC=1800` = действительно потерянная задача.
-   Нет heartbeat или он устарел (воркер упал/завис/ещё не развёрнут) → queued
-   пропускаются и считаются `skipped_queued` в отчёте watchdog — backlog под
-   нагрузкой и окно до старта воркера не reap'ятся. Dry-run сохранён и выводит
-   `worker_alive`/`worker_heartbeat_age_sec`/`skipped_queued`.
+   **Queued-строки НЕ reap'ятся никогда (цикл 4, P0):** живой claim loop может
+   законно держать backlog старше любого порога — возраст (даже со свежим
+   heartbeat) не доказывает невозможность обработки. Просроченные queued
+   выводятся как диагностическое предупреждение (`stale_queued_run_ids`,
+   `skipped_queued`, `worker_alive`, `worker_heartbeat_age_sec` в выводе
+   watchdog); выход из `queued` — только claim воркером или явная отмена.
+   Claim-loop пишет heartbeat в `app_settings` (`ai_worker.heartbeat`,
+   `AI_WORKER_HEARTBEAT_SEC=15`) — чисто диагностический сигнал жизни цикла.
+   Dry-run сохранён.
 
 ## 4. Таблица блокирующих операций
 
@@ -92,22 +96,24 @@ fake-драйвером/заглушкой; **[static]** — статическ�
 | MFU snapshot | нет | `wait_for` 5s |
 | Voice scan | лимит после полного обхода | bound `AI_VOICE_SCAN_MAX_ENTRIES=5000` записей ФС + top-K heap `AI_VOICE_REPORT_MAX_FILES=300` в памяти, 2MB/файл |
 | Doc extractors | unbounded read | 50MB cap |
-| Mail single-flight | бесконечный wait → fan-out | 120s wait → max ONE fallback producer на ключ → fail-fast `MailSingleflightTimeoutError` |
+| Mail single-flight | бесконечный wait → fan-out; гонка leader/fallback | 120s wait → max ONE fallback producer на ключ; результат публикуется под локом — первый завершившийся producer выигрывает, все ждущие видят одно значение; fail-fast `MailSingleflightTimeoutError` |
 | Confirm action HTTP | нет | `wait_for` 130s → 504 «исход неизвестен» |
 | Любой tool call | нет | wall-timeout 120s + admission + leaked-учёт |
 
 ## 5. Изменения watchdog
 
-- Раздельные пороги queued/running; `running`-порог не изменён.
+- `running`-порог не изменён; потерянные running-run'ы reap'ятся как раньше.
+- **Queued никогда не reap'ится** (цикл 4): backlog — легитимное состояние;
+  просроченные queued-строки — только диагностическое предупреждение в лог и
+  в вывод watchdog (`stale_queued_run_ids`), не `failed`.
 - Heartbeat run'а через checkpoint (`updated_at`) — живой долгий run не reap'ится.
-- **Heartbeat воркера** — новый сигнал жизни claim-loop'а: только свежий heartbeat
-  разрешает reap queued (возраст строки сам по себе — не доказательство).
+- Heartbeat воркера (`ai_worker.heartbeat`) — диагностический сигнал жизни
+  claim-loop'а в выводе watchdog (`worker_alive`, `worker_heartbeat_age_sec`).
 - CAS по `(id, status, updated_at)` сохранён; `cancel_active_run` — conditional UPDATE.
 - Dry-run сохранён; production — opt-in `AI_RUN_WATCHDOG_ENABLED` (по умолчанию выкл).
-- Сценарии **[test]**: живой перегруженный воркер (heartbeat свежий, queued моложе
-  порога → ничего не reap'ится); воркер отсутствует/упал (heartbeat нет/устарел →
-  queued сохраняются); рестарт (heartbeat обновляется → queued старше порога reap'ятся);
-  долгие running reap'ятся независимо от heartbeat.
+- Сценарии **[test]**: живой перегруженный воркер со свежим heartbeat и queued
+  старше порога → строка остаётся `queued` и claimable; отсутствующий/упавший
+  воркер → то же самое; долгие running reap'ятся независимо от heartbeat.
 
 ## 6. Результаты тестов
 
@@ -116,13 +122,13 @@ fake-драйвером/заглушкой; **[static]** — статическ�
 - `pytest -q tests\test_ai_kb_retrieval.py tests\test_ai_tool_permissions.py tests\test_ai_tool_routing.py tests\test_ai_run_retry.py` — **77 PASS**
 - `pytest -q tests\test_ai_memory_migration.py tests\test_ai_smart_memory_migration.py tests\test_e2e_ai_smart_memory.py tests\test_ai_tool_validation_diagnostic.py tests\test_ai_chat_document_extractors.py` — **40 PASS**
 - `pytest -q tests\test_ai_chat_runtime.py` — **74 PASS**
-- `pytest -q tests\test_ai_run_stability.py` — **46 PASS**
+- `pytest -q tests\test_ai_run_stability.py` — **49 PASS**
 - `pytest -q tests\test_ai_run_watchdog.py` — **10 PASS**
 - `pytest -q tests\test_db_pool_and_engine_cache.py` — **4 PASS**
 - Релевантные suites (mail single-flight runtime, voice): `test_mail_runtime_cache.py`,
   `test_mail_runtime_snapshots.py`, `test_ai_voice_tools.py` — **15 PASS**
 
-**Итого: 266 PASS / 0 FAIL** (191 baseline + 46 stability + 10 watchdog + 4 pool
+**Итого: 269 PASS / 0 FAIL** (191 baseline + 49 stability + 10 watchdog + 4 pool
 + 15 mail/voice). `git diff --check` — чисто.
 
 Матрица «дефект → тест» (новое в цикле 3):
@@ -134,13 +140,17 @@ fake-драйвером/заглушкой; **[static]** — статическ�
 | Драйвер отказал ping-timeout | `test_idle_ping_timeout_refusal_fails_closed` — ошибка до SQL, conn закрыт **[fake]** |
 | Битое соединение на ping | `test_idle_ping_broken_conn_recovers_with_fresh_connection` — discard + fresh conn **[fake]** |
 | submit() кидает | `test_submit_runtime_error_releases_capacity_and_recovers` — `tool_submit_failed`, ёмкость возвращена, восстановление **[test]** |
-| Сбой между резервом и callback | `test_submit_failure_between_reserve_and_callback_is_safe` — future отменён, не стартовал, счётчики нулевые **[test]** |
+| Сбой между резервом и callback (ещё в очереди) | `test_submit_failure_between_reserve_and_callback_is_safe` — future отменён, не стартовал, счётчики нулевые **[test]** |
+| Callback-сбой на RUNNING future | `test_callback_failure_on_running_future_keeps_capacity_until_done` — ёмкость держится до завершения, реальный результат возвращён, monitor освобождает **[test]** |
+| Callback-сбой + monitor не стартует | `test_callback_failure_monitor_spawn_failure_holds_capacity_as_leaked` — `tool_submit_incomplete` («неизвестен»), ёмкость как leaked **[test]** |
 | Повторные submit-сбои | `test_shut_down_executor_rejects_without_negative_counters` — `in_flight` никогда < 0 **[test]** |
 | 10 followers + hung leader | `test_singleflight_many_waiters_one_fallback_producer` — ≤1 fallback producer, все разрешились, после освобождения leader новые запросы работают **[test]** |
 | Hung leader + hung fallback | `test_singleflight_fallback_hang_fails_fast_not_unbounded` — `MailSingleflightTimeoutError`, без неограниченного ожидания **[test]** |
-| Watchdog без heartbeat | `test_watchdog_preserves_queued_backlog_without_worker_heartbeat` — queued сохранён, running reaped **[test]** |
-| Watchdog + свежий heartbeat | `test_watchdog_reaps_queued_only_with_fresh_heartbeat` — потерянная queued reap'ится **[test]** |
-| Устаревший heartbeat | `test_watchdog_stale_heartbeat_is_conservative` — консервативно пропускаем **[test]** |
+| Гонка leader/fallback | `test_singleflight_consistent_result_when_leader_wins_race` — единый публичный результат, без ложного пробуждения **[test]** |
+| Queued + возраст ≠ потеря | `test_watchdog_queued_never_reaped_age_is_diagnostic_only` — stale queued → диагностика, не reap **[test]** |
+| Queued без heartbeat | `test_watchdog_preserves_queued_backlog_without_worker_heartbeat` — queued сохранён, running reaped **[test]** |
+| Живой воркер + старый queued | `test_watchdog_queued_survives_fresh_heartbeat_and_gets_processed` — остаётся `queued`, claimable **[test]** |
+| Устаревший heartbeat | `test_watchdog_stale_heartbeat_is_conservative` — диагностика, queued не тронут **[test]** |
 | Voice: bound обхода ФС | `test_voice_scan_bounds_entries_inspected` — entry-бюджет останавливает walk **[test]** |
 | Voice: top-K по mtime | `test_voice_scan_heap_keeps_newest_within_budget` — новейшие среди просмотренных, в памяти ≤ max_files **[test]** |
 
@@ -195,20 +205,20 @@ heap отдаёт новейшие среди ПРОСМОТРЕННЫХ (до 5
   ДО установки timeout в ping-пути остаётся теоретически возможным (курсор
   создаётся после установки timeout — окно минимально, pyodbc `cursor()` —
   локальная операция, не сетевая) **[static]**.
-- Heartbeat — доказательство жизни CLAIM-LOOP'а, не отдельных run'ов: если цикл
-  жив, но claim-запрос сломан (схема БД, права), свежий heartbeat + просроченная
-  queued-строка reap'ится — это и есть целевой сценарий «очередь потеряна при
-  живом воркере».
+- Heartbeat — диагностический сигнал жизни CLAIM-LOOP'а (не отдельных run'ов):
+  выводится в watchdog-отчёте; на reap-решения НЕ влияет — queued не reap'ится
+  никогда. Зависшая навсегда очередь разбирается оператором по диагностике
+  (`stale_queued_run_ids`), не watchdog'ом.
 - LDAP `receive_timeout` покрывает ожидание ответа; разрыв TLS-handshake в
   середине покрыт `connect_timeout` частично.
 - `run_coroutine` (warehouse): брошенный поток non-daemon — до внутреннего
   45s-бюджета 1C при рестарте.
 - `asyncio.wait_for` на confirm отменяет корутину, не поток — действие может
   завершиться в фоне (поэтому 504 «исход неизвестен», repair-слой согласует).
-- Heartbeat single-writer: два воркера на одной БД пишут один ключ — свежесть
-  показывает «хотя бы один живой цикл»; per-worker идентификация (pid в payload)
-  есть, но watchdog трактует heartbeat как наличие ЛЮБОГО живого воркера —
-  консервативно верно для reaping.
+- Heartbeat single-writer: два воркера на одной БД пишут один ключ — `worker_alive`
+  в выводе показывает «хотя бы один живой цикл»; на reap-решения heartbeat не
+  влияет (queued не reap'ится никогда), точность диагностики при нескольких
+  воркерах — приближённая.
 
 ## 10. Развёртывание и откат
 
