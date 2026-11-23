@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
 """Export per-run AI profile metrics from a worker log into JSON.
 
-Parses the correlated A5/A5.1 log lines — ``ai_chat.run.<stage>`` laps,
-``ai_jev_routing_cache`` hit/miss, ``ai_run_profile`` and
-``ai_run_profile_final`` — keyed by the real ``run_id``, then reports
-p50/p95 per stage and per intent mode. Stage laps are reported
-individually; wall-clock ``elapsed_ms`` from ``ai_run_profile_final`` is
-the authoritative total — nested stages are never summed.
+Parses the correlated A5.1 log lines — ``ai_chat.run.<stage>`` laps,
+``ai_jev_routing`` / ``ai_jev_routing_cache``, ``ai_run_profile`` and
+``ai_run_profile_final`` — keyed by the real ``run_id``.
+
+Report shape::
+
+    {
+      "runs": N, "profiles": {"complete": n, "incomplete": n},
+      "jev_cache": {"hit": n, "miss": n, "none": n},
+      "by_outcome": {"completed": {...}, "failed": {...}, "cancelled": {...}},
+      "stages": {stage: {count, rounds, p50_ms, p95_ms, mean_ms}},
+      "by_intent_mode": {mode: {count, elapsed p50/p95, "stages": {...}}},
+      "by_cache": {"hit": {"jev_ms": {...}, "server_total_ms": {...}}, ...},
+      "tokens": {...}
+    }
+
+Repeated laps in one run (e.g. ``llm_followup`` per tool round, ``tools``
+per round) are aggregated per run first — stages are never double-counted
+into a fake total; ``server_total_ms`` from ``ai_run_profile_final`` is the
+authoritative total (queue wait + processing, server-side only — NOT client
+TTFT).
 
 Usage (from WEB-itinvent):
 
@@ -22,9 +37,10 @@ import statistics
 import sys
 
 LAP_RE = re.compile(r"ai_chat\.run\.([\w.]+)\s+duration_ms=([\d.]+)(.*)")
-KV_RE = re.compile(r"(\w+)=([^\s]+)")
+JEV_RE = re.compile(r"ai_jev_routing(?:\(mode=\w+\))?.*latency_ms=([\d.]+).*run_id=(\S+)")
 CACHE_RE = re.compile(r"ai_jev_routing_cache\s+(hit|miss)\s+.*run_id=(\S+)")
 PROFILE_RE = re.compile(r"ai_run_profile(_final)?\s+(.*)")
+KV_RE = re.compile(r"(\w+)=([^\s]+)")
 
 
 def _percentile(values: list[float], q: float) -> float | None:
@@ -35,6 +51,25 @@ def _percentile(values: list[float], q: float) -> float | None:
     return round(ordered[idx], 1)
 
 
+def _summary(values: list[float], rounds: int | None = None) -> dict:
+    out = {
+        "count": len(values),
+        "p50_ms": _percentile(values, 50),
+        "p95_ms": _percentile(values, 95),
+        "mean_ms": round(statistics.fmean(values), 1) if values else None,
+    }
+    if rounds is not None:
+        out["rounds"] = rounds
+    return out
+
+
+def _f(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", required=True, help="worker log path or '-' for stdin")
@@ -43,92 +78,143 @@ def main() -> int:
 
     lines = sys.stdin if args.log == "-" else open(args.log, encoding="utf-8", errors="replace")
     runs: dict[str, dict] = {}
-    stages: dict[str, list[float]] = {}
-    cache = {"hit": 0, "miss": 0}
+
+    def run(rid: str) -> dict:
+        return runs.setdefault(rid, {"laps": {}})
 
     for raw in lines:
         line = raw.rstrip("\n")
         m = LAP_RE.search(line)
-        if m and "queue_wait" not in m.group(1):
+        if m:
             stage, duration, rest = m.group(1), float(m.group(2)), m.group(3)
-            run_id = (KV_RE.search(rest) or [None, "-"])[1] if "run_id=" in rest else "-"
             kv = dict(KV_RE.findall(rest))
-            run_id = kv.get("run_id", "-")
-            stages.setdefault(stage, []).append(duration)
-            runs.setdefault(run_id, {}).setdefault("laps", {})[stage] = duration
+            entry = run(kv.get("run_id", "-"))
+            if stage == "queue_wait":
+                entry["queue_wait_ms"] = duration
+            else:
+                laps = entry["laps"].setdefault(stage, {"total": 0.0, "count": 0})
+                laps["total"] += duration
+                laps["count"] += 1
             continue
-        m = LAP_RE.search(line) if "queue_wait" in line else None
-        if m and m.group(1) == "queue_wait":
-            kv = dict(KV_RE.findall(m.group(3)))
-            rid = kv.get("run_id", "-")
-            runs.setdefault(rid, {})["queue_wait_ms"] = float(m.group(2))
+        m = JEV_RE.search(line)
+        if m:
+            run(m.group(2))["jev_ms"] = float(m.group(1))
             continue
         m = CACHE_RE.search(line)
         if m:
-            cache[m.group(1)] += 1
-            runs.setdefault(m.group(2), {})["jev_cache"] = m.group(1)
+            run(m.group(2))["jev_cache"] = m.group(1)
             continue
         m = PROFILE_RE.search(line)
         if m:
-            is_final = bool(m.group(1))
             kv = dict(KV_RE.findall(m.group(2)))
             rid = kv.get("run_id", "-")
-            entry = runs.setdefault(rid, {})
-            key = "final" if is_final else "profile"
-            entry[key] = {
+            if not m.group(1):
+                run(rid)["profile"] = kv
+                continue
+            used = (kv.get("used_tools") or "[]").strip("[]'\" ")
+            errs = (kv.get("error_tools") or "[]").strip("[]'\" ")
+            run(rid)["final"] = {
+                "outcome": kv.get("outcome") or "completed",
                 "intent": kv.get("intent"),
-                "queue_wait_ms": float(kv.get("queue_wait_ms") or 0),
-                "elapsed_ms": float(kv.get("elapsed_ms") or 0),
-                "mode_denied": int(kv.get("mode_denied") or 0),
+                "queue_wait_ms": _f(kv.get("queue_wait_ms")),
+                "processing_ms": _f(kv.get("processing_ms") or kv.get("elapsed_ms")),
+                "server_total_ms": _f(kv.get("server_total_ms") or kv.get("elapsed_ms")),
+                "mode_denied": int(_f(kv.get("mode_denied"))),
+                "used_tools": [t for t in used.replace("'", "").split(",") if t.strip()] if used else [],
+                "error_tools": [t for t in errs.replace("'", "").split(",") if t.strip()] if errs else [],
+                "meta_calls": int(_f(kv.get("meta_calls"))),
                 "prompt_tokens": kv.get("prompt_tokens"),
                 "completion_tokens": kv.get("completion_tokens"),
                 "total_tokens": kv.get("total_tokens"),
             }
 
-    def stage_summary(vals: list[float]) -> dict:
-        return {
-            "count": len(vals),
-            "p50_ms": _percentile(vals, 50),
-            "p95_ms": _percentile(vals, 95),
-            "mean_ms": round(statistics.fmean(vals), 1) if vals else None,
-        }
+    def finals(pred=lambda r: True):
+        return [r["final"] for r in runs.values() if "final" in r and pred(r)]
 
-    by_stage = {stage: stage_summary(vals) for stage, vals in sorted(stages.items())}
-    by_stage["queue_wait"] = stage_summary(
-        [r["queue_wait_ms"] for r in runs.values() if "queue_wait_ms" in r]
-    )
-    by_stage["total_elapsed"] = stage_summary(
-        [r["final"]["elapsed_ms"] for r in runs.values() if "final" in r and r["final"]["elapsed_ms"]]
-    )
+    # --- stages: per-run totals first (multi-round laps merged, no doubling)
+    stages: dict[str, dict] = {}
+    all_laps: dict[str, list[float]] = {}
+    all_rounds: dict[str, int] = {}
+    for entry in runs.values():
+        for stage, agg in entry["laps"].items():
+            all_laps.setdefault(stage, []).append(agg["total"])
+            all_rounds[stage] = all_rounds.get(stage, 0) + agg["count"]
+    for stage, vals in sorted(all_laps.items()):
+        stages[stage] = _summary(vals, rounds=all_rounds[stage])
+    stages["queue_wait"] = _summary([r["queue_wait_ms"] for r in runs.values() if "queue_wait_ms" in r])
+    stages["processing"] = _summary([f["processing_ms"] for f in finals() if f["processing_ms"]])
+    stages["server_total"] = _summary([f["server_total_ms"] for f in finals() if f["server_total_ms"]])
 
+    # --- per intent mode: totals + per-stage
     by_mode: dict[str, dict] = {}
-    for run in runs.values():
-        final = run.get("final") or {}
-        intent = final.get("intent") or "-"
-        bucket = by_mode.setdefault(intent, {"count": 0, "elapsed": []})
+    for entry in runs.values():
+        intent = (entry.get("final") or {}).get("intent") or "-"
+        bucket = by_mode.setdefault(intent, {"count": 0, "server_total": [], "laps": {}})
         bucket["count"] += 1
-        if final.get("elapsed_ms"):
-            bucket["elapsed"].append(final["elapsed_ms"])
+        if (entry.get("final") or {}).get("server_total_ms"):
+            bucket["server_total"].append(entry["final"]["server_total_ms"])
+        for stage, agg in entry["laps"].items():
+            bucket["laps"].setdefault(stage, []).append(agg["total"])
     by_mode = {
-        mode: {"count": b["count"], **stage_summary(b["elapsed"])}
+        mode: {
+            "count": b["count"],
+            "server_total": _summary(b["server_total"]),
+            "stages": {s: _summary(v) for s, v in sorted(b["laps"].items())},
+        }
         for mode, b in sorted(by_mode.items())
     }
 
-    token_runs = [
-        r["final"] for r in runs.values()
-        if "final" in r and r["final"].get("total_tokens")
-    ]
+    # --- cache hit/miss: JEV decision latency + full server time
+    by_cache: dict[str, dict] = {}
+    for entry in runs.values():
+        flag = entry.get("jev_cache") or "none"
+        bucket = by_cache.setdefault(flag, {"jev_ms": [], "server_total_ms": []})
+        if entry.get("jev_ms"):
+            bucket["jev_ms"].append(entry["jev_ms"])
+        final = entry.get("final") or {}
+        if final.get("server_total_ms"):
+            bucket["server_total_ms"].append(final["server_total_ms"])
+    by_cache = {k: {kk: _summary(vv) for kk, vv in b.items()} for k, b in sorted(by_cache.items())}
+
+    # --- outcomes
+    by_outcome = {}
+    for outcome in ("completed", "failed", "cancelled"):
+        sel = [f for f in finals() if f.get("outcome") == outcome]
+        by_outcome[outcome] = {
+            "count": len(sel),
+            "server_total": _summary([f["server_total_ms"] for f in sel if f["server_total_ms"]]),
+        }
+
+    token_finals = [f for f in finals() if f.get("total_tokens")]
+    used = [t for f in finals() for t in f["used_tools"]]
+    errs = [t for f in finals() for t in f["error_tools"]]
     report = {
         "runs": len(runs),
-        "jev_cache": cache,
-        "stages": by_stage,
+        "profiles": {
+            "complete": sum(1 for r in runs.values() if "final" in r),
+            "incomplete": sum(1 for r in runs.values() if "final" not in r),
+        },
+        "jev_cache": {
+            "hit": sum(1 for r in runs.values() if r.get("jev_cache") == "hit"),
+            "miss": sum(1 for r in runs.values() if r.get("jev_cache") == "miss"),
+            "none": sum(1 for r in runs.values() if not r.get("jev_cache")),
+        },
+        "by_outcome": by_outcome,
+        "stages": stages,
         "by_intent_mode": by_mode,
+        "by_cache": by_cache,
+        "tools": {
+            "executed_calls": len(used),
+            "error_calls": len(errs),
+            "mode_denied_calls": sum(f["mode_denied"] for f in finals()),
+            "meta_calls": sum(f["meta_calls"] for f in finals()),
+        },
         "tokens": {
-            "count": len(token_runs),
-            "prompt_p50": _percentile([float(r["prompt_tokens"]) for r in token_runs if r.get("prompt_tokens")], 50),
-            "completion_p50": _percentile([float(r["completion_tokens"]) for r in token_runs if r.get("completion_tokens")], 50),
-            "total_p50": _percentile([float(r["total_tokens"]) for r in token_runs], 50),
-            "total_p95": _percentile([float(r["total_tokens"]) for r in token_runs], 95),
+            "count": len(token_finals),
+            "prompt_p50": _percentile([_f(r["prompt_tokens"]) for r in token_finals if r.get("prompt_tokens")], 50),
+            "completion_p50": _percentile([_f(r["completion_tokens"]) for r in token_finals if r.get("completion_tokens")], 50),
+            "total_p50": _percentile([_f(r["total_tokens"]) for r in token_finals], 50),
+            "total_p95": _percentile([_f(r["total_tokens"]) for r in token_finals], 95),
         },
     }
     text = json.dumps(report, ensure_ascii=False, indent=2)

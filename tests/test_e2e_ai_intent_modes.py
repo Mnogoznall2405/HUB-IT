@@ -112,6 +112,37 @@ def test_tool_mode_read_executes_search_but_strips_artifacts(agent, monkeypatch)
     assert result.get("artifacts_count", 0) == 0
 
 
+def test_read_run_profile_final_records_executed_tool(agent, monkeypatch, caplog):
+    import logging
+
+    def decide(**kw):
+        probs = {
+            key: 0.9 if key.startswith("t") else 0.02
+            for key in (kw.get("questions") or {})
+        }
+        return _decision(**probs)
+
+    monkeypatch.setenv("AI_JEV_ROUTING_MODE", "tool")
+    _enable_jev(monkeypatch, decide)
+    monkeypatch.setattr(
+        "backend.services.address_book_service.address_book_service.search",
+        lambda *a, **k: {"items": [{"full_name": "Смирнова А.А."}], "total": 1},
+        raising=False,
+    )
+    agent.steps.extend([
+        _reply("", tool_calls=[_call("directory.people.search", query="Смирнова")]),
+        _reply("Телефон найден"),
+    ])
+    with caplog.at_level(logging.INFO):
+        result = agent.request("Найди рабочий телефон Смирновой")
+    assert result["intent_mode"] == "read"
+    final_lines = [r.getMessage() for r in caplog.records if "ai_run_profile_final" in r.getMessage()]
+    assert final_lines, "unified final profile line must be logged"
+    assert "directory.people.search" in final_lines[-1]
+    assert "queue_wait_ms=" in final_lines[-1]
+    assert "server_total_ms=" in final_lines[-1]
+
+
 def test_tool_mode_jev_timeout_is_not_confident_chat(agent, monkeypatch):
     def decide(**kw):
         raise TimeoutError("fake jev timeout")

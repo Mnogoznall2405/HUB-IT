@@ -63,15 +63,30 @@ def _ctx(*, enabled_tools, run_allowed_tools=None):
 
 
 def test_mode_chat_drops_routed_and_other(monkeypatch):
-    """Confident CHAT: every routed group incl. 'other' safety-net is dropped."""
+    """Confident CHAT (no group selection): every routed group incl. 'other'
+    safety-net is dropped."""
     _enable_jev(monkeypatch, lambda **kw: _jev_decision(
-        {"g_itinvent": 0.9, "g_office": 0.7, "m_mode_chat": 0.95, "m_mode_act": 0.05}))
+        {"g_itinvent": 0.1, "g_office": 0.1, "m_mode_chat": 0.95, "m_mode_act": 0.05}))
     result = service_module._route_tool_groups_jev(
         trigger_text="расскажи, какие бывают принтеры",
         available_groups={"itinvent", "office", "other"},
     )
     assert result == set()
     assert result.intent_mode == "chat"
+
+
+def test_mode_chat_label_with_routed_group_is_read_not_chat(monkeypatch):
+    """A5.1: m_mode_chat>=threshold AND a routed group is a contradiction —
+    conflicting signals must not become a confident CHAT (same rule as
+    tool-mode): the group selection wins under a READ ceiling."""
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_office": 0.9, "g_itinvent": 0.1, "m_mode_chat": 0.9, "m_mode_act": 0.05}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="ну и про почту расскажи раз уж",
+        available_groups={"itinvent", "office", "other"},
+    )
+    assert result.intent_mode == "read"
+    assert "office" in result  # group selection kept, not dropped to chat
 
 
 def test_mode_act_has_precedence_over_chat(monkeypatch):
@@ -162,7 +177,9 @@ def _route_env(monkeypatch, probs):
 def test_route_for_run_chat_suppresses_keyword_groups(monkeypatch):
     """§4.1: 'расскажи, какие бывают принтеры' — keyword 'принтер' must not
     turn a confident CHAT into a corporate ITinvent search."""
-    svc = _route_env(monkeypatch, {"g_itinvent": 0.8, "m_mode_chat": 0.95, "m_mode_act": 0.05})
+    # g_itinvent stays BELOW threshold: JEV picked no group, so the chat
+    # label is unambiguous and the keyword 'принтер' must not resurrect tools.
+    svc = _route_env(monkeypatch, {"g_itinvent": 0.2, "m_mode_chat": 0.95, "m_mode_act": 0.05})
     routing = svc._route_for_run(
         trigger_text="расскажи, какие бывают принтеры",
         all_tool_specs=[],

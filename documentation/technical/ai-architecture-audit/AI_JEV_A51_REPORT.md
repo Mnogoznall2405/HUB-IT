@@ -1,6 +1,17 @@
 # A5.1 — tool-mode conflict fix, run-profile telemetry, staging readiness
 
-База: `b2d36b38` (HEAD PR #21). Ветка: `perf/ai-jev-a51`. Отдельная небольшая работа — не смешана с архитектурным PR #21.
+База: `b2d36b38` (HEAD PR #21). Ветка: `perf/ai-jev-a51`, **PR #22**. Отдельная небольшая работа — не смешана с архитектурным PR #21.
+
+> **Цикл 2 (ревью PR #22)** — точечная коррекция телеметрии и group-mode риск:
+>
+> | # | Дефект | Исправление |
+> |---|---|---|
+> | 1 | `used_tools` фильтровал trace по `.get("ok")`, но audit_row использует `status="ok"/"error"` | Классификация по `status`+`ok`: `used_tools` (выполненные), `error_tools` (ошибочные), `mode_denied` (счётчик по режиму), `meta_calls` (`ai.request_tool_group`) — раздельные поля в `ai_run_profile_final`. E2E: READ + `directory.people.search` → id есть в `used_tools` лога |
+> | 2 | `elapsed_ms` смешивал очередь и обработку | `queue_wait_ms` (enqueue→claim) / `processing_ms` (claim→финал) / `server_total_ms` (их сумма, серверный итог — НЕ клиентский TTFT); `elapsed_ms` сохранён = `processing_ms` для совместимости |
+> | 3 | Экспортёр | +p50/p95 по стадиям **внутри каждого режима**; `by_cache`: JEV-латентность (`ai_jev_routing latency_ms`, теперь с `run_id`) и `server_total` для hit/miss/none; `profiles.complete/incomplete`; многораундовые `llm_followup`/`tools` агрегируются per-run (без двойного счёта); `by_outcome` completed/failed/cancelled |
+> | 4 | Group-mode конфликт `m_mode_chat≥thr` + routed-группа давал уверенный CHAT | Тот же принцип, что tool-mode: уверенный CHAT требует `chat_p≥thr` И отсутствия JEV-выбора (`jev_selected`); конфликт → READ с сохранённым routed. Тривиальный случай ≤1 группы по-прежнему допускает CHAT |
+>
+> Тесты цикла 2: `test_mode_chat_label_with_routed_group_is_read_not_chat`, `test_read_run_profile_final_records_executed_tool` (e2e, caplog).
 
 ## 1. Противоречивая классификация в tool-mode — ИСПРАВЛЕНО
 
@@ -43,8 +54,9 @@
 
 | Suite | Итог |
 |---|---|
-| intent_modes + jev_routing + tool_routing + e2e_intent_modes | **170/170 PASS** |
-| e2e_draft_reliability + serialization + injection + mail_lifecycle (флаг 0) | **153/154** (1 pre-existing FAIL) |
+| intent_modes + jev_routing + tool_routing + e2e_intent_modes (цикл 2) | **172/172 PASS** |
+| e2e_draft + serialization + injection + mail_lifecycle + stability (флаг 0) | **202/203** (1 pre-existing FAIL) |
+| Экспортёр на синтетических логах | верный разбор: per-run агрегация многораундовых laps, outcome, cache, completeness |
 
 ## Оставшиеся ограничения
 
