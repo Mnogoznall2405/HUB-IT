@@ -219,7 +219,7 @@ describe('DocumentPreviewDialog', () => {
     expect(browserPrint).not.toHaveBeenCalled();
   });
 
-  it('falls back to browser print outside a capable Desktop host', async () => {
+  it('prints the PDF bytes through a hidden iframe outside a capable Desktop host', async () => {
     setMobileMedia(false);
     desktopMocks.requestPrint.mockReturnValue(false);
     const browserPrint = vi.spyOn(window, 'print').mockImplementation(() => {});
@@ -236,6 +236,35 @@ describe('DocumentPreviewDialog', () => {
     );
 
     fireEvent.click(await screen.findByRole('button', { name: 'Печать' }));
-    expect(browserPrint).toHaveBeenCalledTimes(1);
+    // The browser must print the original PDF document, not the preview
+    // canvas raster: a hidden iframe points at the same blob URL so the
+    // browser PDF viewer drives the print pipeline.
+    await waitFor(() => {
+      const frame = document.querySelector('iframe[aria-hidden="true"]');
+      expect(frame).not.toBeNull();
+      expect(frame.src).toBe('blob:report');
+    });
+    expect(browserPrint).not.toHaveBeenCalled();
+  });
+
+  it('falls back to window.print when no printable document source exists', async () => {
+    setMobileMedia(false);
+    desktopMocks.requestPrint.mockReturnValue(false);
+    const browserPrint = vi.spyOn(window, 'print').mockImplementation(() => {});
+    render(
+      <ThemeProvider theme={theme}>
+        <DocumentPreviewDialog
+          open
+          title="report.pdf"
+          kind="pdf"
+          onClose={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+
+    // No preview surface and no object URL: the dialog shows the
+    // "preparing" fallback and the print button is not rendered at all.
+    expect(screen.queryByRole('button', { name: 'Печать' })).toBeNull();
+    expect(browserPrint).not.toHaveBeenCalled();
   });
 });

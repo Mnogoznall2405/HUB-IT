@@ -29,7 +29,7 @@ import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import { extractMarkdownHeadings, safeMarkdownUrlTransform } from '../../lib/textPreview';
 import CodeMirrorTextViewer, { useCopyText, usePreviewFullscreen } from './CodeMirrorTextViewer';
 
-const sanitizeSchema = {
+export const MARKDOWN_SANITIZE_SCHEMA = {
   ...defaultSchema,
   tagNames: [...(defaultSchema.tagNames || []), 'mark'],
   protocols: {
@@ -39,12 +39,12 @@ const sanitizeSchema = {
   },
 };
 
-const REHYPE_PLUGINS = [
-  [rehypeSanitize, sanitizeSchema],
+export const MARKDOWN_REHYPE_PLUGINS = [
+  [rehypeSanitize, MARKDOWN_SANITIZE_SCHEMA],
   rehypeSlug,
   [rehypeHighlight, { detect: false, ignoreMissing: true }],
 ];
-const REMARK_PLUGINS = [remarkGfm];
+export const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
 
 const flattenText = (node) => {
   if (node === null || node === undefined || typeof node === 'boolean') return '';
@@ -449,8 +449,8 @@ export default function MarkdownFileViewer({
             }}
           >
             <ReactMarkdown
-              remarkPlugins={REMARK_PLUGINS}
-              rehypePlugins={REHYPE_PLUGINS}
+              remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+              rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
               components={components}
               urlTransform={safeMarkdownUrlTransform}
             >

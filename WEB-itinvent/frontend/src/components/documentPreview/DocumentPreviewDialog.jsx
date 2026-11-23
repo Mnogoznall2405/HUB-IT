@@ -31,6 +31,13 @@ import {
   requestDesktopPrintCurrent,
 } from '../../lib/desktopBridge';
 import { isNativeShellRuntime } from '../../lib/platform';
+import {
+  buildSheetsPrintBodyHtml,
+  buildTextPrintBodyHtml,
+  escapeHtml,
+  printHtmlDocument,
+  printPdfDocument,
+} from '../../lib/documentPrint';
 import { getDesktopOfficeOpenLabel, openOriginalWithDesktopApplication } from './desktopOfficeOpen';
 
 const MailPdfPreviewSurface = lazy(() => import('../mail/MailPdfPreviewSurface'));
@@ -128,14 +135,68 @@ export default function DocumentPreviewDialog({
     setRotation((current) => (current + 90) % 360);
   }, []);
 
-  const printPreview = useCallback(() => {
-    if (!requestDesktopPrintCurrent()) window.print();
-  }, []);
-
   const showModeTabs = hasExcelTable && hasPdfPreview;
   const resolvedMode = hasExcelTable && mode === 'table' ? 'table' : 'pdf';
   const heading = title || 'Документ';
   const subheading = subtitle || (hasOfficeView ? 'Просмотр (только чтение)' : hasMarkdownPreview ? 'Markdown' : hasTextPreview ? 'Текст' : kind === 'csv' ? 'CSV-таблица' : isExcel ? 'Excel' : kind === 'office_pdf' ? 'PDF-предпросмотр' : 'PDF');
+
+  const printPreview = useCallback(async () => {
+    if (requestDesktopPrintCurrent()) return;
+    try {
+      // PDF/office_pdf: print the original PDF bytes through the browser's
+      // own PDF viewer (hidden blob iframe). window.print() on the app DOM
+      // would rasterize the preview canvas inside an A4 page and lose pages.
+      if (objectUrl && (hasPdfPreview || kind === 'pdf' || kind === 'office_pdf')
+        && resolvedMode !== 'table') {
+        await printPdfDocument({ url: objectUrl, title: heading });
+        return;
+      }
+      if (hasMarkdownPreview && textPreview) {
+        const { buildMarkdownPrintBodyHtml } = await import('../../lib/markdownPrint');
+        await printHtmlDocument({
+          title: heading,
+          bodyHtml: buildMarkdownPrintBodyHtml(textPreview.text, { truncated: textPreview.truncated }),
+        });
+        return;
+      }
+      if (hasTextPreview && textPreview) {
+        await printHtmlDocument({
+          title: heading,
+          bodyHtml: buildTextPrintBodyHtml({ text: textPreview.text, truncated: textPreview.truncated }),
+        });
+        return;
+      }
+      if (hasImagePreview && objectUrl) {
+        await printHtmlDocument({
+          title: heading,
+          bodyHtml: `<img src="${escapeHtml(objectUrl)}" alt="${escapeHtml(heading)}" style="max-width:100%;height:auto">`,
+        });
+        return;
+      }
+      if (resolvedMode === 'table' && hasExcelTable) {
+        await printHtmlDocument({
+          title: heading,
+          bodyHtml: buildSheetsPrintBodyHtml({ sheets: excelWorkbook?.sheets }),
+        });
+        return;
+      }
+    } catch {
+      // Fall through to the legacy path below.
+    }
+    window.print();
+  }, [
+    excelWorkbook,
+    hasExcelTable,
+    hasImagePreview,
+    hasMarkdownPreview,
+    hasPdfPreview,
+    hasTextPreview,
+    heading,
+    kind,
+    objectUrl,
+    resolvedMode,
+    textPreview,
+  ]);
 
   const body = useMemo(() => {
     if (loading) {
@@ -374,7 +435,7 @@ export default function DocumentPreviewDialog({
                 </span>
               </Tooltip>
             ) : null}
-            {(hasPdfPreview || hasExcelTable) && !loading ? (
+            {(hasPdfPreview || hasExcelTable || hasMarkdownPreview || hasTextPreview || hasImagePreview) && !loading ? (
               <Tooltip title="Печать">
                 <IconButton onClick={printPreview} aria-label="Печать">
                   <PrintRoundedIcon />
