@@ -2,7 +2,12 @@
 
 Обновлять при каждом checkpoint. Восстановление контекста: читать `PROGRESS.json` (все 324), этот файл, `MASTER_PLAN.md`, `DECISIONS.md`.
 
-## Текущее состояние (2026-11-23, старт программы)
+## Текущее состояние (2026-11-23, checkpoint 2)
+
+- **P0.1 закрыт по коду**: FE-0197/0198/0199 → PR **#23** (`fix/auth-2fa-flow`, `0f310c9d`, open, не merged). Механизм: `postAuthUiHold` в AuthContext; LoginRoute держит `<Login/>` пока идёт post-auth UI. Тесты: 7 новых + 42 регрессии зелёные; build ок. Независимое ревью diff — проведено автором по differential-review (auth-политика не тронута).
+- Следующая задача: **P0.3 FE-0232** (delegates data loss) — строгий repro в `audit/frontend/evidence/`.
+
+## Стартовое состояние (2026-11-23)
 
 - Реестр создан: 269 OPEN + 12 NEEDS_EVIDENCE + 42 REJECTED + 1 IN_PROGRESS (FE-0064, PR #10).
 - Открытые PR чужих работ: #18 (my-files compact — источник расхождений в my-files), #17 (chat emoji), #21/#22 (AI perf), #15 (AI docs), #10 (FE-0064), #9 (аудит — не трогать).
