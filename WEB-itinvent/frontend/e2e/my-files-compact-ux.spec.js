@@ -71,7 +71,10 @@ async function seedDisk(page, stamp) {
     const libNested = await (await page.request.post('/api/v1/my-files/folders', {
       data: { name: `Архив ${stamp}`, parent_id: String(libRoot.id), library_id: String(libraries[0].id) },
     })).json();
-    libTree = { library: libraries[0], root: libRoot, nested: libNested };
+    const libDeep = await (await page.request.post('/api/v1/my-files/folders', {
+      data: { name: `Приказы 2020—2026 ${stamp}`, parent_id: String(libNested.id), library_id: String(libraries[0].id) },
+    })).json();
+    libTree = { library: libraries[0], root: libRoot, nested: libNested, deep: libDeep };
   }
   // Nested plain folders + a dozen files of mixed types.
   const outer = await (await page.request.post('/api/v1/my-files/folders', {
@@ -129,20 +132,55 @@ test('compact UX: populated disk, all widths and zooms, menus, collapse, themes'
     const m = await measureOverflow(page);
     metrics.widths[width] = m;
     await shot(page, `width-${width}`);
-    if (width >= 1024) {
-      expect(m.docOverflow, `horizontal doc overflow at ${width}px`).toBeLessThanOrEqual(0);
+    // A clipped page must fail the check, not only land in metrics.
+    expect(m.docOverflow, `horizontal doc overflow at ${width}px`).toBeLessThanOrEqual(0);
+    // Critical controls must be inside the viewport, not only «exist».
+    const searchBox = await page.getByTestId('my-files-search-input').boundingBox();
+    expect(searchBox, `search input missing at ${width}px`).toBeTruthy();
+    expect(searchBox.x + searchBox.width, `search input clipped at ${width}px`)
+      .toBeLessThanOrEqual(width + 1);
+    const overflowButton = page.locator(
+      '[data-testid^="my-files-card-menu-"], [data-testid^="my-files-folder-menu-"], [data-testid^="my-files-menu-"]',
+    ).first();
+    await expect(overflowButton, `row ⋮ button missing at ${width}px`).toBeVisible();
+    const ob = await overflowButton.boundingBox();
+    expect(ob.x + ob.width, `row ⋮ button clipped at ${width}px`).toBeLessThanOrEqual(width + 1);
+    if (width <= 768) {
+      // Compact layout: the ⋮ is the action affordance — it must actually open.
+      await overflowButton.click();
+      await expect(page.getByRole('menu').first(), `⋮ menu did not open at ${width}px`).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('menu')).toHaveCount(0, { timeout: 5_000 });
     }
   }
 
   // ── Zooms at a Desktop-like window width ────────────────────────────────
-  await page.setViewportSize({ width: 1024, height: 800 });
+  // CSS-zoom on <html> only magnifies pixels — the layout still believes the
+  // viewport is 1024px. Real browser zoom re-lays the page out at a smaller
+  // logical viewport, so it is emulated as viewport = window/zoom.
   for (const zoom of [1.25, 1.5, 2.0]) {
-    await page.evaluate((z) => { document.documentElement.style.zoom = String(z); }, zoom);
-    await page.waitForTimeout(300);
-    metrics.zooms[zoom] = await measureOverflow(page);
+    const logicalWidth = Math.round(1024 / zoom);
+    await page.setViewportSize({ width: logicalWidth, height: 800 });
+    await page.waitForTimeout(350);
+    const m = await measureOverflow(page);
+    m.logicalWidth = logicalWidth;
+    metrics.zooms[zoom] = m;
+    expect(m.docOverflow, `horizontal doc overflow at zoom ${zoom} (≈${logicalWidth}px)`)
+      .toBeLessThanOrEqual(0);
     await shot(page, `zoom-${Math.round(zoom * 100)}`);
+    // The row ⋮ must stay reachable and keep opening the menu at any zoom.
+    const zoomOverflow = page.locator(
+      '[data-testid^="my-files-card-menu-"], [data-testid^="my-files-folder-menu-"], [data-testid^="my-files-menu-"]',
+    ).first();
+    await expect(zoomOverflow, `row ⋮ button missing at zoom ${zoom}`).toBeVisible();
+    const zb = await zoomOverflow.boundingBox();
+    expect(zb.x + zb.width, `row ⋮ button clipped at zoom ${zoom}`).toBeLessThanOrEqual(logicalWidth + 1);
+    await zoomOverflow.click();
+    await expect(page.getByRole('menu').first(), `⋮ menu did not open at zoom ${zoom}`).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0, { timeout: 5_000 });
   }
-  await page.evaluate(() => { document.documentElement.style.zoom = '1'; });
+  await page.setViewportSize({ width: 1024, height: 800 });
 
   // ── File context menu: grouped first level + flyout ─────────────────────
   await page.setViewportSize({ width: 1024, height: 800 });
@@ -168,13 +206,39 @@ test('compact UX: populated disk, all widths and zooms, menus, collapse, themes'
     await moreGroup.click();
     await expect(page.getByRole('menuitem', { name: 'Сведения', exact: true })).toBeVisible();
     await shot(page, 'menu-file-more-open');
-    metrics.menus.moreItems = await page.getByRole('menu').nth(1).getByRole('menuitem').allTextContents().catch(() => []);
+    // The flyout is a Modal: while open it aria-hides the parent menu, so it
+    // is the ONLY role=menu in the DOM — address it by its own label.
+    metrics.menus.moreItems = await page.getByRole('menu', { name: 'Дополнительно' })
+      .getByRole('menuitem').allTextContents().catch(() => []);
   }
   // Escape from the flyout returns to the parent row, Escape again closes all.
   await page.keyboard.press('Escape');
   await page.keyboard.press('Escape');
   await expect(page.getByRole('menu')).toHaveCount(0, { timeout: 5_000 });
   metrics.menus.escapesClean = true;
+
+  // Flyout opened near the right viewport edge must stay fully on screen —
+  // it flips left instead of clipping out of view.
+  const edgeCard = page.locator('[data-testid^="my-files-card-"]').last();
+  if (await edgeCard.count()) {
+    const box = await edgeCard.boundingBox();
+    await edgeCard.click({ button: 'right', position: { x: Math.max(8, box.width - 12), y: Math.min(24, box.height - 4) } });
+    const edgeGroup = page.getByTestId('file-action-group-organize');
+    if (await edgeGroup.count()) {
+      await edgeGroup.click();
+      const flyout = page.getByRole('menu', { name: 'Организовать' });
+      await expect(flyout).toBeVisible();
+      const fb = await flyout.boundingBox();
+      const vw = page.viewportSize().width;
+      expect(fb.x, 'flyout clipped on the left').toBeGreaterThanOrEqual(-1);
+      expect(fb.x + fb.width, 'flyout clipped on the right').toBeLessThanOrEqual(vw + 1);
+      metrics.menus.edgeFlyoutInside = true;
+      await shot(page, 'menu-file-flyout-edge');
+    }
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0, { timeout: 5_000 });
+  }
 
   // ── Folder context menu uses the same grouping ──────────────────────────
   const folderRow = page.getByTestId(`my-files-folder-${seeded.outer.id}`);
@@ -236,7 +300,9 @@ test('compact UX: populated disk, all widths and zooms, menus, collapse, themes'
 
   // ── Library nav tree: real parent_id hierarchy under the open library ───
   if (seeded.libTree?.library?.id) {
-    await page.goto(`/my-files?library=${seeded.libTree.library.id}`);
+    const libId = seeded.libTree.library.id;
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`/my-files?library=${libId}`);
     await page.getByTestId('my-files-search-input').waitFor({ timeout: 30_000 });
     const rootNode = page.getByTestId(`my-files-tree-folder-${seeded.libTree.root.id}`);
     await expect(rootNode).toBeVisible({ timeout: 15_000 });
@@ -246,7 +312,46 @@ test('compact UX: populated disk, all widths and zooms, menus, collapse, themes'
       await toggle.click();
       await expect(page.getByTestId(`my-files-tree-folder-${seeded.libTree.nested.id}`)).toBeVisible();
       await shot(page, 'sidebar-library-tree-expanded');
-      metrics.libraryTree = { rootVisible: true, nestedAfterToggle: true };
+    }
+
+    // Deep link into a level-3 folder: the whole ancestor chain must be
+    // auto-expanded (root → nested → deep), not just the first level.
+    await page.goto(`/my-files?library=${libId}&folder=${seeded.libTree.deep.id}`);
+    await page.getByTestId('my-files-search-input').waitFor({ timeout: 30_000 });
+    for (const id of [seeded.libTree.root.id, seeded.libTree.nested.id]) {
+      await expect(page.getByTestId(`my-files-tree-toggle-${id}`)).toHaveAttribute('aria-expanded', 'true', { timeout: 15_000 });
+    }
+    const deepNode = page.getByTestId(`my-files-tree-folder-${seeded.libTree.deep.id}`);
+    await expect(deepNode).toBeVisible();
+    await expect(deepNode).toHaveAttribute('aria-current', 'page');
+    await shot(page, 'sidebar-library-tree-deep');
+    metrics.libraryTree = { rootVisible: true, deepChainAutoExpanded: true };
+
+    // Manual collapse of the root folds the whole subtree and stays folded.
+    await page.getByTestId(`my-files-tree-toggle-${seeded.libTree.root.id}`).click();
+    await expect(page.getByTestId(`my-files-tree-toggle-${seeded.libTree.root.id}`)).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByTestId(`my-files-tree-folder-${seeded.libTree.nested.id}`)).toHaveCount(0);
+    await shot(page, 'sidebar-library-tree-manual-collapse');
+    metrics.libraryTree.manualCollapse = true;
+
+    // Switching to the second library swaps the tree under its row only.
+    // (An admin without membership gets the settings dialog instead — both
+    // are valid product paths; the tree check applies to navigation.)
+    if (seeded.libraries[1]?.id) {
+      await page.getByTestId(`my-files-library-${seeded.libraries[1].id}`).click();
+      await page.waitForTimeout(1500);
+      if (page.url().includes(`library=${seeded.libraries[1].id}`)) {
+        await expect(page.getByTestId(`my-files-tree-folder-${seeded.libTree.root.id}`)).toHaveCount(0);
+        metrics.libraryTree.switchClearsTree = true;
+        await shot(page, 'sidebar-library-tree-switched');
+      } else {
+        const dlg = page.getByRole('dialog');
+        if (await dlg.isVisible().catch(() => false)) {
+          metrics.libraryTree.switchOpensSettings = true;
+          await shot(page, 'sidebar-library-switch-dialog');
+          await page.keyboard.press('Escape');
+        }
+      }
     }
   }
 

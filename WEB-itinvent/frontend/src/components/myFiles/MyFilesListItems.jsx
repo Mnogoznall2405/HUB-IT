@@ -358,6 +358,7 @@ export const FolderRow = memo(function FolderRow({
           <IconButton
             size="small"
             aria-label={`Действия с папкой ${folder.name}`}
+            data-testid={`my-files-menu-folder-${folder.id}`}
             onClick={(event) => {
               event.stopPropagation();
               openFolderActionsMenu(event, folder);
@@ -601,6 +602,7 @@ export const FileRow = memo(function FileRow({
           <IconButton
             size="small"
             aria-label={`Действия с файлом ${fileName}`}
+            data-testid={`my-files-menu-file-${item.id}`}
             onClick={(event) => {
               event.stopPropagation();
               openFileActionsMenu(event, item);

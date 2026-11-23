@@ -228,19 +228,26 @@ export default function MyFilesSidebar({
     return attach('', new Set());
   }, [libraryFolders]);
 
-  // Auto-expand the ancestor chain of the folder that is currently open.
+  // Auto-expand the WHOLE ancestor chain of the folder that is currently
+  // open. An ancestor that is already expanded must not stop the walk —
+  // folders above it can still be collapsed (e.g. the user folded the root
+  // while a mid node stayed in the expanded set).
   useEffect(() => {
     if (!currentFolderId) return;
     const byId = new Map(libraryFolders.map((folder) => [String(folder.id), folder]));
     setTreeExpandedIds((current) => {
       const next = new Set(current);
+      const seen = new Set([String(currentFolderId)]);
       let node = byId.get(String(currentFolderId));
       let changed = false;
       while (node) {
         const parentId = String(node.parent_id || '');
-        if (!parentId || next.has(parentId)) break;
-        next.add(parentId);
-        changed = true;
+        if (!parentId || seen.has(parentId)) break;
+        seen.add(parentId);
+        if (!next.has(parentId)) {
+          next.add(parentId);
+          changed = true;
+        }
         node = byId.get(parentId);
       }
       return changed ? next : current;

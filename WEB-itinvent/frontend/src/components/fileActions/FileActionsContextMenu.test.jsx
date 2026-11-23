@@ -140,6 +140,114 @@ describe('FileActionsContextMenu', () => {
     expect(bridgeMocks.requestAction).toHaveBeenCalledWith('print');
   });
 
+  it('closes the open flyout when the pointer settles on a plain menu row', async () => {
+    render(
+      <FileActionsContextMenu
+        open
+        anchorPosition={{ left: 10, top: 10 }}
+        fileName="report.pdf"
+        onClose={vi.fn()}
+        onDownload={vi.fn()}
+        onRename={vi.fn()}
+        onMove={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('file-action-group-organize'));
+    expect(screen.getByRole('menuitem', { name: 'Переименовать' })).toBeVisible();
+
+    // A quick pass over «Удалить» on the way into the flyout does not close it…
+    fireEvent.mouseEnter(screen.getByTestId('file-action-delete'));
+    expect(screen.getByRole('menuitem', { name: 'Переименовать' })).toBeVisible();
+    fireEvent.mouseLeave(screen.getByTestId('file-action-delete'));
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(screen.getByRole('menuitem', { name: 'Переименовать' })).toBeVisible();
+
+    // …but lingering on the plain row past the intent delay collapses the flyout.
+    fireEvent.mouseEnter(screen.getByTestId('file-action-delete'));
+    await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Переименовать' })).not.toBeInTheDocument());
+    expect(screen.getByRole('menuitem', { name: 'Удалить' })).toBeVisible();
+  });
+
+  it('routes every action to its own handler, inside groups too', async () => {
+    const handlers = {
+      onPreview: vi.fn(),
+      onEditOnline: vi.fn(),
+      onDownload: vi.fn(),
+      onCollaborators: vi.fn(),
+      onShare: vi.fn(),
+      onRevokeShare: vi.fn(),
+      onToggleFavorite: vi.fn(),
+      onRename: vi.fn(),
+      onMove: vi.fn(),
+      onCopyTo: vi.fn(),
+      onSelectAll: vi.fn(),
+      onDetails: vi.fn(),
+      onVersions: vi.fn(),
+      onAudit: vi.fn(),
+      onExportPdf: vi.fn(),
+      onDelete: vi.fn(),
+    };
+    // Simpler and more reliable: verify each item once per fresh render.
+    const cases = [
+      ['file-action-preview', 'onPreview'],
+      ['file-action-edit-online', 'onEditOnline'],
+      ['file-action-download', 'onDownload'],
+      ['file-action-collaborators', 'onCollaborators', 'file-action-group-share'],
+      ['file-action-share', 'onShare', 'file-action-group-share'],
+      ['file-action-revoke-share', 'onRevokeShare', 'file-action-group-share'],
+      ['file-action-favorite', 'onToggleFavorite', 'file-action-group-organize'],
+      ['file-action-rename', 'onRename', 'file-action-group-organize'],
+      ['file-action-move', 'onMove', 'file-action-group-organize'],
+      ['file-action-copy-to', 'onCopyTo', 'file-action-group-organize'],
+      ['file-action-select-all', 'onSelectAll', 'file-action-group-organize'],
+      ['file-action-details', 'onDetails', 'file-action-group-more'],
+      ['file-action-versions', 'onVersions', 'file-action-group-more'],
+      ['file-action-audit', 'onAudit', 'file-action-group-more'],
+      ['file-action-export-pdf', 'onExportPdf', 'file-action-group-more'],
+      ['file-action-delete', 'onDelete'],
+    ];
+    for (const [testId, expectedKey, groupId] of cases) {
+      const { unmount } = render(
+        <FileActionsContextMenu
+          open
+          anchorPosition={{ left: 10, top: 10 }}
+          fileName="report.pdf"
+          isShared
+          onClose={vi.fn()}
+          {...handlers}
+        />,
+      );
+      if (groupId) {
+        fireEvent.click(screen.getByTestId(groupId));
+        expect(await screen.findByTestId(testId)).toBeVisible();
+      }
+      fireEvent.click(screen.getByTestId(testId));
+      await waitFor(() => expect(handlers[expectedKey]).toHaveBeenCalledTimes(1));
+      Object.values(handlers).forEach((fn) => fn.mockClear());
+      unmount();
+    }
+  });
+
+  it('keeps the caller-provided delete label (mail attachments)', () => {
+    const onDelete = vi.fn();
+    render(
+      <FileActionsContextMenu
+        open
+        anchorPosition={{ left: 10, top: 10 }}
+        fileName="scan.pdf"
+        onClose={vi.fn()}
+        onDelete={onDelete}
+        deleteLabel="Удалить вложение"
+      />,
+    );
+    const item = screen.getByRole('menuitem', { name: 'Удалить вложение' });
+    expect(item).toBeVisible();
+    fireEvent.click(item);
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
   it('supports pointer and keyboard context-menu anchors', () => {
     expect(getFileActionsAnchorPosition({ clientX: 120, clientY: 80 })).toEqual({ left: 120, top: 80 });
     expect(isFileActionsKeyboardShortcut({ key: 'ContextMenu' })).toBe(true);

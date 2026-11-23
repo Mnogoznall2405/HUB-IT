@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
@@ -22,7 +22,7 @@ import StarRoundedIcon from '@mui/icons-material/StarRounded';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { Divider, ListItemIcon, ListItemText, ListSubheader, Menu, MenuItem } from '@mui/material';
 
-import NestedMenuItem from './NestedMenuItem';
+import NestedMenuItem, { SUBMENU_SWITCH_DELAY_MS } from './NestedMenuItem';
 import {
   isDesktopCapabilityAvailable,
   requestDesktopDownloadedFileAction,
@@ -94,6 +94,7 @@ export default function FileActionsContextMenu({
   const [requestingAction, setRequestingAction] = useState('');
   const [openIntentMessage, setOpenIntentMessage] = useState('');
   const [openSubmenu, setOpenSubmenu] = useState('');
+  const submenuCloseTimer = useRef(null);
   const nativeShell = isNativeShellRuntime();
   const nativeFileActions = nativeShell && isDesktopCapabilityAvailable('file-actions-v2');
   const canOpenInApplication = Boolean(
@@ -109,8 +110,24 @@ export default function FileActionsContextMenu({
       setRequestingAction('');
       setOpenIntentMessage('');
       setOpenSubmenu('');
+      clearTimeout(submenuCloseTimer.current);
+      submenuCloseTimer.current = null;
     }
   }, [fileName, open]);
+
+  // Hovering a plain (leaf) row while a flyout is open closes it — with the
+  // same intent delay, so a diagonal pointer path into the flyout survives.
+  const cancelSubmenuClose = useCallback(() => {
+    clearTimeout(submenuCloseTimer.current);
+    submenuCloseTimer.current = null;
+  }, []);
+  const scheduleSubmenuClose = useCallback(() => {
+    cancelSubmenuClose();
+    submenuCloseTimer.current = setTimeout(() => {
+      submenuCloseTimer.current = null;
+      setOpenSubmenu('');
+    }, SUBMENU_SWITCH_DELAY_MS);
+  }, [cancelSubmenuClose]);
 
   const runDownload = async (action = '') => {
     if (action) {
@@ -139,12 +156,16 @@ export default function FileActionsContextMenu({
 
   const actionBusy = Boolean(busy || requestingAction);
 
-  const leaf = (key, testId, disabled, onClick, icon, text, sx = null) => (
+  // `topLevel` marks rows of the parent menu: hovering one schedules the open
+  // flyout's close. Rows inside a flyout keep it (and its parent) alone.
+  const leaf = (key, testId, disabled, onClick, icon, text, sx = null, topLevel = false) => (
     <MenuItem
       key={key}
       data-testid={testId}
       disabled={disabled}
       onClick={onClick}
+      onMouseEnter={topLevel ? scheduleSubmenuClose : undefined}
+      onMouseLeave={topLevel ? cancelSubmenuClose : undefined}
       sx={{ minHeight: 40, ...(sx || {}) }}
     >
       <ListItemIcon>{icon}</ListItemIcon>
@@ -233,6 +254,7 @@ export default function FileActionsContextMenu({
         id={id}
         openSubmenu={openSubmenu}
         onOpenSubmenu={setOpenSubmenu}
+        onSubmenuEnter={cancelSubmenuClose}
         label={label}
         icon={icon}
         disabled={actionBusy}
@@ -261,14 +283,14 @@ export default function FileActionsContextMenu({
       }}
     >
       {typeof onPreview === 'function' ? leaf('preview', 'file-action-preview', actionBusy,
-        () => runDirectAction(onPreview), <VisibilityOutlinedIcon fontSize="small" />, 'Просмотр') : null}
+        () => runDirectAction(onPreview), <VisibilityOutlinedIcon fontSize="small" />, 'Просмотр', null, true) : null}
       {canOpenInApplication ? leaf('open-in-application', 'file-action-open-in-application', actionBusy,
-        () => runDownload('open'), <OpenInNewRoundedIcon fontSize="small" />, 'Открыть') : null}
+        () => runDownload('open'), <OpenInNewRoundedIcon fontSize="small" />, 'Открыть', null, true) : null}
       {typeof onEditOnline === 'function' ? leaf('edit-online', 'file-action-edit-online', actionBusy,
-        () => runDirectAction(onEditOnline), <EditNoteRoundedIcon fontSize="small" />, editOnlineLabel) : null}
+        () => runDirectAction(onEditOnline), <EditNoteRoundedIcon fontSize="small" />, editOnlineLabel, null, true) : null}
       {typeof onDownload === 'function' ? leaf('download', 'file-action-download', !canDownload || actionBusy,
         () => runDownload(nativeFileActions ? 'saveAs' : ''),
-        <DownloadRoundedIcon fontSize="small" />, nativeFileActions ? 'Сохранить как' : 'Скачать') : null}
+        <DownloadRoundedIcon fontSize="small" />, nativeFileActions ? 'Сохранить как' : 'Скачать', null, true) : null}
       {group('share', 'Поделиться', <ShareOutlinedIcon fontSize="small" />, shareItems)}
       {group('organize', 'Организовать', <DriveFileMoveOutlinedIcon fontSize="small" />, organizeItems)}
       {group('more', 'Дополнительно', <MoreHorizRoundedIcon fontSize="small" />, moreItems)}
@@ -287,6 +309,8 @@ export default function FileActionsContextMenu({
           data-testid="file-action-delete"
           disabled={actionBusy}
           onClick={() => runDirectAction(onDelete)}
+          onMouseEnter={scheduleSubmenuClose}
+          onMouseLeave={cancelSubmenuClose}
           sx={{ minHeight: 40, color: 'error.main' }}
         >
           <ListItemIcon sx={{ color: 'inherit' }}><DeleteOutlineRoundedIcon fontSize="small" /></ListItemIcon>

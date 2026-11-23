@@ -23,7 +23,7 @@
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 51
+          "slack": 47
         },
         {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
@@ -35,7 +35,7 @@
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 69
+          "slack": 65
         },
         {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
@@ -101,11 +101,11 @@
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 136
+          "slack": 132
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 181
+          "slack": 177
         }
       ]
     },
@@ -127,64 +127,65 @@
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 136
+          "slack": 132
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 181
+          "slack": 177
         }
       ]
     }
   },
   "zooms": {
     "2": {
-      "viewport": 1024,
+      "viewport": 512,
       "docOverflow": 0,
       "leaks": [
         {
-          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
-          "slack": 10
+          "id": "MuiAlert-action css-ki1hdl-MuiAlert-action",
+          "slack": 7
         },
         {
-          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
-          "slack": 10
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
-          "id": "main-layout-account-button-desktop",
-          "slack": 3
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
-          "id": "MuiPaper-root MuiPaper-outlined MuiPaper-rounded css-19g5mq3",
-          "slack": 58
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
-          "id": "MuiBox-root css-bmaump",
-          "slack": 58
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
-          "id": "my-files-folder-57b23a648b4a4634980ed2846197274e",
-          "slack": 114
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
-          "id": "my-files-card-9875b504ffad4e9591c7eca189238580",
-          "slack": 114
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
-          "id": "my-files-card-830761c80b4e4bbeae78a40c989f5a71",
-          "slack": 114
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
-          "id": "my-files-card-13ceecca56f6472c8c39f90278399980",
-          "slack": 114
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
-          "id": "my-files-card-01c629b85fc648c6b3e7ad20a00f3a5b",
-          "slack": 114
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         }
-      ]
+      ],
+      "logicalWidth": 512
     },
     "1.25": {
-      "viewport": 1024,
+      "viewport": 819,
       "docOverflow": 0,
       "leaks": [
         {
@@ -198,39 +199,12 @@
         {
           "id": "main-layout-account-button-desktop",
           "slack": 3
-        },
-        {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 77
-        },
-        {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 10
-        },
-        {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 93
-        },
-        {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 81
-        },
-        {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 81
-        },
-        {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 5
-        },
-        {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 65
         }
-      ]
+      ],
+      "logicalWidth": 819
     },
     "1.5": {
-      "viewport": 1024,
+      "viewport": 683,
       "docOverflow": 0,
       "leaks": [
         {
@@ -244,36 +218,9 @@
         {
           "id": "main-layout-account-button-desktop",
           "slack": 3
-        },
-        {
-          "id": "my-files-sort-name",
-          "slack": 22
-        },
-        {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 136
-        },
-        {
-          "id": "MuiStack-root css-8iuher-MuiStack-root",
-          "slack": 10
-        },
-        {
-          "id": "MuiBox-root css-17rcgvp",
-          "slack": 10
-        },
-        {
-          "id": "MuiChip-root MuiChip-filled MuiChip-sizeSmall MuiChip-colorW",
-          "slack": 6
-        },
-        {
-          "id": "MuiChip-label MuiChip-labelSmall css-t3ycia-MuiChip-label",
-          "slack": 47
-        },
-        {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 147
         }
-      ]
+      ],
+      "logicalWidth": 683
     }
   },
   "menus": {
@@ -284,8 +231,12 @@
       "Дополнительно",
       "Удалить"
     ],
-    "moreItems": [],
+    "moreItems": [
+      "Сведения",
+      "Журнал"
+    ],
     "escapesClean": true,
+    "edgeFlyoutInside": true,
     "folderTopLevel": [
       "Открыть",
       "Скачать папку (ZIP)",
@@ -305,7 +256,9 @@
   },
   "libraryTree": {
     "rootVisible": true,
-    "nestedAfterToggle": true
+    "deepChainAutoExpanded": true,
+    "manualCollapse": true,
+    "switchClearsTree": true
   },
   "darkOverflow": {
     "viewport": 768,

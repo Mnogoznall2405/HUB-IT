@@ -72,7 +72,7 @@ import DocumentPreviewDialog from '../components/documentPreview/DocumentPreview
 import FileActionsContextMenu, {
   getFileActionsAnchorPosition,
 } from '../components/fileActions/FileActionsContextMenu';
-import NestedMenuItem from '../components/fileActions/NestedMenuItem';
+import NestedMenuItem, { SUBMENU_SWITCH_DELAY_MS } from '../components/fileActions/NestedMenuItem';
 import PageShell from '../components/layout/PageShell';
 import PageTopBar from '../components/layout/PageTopBar';
 import {
@@ -786,10 +786,24 @@ export default function MyFiles() {
     setFolderActionsMenu({ folder, anchorPosition: getFileActionsAnchorPosition(event) });
   }, []);
 
+  const folderSubmenuCloseTimer = useRef(null);
+  const cancelFolderSubmenuClose = useCallback(() => {
+    clearTimeout(folderSubmenuCloseTimer.current);
+    folderSubmenuCloseTimer.current = null;
+  }, []);
+  const scheduleFolderSubmenuClose = useCallback(() => {
+    cancelFolderSubmenuClose();
+    folderSubmenuCloseTimer.current = setTimeout(() => {
+      folderSubmenuCloseTimer.current = null;
+      setFolderSubmenu('');
+    }, SUBMENU_SWITCH_DELAY_MS);
+  }, [cancelFolderSubmenuClose]);
+
   const closeFolderActionsMenu = useCallback(() => {
     setFolderActionsMenu({ folder: null, anchorPosition: null });
     setFolderSubmenu('');
-  }, []);
+    cancelFolderSubmenuClose();
+  }, [cancelFolderSubmenuClose]);
 
   const handleCreateFolder = useCallback(async () => {
     const name = String(folderNameInput || '').trim();
@@ -1626,8 +1640,18 @@ export default function MyFiles() {
     closeFolderActionsMenu();
     if (folder) fn(folder);
   };
-  const folderLeaf = (key, testId, disabled, onClick, icon, text) => (
-    <MenuItem key={key} data-testid={testId} disabled={disabled} onClick={onClick} sx={{ minHeight: 40 }}>
+  // `topLevel` marks rows of the parent menu: hovering one schedules the open
+  // flyout's close; rows inside a flyout leave it alone.
+  const folderLeaf = (key, testId, disabled, onClick, icon, text, topLevel = false) => (
+    <MenuItem
+      key={key}
+      data-testid={testId}
+      disabled={disabled}
+      onClick={onClick}
+      onMouseEnter={topLevel ? scheduleFolderSubmenuClose : undefined}
+      onMouseLeave={topLevel ? cancelFolderSubmenuClose : undefined}
+      sx={{ minHeight: 40 }}
+    >
       <ListItemIcon>{icon}</ListItemIcon>
       <ListItemText>{text}</ListItemText>
     </MenuItem>
@@ -1678,6 +1702,7 @@ export default function MyFiles() {
         id={id}
         openSubmenu={folderSubmenu}
         onOpenSubmenu={setFolderSubmenu}
+        onSubmenuEnter={cancelFolderSubmenuClose}
         label={label}
         icon={icon}
         testId={`folder-action-group-${id}`}
@@ -2718,10 +2743,10 @@ export default function MyFiles() {
           >
             {folderLeaf('open', 'folder-action-open', false,
               folderMenuRun((folder) => navigateToFolder(folder.id, folder.library_id)),
-              <FolderOutlinedIcon fontSize="small" />, 'Открыть')}
+              <FolderOutlinedIcon fontSize="small" />, 'Открыть', true)}
             {folderSharedWithMe ? null : folderLeaf('archive', 'folder-action-archive', false,
               folderMenuRun((folder) => { void handleFolderArchive(folder); }),
-              <ArchiveOutlinedIcon fontSize="small" />, 'Скачать папку (ZIP)')}
+              <ArchiveOutlinedIcon fontSize="small" />, 'Скачать папку (ZIP)', true)}
             {folderGroup('share', 'Поделиться', <ShareOutlinedIcon fontSize="small" />, folderShareItems)}
             {folderGroup('organize', 'Организовать', <DriveFileMoveOutlinedIcon fontSize="small" />, folderOrganizeItems)}
             {folderGroup('more', 'Дополнительно', <MoreHorizRoundedIcon fontSize="small" />, folderMoreItems)}
@@ -2731,6 +2756,8 @@ export default function MyFiles() {
                 data-testid="folder-action-delete"
                 disabled={!folderMenuAccess.canWrite}
                 onClick={folderMenuRun((folder) => { void handleDeleteFolder(folder); })}
+                onMouseEnter={scheduleFolderSubmenuClose}
+                onMouseLeave={cancelFolderSubmenuClose}
                 sx={{ minHeight: 40, color: 'error.main' }}
               >
                 <ListItemIcon sx={{ color: 'inherit' }}><DeleteOutlineIcon fontSize="small" /></ListItemIcon>

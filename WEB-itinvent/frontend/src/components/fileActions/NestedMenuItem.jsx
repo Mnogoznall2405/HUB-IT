@@ -1,8 +1,18 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import { Box, ListItemIcon, ListItemText, Menu, MenuItem } from '@mui/material';
 
 const SUBMENU_MIN_WIDTH = 200;
+
+// When a flyout is already open, the pointer has this long to cross a sibling
+// row diagonally on its way into the flyout before the switch actually happens.
+export const SUBMENU_SWITCH_DELAY_MS = 200;
+
+// A tap on touch devices fires pointer/mouseenter and then click for a single
+// gesture. Within this window an open triggered by that emulated mouseenter is
+// treated as "opened by the tap", so the click keeps the flyout open instead of
+// instantly toggling it shut.
+const TAP_OPEN_GRACE_MS = 700;
 
 // A menu row that opens a secondary flyout menu anchored to its side.
 // Open/close is controlled by the parent menu through `openSubmenu`/`onOpenSubmenu`
@@ -12,6 +22,7 @@ export default function NestedMenuItem({
   id,
   openSubmenu,
   onOpenSubmenu,
+  onSubmenuEnter = null,
   label,
   icon = null,
   disabled = false,
@@ -20,13 +31,25 @@ export default function NestedMenuItem({
   children,
 }) {
   const itemRef = useRef(null);
+  const switchTimerRef = useRef(null);
+  const openMetaRef = useRef({ via: '', at: 0 });
   const [flipLeft, setFlipLeft] = useState(false);
   // Mount the flyout lazily: before the first open there is no anchor yet and
   // a mounted-but-closed Menu warns about `anchorEl === undefined`.
   const [everOpened, setEverOpened] = useState(false);
   const open = openSubmenu === id;
 
-  const openSub = useCallback(() => {
+  const clearSwitchTimer = useCallback(() => {
+    if (switchTimerRef.current) {
+      clearTimeout(switchTimerRef.current);
+      switchTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => clearSwitchTimer, [clearSwitchTimer]);
+
+  const openSub = useCallback((via) => {
+    if (disabled) return;
     const rect = itemRef.current?.getBoundingClientRect?.();
     if (rect && rect.right + SUBMENU_MIN_WIDTH + 16 > window.innerWidth) {
       setFlipLeft(true);
@@ -34,8 +57,9 @@ export default function NestedMenuItem({
       setFlipLeft(false);
     }
     setEverOpened(true);
+    openMetaRef.current = { via, at: Date.now() };
     onOpenSubmenu?.(id);
-  }, [id, onOpenSubmenu]);
+  }, [disabled, id, onOpenSubmenu]);
 
   const closeSub = useCallback(() => {
     onOpenSubmenu?.(null);
@@ -45,6 +69,27 @@ export default function NestedMenuItem({
     itemRef.current?.focus?.();
   }, []);
 
+  const handleMouseEnter = useCallback(() => {
+    if (disabled) return;
+    if (open) {
+      // Pointer returned to the row whose flyout is open — counts as being
+      // "inside" the submenu, so a pending close from a crossed leaf cancels.
+      onSubmenuEnter?.();
+      return;
+    }
+    if (openSubmenu) {
+      // Another flyout is open: delay the switch so a diagonal move towards
+      // the open flyout does not tear it down mid-gesture.
+      clearSwitchTimer();
+      switchTimerRef.current = setTimeout(() => {
+        switchTimerRef.current = null;
+        openSub('hover');
+      }, SUBMENU_SWITCH_DELAY_MS);
+      return;
+    }
+    openSub('hover');
+  }, [disabled, open, openSubmenu, onSubmenuEnter, clearSwitchTimer, openSub]);
+
   return (
     <>
       <MenuItem
@@ -53,18 +98,29 @@ export default function NestedMenuItem({
         disabled={disabled}
         aria-haspopup="menu"
         aria-expanded={open}
-        onMouseEnter={openSub}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={clearSwitchTimer}
         onClick={(event) => {
           // Tap/click toggles the flyout instead of closing the whole menu.
           event.stopPropagation();
+          if (disabled) return;
+          clearSwitchTimer();
+          const { via, at } = openMetaRef.current;
+          if (open && via === 'hover' && Date.now() - at < TAP_OPEN_GRACE_MS) {
+            // Same tap gesture: the emulated mouseenter already opened the
+            // flyout — keep it open; the next tap toggles it closed.
+            openMetaRef.current = { via: 'click', at: Date.now() };
+            return;
+          }
           if (open) closeSub();
-          else openSub();
+          else openSub('click');
         }}
         onKeyDown={(event) => {
+          if (disabled) return;
           if (event.key === 'ArrowRight' || event.key === 'Enter') {
             event.preventDefault();
             event.stopPropagation();
-            openSub();
+            openSub('key');
           }
         }}
         sx={{ minHeight: dense ? 36 : 40 }}
@@ -102,6 +158,7 @@ export default function NestedMenuItem({
           },
         }}
         PaperProps={{
+          onMouseEnter: () => onSubmenuEnter?.(),
           sx: {
             pointerEvents: 'auto',
             minWidth: SUBMENU_MIN_WIDTH,

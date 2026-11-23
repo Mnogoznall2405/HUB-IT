@@ -64,11 +64,13 @@
 
 ### Unit (Vitest)
 
-- `NestedMenuItem.test.jsx` — 4/4 (клавиатура, hover-switch, edge-flip, anchor guard);
-- `FileActionsContextMenu.test.jsx` — 6/6;
+- `NestedMenuItem.test.jsx` — 7/7 (клавиатура, hover-switch + задержка, edge-flip, anchor guard, tap-жест, disabled);
+- `FileActionsContextMenu.test.jsx` — 9/9 (включая матрицу 16 действий и `deleteLabel`);
+- `MyFilesSidebar.test.jsx` — 6/6 (цепочка предков, ручное сворачивание, переключение, flyout рейла);
+- `MyFilesLibraryDialog.test.jsx` — 24/24 (включая dirty по байтам);
 - `MyFilesListItems.test.jsx` — 5/5;
 - `MyFiles.test.jsx` — **34/34**;
-- суммарно по затронутым файлам — **108/108**.
+- итоговый регресс myFiles + fileActions + mail — **740/740** (147 файлов).
 
 ### E2E (Playwright, локальный стенд `E2E_LOCAL=1`)
 
@@ -88,6 +90,27 @@
 ### Скриншоты (`e2e/artifacts/compact-ux/`)
 
 `menu-file-top`, `menu-file-organize-open`, `menu-file-more-open`, `menu-folder-organize-open`, `row-hover-quick-actions`, `sidebar-libraries-expanded/collapsed`, `sidebar-library-tree(-expanded)`, `sidebar-panel-collapsed`, `sidebar-collapsed-libraries-flyout`, `width-390…1600`, `zoom-125/150/200`, `dark-*`. «До» — приложенный пользователем скриншот прода (меню в 16 пунктов, плоские «Общие папки»).
+
+## Цикл 2: финальная проверка и исправления (P1/P2)
+
+| Проблема | Исправление | Подтверждающий тест | Результат |
+|---|---|---|---|
+| **P1** Ложное «Несохранённые изменения»: ввод квоты, округляющийся в те же байты (`10.0000000001` при лимите 10 ГиБ), считался правкой — грозил лишним PATCH и диалогом сброса | `normalizeQuotaGbText` сравнивает **байты**, а не текст ГБ | `MyFilesLibraryDialog.test`: «does not flag unsaved changes when the typed limit rounds to the stored bytes» | устранено, 24/24 |
+| P1 PUT участников при смене только названия/квоты | уже устранено в PR #14: `setMembers` только под `membersDirty`, PATCH — из dirty-полей | существующие тесты «sends only the settings update…», «does not touch quota_bytes on rename…», «sends only setMembers…» | подтверждено, дефекта нет |
+| P1 Валидация лимита (`abc`, `-2`, пробелы, `too_small`, `too_large`) | уже устранено в PR #14 (`parseQuotaGbInput` + DOM-матрица) | таблица `it.each` на 7 невалидных вводов | подтверждено, дефекта нет |
+| **P2** Touch: тап по группе открывал и мгновенно закрывал flyout (эмулированный `mouseenter` + `click` одного жеста) | `openMeta` — открытие hover'ом в окне 700мс трактуется как «открыто тапом», клик не гасит; второй тап — закрывает | `NestedMenuItem.test`: «a tap gesture (mouseenter + click) opens the flyout…» | устранено, 7/7 |
+| **P2** Диагональное движение мыши к flyout пересекало соседнюю строку и срывало его | задержка переключения 200мс (`SUBMENU_SWITCH_DELAY_MS`) при уже открытом flyout, отмена по `mouseleave`/unmount | «delays the switch while another flyout is open so a diagonal aim survives» | устранено |
+| **P2** Flyout не закрывался при наведении на обычный пункт (висел поверх меню) | leaf-пункты верхнего уровня ставят тот же отложенный таймер закрытия; вход во flyout/свою строку его отменяет (`onSubmenuEnter`) | `FileActionsContextMenu.test`: «closes the open flyout when the pointer settles on a plain menu row» | устранено |
+| **P2** Disabled-группа открывала flyout по hover/клику/клавише | guards `disabled` во всех входных обработчиках | «never opens a flyout for a disabled group row» | устранено |
+| **P2** Соответствие пункт↔обработчик не было доказано | матрица 16 действий: каждый пункт (включая пункты внутри групп) вызывает ровно свой колбэк; `deleteLabel` почты | «routes every action to its own handler, inside groups too» + «keeps the caller-provided delete label» | подтверждено, 9/9 |
+| **P2** Спека писала метрики, но не падала на обрезанных элементах; `style.zoom` — неверная модель зума | assertions `docOverflow ≤ 0` + `⋮`/поиск внутри viewport на всех ширинах; зум эмулируется логической шириной `1024/zoom`; кликабельность ⋮ проверяется на 390/768 и каждом зуме | `my-files-compact-ux.spec.js` — поймала реальный срыв клика при прежней модели | устранено, e2e зелёный |
+| **P2** Автораскрытие дерева останавливалось на первом уже раскрытом предке — глубокая цепочка могла остаться скрытой | обход всех предков без раннего `break` + защита от цикла (`seen`) | `MyFilesSidebar.test`: «re-expands ancestors above a middle node…», «auto-expands the whole ancestor chain…» | устранено, 6/6 |
+| **P2** У list-ряда кнопки ⋮ не было `data-testid` — e2e не мог адресовать критичный элемент | добавлены `my-files-menu-file-*`/`my-files-menu-folder-*` | используются в assertions спеки | устранено |
+| **P2** Ручное сворачивание, переход между библиотеками, глубокая вложенность | логика уже корректна — покрыто проверками | sidebar-тесты «keeps a manual collapse», «shows the tree only under the active library…» + e2e deep-chain/manualCollapse/switchClearsTree | подтверждено |
+
+Новое поведение в `metrics.json`: `libraryTree = {rootVisible, deepChainAutoExpanded, manualCollapse, switchClearsTree}`, `menus.edgeFlyoutInside`, `moreItems` — заполнен. Скриншоты: `sidebar-library-tree-deep`, `-manual-collapse`, `-switched`, `menu-file-flyout-edge`.
+
+Примечание по доступности: открытый flyout — Modal и `aria-hidden` скрывает родительское меню для AT (стандартное наслоение модалей; возврат — Escape/ArrowLeft с фокусом на родителе).
 
 ## Ограничения / открытые вопросы
 
