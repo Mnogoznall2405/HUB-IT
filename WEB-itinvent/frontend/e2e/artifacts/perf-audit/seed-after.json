@@ -1,0 +1,25 @@
+{
+  "base": "http://127.0.0.1:18012",
+  "stamp": "mwt9dbog",
+  "libraries": {
+    "a": "ee5e837a5546410099e8fb095068802f",
+    "b": "f58afda225a84e4dad0fb5620e80e06d"
+  },
+  "libDeepFolderId": "ac7e5353d97f4e759af8208aeeb283bf",
+  "libChainDepth": 13,
+  "libSpreadCount": 150,
+  "tableFolders": {
+    "10": "25a632695ec443e589b9e423f003cca8",
+    "100": "a57349e9d9434f7084d192d34b348e4a",
+    "500": "0bc4a085586b4fda81b23881f12b5b21",
+    "1000": "2df30184dbde40ef861ad7548b5c4a50"
+  },
+  "nav": {
+    "a": "34034dc3ecc2406bb5a2db1e30407d01",
+    "b": "e9513c0d09dd49c78b5e3eb057c8eeaf",
+    "c": "741b5003358a44939fde53a8178389ff"
+  },
+  "markerNavB": "marker-nav-b-mwt9dbog.txt",
+  "markerSearch": "perf-search-marker-zebra-mwt9dbog.txt",
+  "users": 39
+}
