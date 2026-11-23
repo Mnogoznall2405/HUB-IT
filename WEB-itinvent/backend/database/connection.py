@@ -35,6 +35,12 @@ def sql_query_timeout_scope(seconds: Optional[float]) -> Generator[None, None, N
         ai_sql_query_timeout.reset(token)
 
 
+class SqlStatementTimeoutUnsupportedError(RuntimeError):
+    """A1 (P0-2): raised BEFORE any SQL runs when an AI-scoped statement
+    timeout was requested but the driver refused it — fail closed instead
+    of executing unbounded."""
+
+
 def get_database_config(db_id: Optional[str] = None) -> dict:
     """
     Get database configuration by ID.
@@ -266,13 +272,22 @@ class DatabaseConnectionManager:
             if timeout_override is None:
                 timeout_override = ai_sql_query_timeout.get()
             if timeout_override is not None:
+                # A1/P0-2 fail-closed: when a timeout was requested we must be
+                # sure the driver actually accepted it — abort before any SQL
+                # runs and discard the connection instead of executing
+                # unbounded. Non-AI callers (timeout_override is None) are
+                # untouched: they never reach this branch.
                 try:
                     prev_timeout = conn.timeout
                     conn.timeout = int(timeout_override)
-                except Exception:
-                    # Driver without a settable timeout: proceed unbounded
-                    # rather than breaking the query path.
-                    prev_timeout = None
+                    if conn.timeout != int(timeout_override):
+                        raise RuntimeError("driver ignored statement timeout")
+                except Exception as exc:
+                    broken = True
+                    raise SqlStatementTimeoutUnsupportedError(
+                        "SQL driver rejected the statement timeout "
+                        f"({timeout_override}s) — запрос отменён до выполнения."
+                    ) from exc
             yield conn
             conn.commit()
         except Exception:
@@ -289,6 +304,8 @@ class DatabaseConnectionManager:
                 if prev_timeout is not None:
                     try:
                         conn.timeout = prev_timeout
+                        if conn.timeout != prev_timeout:
+                            raise RuntimeError("timeout restore not reflected")
                     except Exception:
                         # The connection is in an unknown state — never return
                         # it to the pool carrying a mutated timeout.

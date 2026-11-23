@@ -55,6 +55,14 @@ def ai_tool_executor_workers() -> int:
     return _env_int("AI_TOOL_EXECUTOR_WORKERS", 12, 1, 32)
 
 
+def ai_tool_executor_max_pending() -> int:
+    """A1 admission control: max tool calls accepted beyond ``workers`` and
+    left waiting in the executor queue. Past ``workers + max_pending`` the
+    call is *rejected* with a distinct capacity error — it never starts, so
+    the "unknown outcome" message is never emitted for it (default 24)."""
+    return _env_int("AI_TOOL_EXECUTOR_MAX_PENDING", 24, 0, 256)
+
+
 def ai_sql_query_timeout_sec() -> float:
     """SQL Server statement timeout for reads issued by AI tools (default 60s).
     Applies only inside AI tool execution — UI/API paths keep the driver

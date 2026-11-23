@@ -20,10 +20,23 @@ from sqlalchemy.orm import Session
 
 import conftest
 from backend.ai_chat import service as service_module
+from backend.ai_chat.tools import registry as registry_module
 from backend.ai_chat.tools.base import AiTool, AiToolResult
 from backend.ai_chat.tools.context import AiToolExecutionContext
-from backend.ai_chat.tools.registry import AiToolRegistry, ai_tool_leaked_count
+from backend.ai_chat.tools.registry import (
+    AiToolRegistry,
+    ai_tool_executor_stats,
+    ai_tool_leaked_count,
+)
 from backend.appdb.models import AppAiBot, AppAiBotConversation, AppAiBotRun, AppUser
+
+
+@pytest.fixture(autouse=True)
+def _fresh_tool_executor():
+    """P0-1: executor is module-global — isolate capacity accounting per test."""
+    registry_module._reset_tool_executor_state_for_tests()
+    yield
+    registry_module._reset_tool_executor_state_for_tests()
 
 
 # --------------------------------------------------------------------------
@@ -126,6 +139,164 @@ def test_timeout_restore_failure_discards_connection():
         pass
     assert mgr._pool.discarded == [conn]
     assert mgr._pool.released == []
+
+
+def test_sql_timeout_unreadable_fails_closed_before_execute():
+    """P0-2: driver cannot even READ conn.timeout → abort before any SQL,
+    connection discarded (never returned to the pool in an unknown state)."""
+    from backend.database.connection import SqlStatementTimeoutUnsupportedError
+
+    class _NoTimeout(_FakePooledConn):
+        def __init__(self) -> None:
+            self.commits = 0
+            self.rollbacks = 0
+
+        @property
+        def timeout(self):
+            raise RuntimeError("driver has no timeout")
+
+        @timeout.setter
+        def timeout(self, value):
+            raise RuntimeError("driver has no timeout")
+
+    conn = _NoTimeout()
+    mgr = _manager_with_pool(_StubPool(conn), query_timeout=45)
+    with pytest.raises(SqlStatementTimeoutUnsupportedError):
+        with mgr.get_connection():
+            pytest.fail("SQL must never execute without a verified timeout")
+    assert mgr._pool.discarded == [conn]
+    assert mgr._pool.released == []
+
+
+def test_sql_timeout_unsettable_fails_closed():
+    from backend.database.connection import SqlStatementTimeoutUnsupportedError
+
+    class _ReadOnlyTimeout(_FakePooledConn):
+        def __init__(self) -> None:
+            self._stored = 0
+            self.commits = 0
+            self.rollbacks = 0
+
+        @property
+        def timeout(self):
+            return self._stored
+
+        @timeout.setter
+        def timeout(self, value):
+            raise RuntimeError("timeout read-only")
+
+    conn = _ReadOnlyTimeout()
+    mgr = _manager_with_pool(_StubPool(conn), query_timeout=45)
+    with pytest.raises(SqlStatementTimeoutUnsupportedError):
+        with mgr.get_connection():
+            pytest.fail("SQL must never execute without a verified timeout")
+    assert mgr._pool.discarded == [conn]
+
+
+def test_sql_timeout_silently_ignored_fails_closed():
+    """Driver accepts the set but reports a different value → fail closed."""
+    from backend.database.connection import SqlStatementTimeoutUnsupportedError
+
+    class _LyingTimeout(_FakePooledConn):
+        @property
+        def timeout(self):
+            return 999  # driver claims a different value than what was set
+
+        @timeout.setter
+        def timeout(self, value):
+            pass
+
+    conn = _LyingTimeout()
+    mgr = _manager_with_pool(_StubPool(conn), query_timeout=45)
+    with pytest.raises(SqlStatementTimeoutUnsupportedError):
+        with mgr.get_connection():
+            pytest.fail("SQL must never execute without a verified timeout")
+    assert mgr._pool.discarded == [conn]
+
+
+def test_sql_timeout_restore_verify_mismatch_discards_connection():
+    """Restore set succeeds but read-back differs → unknown state → discard."""
+    class _RestoreMismatch(_FakePooledConn):
+        _sets = 0
+
+        def __init__(self) -> None:
+            self.commits = 0
+            self.rollbacks = 0
+
+        @property
+        def timeout(self):
+            return 45 if _RestoreMismatch._sets < 2 else 777
+
+        @timeout.setter
+        def timeout(self, value):
+            _RestoreMismatch._sets += 1
+
+    conn = _RestoreMismatch()
+    mgr = _manager_with_pool(_StubPool(conn), query_timeout=45)
+    with mgr.get_connection():
+        pass
+    assert mgr._pool.discarded == [conn]
+    assert mgr._pool.released == []
+
+
+def test_next_request_gets_healthy_connection_after_discard():
+    """A broken conn is discarded; the following request gets a fresh one."""
+    from backend.database.connection import SqlStatementTimeoutUnsupportedError
+
+    class _QueuePool(_StubPool):
+        def __init__(self, conns) -> None:
+            self.conns = list(conns)
+            self.released = []
+            self.discarded = []
+
+        def acquire(self):
+            return self.conns.pop(0)
+
+    class _NoTimeout(_FakePooledConn):
+        def __init__(self) -> None:
+            self.commits = 0
+            self.rollbacks = 0
+
+        @property
+        def timeout(self):
+            raise RuntimeError("dead")
+
+        @timeout.setter
+        def timeout(self, value):
+            raise RuntimeError("dead")
+
+    bad, good = _NoTimeout(), _FakePooledConn()
+    mgr = _manager_with_pool(_QueuePool([bad, good]), query_timeout=30)
+    with pytest.raises(SqlStatementTimeoutUnsupportedError):
+        with mgr.get_connection():
+            pass
+    with mgr.get_connection() as conn:
+        assert conn is good
+        assert conn.timeout == 30
+    assert mgr._pool.released == [good]
+    assert good.timeout == 0
+
+
+def test_non_ai_path_never_touches_timeout_attribute():
+    """P0-2: without a requested timeout the driver attribute is untouched —
+    proves UI/API behavior is unchanged even for drivers lacking it."""
+
+    class _BareConn:
+        def __init__(self) -> None:
+            self.commits = 0
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            pass
+
+    conn = _BareConn()  # no .timeout attribute at all
+    mgr = _manager_with_pool(_StubPool(conn))
+    with mgr.get_connection() as c:
+        assert c is conn
+    assert conn.commits == 1
+    assert mgr._pool.released == [conn]
 
 
 def test_get_db_accepts_optional_query_timeout(monkeypatch):
@@ -303,6 +474,153 @@ def test_concurrent_hung_tools_do_not_block_independent_call():
     assert ok_map["a1.test.quick"] is True
     for tid in hanging_ids:
         assert ok_map[tid] is False  # controlled timeout, not a hang
+
+
+def _saturating_tool(tool_id: str, gate: threading.Event, timeout_sec: float = 30.0):
+    tool = _HangingTool(delay=60.0, gate=gate)
+    tool.tool_id = tool_id
+    tool.timeout_sec = timeout_sec
+    return tool
+
+
+def _wait_for(predicate, timeout: float = 5.0, step: float = 0.01) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(step)
+    return predicate()
+
+
+def test_executor_saturation_rejects_and_recovers(monkeypatch):
+    """P0-1: workers+pending slots filled with blocked tools → the next call is
+    rejected (distinct error, NEVER started), then capacity fully recovers."""
+    monkeypatch.setenv("AI_TOOL_EXECUTOR_WORKERS", "4")
+    monkeypatch.setenv("AI_TOOL_EXECUTOR_MAX_PENDING", "2")
+    gate = threading.Event()
+    tools = [_saturating_tool(f"a1.test.sat{i}", gate) for i in range(6)]
+    quick = _QuickTool()
+    registry = _make_registry(*tools, quick)
+    context = _tool_context([t.tool_id for t in tools] + ["a1.test.quick"])
+
+    errors: list[BaseException] = []
+
+    def call(tool_id: str) -> None:
+        try:
+            registry.execute_bounded(tool_id=tool_id, raw_args={}, context=context)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=call, args=(t.tool_id,), daemon=True) for t in tools]
+    for thread in threads:
+        thread.start()
+    assert _wait_for(lambda: ai_tool_executor_stats()["in_flight"] == 6)
+    stats = ai_tool_executor_stats()
+    assert stats["capacity"] == 6 and stats["submitted_total"] == 6
+
+    # 7th call — rejected synchronously, never queued, never ran.
+    rejected = _saturating_tool("a1.test.sat6", gate)
+    registry.register(rejected)
+    context.enabled_tools.append("a1.test.sat6")
+    result, audit = registry.execute_bounded(tool_id="a1.test.sat6", raw_args={}, context=context)
+    assert result.ok is False
+    assert result.data["diagnostic"]["error_code"] == "tool_capacity_exceeded"
+    assert "не выполнялся" in result.data["diagnostic"]["message"]
+    assert not rejected.started.is_set()  # guaranteed: task never started
+    assert ai_tool_executor_stats()["rejected_total"] == 1
+    # repeats still rejected — counter grows, queue does not
+    registry.execute_bounded(tool_id="a1.test.sat6", raw_args={}, context=context)
+    stats = ai_tool_executor_stats()
+    assert stats["rejected_total"] == 2 and stats["in_flight"] == 6
+    assert stats["degraded"] is True
+
+    # Release — everything drains, capacity returns to zero, new calls work.
+    gate.set()
+    for thread in threads:
+        thread.join(timeout=15)
+    assert _wait_for(lambda: ai_tool_executor_stats()["in_flight"] == 0)
+    ok, _ = registry.execute_bounded(tool_id="a1.test.quick", raw_args={}, context=context)
+    assert ok.ok is True and ok.data == {"answer": 42}
+
+
+def test_leaked_gauge_returns_to_zero_when_abandoned_thread_finishes(monkeypatch):
+    """P1-1: leaked_now is a GAUGE — it drops when the leaked thread really ends."""
+    monkeypatch.setenv("AI_TOOL_EXECUTOR_WORKERS", "2")
+    gate = threading.Event()
+    tool = _saturating_tool("a1.test.leak", gate, timeout_sec=0.05)
+    registry = _make_registry(tool)
+    context = _tool_context(["a1.test.leak"])
+    result, _ = registry.execute_bounded(tool_id="a1.test.leak", raw_args={}, context=context)
+    assert result.data["diagnostic"]["error_code"] == "tool_timeout"
+    stats = ai_tool_executor_stats()
+    assert stats["leaked_now"] == 1 and stats["leaked_total"] == 1
+    assert stats["in_flight"] == 1  # accounting capacity still held by the live thread
+    gate.set()
+    assert _wait_for(lambda: ai_tool_executor_stats()["in_flight"] == 0)
+    stats = ai_tool_executor_stats()
+    assert stats["leaked_now"] == 0  # released on ACTUAL completion, not on timeout
+    assert stats["leaked_total"] == 1  # cumulative evidence is kept
+
+
+def test_queued_timeout_is_reported_as_never_started_not_unknown(monkeypatch):
+    """P0-1: a call that timed out while still QUEUED was cancelled before it
+    ran — the result must say it never executed, not 'outcome unknown'."""
+    monkeypatch.setenv("AI_TOOL_EXECUTOR_WORKERS", "1")
+    monkeypatch.setenv("AI_TOOL_EXECUTOR_MAX_PENDING", "8")
+    gate = threading.Event()
+    blocker = _saturating_tool("a1.test.blocker", gate)
+    queued = _saturating_tool("a1.test.queued", gate, timeout_sec=0.05)
+    registry = _make_registry(blocker, queued)
+    context = _tool_context(["a1.test.blocker", "a1.test.queued"])
+    errors: list[BaseException] = []
+    holder = threading.Thread(
+        target=lambda: registry.execute_bounded(
+            tool_id="a1.test.blocker", raw_args={}, context=context
+        ),
+        daemon=True,
+    )
+    holder.start()
+    assert blocker.started.wait(2.0)
+    result, _ = registry.execute_bounded(tool_id="a1.test.queued", raw_args={}, context=context)
+    assert result.ok is False
+    assert result.data["diagnostic"]["error_code"] == "tool_queue_timeout"
+    assert "не выполнялась" in result.data["diagnostic"]["message"]
+    assert not queued.started.is_set()  # it really never ran
+    stats = ai_tool_executor_stats()
+    assert stats["leaked_now"] == 0 and stats["queue_timeout_total"] == 1
+    gate.set()
+    holder.join(timeout=15)
+    assert _wait_for(lambda: ai_tool_executor_stats()["in_flight"] == 0)
+
+
+def test_rejected_calls_do_not_accumulate_under_repeated_saturation(monkeypatch):
+    """P0-1: repeated submits at full capacity must not grow queue/memory —
+    every excess call is rejected immediately."""
+    monkeypatch.setenv("AI_TOOL_EXECUTOR_WORKERS", "1")
+    monkeypatch.setenv("AI_TOOL_EXECUTOR_MAX_PENDING", "0")
+    gate = threading.Event()
+    blocker = _saturating_tool("a1.test.blocker", gate)
+    registry = _make_registry(blocker, _QuickTool())
+    context = _tool_context(["a1.test.blocker", "a1.test.quick"])
+    holder = threading.Thread(
+        target=lambda: registry.execute_bounded(
+            tool_id="a1.test.blocker", raw_args={}, context=context
+        ),
+        daemon=True,
+    )
+    holder.start()
+    assert blocker.started.wait(2.0)
+    assert _wait_for(lambda: ai_tool_executor_stats()["in_flight"] == 1)
+    for _ in range(10):
+        result, _ = registry.execute_bounded(
+            tool_id="a1.test.quick", raw_args={}, context=context
+        )
+        assert result.data["diagnostic"]["error_code"] == "tool_capacity_exceeded"
+    stats = ai_tool_executor_stats()
+    assert stats["rejected_total"] == 10
+    assert stats["in_flight"] == 1  # nothing queued — no unbounded growth
+    gate.set()
+    holder.join(timeout=15)
 
 
 def test_unknown_tool_still_raises_validation_not_timeout():
