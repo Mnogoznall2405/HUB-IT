@@ -302,6 +302,8 @@ const ChatComposer = memo(function ChatComposer({
   onComposerSelectionSync,
   onOpenEmojiPicker,
   onCloseEmojiPicker,
+  onEmojiHoverStart,
+  onEmojiHoverEnd,
   onSendMessage,
   onComposerPaste,
   onComposerDrop,
@@ -314,6 +316,7 @@ const ChatComposer = memo(function ChatComposer({
   keyboardInset = 0,
   mobileEmojiPickerOpen = false,
   emojiPickerOpen = false,
+  emojiPanelMode = 'popover',
   onInsertEmoji,
   onSendSticker,
   currentUserId = null,
@@ -1122,11 +1125,13 @@ const ChatComposer = memo(function ChatComposer({
                     <button
                       type="button"
                       data-testid="chat-composer-emoji-button"
-                      aria-label={mobileEmojiPickerOpen || emojiPickerOpen ? 'Закрыть панель эмодзи' : 'Открыть панель эмодзи'}
+                      aria-label={mobileEmojiPickerOpen || emojiPickerOpen
+                        ? (emojiPickerOpen && emojiPanelMode !== 'pinned' && !mobileEmojiPickerOpen ? 'Закрепить панель эмодзи' : 'Закрыть панель эмодзи')
+                        : 'Открыть панель эмодзи'}
                       aria-haspopup="dialog"
                       aria-expanded={mobileEmojiPickerOpen || emojiPickerOpen}
                       onMouseDown={compactMobile ? undefined : preserveComposerKeyboard}
-                      onClick={mobileEmojiPickerOpen || emojiPickerOpen ? onCloseEmojiPicker : onOpenEmojiPicker}
+                      onClick={onOpenEmojiPicker}
                       disabled={!activeConversationId}
                       className="inline-flex shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
                       style={{
@@ -1136,10 +1141,13 @@ const ChatComposer = memo(function ChatComposer({
                         color: composerIconColor,
                       }}
                       onMouseEnter={(event) => {
-                        if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(composerAccentColor, 0.08);
+                        if (compactMobile) return;
+                        event.currentTarget.style.backgroundColor = alpha(composerAccentColor, 0.08);
+                        onEmojiHoverStart?.(event);
                       }}
                       onMouseLeave={(event) => {
                         event.currentTarget.style.backgroundColor = 'transparent';
+                        if (!compactMobile) onEmojiHoverEnd?.();
                       }}
                     >
                       {mobileEmojiPickerOpen

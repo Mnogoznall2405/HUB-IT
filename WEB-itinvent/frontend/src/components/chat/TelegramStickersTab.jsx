@@ -16,13 +16,22 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
 import TelegramIcon from '@mui/icons-material/Telegram';
 
-import { chatStickersAPI } from '../../api/chatStickers';
+import {
+  chatStickersAPI,
+  invalidateStickerPacksCache,
+  peekStickerPacksCache,
+  primeStickerPacksCache,
+} from '../../api/chatStickers';
 import ChatStickerMedia from './ChatStickerMedia';
 import ChatStickerThumbnail from './ChatStickerThumbnail';
 
 const STICKER_PREVIEW_HOLD_MS = 420;
 const STICKER_PREVIEW_MOVE_TOLERANCE_PX = 12;
 const RECENT_STICKERS_LIMIT = 20;
+
+// Позиция прокрутки списка стикеров переживает закрытие панели —
+// Telegram Desktop возвращает пользователя туда, где он остановился.
+let persistedStickerScrollTop = 0;
 
 const buildRecentStorageKey = (currentUserId) => (
   `hubit.chat.recent-stickers.v1:${String(currentUserId || 'device')}`
@@ -54,17 +63,21 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   currentUserId = null,
 }) {
   const recentStorageKey = useMemo(() => buildRecentStorageKey(currentUserId), [currentUserId]);
-  const [packs, setPacks] = useState([]);
+  const [packs, setPacks] = useState(() => {
+    const cached = peekStickerPacksCache();
+    return Array.isArray(cached?.items) ? cached.items : [];
+  });
   const [activeSectionId, setActiveSectionId] = useState('recent');
   const [recentStickerIds, setRecentStickerIds] = useState(() => readRecentStickerIds(recentStorageKey));
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !Array.isArray(peekStickerPacksCache()?.items));
   const [loadError, setLoadError] = useState('');
   const [importOpen, setImportOpen] = useState(false);
   const [source, setSource] = useState('');
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState('');
   const [statusText, setStatusText] = useState('');
-  const [sendingStickerId, setSendingStickerId] = useState('');
+  // Отправка параллельная: блокируется только повторный клик по тому же стикеру.
+  const [sendingStickerIds, setSendingStickerIds] = useState({});
   const [previewSticker, setPreviewSticker] = useState(null);
   const sourceInputRef = useRef(null);
   const packStripRef = useRef(null);
@@ -124,6 +137,7 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
 
   const applyPackPayload = useCallback((payload, preferredPackId = '') => {
     const nextPacks = Array.isArray(payload?.items) ? payload.items : [];
+    primeStickerPacksCache(payload);
     setPacks(nextPacks);
     const preferred = String(preferredPackId || '').trim();
     if (preferred && nextPacks.some((item) => item.id === preferred)) {
@@ -138,7 +152,8 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    // При тёплом кэше спиннер не показываем — список уже отрисован.
+    if (!Array.isArray(peekStickerPacksCache()?.items)) setLoading(true);
     setLoadError('');
     chatStickersAPI.listPacks()
       .then((payload) => {
@@ -155,7 +170,8 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
 
   useEffect(() => {
     const refreshPacks = () => {
-      chatStickersAPI.listPacks()
+      invalidateStickerPacksCache();
+      chatStickersAPI.listPacks({ force: true })
         .then((payload) => applyPackPayload(payload))
         .catch(() => {});
     };
@@ -296,6 +312,7 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
       setActiveSectionId((current) => (current === nextSectionId ? current : nextSectionId));
     };
     const handleScroll = () => {
+      persistedStickerScrollTop = scrollRoot.scrollTop;
       if (scrollFrameRef.current !== null) return;
       scrollFrameRef.current = window.requestAnimationFrame(updateActiveSection);
     };
@@ -306,6 +323,14 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
       scrollFrameRef.current = null;
     };
   }, [stickerSections]);
+
+  // Восстановление позиции прокрутки при повторном открытии панели —
+  // только если нет отложенного перехода к конкретному набору.
+  useEffect(() => {
+    const scrollRoot = scrollContainerRef.current;
+    if (!scrollRoot || !persistedStickerScrollTop || pendingScrollSectionRef.current) return;
+    scrollRoot.scrollTop = persistedStickerScrollTop;
+  }, [stickerSections.length]);
 
   const rememberRecentSticker = useCallback((stickerId) => {
     const normalizedStickerId = String(stickerId || '').trim();
@@ -353,8 +378,8 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
 
   const handleStickerClick = useCallback(async (sticker) => {
     const stickerId = String(sticker?.id || '').trim();
-    if (!stickerId || sendingStickerId) return;
-    setSendingStickerId(stickerId);
+    if (!stickerId || sendingStickerIds[stickerId]) return;
+    setSendingStickerIds((current) => (current[stickerId] ? current : { ...current, [stickerId]: true }));
     setStatusText('');
     try {
       const sent = await onSendSticker?.(sticker);
@@ -364,12 +389,17 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
         rememberRecentSticker(stickerId);
       }
     } finally {
-      setSendingStickerId('');
+      setSendingStickerIds((current) => {
+        if (!current[stickerId]) return current;
+        const next = { ...current };
+        delete next[stickerId];
+        return next;
+      });
     }
-  }, [onSendSticker, rememberRecentSticker, sendingStickerId]);
+  }, [onSendSticker, rememberRecentSticker, sendingStickerIds]);
 
   const handleStickerPointerDown = useCallback((event, sticker) => {
-    if (sendingStickerId || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    if (sendingStickerIds[String(sticker?.id || '')] || (event.pointerType === 'mouse' && event.button !== 0)) return;
     pointerPressRef.current = {
       pointerId: event.pointerId,
       x: event.clientX,
@@ -377,7 +407,7 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
     scheduleHoldPreview(sticker);
-  }, [scheduleHoldPreview, sendingStickerId]);
+  }, [scheduleHoldPreview, sendingStickerIds]);
 
   const handleStickerPointerMove = useCallback((event) => {
     const press = pointerPressRef.current;
@@ -418,11 +448,11 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   }, [handleStickerClick]);
 
   const handleStickerKeyDown = useCallback((event, sticker) => {
-    if (event.key !== ' ' || event.repeat || keyboardPressRef.current || sendingStickerId) return;
+    if (event.key !== ' ' || event.repeat || keyboardPressRef.current || sendingStickerIds[String(sticker?.id || '')]) return;
     event.preventDefault();
     keyboardPressRef.current = true;
     scheduleHoldPreview(sticker);
-  }, [scheduleHoldPreview, sendingStickerId]);
+  }, [scheduleHoldPreview, sendingStickerIds]);
 
   const handleStickerKeyUp = useCallback((event, sticker) => {
     if (event.key !== ' ' || !keyboardPressRef.current) return;
@@ -688,7 +718,7 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
                 component="button"
                 type="button"
                 aria-label={`Отправить стикер ${sticker.emoji || ''}`.trim()}
-                disabled={Boolean(sendingStickerId)}
+                disabled={Boolean(sendingStickerIds[String(sticker.id)])}
                 onClick={(event) => handleStickerButtonClick(event, sticker)}
                 onPointerDown={(event) => handleStickerPointerDown(event, sticker)}
                 onPointerMove={handleStickerPointerMove}
@@ -707,7 +737,7 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
                   border: 'none',
                   borderRadius: 2,
                   bgcolor: 'transparent',
-                  cursor: sendingStickerId ? 'wait' : 'pointer',
+                  cursor: sendingStickerIds[String(sticker.id)] ? 'wait' : 'pointer',
                   touchAction: 'manipulation',
                   userSelect: 'none',
                   WebkitUserSelect: 'none',
@@ -715,14 +745,14 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
                   contentVisibility: 'auto',
                   containIntrinsicSize: dense ? '72px 72px' : '80px 80px',
                   transition: 'background-color 120ms ease, transform 100ms ease, opacity 120ms ease',
-                  opacity: sendingStickerId && sendingStickerId !== sticker.id ? 0.55 : 1,
+                  opacity: sendingStickerIds[String(sticker.id)] ? 0.55 : 1,
                   '&:hover': { bgcolor: alpha(accent, 0.08) },
                   '&:active': { transform: 'scale(0.96)' },
                   '&:focus-visible': { outline: `2px solid ${accent}`, outlineOffset: 1 },
                 }}
               >
                 <ChatStickerThumbnail sticker={sticker} size={dense ? 68 : 76} staticOnly />
-                {sendingStickerId === sticker.id ? (
+                {sendingStickerIds[String(sticker.id)] ? (
                   <CircularProgress size={22} sx={{ position: 'absolute', color: accent }} aria-label="Отправка стикера" />
                 ) : null}
               </Box>

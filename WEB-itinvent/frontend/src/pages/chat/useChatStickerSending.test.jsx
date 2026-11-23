@@ -162,4 +162,37 @@ describe('useChatStickerSending', () => {
     expect(chatStickersAPI.sendSticker.mock.calls[0][2].client_message_id)
       .not.toBe(chatStickersAPI.sendSticker.mock.calls[1][2].client_message_id);
   });
+
+  it('sends different stickers in parallel — only the same sticker is deduplicated', async () => {
+    const props = buildProps({ replyMessage: null });
+    const resolvers = [];
+    chatStickersAPI.sendSticker.mockImplementation(
+      () => new Promise((resolve) => { resolvers.push(resolve); }),
+    );
+    const { result } = renderHook(() => useChatStickerSending(props));
+
+    let firstPromise;
+    let secondPromise;
+    let secondSameSticker;
+    await act(async () => {
+      firstPromise = result.current({ id: 'sticker-1' });
+      secondPromise = result.current({ id: 'sticker-2' });
+      secondSameSticker = result.current({ id: 'sticker-1' });
+    });
+
+    // Второй клик по тому же стикеру проглатывается, другой стикер уходит.
+    expect(await secondSameSticker).toBe(false);
+    expect(chatStickersAPI.sendSticker).toHaveBeenCalledTimes(2);
+    const sentStickerIds = chatStickersAPI.sendSticker.mock.calls.map((call) => call[1]);
+    expect(sentStickerIds).toEqual(['sticker-1', 'sticker-2']);
+    expect(chatStickersAPI.sendSticker.mock.calls[0][2].client_message_id)
+      .not.toBe(chatStickersAPI.sendSticker.mock.calls[1][2].client_message_id);
+
+    await act(async () => {
+      resolvers.forEach((resolve, index) => resolve({ id: `message-${index}` }));
+      await Promise.all([firstPromise, secondPromise]);
+    });
+    expect(await firstPromise).toBe(true);
+    expect(await secondPromise).toBe(true);
+  });
 });

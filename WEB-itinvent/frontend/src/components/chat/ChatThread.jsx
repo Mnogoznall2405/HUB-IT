@@ -431,6 +431,8 @@ function ChatThread({
   onComposerSelectionSync,
   onOpenEmojiPicker,
   onCloseEmojiPicker,
+  onEmojiHoverStart,
+  onEmojiHoverEnd,
   onSendMessage,
   onComposerPaste,
   onComposerDrop,
@@ -474,6 +476,7 @@ function ChatThread({
   currentUserId,
   mobileEmojiPickerOpen = false,
   desktopEmojiPickerOpen = false,
+  emojiPanelMode = 'popover',
   onInsertEmoji,
   onSendSticker,
   voiceRecording = false,
@@ -1925,6 +1928,8 @@ function ChatThread({
             composerRef,
             onOpenEmojiPicker,
             onCloseEmojiPicker,
+            onEmojiHoverStart,
+            onEmojiHoverEnd,
             onSendMessage,
             onComposerPaste,
             onComposerDrop,
@@ -1937,6 +1942,7 @@ function ChatThread({
             keyboardInset,
             mobileEmojiPickerOpen,
             emojiPickerOpen: desktopEmojiPickerOpen,
+            emojiPanelMode,
             onInsertEmoji,
             onSendSticker,
             currentUserId,
@@ -1979,6 +1985,8 @@ function ChatThread({
           onComposerSelectionSync={onComposerSelectionSync}
           onOpenEmojiPicker={onOpenEmojiPicker}
           onCloseEmojiPicker={onCloseEmojiPicker}
+          onEmojiHoverStart={onEmojiHoverStart}
+          onEmojiHoverEnd={onEmojiHoverEnd}
           onSendMessage={onSendMessage}
           onComposerPaste={onComposerPaste}
           onComposerDrop={onComposerDrop}
@@ -1991,6 +1999,7 @@ function ChatThread({
           keyboardInset={keyboardInset}
           mobileEmojiPickerOpen={mobileEmojiPickerOpen}
           emojiPickerOpen={desktopEmojiPickerOpen}
+          emojiPanelMode={emojiPanelMode}
           onInsertEmoji={onInsertEmoji}
           onSendSticker={onSendSticker}
           currentUserId={currentUserId}
@@ -2007,14 +2016,17 @@ function ChatThread({
         />
       )}
 
-      {desktopEmojiPickerOpen && !compactMobile ? (
+      {desktopEmojiPickerOpen && !compactMobile && emojiPanelMode !== 'pinned' ? (
         // Д5/Д6: панель эмодзи и стикеров — поповер над полем ввода,
         // не сжимает ленту и не сдвигает шапку.
+        // Hover-зона общая с кнопкой: курсор может уходить в панель и обратно.
         <Box
           data-testid="chat-desktop-emoji-panel"
           data-layout="popover"
           role="dialog"
           aria-label="Эмодзи и стикеры"
+          onMouseEnter={() => onEmojiHoverStart?.()}
+          onMouseLeave={() => onEmojiHoverEnd?.()}
           sx={{
             position: 'absolute',
             right: { xs: 12, md: feedFullWidth ? 14 : `max(14px, calc(50% - ${Math.round(contentMaxWidth / 2)}px))` },
@@ -2042,7 +2054,11 @@ function ChatThread({
             </IconButton>
           </Box>
           <Box sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          <Suspense fallback={null}>
+          <Suspense fallback={
+            <Box sx={{ height: '100%', display: 'grid', placeItems: 'center' }}>
+              <CircularProgress size={24} />
+            </Box>
+          }>
             <LazyChatEmojiPanel
               open
               desktopDocked

@@ -15,15 +15,16 @@ export default function useChatStickerSending({
   setReplyMessage,
 }) {
   const stickerSendSeqRef = useRef(0);
-  const stickerSendInFlightRef = useRef(false);
+  // Параллельная отправка разных стикеров безопасна: у каждого запроса
+  // свой client_message_id, серверная дедупликация по нему идемпотентна.
+  // Глобальный блок заменён на per-sticker — двойной клик по одному
+  // стикеру всё ещё не создаёт дубликат.
+  const inFlightStickerIdsRef = useRef(new Set());
   return useCallback(async (sticker) => {
     const conversationId = String(activeConversationId || '').trim();
     const stickerId = String(sticker?.id || '').trim();
-    // One in-flight sticker send per conversation: a double click must not
-    // create a duplicate (the client_message_id also makes a retry
-    // idempotent on the server).
-    if (!conversationId || !stickerId || stickerSendInFlightRef.current) return false;
-    stickerSendInFlightRef.current = true;
+    if (!conversationId || !stickerId || inFlightStickerIdsRef.current.has(stickerId)) return false;
+    inFlightStickerIdsRef.current.add(stickerId);
     // R20: drain newer pages first so the sticker bubble lands at the real
     // bottom of history instead of above an unloaded tail.
     await ensureLatestThreadWindow?.();
@@ -76,7 +77,7 @@ export default function useChatStickerSending({
       notifyApiError(error, 'Не удалось отправить стикер.');
       return false;
     } finally {
-      stickerSendInFlightRef.current = false;
+      inFlightStickerIdsRef.current.delete(stickerId);
     }
   }, [
     activeConversationId,

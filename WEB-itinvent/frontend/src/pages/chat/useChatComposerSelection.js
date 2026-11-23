@@ -23,7 +23,6 @@ export default function useChatComposerSelection({
   composerSelectionRef,
   isMobile,
   messageText,
-  setEmojiAnchorEl,
   setMessageText,
 }) {
   const syncComposerSelection = useCallback(() => {
@@ -45,12 +44,12 @@ export default function useChatComposerSelection({
     setMessageText(nextValue);
     composerSelectionRef.current = { start: nextPosition, end: nextPosition };
     if (isMobile) return;
-    setEmojiAnchorEl(null);
+    // Панель остаётся открытой: последовательная вставка эмодзи как в Telegram.
     window.requestAnimationFrame(() => {
       composerRef.current?.focus?.();
       composerRef.current?.setSelectionRange?.(nextPosition, nextPosition);
     });
-  }, [composerRef, composerSelectionRef, isMobile, messageText, setEmojiAnchorEl, setMessageText]);
+  }, [composerRef, composerSelectionRef, isMobile, messageText, setMessageText]);
 
   return {
     insertEmojiAtSelection,

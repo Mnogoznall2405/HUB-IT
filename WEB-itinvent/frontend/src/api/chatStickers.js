@@ -1,9 +1,30 @@
 import apiClient from './http';
 
+// Список наборов меняется редко (импорт/удаление), а панель эмодзи
+// открывается часто — кэшируем ответ на время сессии и дедуплицируем
+// параллельные запросы, чтобы повторное открытие было мгновенным.
+let stickerPacksCache = null;
+let stickerPacksInFlight = null;
+
+export const peekStickerPacksCache = () => stickerPacksCache;
+export const primeStickerPacksCache = (payload) => {
+  stickerPacksCache = payload;
+  return stickerPacksCache;
+};
+export const invalidateStickerPacksCache = () => {
+  stickerPacksCache = null;
+};
+
 export const chatStickersAPI = {
-  listPacks: async () => {
-    const response = await apiClient.get('/chat/sticker-packs');
-    return response.data;
+  listPacks: async (options = {}) => {
+    if (!options?.force && stickerPacksCache) return stickerPacksCache;
+    if (stickerPacksInFlight) return stickerPacksInFlight;
+    stickerPacksInFlight = apiClient.get('/chat/sticker-packs')
+      .then((response) => primeStickerPacksCache(response.data))
+      .finally(() => {
+        stickerPacksInFlight = null;
+      });
+    return stickerPacksInFlight;
   },
 
   previewPack: async (shortName, options = {}) => {

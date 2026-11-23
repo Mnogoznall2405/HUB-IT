@@ -1,4 +1,4 @@
-import { Suspense, lazy, memo, useState } from 'react';
+import { Suspense, lazy, memo, useCallback, useState } from 'react';
 import { Box, CircularProgress, Tab, Tabs } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import InsertEmoticonRoundedIcon from '@mui/icons-material/InsertEmoticonRounded';
@@ -23,6 +23,10 @@ const TELEGRAM_CHAT_FONT_FAMILY = [
 
 const PANEL_HEIGHT = 320;
 const TAB_BAR_HEIGHT = 42;
+
+// Активная вкладка переживает размонтирование панели (preview ↔ pinned ↔
+// повторное открытие), как в Telegram Desktop.
+const persistedPanelState = { activeTab: 0 };
 
 /* ─── Tab panel wrapper ─── */
 function TabPanel({ value, index, children, fillAvailableHeight = false }) {
@@ -63,7 +67,11 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
   desktopDocked = false,
   currentUserId = null,
 }) {
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTabState] = useState(() => persistedPanelState.activeTab);
+  const setActiveTab = useCallback((value) => {
+    persistedPanelState.activeTab = value;
+    setActiveTabState(value);
+  }, []);
 
   if (!open) return null;
 

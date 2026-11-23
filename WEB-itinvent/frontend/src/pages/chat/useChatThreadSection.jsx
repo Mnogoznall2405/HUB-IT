@@ -1,6 +1,8 @@
 import { useMemo } from 'react';
+import Box from '@mui/material/Box';
 
 import ChatThread from '../../components/chat/ChatThread';
+import ChatEmojiDock from '../../components/chat/ChatEmojiDock';
 import useChatComposerTextBridge from '../../components/chat/useChatComposerTextBridge';
 import ChatPageRightPanelContent from './ChatPageRightPanelContent';
 import buildChatPagePanesBags from './buildChatPagePanesBags';
@@ -62,6 +64,8 @@ export default function useChatThreadSection(ctx) {
     syncComposerSelection,
     handleOpenEmojiPicker,
     handleCloseEmojiPicker,
+    handleEmojiHoverStart,
+    handleEmojiHoverEnd,
     handleComposerFocusChange,
     handleComposerSend,
     handleComposerPaste,
@@ -104,6 +108,7 @@ export default function useChatThreadSection(ctx) {
     handlePollVote,
     scrollToMessage,
     emojiPickerOpen,
+    emojiPanelMode,
     insertEmojiAtSelection,
     handleSendSticker,
     voiceRecording,
@@ -151,6 +156,16 @@ export default function useChatThreadSection(ctx) {
 
   const threadPane = useMemo(
     () => (
+      <Box
+        data-testid="chat-thread-pane-wrap"
+        sx={{
+          display: 'flex',
+          flex: 1,
+          minWidth: 0,
+          minHeight: 0,
+          position: 'relative',
+        }}
+      >
       <ChatThread
         theme={theme}
         ui={ui}
@@ -210,6 +225,9 @@ export default function useChatThreadSection(ctx) {
         composerTextBridge={composerTextBridge}
         onOpenEmojiPicker={handleOpenEmojiPicker}
         onCloseEmojiPicker={handleCloseEmojiPicker}
+        onEmojiHoverStart={handleEmojiHoverStart}
+        onEmojiHoverEnd={handleEmojiHoverEnd}
+        emojiPanelMode={emojiPanelMode}
         onComposerFocusChange={handleComposerFocusChange}
         onSendMessage={handleComposerSend}
         onComposerPaste={handleComposerPaste}
@@ -263,6 +281,17 @@ export default function useChatThreadSection(ctx) {
         onCancelVoiceRecording={cancelVoiceRecording}
         onBindPinnedScroll={bindPinnedScroll}
       />
+      {!isMobile && emojiPickerOpen && emojiPanelMode === 'pinned' ? (
+        <ChatEmojiDock
+          theme={theme}
+          ui={ui}
+          currentUserId={user?.id}
+          onInsertEmoji={insertEmojiAtSelection}
+          onSendSticker={handleSendSticker}
+          onClose={handleCloseEmojiPicker}
+        />
+      ) : null}
+      </Box>
     ),
     [
       activeAiStatus,
@@ -290,6 +319,7 @@ export default function useChatThreadSection(ctx) {
       editAiAction,
       effectiveLastReadMessageId,
       emojiPickerOpen,
+      emojiPanelMode,
       fileCaption,
       fileDialogOpen,
       fileDragActive,
@@ -302,6 +332,8 @@ export default function useChatThreadSection(ctx) {
       handleComposerPaste,
       handleComposerSend,
       handleCloseEmojiPicker,
+      handleEmojiHoverStart,
+      handleEmojiHoverEnd,
       handleOpenComposerMenu,
       handleOpenEmojiPicker,
       handleOpenInfo,
