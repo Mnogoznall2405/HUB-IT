@@ -64,6 +64,58 @@ def test_viewer_document_type_prefers_source_kind(_onlyoffice_env):
     assert oo.viewer_document_type(file_name="a.bin") == ""
 
 
+def test_viewer_document_type_covers_view_only_formats(_onlyoffice_env):
+    # Editable set unchanged — only docx/xlsx/pptx can open an edit session.
+    assert oo.document_type_for("a.txt") == ""
+    assert oo.document_type_for("a.doc") == ""
+    # View-only formats map to a DocEditor documentType for the embedded viewer.
+    assert oo.viewer_document_type(file_name="a.rtf") == "word"
+    assert oo.viewer_document_type(file_name="a.odt") == "word"
+    assert oo.viewer_document_type(file_name="a.xls") == "cell"
+    assert oo.viewer_document_type(file_name="a.ods") == "cell"
+    assert oo.viewer_document_type(file_name="a.pps") == "slide"
+    assert oo.viewer_document_type(file_name="a.odp") == "slide"
+    # Binaries and text formats stay out of the viewer — they have dedicated
+    # native viewers (text/code viewer, markdown viewer, CSV table preview).
+    for name in ("a.exe", "a.zip", "a.bin", "a.mp4", "a.dll",
+                 "a.txt", "a.md", "a.markdown", "a.log", "a.csv", "a.tsv", "noext"):
+        assert oo.viewer_document_type(file_name=name) == ""
+
+
+def test_classify_office_view_source_superset():
+    """View classifier accepts text/legacy formats; conversion classifier stays office-only."""
+    from backend.services.mail_attachment_preview_service import (
+        classify_office_source,
+        classify_office_view_source,
+    )
+
+    # Conversion set unchanged: prepared PDF previews only for real office types.
+    assert classify_office_source(filename="a.txt", content_type="text/plain") == ""
+    assert classify_office_source(filename="a.csv", content_type="text/csv") == ""
+
+    assert classify_office_view_source(filename="a.pps", content_type="") == "presentation"
+    assert classify_office_view_source(filename="a.fodp", content_type="") == "presentation"
+    assert classify_office_view_source(filename="a.ott", content_type="") == "word"
+    assert classify_office_view_source(filename="a.xlsb", content_type="") == "excel"
+    # Real office still classifies first.
+    assert classify_office_view_source(filename="a.docx", content_type="") == "word"
+    assert classify_office_view_source(filename="a.xlsx", content_type="") == "excel"
+    # Binaries/unknowns and native-viewer formats stay out of office view.
+    for name, mime in (
+        ("a.exe", "application/octet-stream"),
+        ("a.zip", "application/zip"),
+        ("a.mp4", "video/mp4"),
+        ("a.txt", "text/plain"),
+        ("a.md", "text/markdown"),
+        ("a.log", "text/plain"),
+        ("a.csv", "text/csv"),
+        ("a.tsv", "text/tab-separated-values"),
+        ("noext", "application/octet-stream"),
+        ("a.json", "application/json"),
+    ):
+        assert classify_office_view_source(filename=name, content_type=mime) == ""
+
+
 def test_mail_view_source_token_roundtrip_and_type_guard(_onlyoffice_env):
     settings = _settings()
     token = oo.make_mail_view_source_token(

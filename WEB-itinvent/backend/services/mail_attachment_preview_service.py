@@ -114,6 +114,27 @@ def classify_office_source(*, filename: str, content_type: str) -> str:
     return ""
 
 
+def classify_office_view_source(*, filename: str, content_type: str) -> str:
+    """Source kind for the read-only ONLYOFFICE viewer (no conversion needed).
+
+    Superset of :func:`classify_office_source`: Document Server renders legacy
+    Office/ODF formats directly in view mode. Plain-text formats (txt/md/csv/
+    log/…) are handled by the native text viewers instead.
+    """
+    kind = classify_office_source(filename=filename, content_type=content_type)
+    if kind:
+        return kind
+    extension = _file_extension(filename)
+    normalized_type = str(content_type or "").strip().lower()
+    if extension in {"fods", "ots", "xlsb"}:
+        return "excel"
+    if extension in {"ott", "fodt"}:
+        return "word"
+    if extension in {"pps", "ppsm", "ppsx", "fodp", "otp"}:
+        return "presentation"
+    return ""
+
+
 def is_office_preview_enabled() -> bool:
     return _bool_env("MAIL_OFFICE_PREVIEW_ENABLED", True)
 

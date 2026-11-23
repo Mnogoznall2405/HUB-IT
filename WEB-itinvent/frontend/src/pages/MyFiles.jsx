@@ -2810,12 +2810,13 @@ export default function MyFiles() {
         <DocumentPreviewDialog
           open={documentPreview.open}
           title={getMyFileName(documentPreview.item)}
-          subtitle={documentPreview.kind === 'image' ? 'Изображение' : documentPreview.kind === 'office_view' ? 'Просмотр (только чтение)' : documentPreview.sourceKind === 'excel' ? 'Excel' : 'PDF-предпросмотр'}
+          subtitle={documentPreview.kind === 'image' ? 'Изображение' : documentPreview.kind === 'office_view' ? 'Просмотр (только чтение)' : documentPreview.kind === 'markdown' ? 'Markdown' : documentPreview.kind === 'csv' ? 'CSV-таблица' : documentPreview.kind === 'text' ? 'Текст' : documentPreview.sourceKind === 'excel' ? 'Excel' : 'PDF-предпросмотр'}
           kind={documentPreview.kind}
           sourceKind={documentPreview.sourceKind}
           objectUrl={documentPreview.objectUrl}
           excelWorkbook={documentPreview.excelWorkbook}
           officeView={documentPreview.officeView}
+          textPreview={documentPreview.textPreview}
           pageCount={documentPreview.pageCount}
           sheets={documentPreview.sheets}
           loading={documentPreview.loading}

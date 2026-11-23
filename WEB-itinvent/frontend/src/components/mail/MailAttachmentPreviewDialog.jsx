@@ -6,12 +6,11 @@
   DialogActions,
   DialogContent,
   DialogTitle,
-  Paper,
   Skeleton,
   Stack,
   Typography,
 } from '@mui/material';
-import { useMemo } from 'react';
+import { lazy, Suspense, useMemo } from 'react';
 import { useTheme } from '@mui/material/styles';
 import DownloadIcon from '@mui/icons-material/Download';
 import {
@@ -22,7 +21,16 @@ import {
   getMailDialogTitleSx,
 } from './mailUiTokens';
 import { getMailAttachmentVisual } from './mailAttachmentVisuals';
+import { getTextFileKind, getTextLanguage } from '../../lib/textPreview';
 import DocumentPreviewDialog, { isDocumentPreviewKind } from '../documentPreview/DocumentPreviewDialog';
+
+const CodeMirrorTextViewer = lazy(() => import('../documentPreview/CodeMirrorTextViewer'));
+const MarkdownFileViewer = lazy(() => import('../documentPreview/MarkdownFileViewer'));
+const CsvPreviewPanel = lazy(() => import('../documentPreview/CsvPreviewPanel'));
+
+const viewerFallback = (
+  <Skeleton variant="rectangular" height={360} sx={{ borderRadius: '8px' }} />
+);
 
 export default function MailAttachmentPreviewDialog({
   attachmentPreview,
@@ -113,20 +121,35 @@ export default function MailAttachmentPreviewDialog({
         ) : attachmentPreview.kind === 'pdf' && attachmentPreview.objectUrl ? (
           null
         ) : attachmentPreview.kind === 'text' ? (
-          <Stack spacing={0.8}>
-            <Paper variant="outlined" sx={{ p: 1, borderRadius: '8px', bgcolor: tokens.surfaceBg, borderColor: tokens.surfaceBorder, boxShadow: 'none' }}>
-              <Typography variant="caption" color="text.secondary">
-                {attachmentPreview.contentType || 'text/plain'}
-              </Typography>
-            </Paper>
-            <Paper variant="outlined" sx={{ p: 1.5, borderRadius: '8px', maxHeight: '65vh', overflow: 'auto' }}>
-              <Box component="pre" sx={{ m: 0, fontFamily: 'var(--mail-mono-font)', fontSize: '0.8rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                {attachmentPreview.textContent || '(пустой файл)'}
-              </Box>
-            </Paper>
-            {attachmentPreview.textTruncated ? (
-              <Alert severity="info">Показана только часть файла (до 1 МБ).</Alert>
-            ) : null}
+          <Stack spacing={0.8} sx={{ minHeight: 0, height: '100%' }}>
+            {(() => {
+              const nativeKind = getTextFileKind({
+                fileName: attachmentPreview.filename,
+                contentType: attachmentPreview.contentType,
+              });
+              return (
+                <Suspense fallback={viewerFallback}>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '65vh', border: '1px solid', borderColor: tokens.surfaceBorder, borderRadius: '8px', overflow: 'hidden' }}>
+                    {nativeKind === 'markdown' ? (
+                      <MarkdownFileViewer
+                        value={attachmentPreview.textContent || ''}
+                        fileName={attachmentPreview.filename}
+                        truncated={attachmentPreview.textTruncated}
+                      />
+                    ) : nativeKind === 'csv' ? (
+                      <CsvPreviewPanel blob={attachmentPreview.blob} />
+                    ) : (
+                      <CodeMirrorTextViewer
+                        value={attachmentPreview.textContent || ''}
+                        fileName={attachmentPreview.filename}
+                        language={getTextLanguage(attachmentPreview.filename)}
+                        truncated={attachmentPreview.textTruncated}
+                      />
+                    )}
+                  </Box>
+                </Suspense>
+              );
+            })()}
           </Stack>
         ) : attachmentPreview.kind === 'unsupported' ? (
           <Alert severity="info" sx={{ mt: 2 }}>

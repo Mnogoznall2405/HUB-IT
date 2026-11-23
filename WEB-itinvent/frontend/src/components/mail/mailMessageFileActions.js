@@ -1,6 +1,14 @@
+import { CSV_EXTENSIONS, MARKDOWN_EXTENSIONS, TEXT_EXTENSIONS } from '../../lib/textPreview';
+
 export const MAX_PREVIEW_FILE_BYTES = 25 * 1024 * 1024;
 export const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024;
 export const MAIL_ATTACHMENT_CONTEXT_MISSING_CODE = 'MAIL_ATTACHMENT_CONTEXT_MISSING';
+
+const isNativeTextAttachmentExtension = (extension = '') => (
+  TEXT_EXTENSIONS.has(extension)
+  || MARKDOWN_EXTENSIONS.has(extension)
+  || CSV_EXTENSIONS.has(extension)
+);
 
 export const createEmptyAttachmentPreview = () => ({
   open: false,
@@ -162,6 +170,34 @@ export const getOfficeAttachmentSourceKind = ({ filename = '', contentType = '' 
   return '';
 };
 
+// View-only formats Document Server renders directly without conversion:
+// plain text/markdown, delimited data and the remaining Office/ODF types.
+// Deliberately separate from getOfficeAttachmentSourceKind — the prepared
+// preview/conversion paths only understand the convertible office set.
+export const getOfficeViewSourceKind = ({ filename = '', contentType = '' } = {}) => {
+  const officeKind = getOfficeAttachmentSourceKind({ filename, contentType });
+  if (officeKind) return officeKind;
+  const normalizedContentType = String(contentType || '').toLowerCase();
+  const extension = getAttachmentPreviewExtension(filename);
+  if (['fods', 'ots', 'xlsb'].includes(extension)) {
+    return 'excel';
+  }
+  if (['ott', 'fodt'].includes(extension)) {
+    return 'word';
+  }
+  if (['pps', 'ppsm', 'ppsx', 'fodp', 'otp'].includes(extension)) {
+    return 'presentation';
+  }
+  return '';
+};
+
+export const isOfficeViewableAttachment = (attachment = {}) => (
+  Boolean(getOfficeViewSourceKind({
+    filename: attachment?.name || attachment?.filename,
+    contentType: attachment?.content_type || attachment?.contentType,
+  }))
+);
+
 export const isOfficePreviewableAttachment = (attachment = {}) => (
   Boolean(getOfficeAttachmentSourceKind({
     filename: attachment?.name || attachment?.filename,
@@ -236,7 +272,7 @@ export const buildAttachmentPreviewState = async ({
       || normalizedContentType.includes('css')
       || normalizedContentType.includes('yaml')
       || normalizedContentType.includes('toml')
-      || ['txt', 'log', 'md', 'json', 'xml', 'yaml', 'yml', 'csv'].includes(extension)
+      || isNativeTextAttachmentExtension(extension)
     ) {
       return 'text';
     }
