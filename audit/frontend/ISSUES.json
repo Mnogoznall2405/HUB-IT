@@ -2286,7 +2286,7 @@
     },
     {
       "id": "FE-0059",
-      "title": "Обрыв сети >15 с во время ротации refresh-токена принудительно разлогинивает",
+      "title": "Потеря ответа ротации refresh-токена принудительно разлогинивает после истечения grace",
       "category": "Auth/NetworkReliability",
       "severity": "High",
       "status": "Confirmed",
@@ -2309,7 +2309,8 @@
         "AUTH_SECURITY_STACK.md:18-19 — задокументированный компромисс («recovered only within the configured grace window»)",
         "[cycle12:confirmed] High, ручная проверка: grace допускает 1 повтор, затем отзывает family (auth.py:135,1648-1675); runtime-разлогин после офлайна подтверждён.",
         "[cycle15:live] Auth disconnect probe on isolated backend (refresh grace 180 s from root .env): login, rotate refresh while discarding the new cookies (lost response), wait 185 s, retry the old refresh cookie -> 401 \"Refresh token has been revoked\"; old access cookie /auth/me -> 401. Reproduces forced logout after a lost rotation response.",
-        "[cycle16:live] Lost rotation response: after 185 s (> effective grace 180 s) the old refresh cookie -> 401 \"Refresh token has been revoked\". The NEW token pair issued by the rotation remained valid: /auth/me 200 and /auth/refresh 200. So the family is not revoked by the mere old-cookie rejection; the forced logout happens because the client kept only the old cookie."
+        "[cycle16:live] Lost rotation response: after 185 s (> effective grace 180 s) the old refresh cookie -> 401 \"Refresh token has been revoked\". The NEW token pair issued by the rotation remained valid: /auth/me 200 and /auth/refresh 200. So the family is not revoked by the mere old-cookie rejection; the forced logout happens because the client kept only the old cookie.",
+        "[cycle17:live] Clean stand b95c4cac, effective grace 15 s (code default), MAX_HITS=1. A: rotate + one sequential stale retry -> both 200; first new access/refresh still 200. D: after grace the stale cookie -> 401 revoked, while the new token from the rotation -> /auth/me 200 and /auth/refresh 200. Confirms the lost-response logout is client-side and is not family revocation."
       ],
       "impact": "Пользователи нестабильных сетей (Wi-Fi-роуминг, мобильный интернет, VPN) теряют сессию и несохранённый ввод",
       "recommendation": "Решение владельца: рассмотреть grace 60-120 c для web или мягкое восстановление; замерить refresh_reuse_detected/refresh_expired_or_already_used в метриках",
@@ -2344,13 +2345,28 @@
           "verdict": "confirmed",
           "note": "Lost-response probe: old token after grace -> 401 revoked; new token from the same rotation -> /auth/me 200 and /auth/refresh 200. Forced logout is caused by losing the new cookie, not by family revocation.",
           "sourceFile": "manual-live-refresh-loss-viability"
+        },
+        {
+          "cycle": 17,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "A: one stale retry within grace -> 200, first new token access/refresh 200. D: stale after grace -> 401 revoked, new token access/refresh 200. Lost-response logout confirmed; family not revoked.",
+          "sourceFile": "manual-live-refresh-matrix"
         }
       ],
-      "currentConclusion": "Подтверждено: при потерянном ответе ротации клиент остаётся со старой cookie; после grace старый refresh -> 401 revoked, /auth/me -> 401, принудительный logout. Новый токен, выданный ротацией, при этом остаётся живым — проблема клиентская (потеря ответа), а не отзыв family.",
+      "currentConclusion": "Подтверждено: при потерянном ответе ротации клиент остаётся со старой cookie и после grace получает 401 revoked; новый токен той же ротации при этом жив (A/D: 200). Причина принудительного logout — потеря нового ответа клиентом, а не отзыв family. Порог grace не универсален: код-дефолт 15 с, значение переопределяется окружением (на стенде цикла 16 — 180 с).",
       "verificationLegacy": [
         "live-production",
         "static",
         "перепроверено (цикл 12)"
+      ],
+      "titleHistory": [
+        {
+          "title": "Обрыв сети >15 с во время ротации refresh-токена принудительно разлогинивает",
+          "changedInCycle": 17,
+          "date": "2026-11-23",
+          "reason": "The historical title named \"15 s\" as if it were a universal threshold. 15 s is only the code default; the stand value is configurable (180 s in cycle 16 with root .env, 15 s in the clean cycle-17 stand)."
+        }
       ]
     },
     {
@@ -3281,7 +3297,8 @@
         "[cycle12:confirmed] High, ручная проверка: refreshInFlight только внутри вкладки (http.js:54,66-76), navigator.locks/BroadcastChannel нет; backend grace max 1 -> 3 параллельных refresh дают [200,200,401] и отзыв family (probe_refresh_race.mjs).",
         "[cycle13:confirmed] Live cycle 13: 3 параллельных POST /auth/refresh с одной кукой дали [401,200,200], затем /auth/me 401 — family отозвана, вкладки разлогинены.",
         "[cycle14:live] Two-tab browser race on isolated stack 5219/18002: three concurrent POST /auth/refresh from two pages sharing cookies -> [200,401,200]; /auth/me -> 401; a NEW refresh cookie after the race -> 401 \"Refresh token has been revoked\"; both tabs reloaded to /login.",
-        "[cycle16:live] Same cookie, 3 parallel POST /auth/refresh -> [200,200,401]. Cookies from a successful response -> /auth/me 401 and /auth/refresh 401 \"revoked\": the third hit exceeded grace MAX_HITS and revoked the family, killing the winners too. Control: two sequential retries within grace -> [200,200], new access 200. Trigger is concurrency, not staleness."
+        "[cycle16:live] Same cookie, 3 parallel POST /auth/refresh -> [200,200,401]. Cookies from a successful response -> /auth/me 401 and /auth/refresh 401 \"revoked\": the third hit exceeded grace MAX_HITS and revoked the family, killing the winners too. Control: two sequential retries within grace -> [200,200], new access 200. Trigger is concurrency, not staleness.",
+        "[cycle17:live] Clean stand b95c4cac, grace 15 s, MAX_HITS=1, four isolated families. A: one sequential stale retry -> 200, first new access/refresh 200. B: two sequential stale retries -> [200,401 expired/already used], first new access/refresh 401 revoked. C: three parallel -> [200,200,401], both winner access/refresh 401. D: stale after grace -> 401 revoked, new access/refresh 200. The family is revoked by the reuse that exceeds MAX_HITS=1, not by concurrency per se; parallel refresh only produces the excess reuse faster."
       ],
       "verification": [
         "static-code",
@@ -3323,9 +3340,16 @@
           "verdict": "confirmed",
           "note": "3 parallel refresh: [200,200,401]; new cookies from a 200 response -> 401 on /auth/me and /auth/refresh (family revoked). Sequential control within grace: [200,200], new access alive.",
           "sourceFile": "manual-live-refresh-race-family"
+        },
+        {
+          "cycle": 17,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "A-D matrix: one stale retry survives; the second reuse revokes the family; 3 parallel behaves like two retries; after-grace rejection does not revoke the new token. Root cause is reuse count, not concurrency.",
+          "sourceFile": "manual-live-refresh-matrix"
         }
       ],
-      "currentConclusion": "Подтверждено: 3 параллельных refresh с одной cookie -> [200,200,401]; family отозвана, токены даже успешных ответов дают 401. Два последовательных повтора внутри grace проходят (200), поэтому триггер — именно параллельность (несколько вкладок/visibilitychange), а не устаревание.",
+      "currentConclusion": "Подтверждено: family отзывается при превышении лимита повторного использования старой cookie (MAX_HITS=1), а не из-за параллельности как таковой. A: один последовательный повтор -> 200, новый токен жив. B: два последовательных -> второй 401, family отозвана, новый токен мёртв. C: три параллельных -> [200,200,401], оба победителя мертвы. D: после grace старый токен 401, новый жив. Параллельный refresh — практический триггер, ускоряющий превышение лимита.",
       "verificationLegacy": [
         "static",
         "tooling",
@@ -8196,7 +8220,8 @@
         "статическая проверка по file:line (цикл 11, агент + ручная перепроверка)",
         "[cycle12:confirmed] После autosave blob-URL inline-превью отзываются (MailComposeHost.jsx:524-539), DOM Quill не переписывается (эффект выходит по nextValue===valueRef, MailRichTextEditor.jsx:228-242), а buildPortableComposeHtml удаляет img с не-cid src (mailComposeHtml.js:138-145).",
         "[cycle13:confirmed] Static remains confirmed; live mail check not possible: isolated stack runs MAIL_MODULE_ENABLED=0 and has no mailbox.",
-        "[cycle15:blocked] Cycle 15 mailbox investigation: local_backend forcibly sets MAIL_MODULE_ENABLED=0; no IMAP/SMTP fixture or test mailbox exists. Route-mocking can validate UI only, not server-side autosave/attachment persistence, so live check remains blocked."
+        "[cycle15:blocked] Cycle 15 mailbox investigation: local_backend forcibly sets MAIL_MODULE_ENABLED=0; no IMAP/SMTP fixture or test mailbox exists. Route-mocking can validate UI only, not server-side autosave/attachment persistence, so live check remains blocked.",
+        "[cycle17:blocked] The mail transport is Exchange EWS (backend/services/mail_service.py + mail_exchange_transport.create_exchange_account), not IMAP/SMTP. A local IMAP/SMTP fixture would not be used by the backend. The isolated stack forces MAIL_MODULE_ENABLED=0 and /mail shows the corporate-password gate; no EWS test server or test mailbox exists. Live inline-image/autosave verification remains blocked; route-mocking would be UI-only."
       ],
       "verification": [
         "static-code"
@@ -8218,15 +8243,23 @@
           "verdict": "confirmed",
           "note": "Static remains confirmed; live mail check not possible: isolated stack runs MAIL_MODULE_ENABLED=0 and has no mailbox.",
           "sourceFile": "manual"
+        },
+        {
+          "cycle": 17,
+          "date": "2026-11-23",
+          "verdict": "blocked",
+          "note": "Transport investigation: EWS, not IMAP/SMTP. No local EWS test server/mailbox; MAIL_MODULE_ENABLED=0. Live autosave/inline-image test not possible.",
+          "sourceFile": "manual-live-mail-transport"
         }
       ],
-      "currentConclusion": "Static remains confirmed; live mail check not possible: isolated stack runs MAIL_MODULE_ENABLED=0 and has no mailbox.",
+      "currentConclusion": "Static remains confirmed. Live mail check is blocked: the backend uses Exchange EWS (not IMAP/SMTP), the isolated stack disables the mail module, and no EWS test server or mailbox is available.",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Cycle 15 mailbox investigation: local_backend forcibly sets MAIL_MODULE_ENABLED=0; no IMAP/SMTP fixture or test mailbox exists. Route-mocking can validate UI only, not server-side autosave/attachment persistence, so live check remains blocked."
+      "statusRationale": "Cycle 15 mailbox investigation: local_backend forcibly sets MAIL_MODULE_ENABLED=0; no IMAP/SMTP fixture or test mailbox exists. Route-mocking can validate UI only, not server-side autosave/attachment persistence, so live check remains blocked.",
+      "runtimeStatus": "blocked-environment"
     },
     {
       "id": "FE-0216",
@@ -8727,7 +8760,8 @@
         "статическая проверка по file:line (цикл 11, агент + ручная перепроверка)",
         "[cycle12:confirmed] High, ручная проверка: isNativeShellRuntime() возвращает null до хуков (HubItPwaSettingsCard.jsx:36-38; ChatNotificationsSettingsCard.jsx:30-32, файл переехал в pages/account/settings/notifications/). Флаг зависит от асинхронного desktopBridgeReady (platform.js:14-16), поэтому смена false→true меняет число хуков и роняет рендер.",
         "[cycle13:confirmed] Static remains confirmed; live simulation with a late desktop.hostReady on the isolated stand did not reproduce a hooks error (card subtree unmounted on re-render), so live reproduction is inconclusive.",
-        "[cycle15:blocked] Cycle 15 Desktop investigation: C# DesktopBridgeHost sends hostReady only after WebView2 bridge initialization; no Windows Desktop host/build is available in this audit, and browser simulation is not a valid WebView2 proof. Need a real WebView2 host with delayed CoreWebView2 init."
+        "[cycle15:blocked] Cycle 15 Desktop investigation: C# DesktopBridgeHost sends hostReady only after WebView2 bridge initialization; no Windows Desktop host/build is available in this audit, and browser simulation is not a valid WebView2 proof. Need a real WebView2 host with delayed CoreWebView2 init.",
+        "[cycle17:live] Real Windows WebView2 host: HUB.Desktop PerfBench build from b95c4cac, WebView2 157.0.4341.60, isolated profile, local stand. The desktop.ready handshake was delayed 8 s (test condition), then /settings/notifications was loaded. The card \"Фоновая доставка чатов\" mounted with shell=null; at the hostReady flip the \"Обновить фоновую доставку\" button was clicked synchronously. Result: shell=true, no pageerror/console error; the parent unmounted the card. Live crash not reproduced in this path."
       ],
       "verification": [
         "static-code"
@@ -8749,15 +8783,23 @@
           "verdict": "confirmed",
           "note": "Static remains confirmed; live simulation with a late desktop.hostReady on the isolated stand did not reproduce a hooks error (card subtree unmounted on re-render), so live reproduction is inconclusive.",
           "sourceFile": "manual"
+        },
+        {
+          "cycle": 17,
+          "date": "2026-11-23",
+          "verdict": "inconclusive",
+          "note": "Real WebView2 host with delayed hostReady + synchronous button click: no hooks error; parent unmounted the card. Static risk remains, live effect not reproduced.",
+          "sourceFile": "manual-live-webview2-late-hostready"
         }
       ],
-      "currentConclusion": "Static remains confirmed; live simulation with a late desktop.hostReady on the isolated stand did not reproduce a hooks error (card subtree unmounted on re-render), so live reproduction is inconclusive.",
+      "currentConclusion": "Статический механизм подтверждён (return null до хуков), но live-крах не воспроизведён: в реальном WebView2 host при позднем hostReady родитель размонтирует карточку. Для краха нужен card-local re-render до parent re-render; этот сценарий не достигнут.",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Cycle 15 Desktop investigation: C# DesktopBridgeHost sends hostReady only after WebView2 bridge initialization; no Windows Desktop host/build is available in this audit, and browser simulation is not a valid WebView2 proof. Need a real WebView2 host with delayed CoreWebView2 init."
+      "statusRationale": "Static early-return before hooks is confirmed, but cycle 15 browser simulation and cycle 17 real WebView2 host both failed to produce the render crash: on hostReady the parent re-renders nativeShell and unmounts the card before a card-local re-render. The defect remains static-only; live user-visible effect is unproven.",
+      "runtimeStatus": "not-reproduced-live"
     },
     {
       "id": "FE-0231",
@@ -8807,7 +8849,8 @@
         "статическая проверка по file:line (цикл 11, агент + ручная перепроверка)",
         "[cycle12:confirmed] High, ручная проверка: при ошибке bulk-загрузки делегатов users остаются с task_delegate_links=[] (useAccountSectionData.js:244-251, accountUserModel.js:27-39); сохранение пользователя отправляет этот пустой список в updateTaskDelegates (637-644) и стирает связи.",
         "[cycle13:confirmed] Static remains confirmed; live account-admin race not executed in cycle 13 (no test-data mutation outside throwaway stack).",
-        "[cycle15:blocked] Cycle 15 account fixtures not prepared; no approved mutation of delegate links in the isolated DB. Static catch->empty merge->save chain remains confirmed."
+        "[cycle15:blocked] Cycle 15 account fixtures not prepared; no approved mutation of delegate links in the isolated DB. Static catch->empty merge->save chain remains confirmed.",
+        "[cycle17:live] Synthetic users in isolated DB: owner 11 with delegate 12. Injected GET /auth/task-delegates 500 on page load; opened owner in admin, the delegate was absent from the drawer; Save sent PUT /auth/users/11/task-delegates {\"items\":[]} and the bulk link count went 1 -> 0. Control without injection: delegate present, Save kept 1 -> 1. Data loss reproduced; persistence checked on the real backend."
       ],
       "verification": [
         "static-code"
@@ -8829,15 +8872,23 @@
           "verdict": "confirmed",
           "note": "Static remains confirmed; live account-admin race not executed in cycle 13 (no test-data mutation outside throwaway stack).",
           "sourceFile": "manual"
+        },
+        {
+          "cycle": 17,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Injected bulk failure: 1 link -> 0 after Save; control: 1 -> 1. Real backend persistence.",
+          "sourceFile": "manual-live-admin-delegates"
         }
       ],
-      "currentConclusion": "Static remains confirmed; live account-admin race not executed in cycle 13 (no test-data mutation outside throwaway stack).",
+      "currentConclusion": "Confirmed live: when the bulk delegate load fails, the list has no delegate links; saving a user sends an empty items array and erases all assistant/deputy links. Control without the failure preserves the link.",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Cycle 15 account fixtures not prepared; no approved mutation of delegate links in the isolated DB. Static catch->empty merge->save chain remains confirmed."
+      "statusRationale": "Cycle 15 account fixtures not prepared; no approved mutation of delegate links in the isolated DB. Static catch->empty merge->save chain remains confirmed.",
+      "runtimeStatus": "reproduced-live"
     },
     {
       "id": "FE-0233",
@@ -9056,7 +9107,8 @@
         "статическая проверка по file:line (цикл 11, агент + ручная перепроверка)",
         "[cycle12:confirmed] High, ручная проверка: loadMembers без seq-guard (DepartmentsTab.jsx:58-89) может применить ответ старого отдела; handleSaveManagers отправляет draftManagerIds в текущий selectedDepartmentId (129-142).",
         "[cycle13:confirmed] Static remains confirmed; live department-manager race not executed in cycle 13.",
-        "[cycle15:blocked] Cycle 15 department/user fixtures not prepared; no approved mutation. Static race remains confirmed."
+        "[cycle15:blocked] Cycle 15 department/user fixtures not prepared; no approved mutation. Static race remains confirmed.",
+        "[cycle17:live] Two synthetic departments: D1 managers [11], D2 managers [13]. D1 members GET delayed 3.2 s; selected D1 then quickly D2. The late D1 response overwrote draftManagerIds while D2 was selected; Save sent PUT /departments/D2/managers {\"manager_user_ids\":[11]}. After: D2 managers [11], D1 unchanged [11]. Wrong-department write reproduced on the real backend."
       ],
       "verification": [
         "static-code"
@@ -9078,15 +9130,23 @@
           "verdict": "confirmed",
           "note": "Static remains confirmed; live department-manager race not executed in cycle 13.",
           "sourceFile": "manual"
+        },
+        {
+          "cycle": 17,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Delayed D1 members load + switch to D2: D2 managers 13 -> 11. Real backend persistence.",
+          "sourceFile": "manual-live-admin-departments"
         }
       ],
-      "currentConclusion": "Static remains confirmed; live department-manager race not executed in cycle 13.",
+      "currentConclusion": "Confirmed live: a late loadMembers response from the previously selected department overwrites the manager draft; Save writes those managers into the currently selected department. D2 received D1 manager [11] instead of its own [13].",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Cycle 15 department/user fixtures not prepared; no approved mutation. Static race remains confirmed."
+      "statusRationale": "Cycle 15 department/user fixtures not prepared; no approved mutation. Static race remains confirmed.",
+      "runtimeStatus": "reproduced-live"
     },
     {
       "id": "FE-0240",
@@ -9816,7 +9876,8 @@
         "статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company)",
         "[cycle12:confirmed] High, ручная проверка: ConstructionWorkWorkspace использует только SPA-guard useConstructionWorkLeaveGuard (строка 41), beforeunload нет; в ConstructionWorkPanel.jsx:165-167 и TaskCanvasWorkspace.jsx:348-349 он есть. F5/закрытие теряет черновик.",
         "[cycle13:confirmed] Static remains confirmed; live construction-workspace check blocked: local stack has no 1C/SQL construction data.",
-        "[cycle15:blocked] Cycle 15 mocked construction attempt reached the page but the workspace requires a configured object/direction («сначала настройте объект»); mocked planning alone is insufficient. F5/close/unmount still blocked by missing configured construction fixture."
+        "[cycle15:blocked] Cycle 15 mocked construction attempt reached the page but the workspace requires a configured object/direction («сначала настройте объект»); mocked planning alone is insufficient. F5/close/unmount still blocked by missing configured construction fixture.",
+        "[cycle17:live] Created a managed construction object with a GUID direction in the isolated DB, added a work via the UI (plan saved to the backend, visible after reload), switched to \"Сводка за день\", entered 5 in \"За день\" (dirty, \"Сохранить сводку\" shown). F5 reload: no beforeunload dialog; after reload the value is empty and the dirty UI is gone. The weekly/day draft is lost without a prompt; the route-level leave guard covers SPA navigation but not reload/close."
       ],
       "verification": [
         "static-code"
@@ -9838,15 +9899,23 @@
           "verdict": "confirmed",
           "note": "Static remains confirmed; live construction-workspace check blocked: local stack has no 1C/SQL construction data.",
           "sourceFile": "manual"
+        },
+        {
+          "cycle": 17,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Managed object + work plan; draft value 5; F5 without beforeunload; value lost. Real backend for the plan, client-side draft.",
+          "sourceFile": "manual-live-construction-workspace"
         }
       ],
-      "currentConclusion": "Static remains confirmed; live construction-workspace check blocked: local stack has no 1C/SQL construction data.",
+      "currentConclusion": "Confirmed live on a synthetic managed object: the work plan saves, but an unsaved day/week draft is lost on F5 with no beforeunload prompt. useConstructionWorkLeaveGuard protects React Router navigation, not page reload/close.",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Cycle 15 mocked construction attempt reached the page but the workspace requires a configured object/direction («сначала настройте объект»); mocked planning alone is insufficient. F5/close/unmount still blocked by missing configured construction fixture."
+      "statusRationale": "Cycle 15 mocked construction attempt reached the page but the workspace requires a configured object/direction («сначала настройте объект»); mocked planning alone is insufficient. F5/close/unmount still blocked by missing configured construction fixture.",
+      "runtimeStatus": "reproduced-live"
     },
     {
       "id": "FE-0260",
@@ -12342,36 +12411,8 @@
     "note": "verification[] — очищенные методы; verificationLegacy[] сохраняет исходные значения циклов 1–13."
   },
   "highBreakdown": {
-    "historical": [
-      "FE-0022",
-      "FE-0023",
-      "FE-0059",
-      "FE-0078",
-      "FE-0083",
-      "FE-0197",
-      "FE-0198",
-      "FE-0215",
-      "FE-0230",
-      "FE-0232",
-      "FE-0239",
-      "FE-0259"
-    ],
-    "current": [
-      "FE-0022",
-      "FE-0023",
-      "FE-0059",
-      "FE-0083",
-      "FE-0197",
-      "FE-0198",
-      "FE-0215",
-      "FE-0230",
-      "FE-0232",
-      "FE-0239",
-      "FE-0259"
-    ],
-    "fixed": [
-      "FE-0078"
-    ],
+    "historical": 12,
+    "current": 11,
     "runtimeProven": [
       "FE-0022",
       "FE-0023",
@@ -12379,22 +12420,31 @@
       "FE-0078",
       "FE-0083",
       "FE-0197",
-      "FE-0198"
+      "FE-0198",
+      "FE-0232",
+      "FE-0239",
+      "FE-0259"
     ],
-    "runtimeUnresolved": [
+    "unresolvedRuntime": [
       "FE-0022",
       "FE-0023",
       "FE-0059",
       "FE-0083",
       "FE-0197",
-      "FE-0198"
-    ],
-    "staticOnly": [
-      "FE-0215",
-      "FE-0230",
+      "FE-0198",
       "FE-0232",
       "FE-0239",
       "FE-0259"
+    ],
+    "staticOnly": [
+      "FE-0215",
+      "FE-0230"
+    ],
+    "runtimeNotReproduced": [
+      "FE-0230"
+    ],
+    "blockedEnvironment": [
+      "FE-0215"
     ]
   }
 }

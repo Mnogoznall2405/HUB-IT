@@ -1,0 +1,80 @@
+{
+  "base": "http://127.0.0.1:5227",
+  "runId": "1795424647920-424",
+  "results": [
+    {
+      "name": "feed",
+      "pass": true,
+      "ms": 11808,
+      "details": {
+        "token": "AUDIT-C17-FEED-1795424647920-424",
+        "visibleAfterPublish": true,
+        "visibleAfterReload": true,
+        "dialogClosed": true,
+        "shot": "C:\\Users\\Администратор\\AppData\\Local\\Temp\\2\\opencode\\hub-audit-publish\\audit\\frontend\\evidence\\cycle17\\shots\\feed-1795424647920-424.png"
+      },
+      "error": null
+    },
+    {
+      "name": "tasks",
+      "pass": true,
+      "ms": 32878,
+      "details": {
+        "token": "AUDIT-C17-TASK-1795424647920-424",
+        "created": true,
+        "afterReload": true,
+        "editedVisible": true,
+        "editedAfterReload": true,
+        "chkToken": "AUDIT-C17-CHK-1795424647920-424",
+        "checklistVisible": true,
+        "checklistAfterReload": true,
+        "shot": "C:\\Users\\Администратор\\AppData\\Local\\Temp\\2\\opencode\\hub-audit-publish\\audit\\frontend\\evidence\\cycle17\\shots\\tasks-1795424647920-424.png"
+      },
+      "error": null
+    },
+    {
+      "name": "chat",
+      "pass": true,
+      "ms": 22971,
+      "details": {
+        "token": "AUDIT-C17-CHAT-1795424647920-424",
+        "token2": "AUDIT-C17-CHAT-1795424647920-424-B",
+        "secondTabSees": true,
+        "firstTabSeesSecond": true,
+        "visibleAfterReloadA": true,
+        "visibleAfterReloadB": true,
+        "conversationsStatus": 200,
+        "messagesStatus": 200,
+        "apiOccurrences": 2,
+        "apiDuplicates": 0,
+        "shot": "C:\\Users\\Администратор\\AppData\\Local\\Temp\\2\\opencode\\hub-audit-publish\\audit\\frontend\\evidence\\cycle17\\shots\\chat-1795424647920-424.png"
+      },
+      "error": null
+    },
+    {
+      "name": "myFiles",
+      "pass": true,
+      "ms": 16151,
+      "details": {
+        "name": "audit-c17-1795424647920-424.txt",
+        "dialogClosed": true,
+        "visibleAfterReload": true,
+        "previewHasContent": true,
+        "shot": "C:\\Users\\Администратор\\AppData\\Local\\Temp\\2\\opencode\\hub-audit-publish\\audit\\frontend\\evidence\\cycle17\\shots\\myfiles-1795424647920-424.png"
+      },
+      "error": null
+    },
+    {
+      "name": "adminUsers",
+      "pass": true,
+      "ms": 13251,
+      "details": {
+        "loginName": "audit_c17_1795424647920_424",
+        "created": true,
+        "visibleAfterReload": true,
+        "shot": "C:\\Users\\Администратор\\AppData\\Local\\Temp\\2\\opencode\\hub-audit-publish\\audit\\frontend\\evidence\\cycle17\\shots\\admin-1795424647920-424.png"
+      },
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "base": "http://127.0.0.1:5227",
+  "runId": "1795426407627-217",
+  "results": [
+    {
+      "name": "myFiles",
+      "pass": true,
+      "ms": 16395,
+      "details": {
+        "name": "audit-c17-1795426407627-217.txt",
+        "dialogClosed": true,
+        "visibleAfterReload": true,
+        "previewHasContent": true,
+        "shot": "C:\\Users\\Администратор\\AppData\\Local\\Temp\\2\\opencode\\hub-audit-publish\\audit\\frontend\\evidence\\cycle17\\shots\\myfiles-1795426407627-217.png"
+      },
+      "error": null
+    }
+  ]
+}

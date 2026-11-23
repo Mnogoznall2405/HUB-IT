@@ -321,3 +321,23 @@ MSBuild/Roslyn-узлы простаивают, серверу не мешают
   fixtures), FE-0259 (Construction 502), /database и /my-files/edit.
 - Итог: 323 записи, Confirmed 269, Suspected 11, Fixed 2, Rejected 41.
   Валидатор 0 ошибок. Отчёт CYCLE_16_REVIEW.md.
+
+## Цикл 17 — воспроизводимость и заблокированные High (2026-11-23)
+
+- База e8930fe9; проверенный код — чистый b95c4cac; frontend и backend из одного
+  git archive, без правок владельца. Стенд .state-cycle17, 18007/5227.
+- Five E2E с нуля: 5/5 PASS (feed, tasks, chat, myFiles, admin); chat — 2 сообщения,
+  0 дублей. Скрипт five-e2e.cjs воспроизводит прогон одной командой.
+- Refresh matrix A-D (grace 15 c, MAX_HITS=1): один повтор — 200 и новый токен жив;
+  два последовательных — второй 401 и family отозвана; три параллельных — [200,200,401],
+  оба победителя мертвы; после grace старый 401, новый жив. Причина — превышение
+  лимита reuse, не параллельность.
+- FE-0059: заголовок исправлен (исторические 15 c убраны), titleHistory сохранён.
+- High: FE-0232 live (связь 1 -> 0 при сбое bulk), FE-0239 live (D2 получил
+  руководителя D1), FE-0259 live (черновик потерян при F5); FE-0230 — реальный
+  WebView2 host, live не воспроизведён; FE-0215 — blocked (Exchange EWS, не IMAP/SMTP).
+- Покрытие: E2E 9, Functional 27, Smoke 2, Blocked 8; Functional+E2E 36/46 (78.3%).
+  Новые E2E: public share (access/download/revoke/expiry), KB article, construction
+  direction workspace; /dashboard — Functional.
+- Реестр: 323 записи, 269/11/2/41; highBreakdown обновлён, runtimeStatus у пяти High;
+  валидатор 0 ошибок. Отчёт CYCLE_17_REVIEW.md.

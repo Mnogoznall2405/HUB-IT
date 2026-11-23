@@ -198,3 +198,15 @@
 - PWA: активация waiting-worker, offline с истёкшей сессией (FE-0325/0084/0085).
 - 11 Suspected: FE-0004, FE-0051, FE-0076, FE-0110, FE-0115, FE-0161,
   FE-0194, FE-0265, FE-0300, FE-0323, FE-0324.
+
+## Цикл 17 — очередь (2026-11-23)
+
+- FE-0215: EWS-совместимый тестовый сервер/mailbox (IMAP/SMTP не подходит).
+- FE-0230: найти воспроизводимый card-local re-render при позднем hostReady.
+- FE-0232/FE-0239/FE-0259: исправления — сохранение делегатов при сбое bulk,
+  request-id/abort при смене отдела, beforeunload/автосохранение черновика.
+- Данные для /computers, /statistics, /database, /it/objects, /my-files/edit.
+- Construction: 1C-заявки для вкладок «Заявки» и request-child.
+- 11 Suspected: FE-0004, FE-0051, FE-0076, FE-0110, FE-0115, FE-0161,
+  FE-0194, FE-0265, FE-0300, FE-0323, FE-0324.
+- При появлении исправлений — повторить матрицу refresh и five E2E на новом SHA.

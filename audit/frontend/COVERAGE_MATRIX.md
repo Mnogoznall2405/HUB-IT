@@ -1,7 +1,7 @@
-# COVERAGE MATRIX — route inventory (cycle 16)
+# COVERAGE MATRIX — route inventory (cycle 17)
 
-> Старые таблицы ниже — исторические (циклы 1–15). Актуальная инвентаризация построена
-> непосредственно из `App.jsx` (51 route entry) и не считает 36 сценариев 100% покрытием.
+> Исторические таблицы ниже сохранены. Актуальная инвентаризация построена из `App.jsx`;
+> 36 action-сценариев циклов 13–15 не считаются 100% покрытием.
 
 ## Полная карта маршрутов
 
@@ -9,26 +9,26 @@
 |---|---|---|---|---|
 | `/` | Redirect | — | None | RootRoute -> first accessible |
 | `/login` | Public | Auth | E2E | real 2FA setup/login (cycle14) |
-| `/shared-files/:token` | Public/Param | Public share | Functional | invalid-token error + retry |
+| `/shared-files/:token` | Public/Param | Public share | E2E | access + download + revoke + forced expiry (cycle17) |
 | `/shared-folders/:token` | Public/Param | Public share | Functional | 2000-file large folder (cycle13) |
 | `/about` | Standalone | — | Functional | Перейти в HUB |
-| `/dashboard` | Standalone | — | Smoke | rendered |
-| `/feed` | Standalone | API | E2E | create post -> reload (cycle16) |
+| `/dashboard` | Standalone | API | Functional | real greeting/task/mail/chat counters (cycle17) |
+| `/feed` | Standalone | API | E2E | create post -> reload (cycle16/17) |
 | `/tickets` | Standalone | API | Functional | create dialog |
-| `/tasks` | Standalone | API | E2E | create + edit + checklist -> reload (cycle16) |
-| `/chat` | Standalone | WS/API | E2E | notes send -> reload; cross-tab dedup (cycle16); offline send (cycle13) |
-| `/database` | Standalone | SQL Server | Smoke | rendered |
+| `/tasks` | Standalone | API | E2E | create + edit + checklist -> reload (cycle16/17) |
+| `/chat` | Standalone | WS/API | E2E | notes send -> reload; cross-tab dedupe (cycle16/17) |
+| `/database` | Standalone | SQL Server | Blocked | equipment APIs 500/503; no SQL/branch data |
 | `/networks` | Standalone | API | Functional | 10k ports mobile |
 | `/vcs` | Standalone | API | Functional | add terminal dialog |
 | `/mfu` | Standalone | 1C/API | Functional | error/empty state |
 | `/monitoring` | Standalone | SNMP/API | Functional | empty/search state |
-| `/computers` | Standalone | API | Smoke | rendered |
+| `/computers` | Standalone | API | Smoke | empty state: 0 PCs; no data fixtures |
 | `/scan-center` | Standalone | Scan API | Functional | queue tab |
 | `/voice` | Standalone | Voice API | Functional | tab + refresh |
 | `/dlp` | Standalone | DLP API | Functional | refresh |
 | `/file-egress` | Standalone | DLP API | Functional | refresh |
-| `/statistics` | Standalone | API | Smoke | rendered |
-| `/mail` | Standalone | Mail provider | Blocked | corporate password gate; no test mailbox |
+| `/statistics` | Standalone | API | Smoke | controls render; 0 records / no data |
+| `/mail` | Standalone | Exchange EWS | Blocked | EWS, not IMAP/SMTP; credentials gate; MAIL_MODULE_ENABLED=0 |
 | `/menu` | Standalone | — | Functional | navigate Tasks |
 | `/address-book` | Standalone | API | Functional | refresh/empty |
 | `/company-structure` | Standalone | API | Functional | tabs + refresh |
@@ -38,76 +38,76 @@
 | `/docflow` | Standalone | 1C/API | Functional | connect dialog |
 | `/passwords` | Standalone | API | Functional | new record dialog |
 | `/groups-access` | Standalone | AD/API | Functional | refresh |
-| `/my-files` | Standalone | API/storage | E2E | upload + search + reload + preview (cycle16) |
-| `/kb/manage` | Standalone | KB API | Smoke | rendered? not exercised |
+| `/my-files` | Standalone | API/storage | E2E | upload + search + reload + preview (cycle16/17) |
+| `/kb/manage` | Standalone | KB API | E2E | create article -> reload -> reopen (cycle17) |
 | `/help` | Standalone | — | Functional | open article |
 | `/profile` | Standalone | API | Functional | expand service data |
 | `/chat/open` | Param/Child | API | Functional | invalid link -> /chat |
 | `/networks/:branchId` | Param/Child | API | Functional | branch selected |
 | `/it/requests/:requestRef?` | Param/Child | 1C | Functional | История tab |
-| `/it/objects/:objectRef` | Param/Child | API | Smoke | not exercised |
-| `/construction/objects/:objectId` | Param/Child | 1C/SQL | Blocked | no configured object + 1C absent |
-| `/construction/objects/:objectId/directions/:groupRef` | Param/Child | 1C/SQL | Blocked | no fixture |
-| `/construction/objects/:objectId/directions/:groupRef/requests/:requestRef` | Param/Child | 1C/SQL | Blocked | no fixture |
-| `/construction/objects/:objectId/requests/:requestRef` | Param/Child | 1C/SQL | Blocked | no fixture |
-| `/my-files/edit/:fileId` | Param/Child | ONLYOFFICE | Smoke | editor error state |
-| `/mail/compose` | Param/Child | Mail provider | Blocked | credentials gate |
+| `/it/objects/:objectRef` | Param/Child | API | Blocked | IT objects DB unavailable |
+| `/construction/objects/:objectId` | Param/Child | 1C/SQL | Functional | managed synthetic object renders (cycle17) |
+| `/construction/objects/:objectId/directions/:groupRef` | Param/Child | 1C/SQL | E2E | work plan saved + F5 draft loss (cycle17) |
+| `/construction/objects/:objectId/directions/:groupRef/requests/:requestRef` | Param/Child | 1C/SQL | Blocked | no 1C request fixture |
+| `/construction/objects/:objectId/requests/:requestRef` | Param/Child | 1C/SQL | Blocked | no 1C request fixture |
+| `/my-files/edit/:fileId` | Param/Child | ONLYOFFICE | Blocked | editor server unavailable |
+| `/mail/compose` | Param/Child | Exchange EWS | Blocked | credentials gate; no EWS test server |
 | `/settings/:section?` | Param/Child | API | Functional | app section |
-| `/admin/:section?` | Param/Child | API | E2E | create synthetic user -> reload (cycle16) |
+| `/admin/:section?` | Param/Child | API | E2E | create synthetic user -> reload (cycle16/17) |
 | `/dashboard/news` | Redirect | — | None | LegacyNewsRedirect |
 | `/ad-users` | Redirect | — | None | -> /admin/ad-users |
 | `/kb` | Redirect | — | None | -> /help |
 | `*` | Redirect | — | None | HomeRedirect |
 
-## Реальный знаменатель (cycle 16)
+## Реальный знаменатель
 
 - Всего route entry в `App.jsx`: **51**.
 - Redirect/service: **5** (`/`, `/dashboard/news`, `/ad-users`, `/kb`, `*`).
 - Пользовательских route entry: **46**.
-- Первичные категории: 3 public, 31 standalone protected, 12 parameterized/child.
-- Вложенные разделы: 12 admin sections (`users, departments, ad-users, references, ai-bots, sessions, my-files, feedback, hub-desktop, work-schedules, chat-groups, system`) и 6 settings tabs (`appearance, notifications, ai, security, app, about`).
+- 3 public, 31 standalone protected, 12 parameterized/child.
+- 12 admin sections, 6 settings tabs.
 
-## Покрытие
+## Покрытие (cycle 17)
 
-| Уровень | Кол-во | Доля от 46 user-visible |
+| Уровень | Кол-во | Доля от 46 |
 |---|---|---|
-| E2E | 6 | 13.0% |
-| Functional (без E2E) | 26 | 56.5% |
-| Functional + E2E | 32 | 69.6% |
-| Smoke-only | 7 | 15.2% |
-| Blocked (среда) | 7 | 15.2% |
+| E2E | 9 | 19.6% |
+| Functional (без E2E) | 27 | 58.7% |
+| Functional + E2E | 36 | 78.3% |
+| Smoke-only | 2 | 4.3% |
+| Blocked (среда) | 8 | 17.4% |
 | Redirect | 5 | — |
 
-- **Functional/E2E: 32/46 = 69.6%**, не 100%.
-- **E2E: 6/46 = 13.0%**.
-- **Smoke-only + blocked: 14/46 = 30.4%** без функционального действия.
-- 36 action-сценариев циклов 13–15 покрывают 32 route entry; ещё 14 entry не имеют functional/E2E-действия.
-- Admin sections: 2/12 functional (users, departments); settings tabs: 1/6 functional (app).
+- **Functional/E2E: 36/46 = 78.3%**.
+- **E2E: 9/46 = 19.6%**.
+- Smoke-only: `/computers`, `/statistics` — empty states без данных; не считаются проверенными с данными.
+- Blocked: 8 entry, включая `/mail`, `/mail/compose`, `/construction`, 2 request-child, `/database`, `/my-files/edit`, `/it/objects/:objectRef`.
 
-## Cycle 16 — полные E2E (UI → API → SQLite → повторное открытие)
+## Cycle 17 — воспроизводимость и новые E2E
 
-| Сценарий | Маршрут | Что проверено | Результат |
-|---|---|---|---|
-| Публикация в ленте | `/feed` | title + body → Опубликовать → reload | PASS, запись в списке после reload |
-| Задача + чек-лист | `/tasks` | create с исполнителем → edit описания → чек-лист → reload | PASS, изменения сохранены |
-| Заметки чата | `/chat` | отправка → вторая вкладка → reload → API messages | PASS, 2 сообщения без дублей |
-| Загрузка файла | `/my-files` | upload session → reload → поиск → preview содержимого | PASS, контент сохранён |
-| Синтетический пользователь | `/admin/users` | create → reload → поиск | PASS, пользователь в списке |
-| Refresh-ротация | API | lost response / grace / 3 parallel | PASS (family revoke подтверждён) |
+| Проверка | Результат |
+|---|---|
+| Five E2E с нуля на clean b95c4cac | 5/5 PASS (feed, tasks, chat, myFiles, admin) |
+| Public file share | access 200, download 200, revoke 204 -> 404, forced expiry -> 404/expired page |
+| KB article | create -> reload -> reopen PASS |
+| Construction workspace | managed object + work plan -> reload PASS; F5 draft lost without prompt |
+| Dashboard | real counters render, no API errors |
+| Statistics / Computers | controls render, 0 records; no data fixtures |
+| Database | equipment APIs 500/503; blocked |
+| My Files editor | ONLYOFFICE server unavailable; blocked |
+| IT object detail | objects DB unavailable; blocked |
 
 ## Явно не покрыто функционально
 
-`/dashboard`, `/database`, `/computers`, `/statistics`, `/kb/manage`,
-`/my-files/edit/:fileId`, `/it/objects/:objectRef`;
-10 из 12 admin sections; 5 из 6 settings tabs.
-Blocked: `/mail`, `/mail/compose`, `/construction` и 4 construction child routes.
+`/computers`, `/statistics` (empty), 8 blocked entry; 10 из 12 admin sections
+(users — E2E; departments — read-only); 5 из 6 settings tabs (app — functional).
 
 ## Уровни
 
-- **Smoke** — страница открылась и отрисовала базовый shell.
-- **Functional** — выполнено главное действие/состояние (таб, refresh, диалог, error-state), результат проверен.
+- **Smoke** — страница открылась и отрисовала shell; данных нет.
+- **Functional** — выполнено главное действие/состояние, результат проверен.
 - **E2E** — UI → API → SQLite/WS → повторное открытие.
-- **Blocked** — среда не позволяет выполнить сценарий (нет интеграции/fixture); зафиксировано как ограничение, не как PASS.
+- **Blocked** — среда не позволяет выполнить сценарий; это ограничение, не PASS.
 
 ---
 

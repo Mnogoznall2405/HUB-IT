@@ -1,0 +1,63 @@
+{
+  "generatedAt": "2026-11-23",
+  "auditBase": "e8930fe9",
+  "testedSha": "b95c4cac",
+  "environment": "clean git archive b95c4cac; frontend build + backend from the same export; SQLite .state-cycle17 :18007; static proxy :5227",
+  "fiveE2E": {
+    "runId": "1795424647920-424",
+    "passed": 5,
+    "total": 5,
+    "scenarios": ["feed", "tasks", "chat", "myFiles", "adminUsers"],
+    "chatApi": { "messages": 2, "duplicates": 0 }
+  },
+  "refreshMatrix": {
+    "graceSeconds": 15,
+    "maxHits": 1,
+    "A_oneSequentialRetry": { "rotate": 200, "retry": 200, "newAccess": 200, "newRefresh": 200 },
+    "B_twoSequentialRetries": { "rotate": 200, "retry1": 200, "retry2": 401, "newAccess": 401, "newRefresh": 401 },
+    "C_threeParallel": { "statuses": [200, 200, 401], "winnerAccess": [401, 401], "winnerRefresh": [401, 401] },
+    "D_afterGrace": { "retry": 401, "newAccess": 200, "newRefresh": 200 },
+    "conclusion": "family revocation follows exceeding MAX_HITS=1 reuse; concurrency only reaches the limit faster"
+  },
+  "highs": {
+    "FE-0215": "blocked: Exchange EWS, no test server/mailbox, MAIL_MODULE_ENABLED=0",
+    "FE-0230": "not-reproduced-live: real WebView2 host, delayed hostReady, no hooks error",
+    "FE-0232": "reproduced-live: delegated link 1 -> 0 after injected bulk failure + Save",
+    "FE-0239": "reproduced-live: D2 managers 13 -> 11 after delayed D1 members load",
+    "FE-0259": "reproduced-live: draft lost on F5 without beforeunload"
+  },
+  "coverage": {
+    "totalRouteEntries": 51,
+    "userVisible": 46,
+    "E2E": 9,
+    "Functional": 27,
+    "Smoke": 2,
+    "Blocked": 8,
+    "Redirect": 5,
+    "functionalPlusE2E": 36,
+    "functionalPlusE2EPercent": 78.3,
+    "e2ePercent": 19.6,
+    "newE2ERoutes": ["/shared-files/:token", "/kb/manage", "/construction/objects/:objectId/directions/:groupRef"]
+  },
+  "publicShare": {
+    "create": 200,
+    "publicPage": 200,
+    "download": 200,
+    "revoke": 204,
+    "afterRevoke": 404,
+    "forcedExpiry": 404
+  },
+  "unverifiedRoutes": ["/computers (empty)", "/statistics (empty)", "/database (500/503)", "/my-files/edit (ONLYOFFICE)", "/it/objects/:objectRef (DB)"],
+  "blockedEnvironment": [
+    "/mail",
+    "/mail/compose",
+    "/construction",
+    "/construction/objects/:objectId/requests/:requestRef",
+    "/construction/objects/:objectId/directions/:groupRef/requests/:requestRef"
+  ],
+  "notes": [
+    "No app code changed; only audit/frontend in the PR",
+    "Test keys generated per run; no secrets/tokens/cookies in evidence",
+    "Network failure/delay injections are labeled as such; persistence checked on the real isolated backend"
+  ]
+}
