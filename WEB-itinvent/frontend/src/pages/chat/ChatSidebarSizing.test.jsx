@@ -70,9 +70,80 @@ describe('resizable chat sidebar', () => {
     first.unmount();
     render(<Harness />);
     expect(screen.getByRole('button', { name: 'Развернуть список чатов' })).toBeInTheDocument();
+    // Поиск из rail: временное раскрытие на ~340px, сохранённая ширина 436 не трогается.
     fireEvent.click(screen.getByRole('button', { name: 'Поиск чатов' }));
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Поиск чатов' })).toHaveFocus());
-    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '436');
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '340');
+    // Закрытие поиска восстанавливает rail; временный режим не попал в localStorage.
+    fireEvent.click(screen.getByRole('button', { name: 'Закрыть поиск' }));
+    expect(screen.getByRole('button', { name: 'Развернуть список чатов' })).toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(readSidebarLayout().mode).toBe('collapsed');
+  });
+
+  it('compact search opens a temporary panel and back restores compact', async () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Компактный список чатов' }));
+    // В compact нет текстового поля — только кнопка «Поиск» на всю ширину.
+    expect(screen.queryByRole('textbox', { name: 'Поиск чатов' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('chat-search-open'));
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Поиск чатов' })).toHaveFocus());
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '340');
+    fireEvent.click(screen.getByRole('button', { name: 'Закрыть поиск' }));
+    expect(screen.queryByRole('textbox', { name: 'Поиск чатов' })).not.toBeInTheDocument();
+    // Вернулись в compact: снова видна кнопка-заглушка, режим в хранилище — compact.
+    expect(screen.getByTestId('chat-search-open')).toBeInTheDocument();
+    expect(readSidebarLayout().mode).toBe('compact');
+  });
+
+  it('explicit resize during search keeps the user width instead of restoring', async () => {
+    const pointer = (el, type, init = {}) =>
+      fireEvent(el, new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, ...init }));
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Свернуть список чатов' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Поиск чатов' }));
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Поиск чатов' })).toHaveFocus());
+    const separator = screen.getByRole('separator');
+    // Пользователь осознанно тянет разделитель во время поиска — его выбор сохраняется.
+    pointer(separator, 'pointerdown', { clientX: 340 });
+    pointer(separator, 'pointermove', { clientX: 480 });
+    pointer(separator, 'pointerup');
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '480');
+    fireEvent.click(screen.getByRole('button', { name: 'Закрыть поиск' }));
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '480');
+    expect(readSidebarLayout()).toEqual({ width: 480, mode: 'expanded' });
+  });
+
+  it('Escape clears the query first and closes the temporary panel when empty', async () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Свернуть список чатов' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Поиск чатов' }));
+    const input = await screen.findByRole('textbox', { name: 'Поиск чатов' });
+    await waitFor(() => expect(input).toHaveFocus());
+    fireEvent.change(input, { target: { value: 'Николаев' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(input).toHaveValue('');
+    expect(screen.getByRole('textbox', { name: 'Поиск чатов' })).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.queryByRole('textbox', { name: 'Поиск чатов' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Развернуть список чатов' })).toBeInTheDocument();
+  });
+
+  it('search session shows back arrow and hides secondary actions', async () => {
+    render(<Harness />);
+    const input = screen.getByRole('textbox', { name: 'Поиск чатов' });
+    expect(screen.queryByRole('button', { name: 'Закрыть поиск' })).not.toBeInTheDocument();
+    fireEvent.focus(input);
+    expect(screen.getByRole('button', { name: 'Закрыть поиск' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Действия' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Свернуть список чатов' })).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'Ник' } });
+    expect(screen.getByRole('button', { name: 'Очистить поиск' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Очистить поиск' }));
+    expect(screen.getByRole('textbox', { name: 'Поиск чатов' })).toHaveValue('');
+    fireEvent.blur(input);
+    expect(screen.queryByRole('button', { name: 'Закрыть поиск' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Свернуть список чатов' })).toBeInTheDocument();
   });
 
   it('clamps keyboard resize, resets by double click and collapses with Enter', () => {

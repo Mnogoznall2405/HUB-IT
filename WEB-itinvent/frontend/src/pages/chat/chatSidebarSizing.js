@@ -5,6 +5,7 @@ export const CHAT_SIDEBAR_MAX = CHAT_TELEGRAM_SIDEBAR_LAYOUT.maxWidth;
 export const CHAT_SIDEBAR_DEFAULT = CHAT_TELEGRAM_SIDEBAR_LAYOUT.defaultWidth;
 export const CHAT_SIDEBAR_RAIL = CHAT_TELEGRAM_SIDEBAR_LAYOUT.railWidth;
 export const CHAT_SIDEBAR_COMPACT = CHAT_TELEGRAM_SIDEBAR_LAYOUT.compactWidth;
+export const CHAT_SIDEBAR_SEARCH_EXPAND = 340;
 export const CHAT_THREAD_MIN = CHAT_TELEGRAM_SIDEBAR_LAYOUT.threadMinWidth;
 export const SIDEBAR_MODES = ['collapsed', 'compact', 'expanded'];
 const STORAGE_KEY = 'hub.chat.sidebarLayout';

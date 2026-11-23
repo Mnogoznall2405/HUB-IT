@@ -191,11 +191,12 @@ function ChatSidebar({
   compose = null,
 }) {
   const density = getDensity(ui);
-  const { collapsed, setCollapsed } = useChatSidebarSizing();
+  const { collapsed, compact, setCollapsed, setSearchExpanded } = useChatSidebarSizing();
   const { openDrawer, headerMode } = useMainLayoutShell();
   const prefersReducedMotion = useReducedMotion();
   const reducedMotion = disableMotion || prefersReducedMotion;
   const [actionsAnchorEl, setActionsAnchorEl] = useState(null);
+  const [folderSelectAnchorEl, setFolderSelectAnchorEl] = useState(null);
   const [folderMenuPosition, setFolderMenuPosition] = useState(null);
   const [folderMenuConversation, setFolderMenuConversation] = useState(null);
   const [searchFocused, setSearchFocused] = useState(false);
@@ -315,17 +316,32 @@ function ChatSidebar({
     searchActive: sidebarSearchActive,
     searchFocused,
   });
+  // Открытие поиска: временно раскрываем панель (без записи в настройки),
+  // после закрытия прежний collapsed/compact режим восстановится.
   const handleExpandSearch = useCallback(() => {
-    setCollapsed?.(false);
+    setSearchExpanded?.(true);
     expandSearch();
     window.requestAnimationFrame(() => {
       searchInputRef.current?.focus?.();
     });
-  }, [expandSearch, setCollapsed]);
+  }, [expandSearch, setSearchExpanded]);
+  // Закрытие поиска: чистим запрос и снимаем временное раскрытие —
+  // панель возвращается к сохранённому режиму.
+  const closeSearch = useCallback(() => {
+    onSidebarQueryChange?.('');
+    setSearchExpanded?.(false);
+    setSearchFocused(false);
+    searchInputRef.current?.blur?.();
+  }, [onSidebarQueryChange, setSearchExpanded]);
   const handleOpenConversation = useCallback((conversationId) => {
     if (shouldSuppressListClick()) return;
+    closeSearch();
     onOpenConversation?.(conversationId);
-  }, [onOpenConversation, shouldSuppressListClick]);
+  }, [closeSearch, onOpenConversation, shouldSuppressListClick]);
+  const handleOpenPeer = useCallback((person) => {
+    closeSearch();
+    onOpenPeer?.(person);
+  }, [closeSearch, onOpenPeer]);
   const handlePrefetchPeerConversation = useCallback((person) => {
     const peerId = Number(person?.id || 0);
     const conversationId = resolveDirectConversationId(peerId, { searchChats });
@@ -394,6 +410,11 @@ function ChatSidebar({
     return items;
   }, [customFolders, folderUnreadCounts, workspace, activeFolderKey, showAiSection,
     aiArchiveOpen, setWorkspace, onActiveFolderChange, onOpenArchive]);
+  // Compact: вместо прокручиваемой ленты вкладок — выпадающий селектор раздела.
+  const compactFolderTabs = useMemo(() => buildChatFolderTabList(customFolders), [customFolders]);
+  const normalizedFolderKey = String(activeFolderKey || 'personal').trim() || 'personal';
+  const activeFolderTab = compactFolderTabs.find((tab) => tab.key === normalizedFolderKey) || compactFolderTabs[0];
+  const activeFolderUnread = Math.max(0, Number(folderUnreadCounts?.[normalizedFolderKey] || 0));
   const handleSidebarScrollRef = useCallback((node) => {
     setScrollElement(node);
     setSidebarListScrollElement(node);
@@ -673,6 +694,8 @@ function ChatSidebar({
               onFocus: () => setSearchFocused(true),
               onBlur: () => setSearchFocused(false),
               focused: searchFocused,
+              onClear: () => onSidebarQueryChange?.(''),
+              onClose: closeSearch,
               onOpenActions: (anchor) => setActionsAnchorEl(anchor),
             }} />
         ) : (
@@ -855,17 +878,78 @@ function ChatSidebar({
         {/* Д2: на десктопе поиск-пилюля живёт в шапке рядом с ☰ (ChatSidebarDesktopHeader). */}
 
         {workspace === 'chats' && !showPeopleSearch ? (
-          <div className={compactMobile ? 'mb-2' : 'mt-2'}>
-            <ChatFolderTabs
-              compact={!compactMobile}
-              activeFolderKey={activeFolderKey}
-              customFolders={customFolders}
-              folderUnreadCounts={folderUnreadCounts}
-              onFolderChange={onActiveFolderChange}
-              disableMotion={reducedMotion}
-              includeAllTab={false}
-            />
-          </div>
+          compact && !compactMobile ? (
+            // Compact 176px: лента вкладок требовала невидимой горизонтальной
+            // прокрутки — вместо неё селектор активного раздела.
+            <div className="mt-1.5 px-1">
+              <button
+                type="button"
+                data-testid="chat-folder-select"
+                aria-label="Раздел чатов"
+                aria-haspopup="menu"
+                aria-expanded={Boolean(folderSelectAnchorEl)}
+                onClick={(event) => setFolderSelectAnchorEl(event.currentTarget)}
+                className="flex w-full items-center gap-1.5 rounded-[10px] px-2 py-1.5 text-left text-[14px] font-medium text-[color:var(--chat-text-primary)] transition-colors hover:bg-[var(--chat-sidebar-row-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--chat-focus-ring)]"
+              >
+                <FolderOutlinedIcon sx={{ fontSize: 18, color: 'var(--chat-text-secondary)' }} />
+                <span className="min-w-0 flex-1 truncate">{activeFolderTab?.label || 'Папка'}</span>
+                {activeFolderUnread > 0 ? (
+                  <span
+                    data-chat-folder-unread-badge="true"
+                    aria-label={`Непрочитанных сообщений: ${activeFolderUnread}`}
+                    className="inline-flex min-w-[18px] items-center justify-center rounded-full px-1 text-[11px] font-bold leading-none"
+                    style={{ minWidth: 18, height: 18, backgroundColor: 'var(--chat-unread-bg)', color: 'var(--chat-unread-text)' }}
+                  >
+                    {activeFolderUnread > 99 ? '99+' : activeFolderUnread}
+                  </span>
+                ) : null}
+                <KeyboardArrowDownRoundedIcon sx={{ fontSize: 18, color: 'var(--chat-text-secondary)' }} />
+              </button>
+              <Menu
+                anchorEl={folderSelectAnchorEl}
+                open={Boolean(folderSelectAnchorEl)}
+                onClose={() => setFolderSelectAnchorEl(null)}
+                PaperProps={{ elevation: 12, sx: { mt: 0.5, borderRadius: 1.75, minWidth: 200 } }}
+              >
+                {compactFolderTabs.map((tab) => {
+                  const tabUnread = Math.max(0, Number(folderUnreadCounts?.[tab.key] || 0));
+                  return (
+                    <MenuItem
+                      key={tab.key}
+                      selected={tab.key === normalizedFolderKey}
+                      onClick={() => {
+                        onActiveFolderChange?.(tab.key);
+                        setFolderSelectAnchorEl(null);
+                      }}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{tab.label}</span>
+                      {tabUnread > 0 ? (
+                        <span
+                          aria-label={`Непрочитанных сообщений: ${tabUnread}`}
+                          className="ml-3 inline-flex min-w-[18px] items-center justify-center rounded-full px-1 text-[11px] font-bold leading-none"
+                          style={{ minWidth: 18, height: 18, backgroundColor: 'var(--chat-unread-bg)', color: 'var(--chat-unread-text)' }}
+                        >
+                          {tabUnread > 99 ? '99+' : tabUnread}
+                        </span>
+                      ) : null}
+                    </MenuItem>
+                  );
+                })}
+              </Menu>
+            </div>
+          ) : (
+            <div className={compactMobile ? 'mb-2' : 'mt-2'}>
+              <ChatFolderTabs
+                compact={!compactMobile}
+                activeFolderKey={activeFolderKey}
+                customFolders={customFolders}
+                folderUnreadCounts={folderUnreadCounts}
+                onFolderChange={onActiveFolderChange}
+                disableMotion={reducedMotion}
+                includeAllTab={false}
+              />
+            </div>
+          )
         ) : null}
 
         <Menu
@@ -1070,7 +1154,12 @@ function ChatSidebar({
       <div
         ref={handleSidebarScrollRef}
         onScroll={onSidebarScroll}
-        className="chat-scroll-hidden flex-1 overflow-y-auto pb-4"
+        className={joinClasses(
+          'chat-scroll-hidden flex-1 overflow-y-auto',
+          // Плавающий FAB (expanded/мобайл) — последний ряд должен
+          // досcrollиться выше кнопки; в collapsed/compact FAB статичен.
+          composeFab && !composeActive && !collapsed && !compact ? 'pb-16' : 'pb-4',
+        )}
         data-testid="chat-sidebar-list-scroll"
         style={{ touchAction: isMobile ? 'pan-y' : undefined }}
       >
@@ -1114,7 +1203,7 @@ function ChatSidebar({
                       key={`person-${person.id}`}
                       person={person}
                       openingPeerId={openingPeerId}
-                      onOpenPeer={onOpenPeer}
+                      onOpenPeer={handleOpenPeer}
                       onPrefetchPeerConversation={handlePrefetchPeerConversation}
                       compactMobile={compactMobile}
                       highlightQuery={sidebarQuery}
@@ -1460,28 +1549,53 @@ function ChatSidebar({
       </Menu>
 
       {composeFab && !composeActive ? (
-        <button
-          type="button"
-          data-testid="chat-compose-fab"
-          aria-label={composeFab.label || (workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат')}
-          title={composeFab.label || (workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат')}
-          onClick={composeFab.onClick || handleCreateAction}
-          disabled={composeFab.disabled ?? chatUnavailable}
-          className={joinClasses(
-            'absolute z-10 inline-flex items-center justify-center rounded-full transition duration-150 hover:scale-[1.04] active:scale-[0.96] disabled:opacity-50',
-            'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--chat-focus-ring)]',
-            compactMobile || collapsed ? 'bottom-4 right-4' : 'bottom-5 right-5',
-          )}
-          style={{
-            width: 44,
-            height: 44,
-            backgroundColor: 'var(--chat-compose-fab-bg)',
-            color: 'var(--chat-compose-fab-text)',
-            boxShadow: 'var(--chat-compose-fab-shadow)',
-          }}
-        >
-          {composeFab.icon || <CreateRoundedIcon />}
-        </button>
+        // В узких режимах (rail 72px / compact 176px) плавающий FAB перекрывает
+        // последнюю строку списка — там он живёт в статичном доке снизу колонки.
+        collapsed || compact ? (
+          <div className="flex shrink-0 justify-center border-t border-[color:var(--chat-border-soft)] px-1 py-1.5" data-testid="chat-compose-fab-dock">
+            <button
+              type="button"
+              data-testid="chat-compose-fab"
+              aria-label={composeFab.label || (workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат')}
+              title={composeFab.label || (workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат')}
+              onClick={composeFab.onClick || handleCreateAction}
+              disabled={composeFab.disabled ?? chatUnavailable}
+              className="inline-flex items-center justify-center rounded-full transition duration-150 hover:scale-[1.04] active:scale-[0.96] disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--chat-focus-ring)]"
+              style={{
+                width: 44,
+                height: 44,
+                backgroundColor: 'var(--chat-compose-fab-bg)',
+                color: 'var(--chat-compose-fab-text)',
+                boxShadow: 'var(--chat-compose-fab-shadow)',
+              }}
+            >
+              {composeFab.icon || <CreateRoundedIcon />}
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            data-testid="chat-compose-fab"
+            aria-label={composeFab.label || (workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат')}
+            title={composeFab.label || (workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат')}
+            onClick={composeFab.onClick || handleCreateAction}
+            disabled={composeFab.disabled ?? chatUnavailable}
+            className={joinClasses(
+              'absolute z-10 inline-flex items-center justify-center rounded-full transition duration-150 hover:scale-[1.04] active:scale-[0.96] disabled:opacity-50',
+              'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--chat-focus-ring)]',
+              compactMobile ? 'bottom-4 right-4' : 'bottom-5 right-5',
+            )}
+            style={{
+              width: 44,
+              height: 44,
+              backgroundColor: 'var(--chat-compose-fab-bg)',
+              color: 'var(--chat-compose-fab-text)',
+              boxShadow: 'var(--chat-compose-fab-shadow)',
+            }}
+          >
+            {composeFab.icon || <CreateRoundedIcon />}
+          </button>
+        )
       ) : null}
     </div>
   );

@@ -1,4 +1,6 @@
 import { Badge } from '@mui/material';
+import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
@@ -156,20 +158,41 @@ export default function ChatSidebarDesktopHeader({
   }
 
   const searchHeight = Number(ui?.density?.sidebarSearchHeight) || 42;
+  const searchHasText = Boolean(String(search?.value || '').trim());
+  const searchActive = Boolean(search && (search.focused || searchHasText));
+  const searchPillSx = {
+    height: searchHeight,
+    borderColor: 'transparent',
+    backgroundColor: search?.focused ? 'var(--chat-sidebar-search-focus-bg)' : 'var(--chat-sidebar-search-bg)',
+  };
   return (
     <div data-testid="chat-sidebar-desktop-header" className="mb-1.5 min-w-0">
-      {/* Д2: ряд «☰ + поиск-пилюля» как в Telegram Web A */}
       <div className="flex min-w-0 items-center gap-1">
-        {menuAction ? action('Открыть главное меню', shell.openDrawer, <MenuRoundedIcon fontSize="small" />) : null}
-        {search ? (
+        {searchActive ? (
+          // Сеанс поиска как в Telegram: «Назад» вместо меню, второстепенные
+          // действия скрыты, чтобы поле получило максимум ширины.
+          action('Закрыть поиск', () => search.onClose?.(), <ArrowBackRoundedIcon fontSize="small" />)
+        ) : (
+          menuAction ? action('Открыть главное меню', shell.openDrawer, <MenuRoundedIcon fontSize="small" />) : null
+        )}
+        {compact ? (
+          // Compact 176px: поле ввода не влезает — единая кнопка «Поиск»
+          // на всю ширину открывает временно раскрытую панель.
+          <button
+            type="button"
+            data-testid="chat-search-open"
+            aria-label={workspace === 'ai' ? 'Поиск по AI-диалогам' : 'Поиск чатов'}
+            onClick={onSearch}
+            className="flex min-w-0 flex-1 items-center rounded-full px-3 text-left transition duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--chat-focus-ring)] hover:bg-[var(--chat-sidebar-search-focus-bg)]"
+            style={{ ...searchPillSx, color: 'var(--chat-search-placeholder)', fontSize: ui?.density?.sidebarSearchFontSize || '14px' }}
+          >
+            <SearchRoundedIcon fontSize="small" sx={{ color: 'var(--chat-text-secondary)' }} />
+            <span className="ml-2 truncate">Поиск</span>
+          </button>
+        ) : search ? (
           <div
             className="flex min-w-0 flex-1 items-center rounded-full border px-3 transition duration-150"
-            style={{
-              height: searchHeight,
-              borderColor: search.focused ? 'transparent' : 'var(--chat-border-soft)',
-              backgroundColor: search.focused ? 'var(--chat-sidebar-search-focus-bg)' : 'var(--chat-sidebar-search-bg)',
-              boxShadow: search.focused ? '0 0 0 3px var(--chat-focus-ring)' : 'none',
-            }}
+            style={searchPillSx}
           >
             <SearchRoundedIcon
               fontSize="small"
@@ -183,27 +206,49 @@ export default function ChatSidebarDesktopHeader({
               onChange={(event) => search.onChange?.(event.target.value)}
               onFocus={search.onFocus}
               onBlur={search.onBlur}
+              onKeyDown={(event) => {
+                if (event.key !== 'Escape') return;
+                event.preventDefault();
+                if (searchHasText) search.onClear?.();
+                else search.onClose?.();
+              }}
               className="ml-2 h-full min-w-0 w-full bg-transparent text-[color:var(--chat-search-text)] placeholder:text-[color:var(--chat-search-placeholder)] outline-none"
               style={{ fontSize: ui?.density?.sidebarSearchFontSize || '14px' }}
             />
-            <SidebarActionButton
-              title="Действия"
-              onClick={(event) => search.onOpenActions?.(event.currentTarget)}
-              ui={ui}
-              className="h-8 w-8 bg-transparent"
-            >
-              <MoreHorizRoundedIcon fontSize="small" />
-            </SidebarActionButton>
+            {searchHasText ? (
+              <SidebarActionButton
+                title="Очистить поиск"
+                aria-label="Очистить поиск"
+                onClick={() => {
+                  search.onClear?.();
+                  search.inputRef?.current?.focus?.();
+                }}
+                ui={ui}
+                className="h-8 w-8 bg-transparent"
+              >
+                <CloseRoundedIcon fontSize="small" />
+              </SidebarActionButton>
+            ) : null}
+            {!searchActive ? (
+              <SidebarActionButton
+                title="Действия"
+                onClick={(event) => search.onOpenActions?.(event.currentTarget)}
+                ui={ui}
+                className="h-8 w-8 bg-transparent"
+              >
+                <MoreHorizRoundedIcon fontSize="small" />
+              </SidebarActionButton>
+            ) : null}
           </div>
         ) : (
           !showAiSection
             ? <span className="min-w-0 flex-1 font-semibold text-[color:var(--chat-text-strong)]">Чаты</span>
             : <span className="min-w-0 flex-1" />
         )}
-        {!compact && shellActions && shell.showNotificationsButton ? action('Уведомления', shell.openNotifications,
+        {!searchActive && !compact && shellActions && shell.showNotificationsButton ? action('Уведомления', shell.openNotifications,
           <Badge badgeContent={shell.notificationsBadgeValue} color="error" max={99}><NotificationsOutlinedIcon fontSize="small" /></Badge>) : null}
-        {setMode && !compact ? action('Компактный список чатов', () => setMode('compact'), <ViewCompactAltRoundedIcon fontSize="small" />) : null}
-        {!compact && setCollapsed ? action('Свернуть список чатов', onCollapse, <ChevronLeftRoundedIcon fontSize="small" />) : null}
+        {!searchActive && setMode && !compact ? action('Компактный список чатов', () => setMode('compact'), <ViewCompactAltRoundedIcon fontSize="small" />) : null}
+        {!searchActive && !compact && setCollapsed ? action('Свернуть список чатов', onCollapse, <ChevronLeftRoundedIcon fontSize="small" />) : null}
       </div>
       {/* Compact 176px: действия уходят во вторую строку — поиск не теснится. */}
       {compact ? (

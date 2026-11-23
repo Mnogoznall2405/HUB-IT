@@ -89,11 +89,22 @@ test('sidebar modes: seeded chats, selection sync, tooltips, viewports', async (
   // Шапка показывает имя именно выбранного чата (заголовок h6 в шапке треда).
   await expect(page.getByRole('heading', { name: targetName, exact: true })).toBeVisible({ timeout: 15_000 });
   await page.screenshot({ path: `${SHOTS}/10-expanded-selected.png` });
-  // composer → сообщение уходит именно выбранному чату
+  // composer → сообщение уходит именно выбранному чату. Отправка идёт
+  // WS-first (HTTP — fallback), поэтому подтверждаем адресата через API:
+  // GET messages выбранной беседы должен содержать отправленный текст.
+  const selectedConvId = new URL(page.url()).searchParams.get('conversation');
+  expect(selectedConvId).toBeTruthy();
   const composer = page.getByRole('textbox', { name: 'Сообщение' });
   await composer.fill('e2e: проверка адресата');
   await page.keyboard.press('Enter');
   await expect(page.getByText('e2e: проверка адресата').last()).toBeVisible({ timeout: 15_000 });
+  await expect.poll(async () => {
+    const resp = await page.request.get(`/api/v1/chat/conversations/${selectedConvId}/messages`);
+    if (!resp.ok()) return '';
+    const json = await resp.json();
+    const items = json.items || json.messages || (Array.isArray(json) ? json : []);
+    return items.map((m) => String(m?.body || '')).join('\n');
+  }, { timeout: 15_000 }).toContain('e2e: проверка адресата');
 
   // === Быстрое переключение 5+ чатов → шапка/выделение не расходятся ===
   const lastTitle = ((await rows.nth(4).getAttribute('title')) || '').trim().split('\n')[0];
@@ -114,15 +125,60 @@ test('sidebar modes: seeded chats, selection sync, tooltips, viewports', async (
   await expect(page.getByRole('tooltip').first()).toBeVisible({ timeout: 5000 });
   await railRows.nth(6).click();
   await expect(railRows.nth(6)).toHaveAttribute('aria-current', 'page');
+  // FAB в dock-режиме: не перекрывает ни одну строку списка.
+  const fabDock = page.getByTestId('chat-compose-fab-dock');
+  await expect(fabDock).toBeVisible();
+  const fabBox = await page.getByTestId('chat-compose-fab').boundingBox();
+  const rowBox = await railRows.nth(6).boundingBox();
+  expect(fabBox && rowBox && fabBox.y >= rowBox.y + rowBox.height - 1).toBeTruthy();
   await page.screenshot({ path: `${SHOTS}/11-collapsed-selected.png` });
 
-  // === COMPACT: имя + бейдж, выбор виден, шапка не перегружена ===
+  // === COMPACT: селектор раздела вместо скрытой прокрутки вкладок ===
   await page.getByRole('button', { name: 'Развернуть список чатов' }).click();
   await page.getByRole('button', { name: 'Компактный список чатов' }).click();
   await expect(page.getByRole('button', { name: 'Развернуть список чатов' })).toBeVisible();
+  // Все разделы достижимы через селектор — «Задачи» видна без прокрутки.
+  const folderSelect = page.getByTestId('chat-folder-select');
+  await expect(folderSelect).toBeVisible();
+  await folderSelect.click();
+  await expect(page.getByRole('menuitem', { name: 'Задачи' })).toBeVisible({ timeout: 5000 });
+  await page.keyboard.press('Escape');
   await page.screenshot({ path: `${SHOTS}/12-compact-selected.png` });
   const scrollW = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(scrollW).toBeLessThanOrEqual(1441);
+
+  // === Реальный pointer-drag разделителя: expanded → compact → expanded ===
+  await page.getByRole('button', { name: 'Развернуть список чатов' }).click();
+  const separator = page.getByRole('separator', { name: 'Ширина списка чатов' });
+  const sepBox = await separator.boundingBox();
+  const sidebarBox = () => page.getByTestId('chat-sidebar-desktop-header').boundingBox();
+  const wBefore = (await sidebarBox()).width;
+  await page.mouse.move(sepBox.x + 4, sepBox.y + sepBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(sepBox.x - 220, sepBox.y + sepBox.height / 2, { steps: 10 });
+  await page.mouse.up();
+  await expect(folderSelect).toBeVisible({ timeout: 5000 });
+  // Хэндл переехал вместе с правым краем панели — берём свежую геометрию.
+  const sepBox2 = await separator.boundingBox();
+  await page.mouse.move(sepBox2.x + 4, sepBox2.y + sepBox2.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(sepBox2.x + 240, sepBox2.y + sepBox2.height / 2, { steps: 10 });
+  await page.mouse.up();
+  await expect(folderSelect).toBeHidden({ timeout: 5000 });
+  const wAfter = (await sidebarBox()).width;
+  expect(wAfter).toBeGreaterThan(176);
+  expect(wBefore).toBeGreaterThan(176);
+
+  // === Тёмная тема приложения (theme_mode=system → prefers-color-scheme) ===
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: `${SHOTS}/20-dark-expanded.png` });
+  await page.getByRole('button', { name: 'Компактный список чатов' }).click();
+  await page.screenshot({ path: `${SHOTS}/21-dark-compact.png` });
+  await page.getByRole('button', { name: 'Свернуть список чатов' }).click();
+  await page.screenshot({ path: `${SHOTS}/22-dark-collapsed.png` });
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.getByRole('button', { name: 'Развернуть список чатов' }).click();
 
   // === 988×838 ===
   await page.setViewportSize({ width: 988, height: 838 });
@@ -146,4 +202,89 @@ test('sidebar modes: seeded chats, selection sync, tooltips, viewports', async (
   await page.emulateMedia({ colorScheme: 'light' });
   await page.waitForTimeout(400);
   await page.screenshot({ path: `${SHOTS}/15-light.png` });
+});
+
+test('sidebar search: temp expand from rail/compact, results, ×/Esc/back, mode restore', async ({ page }) => {
+  await seedConversations(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/chat');
+  await expect(page.getByTestId('chat-sidebar-desktop-header')).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(1200);
+
+  const railSearchBtn = page.getByRole('button', { name: 'Поиск чатов' });
+  const searchInput = page.getByRole('textbox', { name: 'Поиск чатов' });
+  const layoutMode = () => page.evaluate(() => JSON.parse(localStorage.getItem('hub.chat.sidebarLayout') || '{}').mode);
+
+  // === Collapsed: лупа → временная панель ~340px + автофокус ===
+  await page.getByRole('button', { name: 'Свернуть список чатов' }).click();
+  await expect(page.getByRole('button', { name: 'Развернуть список чатов' })).toBeVisible();
+  await railSearchBtn.click();
+  await expect(searchInput).toBeFocused({ timeout: 5000 });
+  await expect(page.getByRole('separator', { name: 'Ширина списка чатов' })).toHaveAttribute('aria-valuenow', '340');
+  // Сеанс поиска: ← вместо второстепенных кнопок.
+  await expect(page.getByRole('button', { name: 'Закрыть поиск' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Свернуть список чатов' })).toBeHidden();
+  await page.screenshot({ path: `${SHOTS}/30-search-temp-expanded.png` });
+
+  // === Ввод → серверные результаты; выбор открывает чат и возвращает rail ===
+  // SQLite lower() не опускает кириллицу (отличие от PostgreSQL в проде) —
+  // ищем по ASCII-токену, чтобы проверять сам путь поиска, а не коллацию тестовой БД.
+  await searchInput.fill('it');
+  const result = page.getByRole('button', { name: /IT Обслуживание/ }).first();
+  await expect(result).toBeVisible({ timeout: 15_000 });
+  await page.screenshot({ path: `${SHOTS}/31-search-results.png` });
+  await result.click();
+  await expect(page.getByRole('heading', { name: 'IT Обслуживание', exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('button', { name: 'Развернуть список чатов' })).toBeVisible({ timeout: 5000 });
+  // Временная ширина поиска не записалась как пользовательская настройка.
+  expect(await layoutMode()).toBe('collapsed');
+
+  // === Compact: поля нет — кнопка «Поиск» на всю ширину ===
+  await page.getByRole('button', { name: 'Развернуть список чатов' }).click();
+  await page.getByRole('button', { name: 'Компактный список чатов' }).click();
+  await expect(page.getByTestId('chat-search-open')).toBeVisible();
+  await expect(searchInput).not.toBeVisible();
+  await page.screenshot({ path: `${SHOTS}/32-compact-search-button.png` });
+  await page.getByTestId('chat-search-open').click();
+  await expect(searchInput).toBeFocused({ timeout: 5000 });
+
+  // === × чистит текст и остаётся в поиске; Esc чистит, затем закрывает ===
+  await searchInput.fill('Снабжение');
+  await expect(page.getByRole('button', { name: 'Очистить поиск' })).toBeVisible();
+  await page.getByRole('button', { name: 'Очистить поиск' }).click();
+  await expect(searchInput).toHaveValue('');
+  await searchInput.fill('Снабжение');
+  await searchInput.press('Escape');
+  await expect(searchInput).toHaveValue('');
+  await searchInput.press('Escape');
+  await expect(page.getByTestId('chat-search-open')).toBeVisible({ timeout: 5000 });
+  expect(await layoutMode()).toBe('compact');
+
+  // === Поиск существующего собеседника → открытие диалога → compact назад ===
+  await page.getByTestId('chat-search-open').click();
+  await expect(searchInput).toBeFocused({ timeout: 5000 });
+  await searchInput.fill('e2e');
+  const personResult = page.getByRole('button', { name: /e2e/i }).first();
+  await expect(personResult).toBeVisible({ timeout: 15_000 });
+  await personResult.click();
+  await expect(page.getByTestId('chat-search-open')).toBeVisible({ timeout: 5000 });
+  await expect.poll(() => new URL(page.url()).searchParams.get('conversation'), { timeout: 10_000 }).toBeTruthy();
+
+  // === Expanded: «Назад» закрывает поиск без смены постоянного режима ===
+  await page.getByRole('button', { name: 'Развернуть список чатов' }).click();
+  await searchInput.fill('Юристы');
+  await expect(page.getByRole('button', { name: 'Закрыть поиск' })).toBeVisible();
+  await page.getByRole('button', { name: 'Закрыть поиск' }).click();
+  await expect(searchInput).toHaveValue('');
+  expect(await layoutMode()).toBe('expanded');
+
+  // === 988×838: поиск из rail не ломает раскладку и не даёт переполнения ===
+  await page.setViewportSize({ width: 988, height: 838 });
+  await page.waitForTimeout(400);
+  await page.getByRole('button', { name: 'Свернуть список чатов' }).click();
+  await railSearchBtn.click();
+  await expect(searchInput).toBeFocused({ timeout: 5000 });
+  const scrollW3 = await page.evaluate(() => document.documentElement.scrollWidth);
+  expect(scrollW3).toBeLessThanOrEqual(989);
+  await page.screenshot({ path: `${SHOTS}/33-search-988.png` });
 });
