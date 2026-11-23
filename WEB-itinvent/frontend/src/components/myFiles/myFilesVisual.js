@@ -88,10 +88,33 @@ export const statusChip = (status, errorText = '') => {
 export const ROW_ACTIONS_SX = {
   display: 'flex',
   justifyContent: 'flex-end',
+  alignItems: 'center',
   gap: 0.25,
-  opacity: { xs: 1, md: 0 },
-  transition: 'opacity 0.15s',
-  '@media (hover: none)': { opacity: 1 },
+};
+
+// Плавающая «пилюля» быстрых действий: показывается при наведении/фокусе на строке
+// поверх правых колонок, поэтому под действия не резервируется широкая колонка.
+export const QUICK_ACTIONS_OVERLAY_SX = {
+  display: { xs: 'none', md: 'flex' },
+  alignItems: 'center',
+  gap: 0.25,
+  position: 'absolute',
+  right: 52,
+  top: '50%',
+  transform: 'translateY(-50%)',
+  px: 0.5,
+  py: 0.25,
+  borderRadius: '999px',
+  bgcolor: 'background.paper',
+  border: '1px solid',
+  borderColor: 'divider',
+  boxShadow: 2,
+  zIndex: 3,
+  opacity: 0,
+  visibility: 'hidden',
+  pointerEvents: 'none',
+  transition: 'opacity 0.15s ease',
+  '@media (hover: none)': { display: 'none' },
 };
 
 export const VIRTUALIZED_ROW_SX = {

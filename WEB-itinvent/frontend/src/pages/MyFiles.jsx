@@ -49,6 +49,7 @@ import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
 import MenuOutlinedIcon from '@mui/icons-material/MenuOutlined';
+import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import StarOutlineRoundedIcon from '@mui/icons-material/StarOutlineRounded';
@@ -71,6 +72,7 @@ import DocumentPreviewDialog from '../components/documentPreview/DocumentPreview
 import FileActionsContextMenu, {
   getFileActionsAnchorPosition,
 } from '../components/fileActions/FileActionsContextMenu';
+import NestedMenuItem from '../components/fileActions/NestedMenuItem';
 import PageShell from '../components/layout/PageShell';
 import PageTopBar from '../components/layout/PageTopBar';
 import {
@@ -227,6 +229,7 @@ export default function MyFiles() {
   const [renameDialog, setRenameDialog] = useState({ open: false, kind: '', id: '', name: '' });
   const [moveDialog, setMoveDialog] = useState({ open: false, kind: '', id: '', targetFolderId: '' });
   const [folderActionsMenu, setFolderActionsMenu] = useState({ folder: null, anchorPosition: null });
+  const [folderSubmenu, setFolderSubmenu] = useState('');
   const [selectedKeys, setSelectedKeys] = useState(() => new Set());
   const [sortField, setSortField] = useState('name');
   const [sortDir, setSortDir] = useState('asc');
@@ -785,6 +788,7 @@ export default function MyFiles() {
 
   const closeFolderActionsMenu = useCallback(() => {
     setFolderActionsMenu({ folder: null, anchorPosition: null });
+    setFolderSubmenu('');
   }, []);
 
   const handleCreateFolder = useCallback(async () => {
@@ -1608,9 +1612,79 @@ export default function MyFiles() {
       else navigateToLibrary(library.id);
     },
     onLibraryCreate: () => setLibraryDialog({ open: true, library: null }),
+    // Дерево показываем только под открытой библиотекой из уже загруженного списка папок.
+    libraryFolders: isLibraryView ? allFolders : [],
+    currentFolderId: isLibraryView ? currentFolderId : null,
+    onLibraryFolderOpen: (folder) => navigateToFolder(folder.id, libraryId),
     quota: activeQuota,
     quotaLoading: loading,
     isLibraryView,
+  };
+
+  const folderMenuRun = (fn) => () => {
+    const folder = folderActionsMenu.folder;
+    closeFolderActionsMenu();
+    if (folder) fn(folder);
+  };
+  const folderLeaf = (key, testId, disabled, onClick, icon, text) => (
+    <MenuItem key={key} data-testid={testId} disabled={disabled} onClick={onClick} sx={{ minHeight: 40 }}>
+      <ListItemIcon>{icon}</ListItemIcon>
+      <ListItemText>{text}</ListItemText>
+    </MenuItem>
+  );
+  const folderSharedWithMe = Boolean(folderActionsMenu.folder?.shared_with_me);
+  const folderShareItems = folderSharedWithMe ? [] : [
+    folderLeaf('share', 'folder-action-share', !folderMenuAccess.canShare,
+      folderMenuRun((folder) => { void handleFolderShare(folder); }),
+      <ShareOutlinedIcon fontSize="small" />, 'Поделиться папкой'),
+    officeStatus.enabled && !folderMenuAccess.library
+      ? folderLeaf('collaborators', 'folder-action-collaborators', !folderMenuAccess.canShare,
+        folderMenuRun((folder) => setCollaboratorsFolder(folder)),
+        <GroupOutlinedIcon fontSize="small" />, 'Совместный доступ')
+      : null,
+    folderActionsMenu.folder?.is_shared
+      ? folderLeaf('revoke-share', 'folder-action-revoke-share', !folderMenuAccess.canShare,
+        folderMenuRun((folder) => { void handleRevokeFolderShare(folder.id); }),
+        <LinkOutlinedIcon fontSize="small" />, 'Отключить ссылку')
+      : null,
+  ].filter(Boolean);
+  const folderOrganizeItems = folderSharedWithMe ? [] : [
+    folderLeaf('rename', 'folder-action-rename', !folderMenuAccess.canWrite,
+      folderMenuRun((folder) => openRenameDialog('folder', folder.id, folder.name)),
+      <DriveFileRenameOutlineRoundedIcon fontSize="small" />, 'Переименовать'),
+    folderMenuAccess.library
+      ? null
+      : folderLeaf('favorite', 'folder-action-favorite', !folderMenuAccess.canWrite,
+        folderMenuRun((folder) => { void handleToggleFavorite(folder, 'folder'); }),
+        folderActionsMenu.folder?.is_favorite
+          ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
+          : <StarOutlineRoundedIcon fontSize="small" />,
+        folderActionsMenu.folder?.is_favorite ? 'Убрать из избранного' : 'В избранное'),
+    folderLeaf('move', 'folder-action-move', !folderMenuAccess.canWrite,
+      folderMenuRun((folder) => openMoveDialog('folder', folder.id)),
+      <DriveFileMoveOutlinedIcon fontSize="small" />, 'Переместить'),
+  ].filter(Boolean);
+  const folderMoreItems = [
+    folderLeaf('details', 'folder-action-details', false,
+      folderMenuRun((folder) => openDetailsFor('folder', folder)),
+      <InfoOutlinedIcon fontSize="small" />, 'Сведения'),
+  ];
+  const folderGroup = (id, label, icon, items) => {
+    if (items.length === 0) return null;
+    if (items.length === 1) return items[0];
+    return (
+      <NestedMenuItem
+        key={id}
+        id={id}
+        openSubmenu={folderSubmenu}
+        onOpenSubmenu={setFolderSubmenu}
+        label={label}
+        icon={icon}
+        testId={`folder-action-group-${id}`}
+      >
+        {items}
+      </NestedMenuItem>
+    );
   };
 
   return (
@@ -1746,7 +1820,7 @@ export default function MyFiles() {
               <Box sx={{ flex: '1 1 auto', minWidth: 0, display: 'flex', alignItems: 'center', gap: 1.5 }}>
                 {isTrashView ? (
                   <>
-                    <Typography variant="h5" sx={{ fontWeight: 700, minWidth: 0 }} noWrap>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 700, minWidth: 0 }} noWrap>
                       {isLibraryView ? `Корзина — ${libraryName}` : 'Корзина'}
                     </Typography>
                     {(items.length > 0 || folders.length > 0) ? (
@@ -1763,7 +1837,7 @@ export default function MyFiles() {
                     ) : null}
                   </>
                 ) : isRecentView || isFavoritesView || (isSharedView && breadcrumbs.length === 0) ? (
-                  <Typography variant="h5" sx={{ fontWeight: 700, minWidth: 0 }} noWrap>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 700, minWidth: 0 }} noWrap>
                     {isRecentView ? 'Недавние' : isSharedView ? 'Доступно мне' : 'Избранное'}
                   </Typography>
                 ) : breadcrumbs.length > 0 ? (
@@ -1783,7 +1857,7 @@ export default function MyFiles() {
                       sx={{
                         fontWeight: 600,
                         cursor: 'pointer',
-                        fontSize: '1.05rem',
+                        fontSize: '0.95rem',
                         minWidth: 0,
                         maxWidth: { xs: 140, sm: 260 },
                         overflow: 'hidden',
@@ -1803,7 +1877,7 @@ export default function MyFiles() {
                           color="text.primary"
                           sx={{
                             fontWeight: 700,
-                            fontSize: '1.05rem',
+                            fontSize: '0.95rem',
                             minWidth: 0,
                             maxWidth: { xs: 160, sm: 360 },
                             overflow: 'hidden',
@@ -1823,7 +1897,7 @@ export default function MyFiles() {
                           sx={{
                             fontWeight: 600,
                             cursor: 'pointer',
-                            fontSize: '1.05rem',
+                            fontSize: '0.95rem',
                             minWidth: 0,
                             maxWidth: { xs: 120, sm: 240 },
                             overflow: 'hidden',
@@ -1839,7 +1913,7 @@ export default function MyFiles() {
                     })}
                   </Breadcrumbs>
                 ) : (
-                  <Typography variant="h5" sx={{ fontWeight: 700, minWidth: 0 }} noWrap>{isLibraryView ? libraryName : 'Мой диск'}</Typography>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 700, minWidth: 0 }} noWrap>{isLibraryView ? libraryName : 'Мой диск'}</Typography>
                 )}
               </Box>
 
@@ -2633,146 +2707,36 @@ export default function MyFiles() {
             onClose={closeFolderActionsMenu}
             anchorReference="anchorPosition"
             anchorPosition={folderActionsMenu.anchorPosition || undefined}
+            MenuListProps={{ 'aria-label': `Действия с папкой ${folderActionsMenu.folder?.name || 'папка'}` }}
+            PaperProps={{
+              sx: {
+                minWidth: 220,
+                borderRadius: '10px',
+                boxShadow: '0 14px 36px rgba(2, 6, 23, 0.24)',
+              },
+            }}
           >
-            <MenuItem
-              data-testid="folder-action-details"
-              onClick={() => {
-                const folder = folderActionsMenu.folder;
-                closeFolderActionsMenu();
-                if (folder) openDetailsFor('folder', folder);
-              }}
-            >
-              <ListItemIcon><InfoOutlinedIcon fontSize="small" /></ListItemIcon>
-              <ListItemText>Сведения</ListItemText>
-            </MenuItem>
-            <MenuItem
-              data-testid="folder-action-open"
-              onClick={() => {
-                const folder = folderActionsMenu.folder;
-                closeFolderActionsMenu();
-                if (folder) navigateToFolder(folder.id, folder.library_id);
-              }}
-            >
-              <ListItemIcon><FolderOutlinedIcon fontSize="small" /></ListItemIcon>
-              <ListItemText>Открыть</ListItemText>
-            </MenuItem>
-            {folderActionsMenu.folder?.shared_with_me ? null : [
+            {folderLeaf('open', 'folder-action-open', false,
+              folderMenuRun((folder) => navigateToFolder(folder.id, folder.library_id)),
+              <FolderOutlinedIcon fontSize="small" />, 'Открыть')}
+            {folderSharedWithMe ? null : folderLeaf('archive', 'folder-action-archive', false,
+              folderMenuRun((folder) => { void handleFolderArchive(folder); }),
+              <ArchiveOutlinedIcon fontSize="small" />, 'Скачать папку (ZIP)')}
+            {folderGroup('share', 'Поделиться', <ShareOutlinedIcon fontSize="small" />, folderShareItems)}
+            {folderGroup('organize', 'Организовать', <DriveFileMoveOutlinedIcon fontSize="small" />, folderOrganizeItems)}
+            {folderGroup('more', 'Дополнительно', <MoreHorizRoundedIcon fontSize="small" />, folderMoreItems)}
+            {folderSharedWithMe ? null : <Divider />}
+            {folderSharedWithMe ? null : (
               <MenuItem
-                key="rename"
-                data-testid="folder-action-rename"
-                disabled={!folderMenuAccess.canWrite}
-                onClick={() => {
-                  const folder = folderActionsMenu.folder;
-                  closeFolderActionsMenu();
-                  if (folder) openRenameDialog('folder', folder.id, folder.name);
-                }}
-              >
-                <ListItemIcon><DriveFileRenameOutlineRoundedIcon fontSize="small" /></ListItemIcon>
-                <ListItemText>Переименовать</ListItemText>
-              </MenuItem>,
-              folderMenuAccess.library ? null : (
-                <MenuItem
-                  key="favorite"
-                  data-testid="folder-action-favorite"
-                  disabled={!folderMenuAccess.canWrite}
-                  onClick={() => {
-                    const folder = folderActionsMenu.folder;
-                    closeFolderActionsMenu();
-                    if (folder) void handleToggleFavorite(folder, 'folder');
-                  }}
-                >
-                  <ListItemIcon>
-                    {folderActionsMenu.folder?.is_favorite
-                      ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
-                      : <StarOutlineRoundedIcon fontSize="small" />}
-                  </ListItemIcon>
-                  <ListItemText>{folderActionsMenu.folder?.is_favorite ? 'Убрать из избранного' : 'В избранное'}</ListItemText>
-                </MenuItem>
-              ),
-              <MenuItem
-                key="archive"
-                data-testid="folder-action-archive"
-                onClick={() => {
-                  const folder = folderActionsMenu.folder;
-                  closeFolderActionsMenu();
-                  if (folder) void handleFolderArchive(folder);
-                }}
-              >
-                <ListItemIcon><ArchiveOutlinedIcon fontSize="small" /></ListItemIcon>
-                <ListItemText>Скачать папку (ZIP)</ListItemText>
-              </MenuItem>,
-              <MenuItem
-                key="move"
-                data-testid="folder-action-move"
-                disabled={!folderMenuAccess.canWrite}
-                onClick={() => {
-                  const folder = folderActionsMenu.folder;
-                  closeFolderActionsMenu();
-                  if (folder) openMoveDialog('folder', folder.id);
-                }}
-              >
-                <ListItemIcon><DriveFileMoveOutlinedIcon fontSize="small" /></ListItemIcon>
-                <ListItemText>Переместить</ListItemText>
-              </MenuItem>,
-              <MenuItem
-                key="share"
-                data-testid="folder-action-share"
-                disabled={!folderMenuAccess.canShare}
-                onClick={() => {
-                  const folder = folderActionsMenu.folder;
-                  closeFolderActionsMenu();
-                  if (folder) void handleFolderShare(folder);
-                }}
-              >
-                <ListItemIcon><ShareOutlinedIcon fontSize="small" /></ListItemIcon>
-                <ListItemText>Поделиться папкой</ListItemText>
-              </MenuItem>,
-              officeStatus.enabled && !folderMenuAccess.library ? (
-                <MenuItem
-                  key="collaborators"
-                  data-testid="folder-action-collaborators"
-                  disabled={!folderMenuAccess.canShare}
-                  onClick={() => {
-                    const folder = folderActionsMenu.folder;
-                    closeFolderActionsMenu();
-                    if (folder) setCollaboratorsFolder(folder);
-                  }}
-                >
-                  <ListItemIcon><GroupOutlinedIcon fontSize="small" /></ListItemIcon>
-                  <ListItemText>Совместный доступ</ListItemText>
-                </MenuItem>
-              ) : null,
-              folderActionsMenu.folder?.is_shared ? (
-                <MenuItem
-                  key="revoke-share"
-                  data-testid="folder-action-revoke-share"
-                  disabled={!folderMenuAccess.canShare}
-                  onClick={() => {
-                    const folder = folderActionsMenu.folder;
-                    closeFolderActionsMenu();
-                    if (folder) void handleRevokeFolderShare(folder.id);
-                  }}
-                >
-                  <ListItemIcon><LinkOutlinedIcon fontSize="small" /></ListItemIcon>
-                  <ListItemText>Отключить ссылку</ListItemText>
-                </MenuItem>
-              ) : null,
-              <Divider key="danger-divider" />,
-              <MenuItem
-                key="delete"
                 data-testid="folder-action-delete"
                 disabled={!folderMenuAccess.canWrite}
-                onClick={() => {
-                  const folder = folderActionsMenu.folder;
-                  closeFolderActionsMenu();
-                  if (folder) void handleDeleteFolder(folder);
-                }}
-                sx={{ color: 'error.main' }}
+                onClick={folderMenuRun((folder) => { void handleDeleteFolder(folder); })}
+                sx={{ minHeight: 40, color: 'error.main' }}
               >
                 <ListItemIcon sx={{ color: 'inherit' }}><DeleteOutlineIcon fontSize="small" /></ListItemIcon>
                 <ListItemText>Удалить</ListItemText>
-              </MenuItem>,
-            ]}
+              </MenuItem>
+            )}
           </Menu>
 
         <Dialog open={uploadDialogOpen} onClose={closeUploadDialog} maxWidth="sm" fullWidth>

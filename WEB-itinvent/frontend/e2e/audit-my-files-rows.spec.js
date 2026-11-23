@@ -54,10 +54,15 @@ test('tapping folder overflow opens the folder menu without navigating', async (
   expect(calls.navigate).toBe(0);
 });
 
-test('desktop keeps the inline action icons and hides the overflow button', async ({ page }) => {
+test('desktop keeps the overflow button visible and reveals quick actions on row hover', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto(harness);
+  // ⋮ доступен на всех ширинах; быстрые действия — плавающая пилюля, появляется при наведении.
+  await expect(page.getByRole('button', { name: `Действия с файлом ${fileName}` })).toBeVisible();
+  await expect(page.getByTestId('my-files-download-file-a')).toBeHidden();
+  await expect(page.getByTestId('my-files-share-file-a')).toBeHidden();
+  await page.getByTitle(fileName).hover();
   await expect(page.getByTestId('my-files-download-file-a')).toBeVisible();
   await expect(page.getByTestId('my-files-share-file-a')).toBeVisible();
-  await expect(page.getByRole('button', { name: `Действия с файлом ${fileName}` })).toBeHidden();
+  await expect(page.getByTestId('my-files-preview-file-a')).toBeVisible();
 });

@@ -125,10 +125,15 @@ describe('FileActionsContextMenu', () => {
 
     expect(screen.getByRole('menuitem', { name: 'Просмотр' })).toBeVisible();
     expect(screen.getByRole('menuitem', { name: 'Открыть' })).toBeVisible();
-    expect(screen.getByRole('menuitem', { name: 'Быстрая печать' })).toBeVisible();
     expect(screen.getByRole('menuitem', { name: 'Сохранить как' })).toBeVisible();
-    expect(screen.getByRole('menuitem', { name: 'Сохранить все вложения…' })).toBeVisible();
+
+    // «Копировать» — единственный пункт группы «Организовать», поэтому поднят на верхний уровень.
     expect(screen.getByRole('menuitem', { name: 'Копировать' })).toBeVisible();
+
+    // Печать и массовое сохранение живут в группе «Дополнительно».
+    fireEvent.click(screen.getByTestId('file-action-group-more'));
+    expect(screen.getByRole('menuitem', { name: 'Быстрая печать' })).toBeVisible();
+    expect(screen.getByRole('menuitem', { name: 'Сохранить все вложения…' })).toBeVisible();
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Быстрая печать' }));
     await waitFor(() => expect(onDownload).toHaveBeenCalledTimes(1));

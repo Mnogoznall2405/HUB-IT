@@ -194,6 +194,7 @@ test('file rename, move and restore keep the original download bytes', async ({ 
   const renamedName = `e2e-renamed-${Date.now()}.txt`;
   const fileCard = page.getByTestId(`my-files-card-${fileId}`);
   await fileCard.click({ button: 'right' });
+  await page.getByTestId('file-action-group-organize').click();
   await page.getByTestId('file-action-rename').click();
 
   const renameDialog = page.getByRole('dialog', { name: 'Переименовать файл' });
@@ -224,6 +225,7 @@ test('file rename, move and restore keep the original download bytes', async ({ 
   const folderId = String(folder.id);
 
   await fileCard.click({ button: 'right' });
+  await page.getByTestId('file-action-group-organize').click();
   await page.getByTestId('file-action-move').click();
   const moveDialog = page.getByRole('dialog', { name: 'Переместить в папку' });
   await expect(moveDialog).toBeVisible();
@@ -486,6 +488,7 @@ test('public file link downloads without login and stops working after revoke', 
       (response) => response.request().method() === 'DELETE' && new URL(response.url()).pathname === `/api/v1/my-files/${fileId}/share`,
     );
     await fileCard.click({ button: 'right' });
+    await page.getByTestId('file-action-group-share').click();
     await page.getByTestId('file-action-revoke-share').click();
     expect((await revokeResponsePromise).status()).toBe(204);
 
@@ -631,6 +634,7 @@ test('public folder link downloads the whole subtree as a zip and dies with the 
 
   const fileCard = page.getByTestId(`my-files-card-${fileId}`);
   await fileCard.click({ button: 'right' });
+  await page.getByTestId('file-action-group-organize').click();
   await page.getByTestId('file-action-move').click();
   const moveDialog = page.getByRole('dialog', { name: 'Переместить в папку' });
   await expect(moveDialog).toBeVisible();
@@ -650,6 +654,9 @@ test('public folder link downloads the whole subtree as a zip and dies with the 
     (response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/api/v1/my-files/folders/${outer.id}/share`,
   );
   await page.getByTestId(`my-files-folder-${outer.id}`).click({ button: 'right' });
+  if (await page.getByTestId('folder-action-group-share').count()) {
+    await page.getByTestId('folder-action-group-share').click();
+  }
   await page.getByTestId('folder-action-share').click();
   const shareResponse = await shareResponsePromise;
   expect(shareResponse.status()).toBe(200);
@@ -710,6 +717,9 @@ test('public folder link downloads the whole subtree as a zip and dies with the 
       (response) => response.request().method() === 'DELETE' && new URL(response.url()).pathname === `/api/v1/my-files/folders/${outer.id}/share`,
     );
     await page.getByTestId(`my-files-folder-${outer.id}`).click({ button: 'right' });
+    if (await page.getByTestId('folder-action-group-share').count()) {
+      await page.getByTestId('folder-action-group-share').click();
+    }
     await page.getByTestId('folder-action-revoke-share').click();
     expect((await revokeResponsePromise).status()).toBe(204);
 

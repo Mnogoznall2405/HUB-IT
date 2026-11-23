@@ -178,6 +178,7 @@ export default function MailAttachmentCard({
         onDownload={onDownload}
         onSaveAll={onSaveAll}
         onDelete={onDelete}
+        deleteLabel="Удалить вложение"
         onSelectAll={onSelectAll}
         paperSx={getMailMenuPaperSx(tokens, { minWidth: 180 })}
       />

@@ -103,24 +103,21 @@ const hasRule = (blocks, query, declaration) =>
   blocks.some((block) => block.includes(query) && block.includes(declaration));
 
 describe('MyFiles mobile list rows', () => {
-  it('hides file action icons below md and shows a single overflow button', () => {
+  it('hides quick action icons below md while the overflow button stays on all breakpoints', () => {
     const { container } = renderWithTheme(<FileRow {...fileRowProps()} />);
     const overflow = screen.getByRole('button', { name: 'Действия с файлом Отчёт за квартал с длинным названием.xlsx' });
     expect(overflow).toBeInTheDocument();
 
-    const desktopActions = container.querySelector('.row-actions > div');
-    expect(desktopActions).toBeTruthy();
+    // Быстрые действия — плавающая пилюля: видна только на md+ при наведении/фокусе.
+    const quickActions = container.querySelector('.row-quick-actions');
+    expect(quickActions).toBeTruthy();
     for (const testid of ['my-files-preview-file-1', 'my-files-download-file-1', 'my-files-share-file-1', 'my-files-delete-file-1']) {
-      expect(desktopActions.querySelector(`[data-testid="${testid}"]`)).toBeTruthy();
+      expect(quickActions.querySelector(`[data-testid="${testid}"]`)).toBeTruthy();
     }
 
-    const wrapperRules = rulesForElement(desktopActions);
-    expect(hasRule(wrapperRules.media, '@media (min-width:0px)', 'display:none')).toBe(true);
-    expect(hasRule(wrapperRules.media, '@media (min-width:900px)', 'display:flex')).toBe(true);
-
-    const overflowRules = rulesForElement(overflow);
-    expect(hasRule(overflowRules.media, '@media (min-width:0px)', 'inline-flex')).toBe(true);
-    expect(hasRule(overflowRules.media, '@media (min-width:900px)', 'display:none')).toBe(true);
+    const overlayRules = rulesForElement(quickActions);
+    expect(hasRule(overlayRules.media, '@media (min-width:0px)', 'display:none')).toBe(true);
+    expect(hasRule(overlayRules.media, '@media (min-width:900px)', 'display:flex')).toBe(true);
   });
 
   it('file overflow button opens the actions menu without opening the file', () => {
@@ -150,10 +147,10 @@ describe('MyFiles mobile list rows', () => {
       officeEditable: true,
     });
     const { container } = renderWithTheme(<FileRow {...props} />);
-    const desktopActions = container.querySelector('.row-actions > div');
-    expect(desktopActions).toBeTruthy();
-    expect(desktopActions.querySelector('[data-testid="my-files-shared-edit-shared-1"]')).toBeTruthy();
-    expect(desktopActions.querySelector('[data-testid="my-files-shared-download-shared-1"]')).toBeTruthy();
+    const quickActions = container.querySelector('.row-quick-actions');
+    expect(quickActions).toBeTruthy();
+    expect(quickActions.querySelector('[data-testid="my-files-shared-edit-shared-1"]')).toBeTruthy();
+    expect(quickActions.querySelector('[data-testid="my-files-shared-download-shared-1"]')).toBeTruthy();
 
     const overflow = screen.getByRole('button', { name: 'Действия с файлом Отчёт за квартал с длинным названием.xlsx' });
     fireEvent.click(overflow);
@@ -168,6 +165,6 @@ describe('MyFiles mobile list rows', () => {
     expect(container.querySelector('.row-actions [data-testid="my-files-restore-file-1"]')).toBeTruthy();
     expect(container.querySelector('.row-actions [data-testid="my-files-purge-file-1"]')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Действия с файлом/ })).not.toBeInTheDocument();
-    expect(container.querySelector('.row-actions > div')).toBeNull();
+    expect(container.querySelector('.row-quick-actions')).toBeNull();
   });
 });
