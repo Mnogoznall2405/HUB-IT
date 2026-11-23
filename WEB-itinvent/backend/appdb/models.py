@@ -1455,6 +1455,9 @@ class AppAiBotConversation(AppBase):
     rolling_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     summary_until_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     context_reset_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # A4: per-conversation enqueue counter, incremented under the FOR UPDATE
+    # lock on this row -> server-side monotone FIFO key for ai_bot_runs.queue_seq.
+    last_run_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     use_personal_memory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     title_source: Mapped[str] = mapped_column(String(24), nullable=False, default="assistant")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
@@ -1541,6 +1544,16 @@ class AppAiBotRun(AppBase):
     __table_args__ = _table_args(
         Index("ix_app_ai_bot_runs_status_created_at", "status", "created_at"),
         Index("ix_app_ai_bot_runs_bot_conversation_created_at", "bot_id", "conversation_id", "created_at"),
+        Index("ix_app_ai_bot_runs_conversation_status_queue_seq", "conversation_id", "status", "queue_seq"),
+        # A4: at most one `running` run per conversation (backstop; the claim
+        # path also serializes on the ai_bot_conversations row lock).
+        Index(
+            "uq_app_ai_bot_runs_running_conversation",
+            "conversation_id",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
+            sqlite_where=text("status = 'running'"),
+        ),
         schema=APP_SCHEMA,
     )
 
@@ -1558,6 +1571,10 @@ class AppAiBotRun(AppBase):
     usage_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # A4: per-conversation FIFO key from ai_bot_conversations.last_run_seq
+    # (assigned under the enqueue row lock). NULL -> ordered oldest via
+    # (created_at, id) fallback.
+    queue_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
