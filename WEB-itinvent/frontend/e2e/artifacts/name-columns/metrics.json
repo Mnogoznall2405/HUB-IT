@@ -1,0 +1,335 @@
+{
+  "w1024": {
+    "viewport": 1024,
+    "docOverflow": 0,
+    "panelWidth": 932,
+    "rowWidth": 930,
+    "gridCols": [
+      40,
+      538,
+      160,
+      96,
+      48
+    ],
+    "nameColWidth": 538,
+    "nameCellWidth": 538,
+    "nameTextWidth": 175,
+    "iconsWidth": 20,
+    "cellWidths": [
+      40,
+      538,
+      0,
+      160,
+      96,
+      48,
+      158
+    ],
+    "visibleSortLabels": [
+      "my-files-sort-updated",
+      "my-files-sort-size"
+    ],
+    "headerColsMatchRow": true
+  },
+  "w1024-details": {
+    "viewport": 1024,
+    "docOverflow": 0,
+    "panelWidth": 932,
+    "rowWidth": 930,
+    "gridCols": [
+      40,
+      538,
+      160,
+      96,
+      48
+    ],
+    "nameColWidth": 538,
+    "nameCellWidth": 538,
+    "nameTextWidth": 175,
+    "iconsWidth": 20,
+    "cellWidths": [
+      40,
+      538,
+      0,
+      160,
+      96,
+      48,
+      158
+    ],
+    "visibleSortLabels": [
+      "my-files-sort-updated",
+      "my-files-sort-size"
+    ],
+    "headerColsMatchRow": true
+  },
+  "w1280": {
+    "viewport": 1280,
+    "docOverflow": 0,
+    "panelWidth": 936,
+    "rowWidth": 934,
+    "gridCols": [
+      40,
+      542,
+      160,
+      96,
+      48
+    ],
+    "nameColWidth": 542,
+    "nameCellWidth": 542,
+    "nameTextWidth": 175,
+    "iconsWidth": 20,
+    "cellWidths": [
+      40,
+      542,
+      0,
+      160,
+      96,
+      48,
+      158
+    ],
+    "visibleSortLabels": [
+      "my-files-sort-updated",
+      "my-files-sort-size"
+    ],
+    "headerColsMatchRow": true
+  },
+  "w1280-details": {
+    "viewport": 1280,
+    "docOverflow": 0,
+    "panelWidth": 616,
+    "rowWidth": 614,
+    "gridCols": [
+      40,
+      494,
+      48
+    ],
+    "nameColWidth": 494,
+    "nameCellWidth": 494,
+    "nameTextWidth": 175,
+    "iconsWidth": 20,
+    "cellWidths": [
+      40,
+      494,
+      0,
+      0,
+      0,
+      48,
+      158
+    ],
+    "visibleSortLabels": [],
+    "headerColsMatchRow": true
+  },
+  "w1366": {
+    "viewport": 1366,
+    "docOverflow": 0,
+    "panelWidth": 1022,
+    "rowWidth": 1020,
+    "gridCols": [
+      40,
+      480,
+      140,
+      160,
+      96,
+      48
+    ],
+    "nameColWidth": 480,
+    "nameCellWidth": 480,
+    "nameTextWidth": 175,
+    "iconsWidth": 20,
+    "cellWidths": [
+      40,
+      480,
+      140,
+      160,
+      96,
+      48,
+      158
+    ],
+    "visibleSortLabels": [
+      "my-files-sort-owner",
+      "my-files-sort-updated",
+      "my-files-sort-size"
+    ],
+    "headerColsMatchRow": true
+  },
+  "w1366-details": {
+    "viewport": 1366,
+    "docOverflow": 0,
+    "panelWidth": 702,
+    "rowWidth": 700,
+    "gridCols": [
+      40,
+      412,
+      160,
+      48
+    ],
+    "nameColWidth": 412,
+    "nameCellWidth": 412,
+    "nameTextWidth": 175,
+    "iconsWidth": 20,
+    "cellWidths": [
+      40,
+      412,
+      0,
+      160,
+      0,
+      48,
+      158
+    ],
+    "visibleSortLabels": [
+      "my-files-sort-updated"
+    ],
+    "headerColsMatchRow": true
+  },
+  "w1600": {
+    "viewport": 1600,
+    "docOverflow": 0,
+    "panelWidth": 1256,
+    "rowWidth": 1254,
+    "gridCols": [
+      40,
+      714,
+      140,
+      160,
+      96,
+      48
+    ],
+    "nameColWidth": 714,
+    "nameCellWidth": 714,
+    "nameTextWidth": 175,
+    "iconsWidth": 20,
+    "cellWidths": [
+      40,
+      714,
+      140,
+      160,
+      96,
+      48,
+      158
+    ],
+    "visibleSortLabels": [
+      "my-files-sort-owner",
+      "my-files-sort-updated",
+      "my-files-sort-size"
+    ],
+    "headerColsMatchRow": true
+  },
+  "w1600-details": {
+    "viewport": 1600,
+    "docOverflow": 0,
+    "panelWidth": 936,
+    "rowWidth": 934,
+    "gridCols": [
+      40,
+      542,
+      160,
+      96,
+      48
+    ],
+    "nameColWidth": 542,
+    "nameCellWidth": 542,
+    "nameTextWidth": 175,
+    "iconsWidth": 20,
+    "cellWidths": [
+      40,
+      542,
+      0,
+      160,
+      96,
+      48,
+      158
+    ],
+    "visibleSortLabels": [
+      "my-files-sort-updated",
+      "my-files-sort-size"
+    ],
+    "headerColsMatchRow": true
+  },
+  "w1920": {
+    "viewport": 1920,
+    "docOverflow": 0,
+    "panelWidth": 1576,
+    "rowWidth": 1574,
+    "gridCols": [
+      40,
+      1034,
+      140,
+      160,
+      96,
+      48
+    ],
+    "nameColWidth": 1034,
+    "nameCellWidth": 1034,
+    "nameTextWidth": 175,
+    "iconsWidth": 20,
+    "cellWidths": [
+      40,
+      1034,
+      140,
+      160,
+      96,
+      48,
+      158
+    ],
+    "visibleSortLabels": [
+      "my-files-sort-owner",
+      "my-files-sort-updated",
+      "my-files-sort-size"
+    ],
+    "headerColsMatchRow": true
+  },
+  "w390": {
+    "viewport": 390,
+    "docOverflow": 0,
+    "panelWidth": 358,
+    "rowWidth": 356,
+    "gridCols": [
+      40,
+      236,
+      48
+    ],
+    "nameColWidth": 236,
+    "nameCellWidth": 236,
+    "nameTextWidth": 192,
+    "iconsWidth": 20,
+    "cellWidths": [
+      40,
+      236,
+      0,
+      0,
+      0,
+      48,
+      0
+    ],
+    "visibleSortLabels": [],
+    "headerColsMatchRow": true
+  },
+  "w768": {
+    "viewport": 768,
+    "docOverflow": 0,
+    "panelWidth": 676,
+    "rowWidth": 674,
+    "gridCols": [
+      40,
+      386,
+      160,
+      48
+    ],
+    "nameColWidth": 386,
+    "nameCellWidth": 386,
+    "nameTextWidth": 175,
+    "iconsWidth": 20,
+    "cellWidths": [
+      40,
+      386,
+      0,
+      160,
+      0,
+      48,
+      0
+    ],
+    "visibleSortLabels": [
+      "my-files-sort-updated"
+    ],
+    "headerColsMatchRow": true
+  }
+}

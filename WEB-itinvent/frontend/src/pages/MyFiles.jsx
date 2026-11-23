@@ -106,7 +106,13 @@ import {
   FolderCard,
   FolderRow,
   ownerLabel,
+  ROW_COL_OWNER_MIN,
+  ROW_COL_SIZE_MIN,
+  ROW_COL_TRASH_DATE_MIN,
+  ROW_COL_TRASH_RETENTION_MIN,
+  ROW_COL_UPDATED_MIN,
   rowGridColumns,
+  secondaryColumnSx,
   sharedOpenLabel,
 } from '../components/myFiles/MyFilesListItems';
 import {
@@ -2261,12 +2267,16 @@ export default function MyFiles() {
             {viewMode === 'list' ? (
             <Paper
               variant="outlined"
-              sx={{ ...getOfficePanelSx(ui), overflow: 'hidden' }}
+              // Контейнерная адаптивность колонок: ярусы rowGridColumns и
+              // видимость второстепенных ячеек реагируют на ширину ЭТОГО блока
+              // (inline-size), а не на viewport — обе боковые панели и панель
+              // сведений сжимают таблицу задолго до media query.
+              sx={{ ...getOfficePanelSx(ui), overflow: 'hidden', containerType: 'inline-size' }}
             >
               <Box
                 sx={{
                   display: 'grid',
-                  gridTemplateColumns: rowGridColumns(isTrashView),
+                  ...rowGridColumns(isTrashView),
                   gap: 1,
                   alignItems: 'center',
                   px: 1,
@@ -2301,7 +2311,7 @@ export default function MyFiles() {
                     active={sortField === 'owner'}
                     direction={sortField === 'owner' ? sortDir : 'asc'}
                     onClick={() => toggleSort('owner')}
-                    sx={{ fontSize: '0.75rem', fontWeight: 700, color: 'text.secondary', display: { xs: 'none', md: 'flex' } }}
+                    sx={{ fontSize: '0.75rem', fontWeight: 700, color: 'text.secondary', ...secondaryColumnSx(ROW_COL_OWNER_MIN, 'flex') }}
                     data-testid="my-files-sort-owner"
                   >
                     Владелец
@@ -2311,7 +2321,7 @@ export default function MyFiles() {
                   active={sortField === 'updated'}
                   direction={sortField === 'updated' ? sortDir : 'asc'}
                   onClick={() => toggleSort('updated')}
-                  sx={{ fontSize: '0.75rem', fontWeight: 700, color: 'text.secondary', display: { xs: 'none', md: 'flex' } }}
+                  sx={{ fontSize: '0.75rem', fontWeight: 700, color: 'text.secondary', ...secondaryColumnSx(isTrashView ? ROW_COL_TRASH_DATE_MIN : ROW_COL_UPDATED_MIN, 'flex') }}
                   data-testid="my-files-sort-updated"
                 >
                   {isTrashView ? 'Удалён' : 'Изменён'}
@@ -2320,12 +2330,12 @@ export default function MyFiles() {
                   active={sortField === 'size'}
                   direction={sortField === 'size' ? sortDir : 'asc'}
                   onClick={() => toggleSort('size')}
-                  sx={{ fontSize: '0.75rem', fontWeight: 700, color: 'text.secondary', display: { xs: 'none', md: 'flex' } }}
+                  sx={{ fontSize: '0.75rem', fontWeight: 700, color: 'text.secondary', ...secondaryColumnSx(isTrashView ? ROW_COL_TRASH_RETENTION_MIN : ROW_COL_SIZE_MIN, 'flex') }}
                   data-testid="my-files-sort-size"
                 >
                   Размер
                 </TableSortLabel>
-                <Box sx={{ display: { xs: 'none', md: 'block' } }} />
+                <Box />
               </Box>
 
               {loading ? (
@@ -2335,8 +2345,8 @@ export default function MyFiles() {
                       {isTrashView ? null : <Skeleton variant="rounded" width={24} height={24} />}
                       <Skeleton variant="rounded" width={34} height={34} />
                       <Skeleton variant="text" sx={{ flex: 1, fontSize: '0.875rem' }} />
-                      <Skeleton variant="text" width={110} sx={{ display: { xs: 'none', md: 'block' } }} />
-                      <Skeleton variant="text" width={70} sx={{ display: { xs: 'none', md: 'block' } }} />
+                      <Skeleton variant="text" width={110} sx={secondaryColumnSx(ROW_COL_UPDATED_MIN)} />
+                      <Skeleton variant="text" width={70} sx={secondaryColumnSx(ROW_COL_SIZE_MIN)} />
                     </Stack>
                   ))}
                 </Box>

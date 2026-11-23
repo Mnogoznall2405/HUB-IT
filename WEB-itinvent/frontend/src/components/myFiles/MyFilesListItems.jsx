@@ -192,9 +192,45 @@ function RowStatusIcons({ entry, kind }) {
 // One grid for the header and every row: checkbox, name, owner, modified, size, actions (the trash drops the owner).
 // Быстрые действия больше не занимают колонку — это плавающая пилюля при наведении;
 // в колонке остаётся только постоянно видимый ⋮ (48px; в корзине — восстановить/удалить, 80px).
+//
+// Ярусы откликаются на ширину САМОГО списка (обёртка списка — CSS container,
+// container-type: inline-size), а не на viewport: две боковые панели и панель
+// сведений сжимают таблицу задолго до media query. «Название» держит 1fr на
+// каждом ярусе; второстепенные колонки уходят в порядке ценности — сначала
+// «Владелец» (у большинства строк это «Я»), затем «Размер», затем «Изменён».
+export const ROW_COL_UPDATED_MIN = 620;
+export const ROW_COL_SIZE_MIN = 760;
+export const ROW_COL_OWNER_MIN = 960;
+export const ROW_COL_TRASH_RETENTION_MIN = 400;
+export const ROW_COL_TRASH_DATE_MIN = 560;
+
+export const secondaryColumnSx = (minWidth, display = 'block') => ({
+  display: 'none',
+  [`@container (min-width: ${minWidth}px)`]: { display },
+});
+
 export const rowGridColumns = (isTrashView) => (isTrashView
-  ? { xs: 'minmax(0,1fr) auto', md: 'minmax(0,1fr) 170px 110px 80px' }
-  : { xs: '40px minmax(0,1fr) auto', md: '40px minmax(0,1fr) 140px 160px 96px 48px' });
+  ? {
+    gridTemplateColumns: 'minmax(0,1fr) 80px',
+    [`@container (min-width: ${ROW_COL_TRASH_RETENTION_MIN}px)`]: {
+      gridTemplateColumns: 'minmax(0,1fr) 110px 80px',
+    },
+    [`@container (min-width: ${ROW_COL_TRASH_DATE_MIN}px)`]: {
+      gridTemplateColumns: 'minmax(0,1fr) 170px 110px 80px',
+    },
+  }
+  : {
+    gridTemplateColumns: '40px minmax(0,1fr) 48px',
+    [`@container (min-width: ${ROW_COL_UPDATED_MIN}px)`]: {
+      gridTemplateColumns: '40px minmax(0,1fr) 160px 48px',
+    },
+    [`@container (min-width: ${ROW_COL_SIZE_MIN}px)`]: {
+      gridTemplateColumns: '40px minmax(0,1fr) 160px 96px 48px',
+    },
+    [`@container (min-width: ${ROW_COL_OWNER_MIN}px)`]: {
+      gridTemplateColumns: '40px minmax(0,1fr) 140px 160px 96px 48px',
+    },
+  });
 
 export const ownerLabel = (entry, currentUsername) => {
   if (entry?.library_name) return entry.library_name;
@@ -210,7 +246,7 @@ function OwnerCell({ entry, currentUsername }) {
       color="text.secondary"
       title={label}
       noWrap
-      sx={{ display: { xs: 'none', md: 'block' } }}
+      sx={secondaryColumnSx(ROW_COL_OWNER_MIN)}
     >
       {label}
     </Typography>
@@ -251,7 +287,11 @@ export const FolderRow = memo(function FolderRow({
       onContextMenu={(event) => { if (!isTrashView) openFolderActionsMenu(event, folder); }}
       onKeyDown={(event) => {
         if (isTrashView) return;
-        if (event.key === 'Enter') navigateToFolder(folder.id, folder.library_id);
+        // Enter belongs to the focused control: keydown bubbles from row
+        // buttons (⋮ menu, quick actions), so only the row itself navigates.
+        if (event.key === 'Enter' && event.target === event.currentTarget) {
+          navigateToFolder(folder.id, folder.library_id);
+        }
         if (isFileActionsKeyboardShortcut(event)) openFolderActionsMenu(event, folder);
       }}
       tabIndex={0}
@@ -259,7 +299,7 @@ export const FolderRow = memo(function FolderRow({
         ...VIRTUALIZED_ROW_SX,
         position: 'relative',
         display: 'grid',
-        gridTemplateColumns: rowGridColumns(isTrashView),
+        ...rowGridColumns(isTrashView),
         gap: 1,
         alignItems: 'center',
         px: 1,
@@ -321,10 +361,10 @@ export const FolderRow = memo(function FolderRow({
         </Stack>
       </Stack>
       {isTrashView ? null : <OwnerCell entry={folder} currentUsername={currentUsername} />}
-      <Typography variant="body2" color="text.secondary" sx={{ display: { xs: 'none', md: 'block' } }}>
+      <Typography variant="body2" color="text.secondary" sx={secondaryColumnSx(isTrashView ? ROW_COL_TRASH_DATE_MIN : ROW_COL_UPDATED_MIN)}>
         {formatDateTime(folder.updated_at)}
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ display: { xs: 'none', md: 'block' } }}>
+      <Typography variant="body2" color="text.secondary" sx={secondaryColumnSx(isTrashView ? ROW_COL_TRASH_RETENTION_MIN : ROW_COL_SIZE_MIN)}>
         {Number(folder.file_count || 0) > 0 ? `${folder.file_count} шт.` : '—'}
       </Typography>
       <Box className="row-actions" sx={ROW_ACTIONS_SX}>
@@ -492,7 +532,9 @@ export const FileRow = memo(function FileRow({
       onContextMenu={(event) => { if (!isTrashView) openFileActionsMenu(event, item); }}
       onKeyDown={(event) => {
         if (isTrashView) return;
-        if (event.key === 'Enter') {
+        // Enter belongs to the focused control: keydown bubbles from row
+        // buttons (⋮ menu, quick actions), so only the row itself previews.
+        if (event.key === 'Enter' && event.target === event.currentTarget) {
           if (editorOpen) { if (ready) onOpenSharedFile?.(item); }
           else if (previewSupported) void openDocumentPreview(item);
           else openFileActionsMenu(event, item);
@@ -504,7 +546,7 @@ export const FileRow = memo(function FileRow({
         ...VIRTUALIZED_ROW_SX,
         position: 'relative',
         display: 'grid',
-        gridTemplateColumns: rowGridColumns(isTrashView),
+        ...rowGridColumns(isTrashView),
         gap: 1,
         alignItems: 'center',
         px: 1,
@@ -565,10 +607,10 @@ export const FileRow = memo(function FileRow({
         </Box>
       </Stack>
       {isTrashView ? null : <OwnerCell entry={item} currentUsername={currentUsername} />}
-      <Typography variant="body2" color="text.secondary" sx={{ display: { xs: 'none', md: 'block' } }}>
+      <Typography variant="body2" color="text.secondary" sx={secondaryColumnSx(isTrashView ? ROW_COL_TRASH_DATE_MIN : ROW_COL_UPDATED_MIN)}>
         {formatDateTime(item.updated_at || item.created_at)}
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ display: { xs: 'none', md: 'block' } }}>
+      <Typography variant="body2" color="text.secondary" sx={secondaryColumnSx(isTrashView ? ROW_COL_TRASH_RETENTION_MIN : ROW_COL_SIZE_MIN)}>
         {formatFileSize(item.original_size_bytes)}
       </Typography>
       <Box className="row-actions" sx={ROW_ACTIONS_SX}>
@@ -768,7 +810,10 @@ export const FolderCard = memo(function FolderCard({
       onContextMenu={(event) => { if (!isTrashView) openFolderActionsMenu(event, folder); }}
       onKeyDown={(event) => {
         if (isTrashView) return;
-        if (event.key === 'Enter') navigateToFolder(folder.id, folder.library_id);
+        // Enter belongs to the focused control (see the list row above).
+        if (event.key === 'Enter' && event.target === event.currentTarget) {
+          navigateToFolder(folder.id, folder.library_id);
+        }
         if (isFileActionsKeyboardShortcut(event)) openFolderActionsMenu(event, folder);
       }}
       tabIndex={0}
@@ -935,7 +980,9 @@ export const FileCard = memo(function FileCard({
       onContextMenu={(event) => { if (!isTrashView) openFileActionsMenu(event, item); }}
       onKeyDown={(event) => {
         if (isTrashView) return;
-        if (event.key === 'Enter') {
+        // Enter belongs to the focused control: keydown bubbles from row
+        // buttons (⋮ menu, quick actions), so only the row itself previews.
+        if (event.key === 'Enter' && event.target === event.currentTarget) {
           if (editorOpen) { if (ready) onOpenSharedFile?.(item); }
           else if (previewSupported) void openDocumentPreview(item);
           else openFileActionsMenu(event, item);
