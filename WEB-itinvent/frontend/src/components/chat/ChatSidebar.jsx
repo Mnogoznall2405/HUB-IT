@@ -191,7 +191,7 @@ function ChatSidebar({
   compose = null,
 }) {
   const density = getDensity(ui);
-  const { collapsed, compact, setCollapsed, setSearchExpanded } = useChatSidebarSizing();
+  const { collapsed, compact, setCollapsed, searchExpanded, setSearchExpanded } = useChatSidebarSizing();
   const { openDrawer, headerMode } = useMainLayoutShell();
   const prefersReducedMotion = useReducedMotion();
   const reducedMotion = disableMotion || prefersReducedMotion;
@@ -694,6 +694,7 @@ function ChatSidebar({
               onFocus: () => setSearchFocused(true),
               onBlur: () => setSearchFocused(false),
               focused: searchFocused,
+              expanded: searchExpanded,
               onClear: () => onSidebarQueryChange?.(''),
               onClose: closeSearch,
               onOpenActions: (anchor) => setActionsAnchorEl(anchor),

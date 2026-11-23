@@ -159,11 +159,19 @@ export default function ChatSidebarDesktopHeader({
 
   const searchHeight = Number(ui?.density?.sidebarSearchHeight) || 42;
   const searchHasText = Boolean(String(search?.value || '').trim());
-  const searchActive = Boolean(search && (search.focused || searchHasText));
+  // Сеанс поиска активен, пока поле в фокусе, есть текст ИЛИ панель
+  // временно раскрыта — «Назад» остаётся явным способом закрыть поиск
+  // и вернуть прежний режим даже после потери фокуса с пустым полем.
+  const searchActive = Boolean(search && (search.focused || searchHasText || search.expanded));
   const searchPillSx = {
     height: searchHeight,
     borderColor: 'transparent',
     backgroundColor: search?.focused ? 'var(--chat-sidebar-search-focus-bg)' : 'var(--chat-sidebar-search-bg)',
+    // Единое focus-состояние: скруглённое кольцо вокруг всей пилюли
+    // (outline следует border-radius и видно в forced-colors), а не
+    // прямоугольный синий контур инпута от глобального :focus-visible.
+    outline: search?.focused ? '2px solid var(--chat-focus-ring)' : '2px solid transparent',
+    outlineOffset: 2,
   };
   return (
     <div data-testid="chat-sidebar-desktop-header" className="mb-1.5 min-w-0">
@@ -213,7 +221,10 @@ export default function ChatSidebarDesktopHeader({
                 else search.onClose?.();
               }}
               className="ml-2 h-full min-w-0 w-full bg-transparent text-[color:var(--chat-search-text)] placeholder:text-[color:var(--chat-search-placeholder)] outline-none"
-              style={{ fontSize: ui?.density?.sidebarSearchFontSize || '14px' }}
+              // Глобальный :focus-visible в index.css (unlayered) побеждает
+              // утилиту outline-none — гасим прямоугольный outline инлайном;
+              // индикатор фокуса живёт на пилюле (outline выше).
+              style={{ fontSize: ui?.density?.sidebarSearchFontSize || '14px', outline: 'none' }}
             />
             {searchHasText ? (
               <SidebarActionButton

@@ -19,15 +19,26 @@ const api = (page) => ({
 
 // Сид ≥15 переписок: личные, группы, длинные имена, непрочитанные.
 // Авторизация cookie-based: login через page.request ставит сессионную куку.
+// Идемпотентно: перед созданием читаем текущий список и пропускаем
+// существующие заголовки/личные диалоги — повторные прогоны не плодят
+// дубликаты, чужие данные не удаляются.
 async function seedConversations(page) {
   await apiLogin(page, USERNAME, PASSWORD);
   const admin = api(page);
   const usersResp = await admin.get('/chat/users?limit=50');
-  console.log('users status', usersResp.status());
   const usersJson = usersResp.ok() ? await usersResp.json() : {};
   const users = usersJson.items || usersJson.users || (Array.isArray(usersJson) ? usersJson : []);
-  console.log('users count', users.length);
   const ids = (Array.isArray(users) ? users : []).map((u) => u.id).filter(Boolean);
+
+  const existingResp = await admin.get('/chat/conversations?limit=200');
+  const existingJson = existingResp.ok() ? await existingResp.json() : {};
+  const existingItems = existingJson.items || (Array.isArray(existingJson) ? existingJson : []);
+  const existingTitles = new Set(
+    existingItems.map((i) => String(i?.title || '').trim()).filter(Boolean),
+  );
+  const hasDirectWith = (uid) => existingItems.some((i) => i?.kind === 'direct'
+    && String(i?.direct_peer?.id ?? '') === String(uid));
+
   const titles = [
     'Проект: Объекты строительства', 'IT Обслуживание', 'Начальники участков',
     'Финансы и логистика', 'HR / Кадры', 'Архивариус длинноназванного департамента кадрового сопровождения',
@@ -36,16 +47,20 @@ async function seedConversations(page) {
   ];
   const convIds = [];
   for (const title of titles) {
+    if (existingTitles.has(title)) continue;
     const resp = await admin.post('/chat/conversations/group', { title, member_user_ids: ids.slice(0, 5) });
     if (resp.ok()) convIds.push((await resp.json()).id);
     else console.log('group create failed', resp.status(), title.slice(0, 20), (await resp.text()).slice(0, 150));
   }
   for (const uid of ids.slice(0, 2)) {
+    if (hasDirectWith(uid)) continue;
     const resp = await admin.post('/chat/conversations/direct', { peer_user_id: uid });
     if (resp.ok()) convIds.push((await resp.json()).id);
     else console.log('direct create failed', resp.status(), (await resp.text()).slice(0, 150));
   }
-  console.log('seeded conversations:', convIds.length);
+  console.log('seeded NEW conversations:', convIds.length, '— повторный сид создаёт только отсутствующие');
+  // Превью и непрочитанные пишем только в свежесозданные беседы — у уже
+  // существующих сообщения остались от первого прогона.
   for (const id of convIds.slice(6, 10)) {
     await admin.post(`/chat/conversations/${id}/messages`, { body: `Проверка предпросмотра ${id.slice(0, 4)}` });
   }
@@ -224,6 +239,16 @@ test('sidebar search: temp expand from rail/compact, results, ×/Esc/back, mode 
   // Сеанс поиска: ← вместо второстепенных кнопок.
   await expect(page.getByRole('button', { name: 'Закрыть поиск' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Свернуть список чатов' })).toBeHidden();
+  // Единое focus-состояние: прямоугольного outline у самого инпута нет
+  // (глобальный :focus-visible подавлен), кольцо — на скруглённой пилюле.
+  const focusStyle = await searchInput.evaluate((el) => ({
+    inputOutline: getComputedStyle(el).outlineStyle,
+    pillOutline: el.parentElement ? getComputedStyle(el.parentElement).outlineStyle : '',
+    pillRadius: el.parentElement ? getComputedStyle(el.parentElement).borderTopLeftRadius : '',
+  }));
+  expect(focusStyle.inputOutline).toBe('none');
+  expect(focusStyle.pillOutline).toBe('solid');
+  await page.waitForTimeout(350); // дождаться окончания анимаций
   await page.screenshot({ path: `${SHOTS}/30-search-temp-expanded.png` });
 
   // === Ввод → серверные результаты; выбор открывает чат и возвращает rail ===
@@ -232,6 +257,7 @@ test('sidebar search: temp expand from rail/compact, results, ×/Esc/back, mode 
   await searchInput.fill('it');
   const result = page.getByRole('button', { name: /IT Обслуживание/ }).first();
   await expect(result).toBeVisible({ timeout: 15_000 });
+  await page.waitForTimeout(350);
   await page.screenshot({ path: `${SHOTS}/31-search-results.png` });
   await result.click();
   await expect(page.getByRole('heading', { name: 'IT Обслуживание', exact: true })).toBeVisible({ timeout: 15_000 });
@@ -239,11 +265,22 @@ test('sidebar search: temp expand from rail/compact, results, ×/Esc/back, mode 
   // Временная ширина поиска не записалась как пользовательская настройка.
   expect(await layoutMode()).toBe('collapsed');
 
+  // === Клик вне поля: фокус теряется, но ← остаётся и закрывает поиск ===
+  await railSearchBtn.click();
+  await expect(searchInput).toBeFocused({ timeout: 5000 });
+  await page.mouse.click(1100, 450); // пустая область треда — blur
+  await expect(searchInput).not.toBeFocused();
+  await expect(page.getByRole('button', { name: 'Закрыть поиск' })).toBeVisible();
+  await page.getByRole('button', { name: 'Закрыть поиск' }).click();
+  await expect(page.getByRole('button', { name: 'Развернуть список чатов' })).toBeVisible();
+  expect(await layoutMode()).toBe('collapsed');
+
   // === Compact: поля нет — кнопка «Поиск» на всю ширину ===
   await page.getByRole('button', { name: 'Развернуть список чатов' }).click();
   await page.getByRole('button', { name: 'Компактный список чатов' }).click();
   await expect(page.getByTestId('chat-search-open')).toBeVisible();
   await expect(searchInput).not.toBeVisible();
+  await page.waitForTimeout(350);
   await page.screenshot({ path: `${SHOTS}/32-compact-search-button.png` });
   await page.getByTestId('chat-search-open').click();
   await expect(searchInput).toBeFocused({ timeout: 5000 });
@@ -258,6 +295,16 @@ test('sidebar search: temp expand from rail/compact, results, ×/Esc/back, mode 
   await expect(searchInput).toHaveValue('');
   await searchInput.press('Escape');
   await expect(page.getByTestId('chat-search-open')).toBeVisible({ timeout: 5000 });
+  expect(await layoutMode()).toBe('compact');
+
+  // === Клик вне поля в compact-поиске: ← доступна, закрытие → compact ===
+  await page.getByTestId('chat-search-open').click();
+  await expect(searchInput).toBeFocused({ timeout: 5000 });
+  await page.mouse.click(1100, 450);
+  await expect(searchInput).not.toBeFocused();
+  await expect(page.getByRole('button', { name: 'Закрыть поиск' })).toBeVisible();
+  await page.getByRole('button', { name: 'Закрыть поиск' }).click();
+  await expect(page.getByTestId('chat-search-open')).toBeVisible();
   expect(await layoutMode()).toBe('compact');
 
   // === Поиск существующего собеседника → открытие диалога → compact назад ===
@@ -286,5 +333,6 @@ test('sidebar search: temp expand from rail/compact, results, ×/Esc/back, mode 
   await expect(searchInput).toBeFocused({ timeout: 5000 });
   const scrollW3 = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(scrollW3).toBeLessThanOrEqual(989);
+  await page.waitForTimeout(350);
   await page.screenshot({ path: `${SHOTS}/33-search-988.png` });
 });
