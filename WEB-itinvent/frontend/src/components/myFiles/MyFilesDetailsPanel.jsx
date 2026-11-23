@@ -12,7 +12,9 @@ import {
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
+import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRenameOutlineRounded';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
@@ -99,10 +101,17 @@ export default function MyFilesDetailsPanel({
   libraryLabel = '',
   openLabel = 'Открыть',
   onOpen = null,
+  openDisabledReason = '',
   downloadLabel = 'Скачать',
   onDownload = null,
+  downloadDisabledReason = '',
   downloading = false,
   onShare = null,
+  shareDisabledReason = '',
+  onRename = null,
+  renameDisabledReason = '',
+  onDelete = null,
+  deleteDisabledReason = '',
   onMore = null,
 }) {
   const theme = useTheme();
@@ -173,28 +182,50 @@ export default function MyFilesDetailsPanel({
       </Stack>
 
       {hasTarget ? (
-        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ px: 1.5, pb: 1, flexShrink: 0 }}>
+        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ px: 1.5, pb: 1, flexShrink: 0, flexWrap: 'wrap' }}>
           {onOpen ? (
-            <Tooltip title={openLabel}>
-              <IconButton size="small" aria-label={openLabel} onClick={onOpen}>
-                <OpenInNewOutlinedIcon fontSize="small" />
-              </IconButton>
+            <Tooltip title={openDisabledReason || openLabel}>
+              <span>
+                <IconButton size="small" aria-label={openLabel} disabled={Boolean(openDisabledReason)} onClick={onOpen}>
+                  <OpenInNewOutlinedIcon fontSize="small" />
+                </IconButton>
+              </span>
             </Tooltip>
           ) : null}
           {onDownload ? (
-            <Tooltip title={downloadLabel}>
+            <Tooltip title={downloadDisabledReason || downloadLabel}>
               <span>
-                <IconButton size="small" aria-label={downloadLabel} disabled={downloading} onClick={onDownload}>
+                <IconButton size="small" aria-label={downloadLabel} disabled={downloading || Boolean(downloadDisabledReason)} onClick={onDownload}>
                   {downloading ? <CircularProgress size={16} /> : <DownloadOutlinedIcon fontSize="small" />}
                 </IconButton>
               </span>
             </Tooltip>
           ) : null}
           {onShare ? (
-            <Tooltip title="Поделиться">
-              <IconButton size="small" aria-label="Поделиться" onClick={onShare}>
-                <ShareOutlinedIcon fontSize="small" />
-              </IconButton>
+            <Tooltip title={shareDisabledReason || 'Поделиться'}>
+              <span>
+                <IconButton size="small" aria-label="Поделиться" disabled={Boolean(shareDisabledReason)} onClick={onShare}>
+                  <ShareOutlinedIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+          ) : null}
+          {onRename ? (
+            <Tooltip title={renameDisabledReason || 'Переименовать'}>
+              <span>
+                <IconButton size="small" aria-label="Переименовать" disabled={Boolean(renameDisabledReason)} onClick={onRename}>
+                  <DriveFileRenameOutlineRoundedIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+          ) : null}
+          {onDelete ? (
+            <Tooltip title={deleteDisabledReason || 'Удалить'}>
+              <span>
+                <IconButton size="small" aria-label="Удалить" color="error" disabled={Boolean(deleteDisabledReason)} onClick={onDelete}>
+                  <DeleteOutlineIcon fontSize="small" />
+                </IconButton>
+              </span>
             </Tooltip>
           ) : null}
           <Box sx={{ flex: 1 }} />

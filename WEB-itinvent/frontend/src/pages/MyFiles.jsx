@@ -1506,11 +1506,14 @@ export default function MyFiles() {
       || (entry.library_id ? detailsLibraryLabel || libraryName : (isSharedView ? 'Доступно мне' : 'Мой диск'));
   })();
   const detailsActions = (() => {
-    if (!detailsTarget) return {};
+    if (!detailsTarget || isTrashView) return {};
     const { kind, entry } = detailsTarget;
     const access = entryAccess(entry);
+    const sharedWithMe = Boolean(entry.shared_with_me);
     const readyFile = kind === 'file' && READY_STATUSES.has(String(entry.status || '').toLowerCase());
-    const editorOpen = kind === 'file' && (entry.shared_with_me || opensInEditor(entry));
+    const processingFile = kind === 'file' && ACTIVE_PROCESSING_STATUSES.has(String(entry.status || '').toLowerCase());
+    const editorOpen = kind === 'file' && (sharedWithMe || opensInEditor(entry));
+    const canOpenEntry = kind === 'folder' || (readyFile && (editorOpen || isMyFilePreviewSupported(entry)));
     const open = () => {
       if (kind === 'folder') {
         navigateToFolder(entry.id, entry.library_id);
@@ -1522,17 +1525,43 @@ export default function MyFiles() {
       }
       if (readyFile && isMyFilePreviewSupported(entry)) void openDocumentPreview(entry);
     };
+    // Скрываем действие только там, где оно бессмысленно (скачивание чужой папки,
+    // публикация объекта, который мне просто открыли); во всех остальных случаях
+    // кнопка остаётся видимой, но заблокированной с причиной в подсказке.
+    const openDisabledReason = canOpenEntry
+      ? ''
+      : (processingFile ? 'Файл ещё обрабатывается' : 'Предпросмотр недоступен');
+    const downloadDisabledReason = kind === 'file' && !readyFile
+      ? (processingFile ? 'Файл ещё обрабатывается' : 'Скачивание недоступно')
+      : '';
+    const shareDisabledReason = sharedWithMe
+      ? ''
+      : (!access.canShare
+          ? 'Недостаточно прав для общего доступа'
+          : (kind === 'file' && !readyFile ? 'Файл ещё обрабатывается' : ''));
+    const writeDisabledReason = access.canWrite ? '' : 'Недостаточно прав';
     return {
       openLabel: kind === 'folder' ? 'Открыть' : (editorOpen ? sharedOpenLabel(entry) : 'Просмотреть'),
       onOpen: open,
+      openDisabledReason,
       downloadLabel: kind === 'folder' ? 'Скачать (ZIP)' : 'Скачать',
       onDownload: kind === 'folder'
-        ? (entry.shared_with_me ? null : () => { void handleFolderArchive(entry); })
-        : (readyFile ? () => { void handleDownload(entry); } : null),
+        ? (sharedWithMe ? null : () => { void handleFolderArchive(entry); })
+        : () => { void handleDownload(entry); },
+      downloadDisabledReason,
       downloading: kind === 'file' && downloadingFileId === String(entry.id || ''),
-      onShare: access.canShare && !entry.shared_with_me && (kind === 'folder' || readyFile)
-        ? () => { void (kind === 'folder' ? handleFolderShare(entry) : handleShare(entry)); }
-        : null,
+      onShare: sharedWithMe
+        ? null
+        : () => { void (kind === 'folder' ? handleFolderShare(entry) : handleShare(entry)); },
+      shareDisabledReason,
+      onRename: sharedWithMe
+        ? null
+        : () => openRenameDialog(kind, entry.id, kind === 'folder' ? entry.name : entry.original_file_name),
+      renameDisabledReason: sharedWithMe ? '' : writeDisabledReason,
+      onDelete: sharedWithMe
+        ? null
+        : () => { void (kind === 'folder' ? handleDeleteFolder(entry) : handleDelete(entry)); },
+      deleteDisabledReason: sharedWithMe ? '' : writeDisabledReason,
       onMore: (event) => (kind === 'folder' ? openFolderActionsMenu(event, entry) : openFileActionsMenu(event, entry)),
     };
   })();
@@ -1717,7 +1746,7 @@ export default function MyFiles() {
               <Box sx={{ flex: '1 1 auto', minWidth: 0, display: 'flex', alignItems: 'center', gap: 1.5 }}>
                 {isTrashView ? (
                   <>
-                    <Typography variant="h5" sx={{ fontWeight: 700 }} noWrap>
+                    <Typography variant="h5" sx={{ fontWeight: 700, minWidth: 0 }} noWrap>
                       {isLibraryView ? `Корзина — ${libraryName}` : 'Корзина'}
                     </Typography>
                     {(items.length > 0 || folders.length > 0) ? (
@@ -1734,7 +1763,7 @@ export default function MyFiles() {
                     ) : null}
                   </>
                 ) : isRecentView || isFavoritesView || (isSharedView && breadcrumbs.length === 0) ? (
-                  <Typography variant="h5" sx={{ fontWeight: 700 }} noWrap>
+                  <Typography variant="h5" sx={{ fontWeight: 700, minWidth: 0 }} noWrap>
                     {isRecentView ? 'Недавние' : isSharedView ? 'Доступно мне' : 'Избранное'}
                   </Typography>
                 ) : breadcrumbs.length > 0 ? (
@@ -1751,14 +1780,37 @@ export default function MyFiles() {
                       underline="hover"
                       color="text.secondary"
                       onClick={() => navigateToFolder(null)}
-                      sx={{ fontWeight: 600, cursor: 'pointer', fontSize: '1.05rem' }}
+                      sx={{
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        fontSize: '1.05rem',
+                        minWidth: 0,
+                        maxWidth: { xs: 140, sm: 260 },
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        display: 'inline-block',
+                        verticalAlign: 'bottom',
+                      }}
                     >
                       {isSharedView ? 'Доступно мне' : isLibraryView ? libraryName : 'Мой диск'}
                     </Link>
                     {breadcrumbs.map((crumb, index) => {
                       const isLast = index === breadcrumbs.length - 1;
                       return isLast ? (
-                        <Typography key={crumb.id} color="text.primary" sx={{ fontWeight: 700, fontSize: '1.05rem' }} noWrap>
+                        <Typography
+                          key={crumb.id}
+                          color="text.primary"
+                          sx={{
+                            fontWeight: 700,
+                            fontSize: '1.05rem',
+                            minWidth: 0,
+                            maxWidth: { xs: 160, sm: 360 },
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                          noWrap
+                        >
                           {crumb.name}
                         </Typography>
                       ) : (
@@ -1768,7 +1820,18 @@ export default function MyFiles() {
                           underline="hover"
                           color="text.secondary"
                           onClick={() => navigateToFolder(crumb.id)}
-                          sx={{ fontWeight: 600, cursor: 'pointer', fontSize: '1.05rem' }}
+                          sx={{
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            fontSize: '1.05rem',
+                            minWidth: 0,
+                            maxWidth: { xs: 120, sm: 240 },
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            display: 'inline-block',
+                            verticalAlign: 'bottom',
+                          }}
                         >
                           {crumb.name}
                         </Link>
@@ -1776,7 +1839,7 @@ export default function MyFiles() {
                     })}
                   </Breadcrumbs>
                 ) : (
-                  <Typography variant="h5" sx={{ fontWeight: 700 }} noWrap>{isLibraryView ? libraryName : 'Мой диск'}</Typography>
+                  <Typography variant="h5" sx={{ fontWeight: 700, minWidth: 0 }} noWrap>{isLibraryView ? libraryName : 'Мой диск'}</Typography>
                 )}
               </Box>
 
@@ -1802,8 +1865,11 @@ export default function MyFiles() {
                 }}
                 sx={{
                   order: { xs: 3, sm: 0 },
-                  flexBasis: { xs: '100%', sm: 'auto' },
-                  width: { xs: '100%', sm: 320 },
+                  // Zoom- и узкоэкрано-устойчиво: резиновая ширина вместо жёстких px —
+                  // на xs поле занимает отдельную строку, на sm+ может сжиматься до 140px.
+                  flex: { xs: '1 1 100%', sm: '0 1 320px' },
+                  minWidth: { xs: 0, sm: 140 },
+                  maxWidth: '100%',
                   '& .MuiOutlinedInput-root': {
                     borderRadius: '999px',
                     bgcolor: alpha(theme.palette.text.primary, theme.palette.mode === 'dark' ? 0.08 : 0.05),
@@ -1815,7 +1881,23 @@ export default function MyFiles() {
                 }}
               />
 
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0, order: { xs: 2, sm: 0 } }}>
+              <Stack
+                direction="row"
+                spacing={1}
+                alignItems="center"
+                sx={{
+                  // Если кластер не помещается рядом с путём и поиском, он целиком
+                  // переезжает на следующую строку и прижимается вправо; при нехватке
+                  // места переносятся и его элементы — ничего не уезжает за край.
+                  order: { xs: 2, sm: 0 },
+                  flex: { xs: '1 1 auto', sm: '0 1 auto' },
+                  minWidth: 0,
+                  ml: 'auto',
+                  flexWrap: 'wrap',
+                  justifyContent: 'flex-end',
+                  rowGap: 0.5,
+                }}
+              >
                 {isLibraryView && libraryRole ? (
                   <Chip
                     size="small"

@@ -37,6 +37,26 @@ import { myFilesOfficeAPI } from '../../api/myFilesOffice';
 
 const GIB = 1024 ** 3;
 
+// «Лимит, ГБ» хранится текстом: байты ↔ ГБ теряют точность, поэтому и базовое,
+// и текущее значение сравниваются после одной и той же нормализации.
+export const quotaBytesToGbInput = (bytes) => {
+  const value = Number(bytes || 0);
+  return value > 0 ? String(Math.round((value / GIB) * 100) / 100) : '';
+};
+
+export const parseQuotaGbInput = (raw) => {
+  const text = String(raw ?? '').trim().replace(',', '.');
+  if (!text) return { ok: true, gb: 0, bytes: 0 };
+  const gb = Number(text);
+  if (!Number.isFinite(gb) || gb < 0) return { ok: false, gb: NaN, bytes: 0 };
+  return { ok: true, gb, bytes: Math.round(gb * GIB) };
+};
+
+const normalizeQuotaGbText = (raw) => {
+  const parsed = parseQuotaGbInput(raw);
+  return parsed.ok ? String(parsed.gb) : `invalid:${String(raw ?? '')}`;
+};
+
 export const LIBRARY_ROLE_OPTIONS = [
   { value: 'manage', label: 'Управление', hint: 'Управление участниками и настройками, корзина, ссылки и журнал' },
   { value: 'edit', label: 'Правка', hint: 'Изменение и загрузка файлов, удаление в корзину' },
@@ -117,7 +137,7 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
   const [name, setName] = useState('');
   const [nameTouched, setNameTouched] = useState(false);
   const [quotaGb, setQuotaGb] = useState('');
-  const [baseline, setBaseline] = useState({ name: '', quotaBytes: 0 });
+  const [baseline, setBaseline] = useState({ name: '', quotaGb: '' });
   const [members, setMembers] = useState([]);
   const [initialMembers, setInitialMembers] = useState([]);
   const [tab, setTab] = useState('main');
@@ -142,9 +162,9 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
     if (!open) return;
     setCurrent(library || null);
     setName(String(library?.name || ''));
-    const quota = Number(library?.quota_bytes || 0);
-    setQuotaGb(quota > 0 ? String(Math.round((quota / GIB) * 100) / 100) : '');
-    setBaseline({ name: String(library?.name || '').trim(), quotaBytes: quota > 0 ? quota : 0 });
+    const quotaInput = quotaBytesToGbInput(library?.quota_bytes);
+    setQuotaGb(quotaInput);
+    setBaseline({ name: String(library?.name || '').trim(), quotaGb: quotaInput });
     setMembers([]);
     setInitialMembers([]);
     setTab('main');
@@ -208,10 +228,11 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
 
   const isNew = !current?.id;
 
-  const quotaBytes = () => {
-    const gb = Number(String(quotaGb).replace(',', '.'));
-    return Number.isFinite(gb) && gb > 0 ? Math.round(gb * GIB) : 0;
-  };
+  // Пустое поле — «без лимита» (0); невалидное значение блокирует сохранение,
+  // а не превращается молча в 0.
+  const quotaParsed = useMemo(() => parseQuotaGbInput(quotaGb), [quotaGb]);
+  const quotaFieldVisible = isNew || !membersOnly;
+  const quotaInvalid = quotaFieldVisible && !quotaParsed.ok;
 
   // Unsaved work: renamed/re-quotaed fields plus every added, removed or re-roled member.
   const memberDiff = useMemo(() => {
@@ -228,8 +249,13 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
   }, [initialMembers, members]);
 
   const nameDirty = isNew ? Boolean(name.trim()) : name.trim() !== baseline.name;
-  const quotaDirty = isNew ? quotaGb !== '' : quotaBytes() !== baseline.quotaBytes;
-  const dirtyCount = (nameDirty ? 1 : 0) + (quotaDirty ? 1 : 0) + memberDiff;
+  const quotaDirty = isNew
+    ? quotaGb !== ''
+    : normalizeQuotaGbText(quotaGb) !== normalizeQuotaGbText(baseline.quotaGb);
+  // Настройки (название/лимит) и список участников сохраняются разными запросами.
+  const settingsDirty = (isNew || !membersOnly) && (nameDirty || quotaDirty);
+  const membersDirty = memberDiff > 0;
+  const dirtyCount = (settingsDirty ? 1 : 0) + memberDiff;
 
   const addMember = (member) => setMembers((list) => (
     list.some((item) => keyOf(item) === keyOf(member)) ? list : [...list, member]
@@ -288,7 +314,7 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
   };
 
   const create = async () => {
-    if (saving) return;
+    if (saving || quotaInvalid) return;
     if (!name.trim()) {
       setNameError('Укажите название папки');
       return;
@@ -298,9 +324,9 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
     setNameError('');
     setQuotaError('');
     try {
-      const created = await myFilesLibrariesAPI.create({ name, quotaBytes: quotaBytes() });
+      const created = await myFilesLibrariesAPI.create({ name: name.trim(), quotaBytes: quotaParsed.bytes });
       setCurrent(created);
-      setBaseline({ name: String(created?.name || name).trim(), quotaBytes: Number(created?.quota_bytes || 0) });
+      setBaseline({ name: String(created?.name || name).trim(), quotaGb: quotaBytesToGbInput(created?.quota_bytes) });
       setInitialMembers([]);
       setChanged(true);
       setTab('access');
@@ -312,10 +338,15 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
   };
 
   const save = async () => {
-    if (saving || loading) return;
+    if (saving || loading || (!membersOnly && quotaInvalid)) return;
     if (!membersOnly && !name.trim()) {
       setNameError('Укажите название папки');
       setTab('main');
+      return;
+    }
+    // Нечего сохранять: ни настройки, ни участники не менялись — просто закрываем.
+    if (!settingsDirty && !membersDirty) {
+      onClose?.(changed);
       return;
     }
     setSaving(true);
@@ -323,10 +354,12 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
     setNameError('');
     setQuotaError('');
     try {
-      if (!membersOnly) {
-        await myFilesLibrariesAPI.update(current.id, { name, quotaBytes: quotaBytes() });
+      if (!membersOnly && settingsDirty) {
+        await myFilesLibrariesAPI.update(current.id, { name: name.trim(), quotaBytes: quotaParsed.bytes });
       }
-      await myFilesLibrariesAPI.setMembers(current.id, members);
+      if (membersDirty) {
+        await myFilesLibrariesAPI.setMembers(current.id, members);
+      }
       onClose?.(true);
     } catch (err) {
       applySaveError(err, 'Не удалось сохранить');
@@ -360,6 +393,10 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
   };
 
   const usedBytes = Number(current?.used_bytes);
+  // Сервер остаётся источником истины, но лимит ниже уже занятого объёма
+  // честно предупреждаем ещё до отправки.
+  const quotaUnderUsed = quotaParsed.ok && quotaParsed.bytes > 0
+    && Number.isFinite(usedBytes) && quotaParsed.bytes < usedBytes;
   const savedQuotaBytes = Number(current?.quota_bytes || 0);
   const departmentMembers = members.filter((item) => item.principal_type === 'department');
   const userMembers = members.filter((item) => item.principal_type === 'user');
@@ -483,13 +520,23 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
           label="Лимит хранения, ГБ"
           value={quotaGb}
           onChange={(event) => { setQuotaGb(event.target.value.replace(/[^\d.,]/g, '')); setQuotaError(''); }}
-          error={Boolean(quotaError)}
-          helperText={quotaError || 'Пусто — без отдельного лимита. Файлы общей папки хранятся бессрочно и занимают место в лимите папки, а не в личных квотах участников.'}
+          error={Boolean(quotaError) || quotaInvalid}
+          helperText={quotaError || (quotaInvalid ? 'Укажите число не меньше 0' : 'Пусто — без отдельного лимита. Файлы общей папки хранятся бессрочно и занимают место в лимите папки, а не в личных квотах участников.')}
           size="small"
           fullWidth
           placeholder="Без лимита"
           inputProps={{ inputMode: 'decimal', 'data-testid': 'my-files-library-quota' }}
         />
+        {quotaUnderUsed ? (
+          <Typography
+            variant="caption"
+            color="warning.main"
+            sx={{ display: 'block', mt: 0.75 }}
+            data-testid="my-files-library-quota-warn"
+          >
+            Новый лимит меньше уже занятого объёма ({formatSize(usedBytes)}) — сервер может отклонить сохранение.
+          </Typography>
+        ) : null}
         {showUsage ? (
           <Box sx={{ mt: 1.5 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="baseline">
@@ -738,7 +785,7 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
             <Button
               variant="contained"
               onClick={create}
-              disabled={saving || !name.trim()}
+              disabled={saving || !name.trim() || quotaInvalid}
               data-testid="my-files-library-create"
             >
               {saving ? 'Создаём…' : 'Создать'}
@@ -747,7 +794,7 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
             <Button
               variant="contained"
               onClick={save}
-              disabled={loading || saving || dirtyCount === 0 || (!membersOnly && !name.trim())}
+              disabled={loading || saving || dirtyCount === 0 || (!membersOnly && (!name.trim() || quotaInvalid))}
               data-testid="my-files-library-save"
             >
               {saving ? 'Сохраняем…' : 'Сохранить'}
