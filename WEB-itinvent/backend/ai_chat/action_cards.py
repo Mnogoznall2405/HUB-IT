@@ -1036,7 +1036,7 @@ def create_pending_action(
                     AppAiPendingAction.id == replace_action_id,
                     AppAiPendingAction.conversation_id == conversation_id,
                     AppAiPendingAction.requester_user_id == requester_user_id,
-                    AppAiPendingAction.action_type.in_([ACTION_OFFICE_MAIL_SEND, ACTION_CHAT_MESSAGE_SEND]),
+                    AppAiPendingAction.action_type.in_([ACTION_OFFICE_MAIL_SEND, ACTION_OFFICE_MAIL_REPLY, ACTION_CHAT_MESSAGE_SEND]),
                     AppAiPendingAction.status == ACTION_STATUS_PENDING,
                     AppAiPendingAction.expires_at > now,
                 ).values(
