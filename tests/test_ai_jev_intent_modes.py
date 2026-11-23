@@ -556,6 +556,43 @@ def test_tool_mode_act_label_keeps_resolver_tools(monkeypatch):
     assert getattr(result, "intent_mode", None) == "act"
 
 
+# ---------- A5.1: contradictory probabilities ----------
+
+
+def test_tool_mode_chat_label_with_core_tool_is_not_confident_chat(monkeypatch):
+    """chat_p>=threshold AND a picked core tool is a contradiction — the tool
+    selection wins under a READ ceiling, never a confident CHAT."""
+    _tool_mode(monkeypatch, lambda **kw: _jev_decision({"t00": 0.9, "m_mode_chat": 0.9}))
+    specs = [
+        {"tool_id": "itinvent.equipment.search", "description": "поиск"},
+        {"tool_id": "itinvent.entity.resolve", "description": "resolver"},
+    ]
+    result = service_module._route_tools_jev(
+        trigger_text="ну найди ноутбук если что", tool_specs=specs)
+    assert getattr(result, "intent_mode", None) != "chat"
+    assert getattr(result, "intent_mode", None) == "read"
+    assert "itinvent.equipment.search" in result
+
+
+def test_tool_mode_chat_label_with_empty_core_is_confident_chat(monkeypatch):
+    """Confident CHAT requires BOTH the label AND an empty core selection."""
+    _tool_mode(monkeypatch, lambda **kw: _jev_decision({"m_mode_chat": 0.9}))
+    specs = [{"tool_id": "itinvent.equipment.search", "description": "поиск"}]
+    result = service_module._route_tools_jev(
+        trigger_text="расскажи анекдот", tool_specs=specs)
+    assert result == set()
+    assert getattr(result, "intent_mode", None) == "chat"
+
+
+def test_tool_mode_act_beats_conflicting_chat(monkeypatch):
+    """act_p >= threshold wins over chat_p even with a conflicting chat label."""
+    _tool_mode(monkeypatch, lambda **kw: _jev_decision({"t00": 0.9, "m_mode_chat": 0.9, "m_mode_act": 0.9}))
+    specs = [{"tool_id": "itinvent.equipment.search", "description": "поиск"}]
+    result = service_module._route_tools_jev(
+        trigger_text="перемести ноутбук", tool_specs=specs)
+    assert getattr(result, "intent_mode", None) == "act"
+
+
 def test_tool_mode_jev_failure_is_not_chat(monkeypatch):
     def _boom(**kw):
         raise TimeoutError("down")
