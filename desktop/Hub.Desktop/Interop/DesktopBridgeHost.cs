@@ -33,6 +33,7 @@ public sealed class DesktopBridgeHost : IDisposable
     public event EventHandler<DesktopShellStatusChangedEventArgs>? ShellStatusChanged;
     public event EventHandler<DesktopQuickRoutesChangedEventArgs>? QuickRoutesChanged;
     public event EventHandler? PrintCurrentDocumentRequested;
+    public event EventHandler<DesktopDocumentPrintRequestedEventArgs>? DocumentPrintRequested;
     public event EventHandler<DesktopEquipmentQrPrintRequestedEventArgs>? EquipmentQrPrintRequested;
     public event EventHandler? OpenDownloadsRequested;
     public event EventHandler? OpenDiagnosticsRequested;
@@ -519,6 +520,46 @@ public sealed class DesktopBridgeHost : IDisposable
             return;
         }
 
+        if (message.Type == DesktopInboundMessageType.PrintDocument
+            && message.DocumentPrint is { } documentPrint)
+        {
+            var status = "failed";
+            if (!_bridgeReady)
+            {
+                DesktopLog.Warning("Rejected document print request before bridge handshake");
+                status = "unavailable";
+            }
+            else
+            {
+                var eventArgs = new DesktopDocumentPrintRequestedEventArgs(documentPrint);
+                try
+                {
+                    DocumentPrintRequested?.Invoke(this, eventArgs);
+                    if (eventArgs.Completion is not null)
+                    {
+                        status = await eventArgs.Completion;
+                    }
+                }
+                catch (Exception exception)
+                {
+                    DesktopLog.Error("Document print request failed", exception);
+                }
+            }
+
+            try
+            {
+                _core.PostWebMessageAsJson(
+                    DesktopBridgeProtocol.CreateDocumentPrintResultMessage(
+                        documentPrint.RequestId,
+                        status));
+            }
+            catch (Exception exception)
+            {
+                DesktopLog.Error("Document print response failed", exception);
+            }
+            return;
+        }
+
         if (message.Type == DesktopInboundMessageType.PrintEquipmentQrBatch
             && message.EquipmentQrPrint is { } qrPrint)
         {
@@ -779,6 +820,15 @@ public sealed class DesktopPrepareDownloadedFileRequestedEventArgs(
     public DesktopDownloadedFileAction Action { get; } = action;
 
     public bool Accepted { get; set; }
+}
+
+public sealed class DesktopDocumentPrintRequestedEventArgs(
+    DesktopDocumentPrintCommand command) : EventArgs
+{
+    public DesktopDocumentPrintCommand Command { get; } = command;
+
+    /// <summary>Статус для document.printResult: dialog-opened|external-opened|failed|too-large|unavailable.</summary>
+    public Task<string>? Completion { get; set; }
 }
 
 public sealed class DesktopEquipmentQrPrintRequestedEventArgs(

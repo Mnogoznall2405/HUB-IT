@@ -21,6 +21,7 @@ public enum DesktopInboundMessageType
     UpdateShellStatus,
     UpdateQuickRoutes,
     PrintCurrentDocument,
+    PrintDocument,
     PrintEquipmentQrBatch,
     OpenDownloads,
     OpenDiagnostics,
@@ -72,6 +73,17 @@ public sealed record DesktopWorkspaceWindowCommand(string RequestId, string Rout
 public sealed record DesktopEquipmentQrPrintCommand(
     string RequestId,
     DesktopEquipmentQrPrintMode Mode);
+
+/// <summary>
+/// «Напечатай документ из предпросмотра»: kind=pdf — исходный PDF по blob: URL
+/// (нативная печать в отдельном WebView2 либо внешний PDF-просмотрщик);
+/// kind=html — готовый print-документ читается из window.__hubPendingPrintHtml.
+/// </summary>
+public sealed record DesktopDocumentPrintCommand(
+    string RequestId,
+    string Kind,
+    string Url,
+    string Title);
 public sealed record DesktopOpenFileDialogCommand(
     string RequestId,
     bool Multiple,
@@ -88,6 +100,7 @@ public sealed record DesktopInboundMessage(
     DesktopMailComposeWindowCommand? MailComposeWindow = null,
     DesktopWorkspaceWindowCommand? WorkspaceWindow = null,
     DesktopEquipmentQrPrintCommand? EquipmentQrPrint = null,
+    DesktopDocumentPrintCommand? DocumentPrint = null,
     DesktopOpenFileDialogCommand? OpenFileDialog = null,
     string? NotificationGroup = null,
     string? RequestId = null,
@@ -113,6 +126,10 @@ public static class DesktopBridgeProtocol
     public const string MicrophoneDiagnosticsCapability = "microphone-diagnostics";
     /// <summary>Окно рисует вкладки документов само — веб-полоса workspace скрывается.</summary>
     public const string WorkspaceChromeCapability = "workspace-chrome";
+    /// <summary>Хост умеет печатать сам документ (PDF/HTML), а не DOM страницы.</summary>
+    public const string DocumentPrintCapability = "print-document";
+    public const int MaximumDocumentPrintUrlLength = 2048;
+    public const int MaximumDocumentPrintTitleLength = 256;
     public const int MaximumWorkspaceDocuments = 16;
     public const int MaximumWorkspaceDocumentTitleLength = 128;
     private const string ReadyMessageType = "desktop.ready";
@@ -128,6 +145,8 @@ public static class DesktopBridgeProtocol
     private const string ShellStatusMessageType = "shell.status";
     private const string QuickRoutesMessageType = "shell.quickRoutes";
     private const string PrintCurrentDocumentMessageType = "document.printCurrent";
+    private const string DocumentPrintMessageType = "document.print";
+    private const string DocumentPrintResultMessageType = "document.printResult";
     private const string EquipmentQrPrintMessageType = "equipmentQr.print";
     private const string EquipmentQrPrintResultMessageType = "equipmentQr.printResult";
     private const string OpenDownloadsMessageType = "desktop.openDownloads";
@@ -200,6 +219,7 @@ public static class DesktopBridgeProtocol
                 ShellStatusMessageType => TryParseShellStatus(root, out message),
                 QuickRoutesMessageType => TryParseQuickRoutes(root, out message),
                 PrintCurrentDocumentMessageType => TryParsePrintCurrentDocument(root, out message),
+                DocumentPrintMessageType => TryParseDocumentPrint(root, out message),
                 EquipmentQrPrintMessageType => TryParseEquipmentQrPrint(root, out message),
                 OpenDownloadsMessageType => TryParseExactCommand(
                     root,
@@ -294,6 +314,7 @@ public static class DesktopBridgeProtocol
             "file-actions-v2",
             "mail-compose-window",
             MicrophoneDiagnosticsCapability,
+            DocumentPrintCapability,
         };
         if (notificationsAvailable)
         {
@@ -1098,6 +1119,66 @@ public static class DesktopBridgeProtocol
             DesktopInboundMessageType.PrintEquipmentQrBatch,
             EquipmentQrPrint: new DesktopEquipmentQrPrintCommand(requestId, mode.Value));
         return true;
+    }
+
+    private static bool TryParseDocumentPrint(
+        JsonElement root,
+        out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "requestId", "kind", "url", "title")
+            || !TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !IsValidRequestId(requestId)
+            || !TryGetBoundedString(root, "kind", 8, out var kind)
+            || kind is not ("pdf" or "html")
+            || !TryGetBoundedString(root, "title", MaximumDocumentPrintTitleLength, out var title))
+        {
+            return false;
+        }
+
+        // url обязателен для kind=pdf и пуст для kind=html — читаем отдельно.
+        var url = string.Empty;
+        if (!root.TryGetProperty("url", out var urlElement)
+            || urlElement.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        url = urlElement.GetString() ?? string.Empty;
+        if (url.Length > MaximumDocumentPrintUrlLength)
+        {
+            return false;
+        }
+
+        // kind=pdf печатает только blob: object URL того же документа
+        // (выданный предпросмотром); kind=html источник не несёт.
+        if (kind == "pdf" ? !url.StartsWith("blob:", StringComparison.Ordinal) : url.Length != 0)
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.PrintDocument,
+            DocumentPrint: new DesktopDocumentPrintCommand(requestId, kind, url, title));
+        return true;
+    }
+
+    /// <summary>document.printResult — финальный статус: диалог печати или внешний просмотрщик.</summary>
+    public static string CreateDocumentPrintResultMessage(string requestId, string status)
+    {
+        if (!IsValidRequestId(requestId)
+            || status is not ("dialog-opened" or "external-opened" or "failed" or "too-large" or "unavailable"))
+        {
+            throw new ArgumentException("Invalid document print result.", nameof(status));
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            type = DocumentPrintResultMessageType,
+            version = CurrentVersion,
+            requestId,
+            status,
+        });
     }
 
     private static bool TryParseExactCommand(

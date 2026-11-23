@@ -51,4 +51,17 @@ public sealed class DesktopPrintServiceTests
     {
         Assert.False(DesktopPrintService.TryGetEquipmentQrPageSize(json, out _, out _));
     }
+
+    [Fact]
+    public async Task DocumentPrintWithoutWebViewReportsUnavailable()
+    {
+        // No live WebView2 → the document print path must refuse explicitly,
+        // never fall back to printing the portal page.
+        var service = new DesktopPrintService();
+        var command = new Hub.Desktop.Interop.DesktopDocumentPrintCommand(
+            "req-1", "pdf", "blob:https://hubit.zsgp.ru/doc", "Отчёт");
+        Assert.Equal(
+            "unavailable",
+            await service.PrintDocumentAsync(null, TrustedOrigin, command));
+    }
 }

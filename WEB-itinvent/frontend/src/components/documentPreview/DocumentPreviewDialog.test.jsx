@@ -6,6 +6,7 @@ import DocumentPreviewDialog from './DocumentPreviewDialog';
 
 const desktopMocks = vi.hoisted(() => ({
   native: false,
+  capabilities: new Set(),
   requestOpen: vi.fn(),
   requestPrint: vi.fn(),
 }));
@@ -17,7 +18,8 @@ vi.mock('../../lib/platform', () => ({
 vi.mock('../../lib/desktopBridge', () => ({
   requestDesktopDownloadedFileAction: desktopMocks.requestOpen,
   requestDesktopOpenDownloadedFile: desktopMocks.requestOpen,
-  requestDesktopPrintCurrent: desktopMocks.requestPrint,
+  requestDesktopPrintDocument: desktopMocks.requestPrint,
+  isDesktopCapabilityAvailable: (name) => desktopMocks.capabilities.has(name),
 }));
 
 vi.mock('../mail/MailPdfPreviewSurface', () => ({
@@ -62,12 +64,15 @@ const renderDialog = () => render(
 describe('DocumentPreviewDialog', () => {
   afterEach(() => {
     desktopMocks.native = false;
+    desktopMocks.capabilities.clear();
     desktopMocks.requestOpen.mockReset();
     desktopMocks.requestPrint.mockReset();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    // Print iframes live outside React's render tree — drop leftovers.
+    document.querySelectorAll('iframe[aria-hidden="true"]').forEach((frame) => frame.remove());
   });
 
   it('uses fullscreen dialog on mobile media queries', () => {
@@ -198,9 +203,11 @@ describe('DocumentPreviewDialog', () => {
     expect(onDownloadOriginal).not.toHaveBeenCalled();
   });
 
-  it('uses the semantic Desktop print command for a ready preview', async () => {
+  it('uses the Desktop document-print command when the host supports it', async () => {
     setMobileMedia(false);
-    desktopMocks.requestPrint.mockReturnValue(true);
+    desktopMocks.native = true;
+    desktopMocks.capabilities.add('print-document');
+    desktopMocks.requestPrint.mockResolvedValue({ accepted: true, status: 'dialog-opened' });
     const browserPrint = vi.spyOn(window, 'print').mockImplementation(() => {});
     render(
       <ThemeProvider theme={theme}>
@@ -215,13 +222,45 @@ describe('DocumentPreviewDialog', () => {
     );
 
     fireEvent.click(await screen.findByRole('button', { name: 'Печать' }));
-    expect(desktopMocks.requestPrint).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(desktopMocks.requestPrint).toHaveBeenCalledWith({
+      kind: 'pdf',
+      url: 'blob:report',
+      title: 'report.pdf',
+    }));
+    expect(browserPrint).not.toHaveBeenCalled();
+    expect(document.querySelector('iframe[aria-hidden="true"]')).toBeNull();
+  });
+
+  it('shows an error with a download action when Desktop document printing fails', async () => {
+    setMobileMedia(false);
+    desktopMocks.native = true;
+    desktopMocks.capabilities.add('print-document');
+    desktopMocks.requestPrint.mockResolvedValue({ accepted: false, status: 'failed' });
+    const onDownloadOriginal = vi.fn();
+    const browserPrint = vi.spyOn(window, 'print').mockImplementation(() => {});
+    render(
+      <ThemeProvider theme={theme}>
+        <DocumentPreviewDialog
+          open
+          title="report.pdf"
+          kind="pdf"
+          objectUrl="blob:report"
+          onClose={vi.fn()}
+          onDownloadOriginal={onDownloadOriginal}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Печать' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось распечатать документ');
+    fireEvent.click(screen.getByRole('button', { name: 'Скачать оригинал' }));
+    expect(onDownloadOriginal).toHaveBeenCalledTimes(1);
     expect(browserPrint).not.toHaveBeenCalled();
   });
 
-  it('falls back to browser print outside a capable Desktop host', async () => {
+  it('shows an error instead of printing the portal DOM in a Desktop host without the capability', async () => {
     setMobileMedia(false);
-    desktopMocks.requestPrint.mockReturnValue(false);
+    desktopMocks.native = true;
     const browserPrint = vi.spyOn(window, 'print').mockImplementation(() => {});
     render(
       <ThemeProvider theme={theme}>
@@ -236,6 +275,88 @@ describe('DocumentPreviewDialog', () => {
     );
 
     fireEvent.click(await screen.findByRole('button', { name: 'Печать' }));
-    expect(browserPrint).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Не удалось распечатать документ');
+    expect(desktopMocks.requestPrint).not.toHaveBeenCalled();
+    expect(browserPrint).not.toHaveBeenCalled();
+  });
+
+  it('prints the PDF bytes through a hidden iframe outside a capable Desktop host', async () => {
+    setMobileMedia(false);
+    const browserPrint = vi.spyOn(window, 'print').mockImplementation(() => {});
+    render(
+      <ThemeProvider theme={theme}>
+        <DocumentPreviewDialog
+          open
+          title="report.pdf"
+          kind="pdf"
+          objectUrl="blob:report"
+          onClose={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Печать' }));
+    // The browser must print the original PDF document, not the preview
+    // canvas raster: a hidden iframe points at the same blob URL so the
+    // browser PDF viewer drives the print pipeline.
+    await waitFor(() => {
+      const frame = document.querySelector('iframe[aria-hidden="true"]');
+      expect(frame).not.toBeNull();
+      expect(frame.src).toBe('blob:report');
+    });
+    expect(browserPrint).not.toHaveBeenCalled();
+  });
+
+  it('never falls back to window.print when no printable document source exists', async () => {
+    setMobileMedia(false);
+    const browserPrint = vi.spyOn(window, 'print').mockImplementation(() => {});
+    render(
+      <ThemeProvider theme={theme}>
+        <DocumentPreviewDialog
+          open
+          title="report.pdf"
+          kind="pdf"
+          onClose={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+
+    // No preview surface and no object URL: the dialog shows the
+    // "preparing" fallback and the print button is not rendered at all.
+    expect(screen.queryByRole('button', { name: 'Печать' })).toBeNull();
+    expect(browserPrint).not.toHaveBeenCalled();
+  });
+
+  it('warns before printing a truncated sheets preview and only prints after confirmation', async () => {
+    setMobileMedia(false);
+    const browserPrint = vi.spyOn(window, 'print').mockImplementation(() => {});
+    const rows = Array.from({ length: 600 }, (_, index) => [`r${index}`, index]);
+    render(
+      <ThemeProvider theme={theme}>
+        <DocumentPreviewDialog
+          open
+          title="big.csv"
+          kind="csv"
+          sourceKind="csv"
+          objectUrl="blob:csv"
+          excelWorkbook={{ sheets: [{ name: 'Лист1', rows, totalRows: 4200 }] }}
+          onClose={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Печать' }));
+    const warning = await screen.findByRole('alert');
+    expect(warning).toHaveTextContent('Предпросмотр ограничен');
+    expect(document.querySelector('iframe[aria-hidden="true"]')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Печатать показанное' }));
+    await waitFor(() => {
+      const frame = document.querySelector('iframe[aria-hidden="true"]');
+      expect(frame).not.toBeNull();
+      expect(frame.srcdoc).toContain('<table>');
+      expect(frame.srcdoc).toContain('Показаны первые 500 строк из 4200');
+    });
+    expect(browserPrint).not.toHaveBeenCalled();
   });
 });
