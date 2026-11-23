@@ -638,6 +638,16 @@ function ChatThread({
     return choices.length > 0 ? { message: last, card, choices } : null;
   }, [editingMessage, isAiConversation, messages]);
   const [suggestionBusyId, setSuggestionBusyId] = useState('');
+  // Keep-alive поповера эмодзи: после первого показа панель остаётся
+  // смонтированной и скрывается стилем — hover-превью не платит за remount
+  // emoji-picker-react и открывается на контенте, а не на спиннере.
+  const emojiPopoverVisible = Boolean(
+    desktopEmojiPickerOpen && !compactMobile && emojiPanelMode !== 'pinned',
+  );
+  const [emojiPopoverEverVisible, setEmojiPopoverEverVisible] = useState(false);
+  useEffect(() => {
+    if (emojiPopoverVisible) setEmojiPopoverEverVisible(true);
+  }, [emojiPopoverVisible]);
   const pickSuggestion = useCallback(async (choice) => {
     if (!suggestionsMessage || typeof onConfirmAction !== 'function' || suggestionBusyId) return;
     setSuggestionBusyId(String(choice.id));
@@ -2016,7 +2026,7 @@ function ChatThread({
         />
       )}
 
-      {desktopEmojiPickerOpen && !compactMobile && emojiPanelMode !== 'pinned' ? (
+      {emojiPopoverEverVisible ? (
         // Д5/Д6: панель эмодзи и стикеров — поповер над полем ввода,
         // не сжимает ленту и не сдвигает шапку.
         // Hover-зона общая с кнопкой: курсор может уходить в панель и обратно.
@@ -2035,7 +2045,8 @@ function ChatThread({
             width: DESKTOP_EMOJI_POPOVER_WIDTH,
             height: DESKTOP_EMOJI_POPOVER_HEIGHT,
             minWidth: 0,
-            display: 'flex',
+            // Keep-alive: скрытие стилем вместо размонтирования.
+            display: emojiPopoverVisible ? 'flex' : 'none',
             flexDirection: 'column',
             overflow: 'hidden',
             borderRadius: '16px',

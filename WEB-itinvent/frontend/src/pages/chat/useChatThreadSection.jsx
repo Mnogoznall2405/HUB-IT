@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Box from '@mui/material/Box';
 
 import ChatThread from '../../components/chat/ChatThread';
@@ -10,6 +10,16 @@ import buildChatPagePanesBags from './buildChatPagePanesBags';
 export default function useChatThreadSection(ctx) {
   const { shell, thread, rightPanel } = buildChatPagePanesBags(ctx);
   const { theme, ui, isMobile, isPhone } = shell;
+  // Keep-alive дока эмодзи: после первого открытия панель остаётся
+  // смонтированной и скрывается стилем — повторное открытие не платит за
+  // remount emoji-picker-react (~250 мс по замерам) и сохраняет скролл.
+  const emojiDockOpen = Boolean(
+    !isMobile && thread.emojiPickerOpen && thread.emojiPanelMode === 'pinned',
+  );
+  const [emojiDockEverOpened, setEmojiDockEverOpened] = useState(false);
+  useEffect(() => {
+    if (emojiDockOpen) setEmojiDockEverOpened(true);
+  }, [emojiDockOpen]);
   const {
     activeConversation,
     navigate,
@@ -281,8 +291,9 @@ export default function useChatThreadSection(ctx) {
         onCancelVoiceRecording={cancelVoiceRecording}
         onBindPinnedScroll={bindPinnedScroll}
       />
-      {!isMobile && emojiPickerOpen && emojiPanelMode === 'pinned' ? (
+      {emojiDockEverOpened ? (
         <ChatEmojiDock
+          hidden={!emojiDockOpen}
           theme={theme}
           ui={ui}
           currentUserId={user?.id}
@@ -318,6 +329,8 @@ export default function useChatThreadSection(ctx) {
       conversationMetaSubtitle,
       editAiAction,
       effectiveLastReadMessageId,
+      emojiDockEverOpened,
+      emojiDockOpen,
       emojiPickerOpen,
       emojiPanelMode,
       fileCaption,

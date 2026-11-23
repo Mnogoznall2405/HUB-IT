@@ -34,6 +34,7 @@ const ChatEmojiDock = memo(function ChatEmojiDock({
   onInsertEmoji,
   onSendSticker,
   onClose,
+  hidden = false,
 }) {
   const rootRef = useRef(null);
   const [asColumn, setAsColumn] = useState(false);
@@ -71,7 +72,9 @@ const ChatEmojiDock = memo(function ChatEmojiDock({
         onClose?.();
       }}
       sx={{
-        display: 'flex',
+        // Keep-alive: скрытие стилем, а не размонтированием — повторное
+        // открытие мгновенное и сохраняет скролл/состояние пикера.
+        display: hidden ? 'none' : 'flex',
         flexDirection: 'column',
         minHeight: 0,
         flexShrink: 0,

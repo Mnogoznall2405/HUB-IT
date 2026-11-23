@@ -3,14 +3,17 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 // Telegram Desktop: курсор над кнопкой смайла открывает лёгкое превью
 // (popover над полем ввода), клик закрепляет панель справа. Паузы убирают
 // мерцание при быстром движении мыши между кнопкой и панелью.
-const EMOJI_PREVIEW_OPEN_DELAY_MS = 260;
+const EMOJI_PREVIEW_OPEN_DELAY_MS = 140;
 const EMOJI_PREVIEW_CLOSE_DELAY_MS = 320;
 
 // Общий ленивый чанк панели (ChatEmojiPanel грузится lazy в ChatThread,
 // ChatComposer и ChatEmojiDock) — префетч на наведении убирает пустую
-// вспышку контента при открытии превью.
+// вспышку контента при открытии превью. Прогревается вся цепочка:
+// обёртка панели и тяжёлый emoji-picker-react (~300 KB прод-чанк) — тот же
+// specifier, что у lazy() внутри панели, поэтому чанк общий.
 const prefetchEmojiPanel = () => {
   void import('../../components/chat/ChatEmojiPanel');
+  void import('emoji-picker-react');
 };
 
 export default function useChatComposerUiController({
@@ -42,6 +45,16 @@ export default function useChatComposerUiController({
   }, []);
 
   useEffect(() => () => clearPreviewTimers(), [clearPreviewTimers]);
+
+  // Idle-прогрев после готовности чата: первое открытие панели тогда платит
+  // только за mount, а не за загрузку и eval чанков. Сам чат не ждёт —
+  // импорт уходит в requestIdleCallback.
+  useEffect(() => {
+    const schedule = window.requestIdleCallback || ((cb) => window.setTimeout(cb, 2500));
+    const cancel = window.cancelIdleCallback || window.clearTimeout;
+    const id = schedule(prefetchEmojiPanel, { timeout: 5000 });
+    return () => cancel.call(window, id);
+  }, []);
 
   const handleOpenMenu = useCallback((event) => {
     void loadChatDialogsModule();

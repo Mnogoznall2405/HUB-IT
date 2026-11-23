@@ -163,7 +163,7 @@ os.environ.update(
         # него сидится локальный набор; short_name попадает в список
         # «дефолтных», поэтому _ensure_default_packs авто-устанавливает его
         # любому пользователю при первом list_packs.
-        "CHAT_DEFAULT_STICKER_PACKS": "e2e_test_pack",
+        "CHAT_DEFAULT_STICKER_PACKS": "e2e_test_pack,e2e_big_pack",
         "TELEGRAM_BOT_TOKEN": "",
     }
 )
@@ -291,41 +291,47 @@ def _seed_sticker_pack() -> None:
     # отдают его как настоящий стикер.
     webp = base64.b64decode("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA")
 
-    pack_id = str(uuid4())
-    sticker_ids = [str(uuid4()) for _ in range(3)]
-    pack_dir = telegram_sticker_service._storage_root / pack_id
-    pack_dir.mkdir(parents=True, exist_ok=True)
-    for sticker_id in sticker_ids:
-        (pack_dir / f"{sticker_id}.webp").write_bytes(webp)
-        (pack_dir / f"{sticker_id}.preview").write_bytes(webp)
-    (pack_dir / _PREVIEW_CACHE_MARKER).write_text("e2e", encoding="utf-8")
+    def _write_pack(short_name: str, title: str, count: int) -> None:
+        pack_id = str(uuid4())
+        sticker_ids = [str(uuid4()) for _ in range(count)]
+        pack_dir = telegram_sticker_service._storage_root / pack_id
+        pack_dir.mkdir(parents=True, exist_ok=True)
+        for sticker_id in sticker_ids:
+            (pack_dir / f"{sticker_id}.webp").write_bytes(webp)
+            (pack_dir / f"{sticker_id}.preview").write_bytes(webp)
+        (pack_dir / _PREVIEW_CACHE_MARKER).write_text("e2e", encoding="utf-8")
 
-    with chat_write_session() as session:
-        session.add(
-            ChatStickerPack(
-                id=pack_id,
-                short_name="e2e_test_pack",
-                title="E2E Test Pack",
-                sticker_type="regular",
-            )
-        )
-        for index, sticker_id in enumerate(sticker_ids):
+        with chat_write_session() as session:
             session.add(
-                ChatSticker(
-                    id=sticker_id,
-                    pack_id=pack_id,
-                    telegram_file_id=f"e2e-file-{index}",
-                    telegram_file_unique_id=f"e2e-unique-{index}",
-                    emoji="\U0001f9ea",
-                    format="static",
-                    mime_type="image/webp",
-                    storage_name=f"{sticker_id}.webp",
-                    file_size=len(webp),
-                    width=512,
-                    height=512,
-                    sort_order=index,
+                ChatStickerPack(
+                    id=pack_id,
+                    short_name=short_name,
+                    title=title,
+                    sticker_type="regular",
                 )
             )
+            for index, sticker_id in enumerate(sticker_ids):
+                session.add(
+                    ChatSticker(
+                        id=sticker_id,
+                        pack_id=pack_id,
+                        telegram_file_id=f"e2e-file-{index}",
+                        telegram_file_unique_id=f"e2e-unique-{index}",
+                        emoji="\U0001f9ea",
+                        format="static",
+                        mime_type="image/webp",
+                        storage_name=f"{sticker_id}.webp",
+                        file_size=len(webp),
+                        width=512,
+                        height=512,
+                        sort_order=index,
+                    )
+                )
+
+    _write_pack("e2e_test_pack", "E2E Test Pack", 3)
+    # Большой набор — замеры монтирования/прокрутки длинного списка
+    # (реалистичный пользовательский пак, ~90 стикеров).
+    _write_pack("e2e_big_pack", "E2E Big Pack", 90)
 
 
 def main() -> None:
