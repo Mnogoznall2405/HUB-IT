@@ -1,0 +1,260 @@
+[WebServer] Mail runtime is using SQLite-backed APP_DATABASE_URL; use a PostgreSQL-compatible app DB for stable multi-user mail load.
+[WebServer] C:\Program Files\Python312\Lib\site-packages\fitz\__init__.py:17: FutureWarning: The `fitz` API is deprecated and will be removed in future. Use `import pymupdf` instead.
+[WebServer]   warnings.warn(
+[WebServer] (node:44212) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+[WebServer] (Use `node --trace-deprecation ...` to show where the warning was created)
+
+Running 3 tests using 1 worker
+
+[WebServer] 10:25:17 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:17 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:17 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:17 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:19 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:19 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:20 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:20 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:21 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:21 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:28 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:28 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:28 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:28 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:30 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:30 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:30 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:30 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:31 [vite] ws proxy error:
+[WebServer] Error: write ECONNABORTED
+[WebServer]     at afterWriteDispatched (node:internal/stream_base_commons:138:10)
+[WebServer]     at writeGeneric (node:internal/stream_base_commons:126:10)
+[WebServer]     at Socket._writeGeneric (node:net:1324:11)
+[WebServer]     at Socket._write (node:net:1336:8)
+[WebServer]     at writeOrBuffer (node:internal/streams/writable:574:12)
+[WebServer]     at _write (node:internal/streams/writable:503:10)
+[WebServer]     at Writable.write (node:internal/streams/writable:512:10)
+[WebServer]     at Socket.ondata (node:internal/streams/readable:1093:24)
+[WebServer]     at Socket.emit (node:events:514:20)
+[WebServer]     at addChunk (node:internal/streams/readable:605:12)
+[WebServer]     at readableAddChunkPushByteMode (node:internal/streams/readable:556:3)
+[WebServer]     at Readable.push (node:internal/streams/readable:436:5)
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:194:23)
+[WebServer] 10:25:31 [vite] ws proxy socket error:
+[WebServer] Error: write ECONNABORTED
+[WebServer]     at afterWriteDispatched (node:internal/stream_base_commons:138:10)
+[WebServer]     at writeGeneric (node:internal/stream_base_commons:126:10)
+[WebServer]     at Socket._writeGeneric (node:net:1324:11)
+[WebServer]     at Socket._write (node:net:1336:8)
+[WebServer]     at writeOrBuffer (node:internal/streams/writable:574:12)
+[WebServer]     at _write (node:internal/streams/writable:503:10)
+[WebServer]     at Writable.write (node:internal/streams/writable:512:10)
+[WebServer]     at Socket.ondata (node:internal/streams/readable:1093:24)
+[WebServer]     at Socket.emit (node:events:514:20)
+[WebServer]     at addChunk (node:internal/streams/readable:605:12)
+[WebServer]     at readableAddChunkPushByteMode (node:internal/streams/readable:556:3)
+[WebServer]     at Readable.push (node:internal/streams/readable:436:5)
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:194:23)
+[WebServer] 10:25:32 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:32 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+  ok 1 [chromium] тА║ e2e\chat-realtime.spec.js:117:1 тА║ messages reach the peer over the chat websocket within the latency budget (29.4s)
+[WebServer] 10:25:38 [vite] ws proxy error:
+[WebServer] Error: write ECONNABORTED
+[WebServer]     at afterWriteDispatched (node:internal/stream_base_commons:138:10)
+[WebServer]     at writeGeneric (node:internal/stream_base_commons:126:10)
+[WebServer]     at Socket._writeGeneric (node:net:1324:11)
+[WebServer]     at Socket._write (node:net:1336:8)
+[WebServer]     at writeOrBuffer (node:internal/streams/writable:574:12)
+[WebServer]     at _write (node:internal/streams/writable:503:10)
+[WebServer]     at Writable.write (node:internal/streams/writable:512:10)
+[WebServer]     at Socket.ondata (node:internal/streams/readable:1093:24)
+[WebServer]     at Socket.emit (node:events:514:20)
+[WebServer]     at addChunk (node:internal/streams/readable:605:12)
+[WebServer]     at readableAddChunkPushByteMode (node:internal/streams/readable:556:3)
+[WebServer]     at Readable.push (node:internal/streams/readable:436:5)
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:194:23)
+[WebServer] 10:25:38 [vite] ws proxy socket error:
+[WebServer] Error: write ECONNABORTED
+[WebServer]     at afterWriteDispatched (node:internal/stream_base_commons:138:10)
+[WebServer]     at writeGeneric (node:internal/stream_base_commons:126:10)
+[WebServer]     at Socket._writeGeneric (node:net:1324:11)
+[WebServer]     at Socket._write (node:net:1336:8)
+[WebServer]     at writeOrBuffer (node:internal/streams/writable:574:12)
+[WebServer]     at _write (node:internal/streams/writable:503:10)
+[WebServer]     at Writable.write (node:internal/streams/writable:512:10)
+[WebServer]     at Socket.ondata (node:internal/streams/readable:1093:24)
+[WebServer]     at Socket.emit (node:events:514:20)
+[WebServer]     at addChunk (node:internal/streams/readable:605:12)
+[WebServer]     at readableAddChunkPushByteMode (node:internal/streams/readable:556:3)
+[WebServer]     at Readable.push (node:internal/streams/readable:436:5)
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:194:23)
+[WebServer] 10:25:38 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:38 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:40 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:40 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:41 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:41 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:42 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:42 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:42 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:42 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:44 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:44 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:44 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:25:44 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] inventory_binding db_pull_failed db=HUB_IT_E2E_UNAVAILABLE error=InterfaceError
+  ok 2 [chromium] тА║ e2e\chat-realtime.spec.js:152:1 тА║ offline receiver catches up with every missed message exactly once (44.2s)
+[WebServer] 10:26:22 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:22 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:23 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:23 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:25 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:25 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:25 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:25 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:26 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:26 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:26 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:26 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:28 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:28 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:28 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:28 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:40 [vite] ws proxy error:
+[WebServer] Error: write ECONNABORTED
+[WebServer]     at afterWriteDispatched (node:internal/stream_base_commons:138:10)
+[WebServer]     at writeGeneric (node:internal/stream_base_commons:126:10)
+[WebServer]     at Socket._writeGeneric (node:net:1324:11)
+[WebServer]     at Socket._write (node:net:1336:8)
+[WebServer]     at writeOrBuffer (node:internal/streams/writable:574:12)
+[WebServer]     at _write (node:internal/streams/writable:503:10)
+[WebServer]     at Writable.write (node:internal/streams/writable:512:10)
+[WebServer]     at Socket.ondata (node:internal/streams/readable:1093:24)
+[WebServer]     at Socket.emit (node:events:514:20)
+[WebServer]     at addChunk (node:internal/streams/readable:605:12)
+[WebServer]     at readableAddChunkPushByteMode (node:internal/streams/readable:556:3)
+[WebServer]     at Readable.push (node:internal/streams/readable:436:5)
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:194:23)
+[WebServer] 10:26:40 [vite] ws proxy socket error:
+[WebServer] Error: write ECONNABORTED
+[WebServer]     at afterWriteDispatched (node:internal/stream_base_commons:138:10)
+[WebServer]     at writeGeneric (node:internal/stream_base_commons:126:10)
+[WebServer]     at Socket._writeGeneric (node:net:1324:11)
+[WebServer]     at Socket._write (node:net:1336:8)
+[WebServer]     at writeOrBuffer (node:internal/streams/writable:574:12)
+[WebServer]     at _write (node:internal/streams/writable:503:10)
+[WebServer]     at Writable.write (node:internal/streams/writable:512:10)
+[WebServer]     at Socket.ondata (node:internal/streams/readable:1093:24)
+[WebServer]     at Socket.emit (node:events:514:20)
+[WebServer]     at addChunk (node:internal/streams/readable:605:12)
+[WebServer]     at readableAddChunkPushByteMode (node:internal/streams/readable:556:3)
+[WebServer]     at Readable.push (node:internal/streams/readable:436:5)
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:194:23)
+[WebServer] 10:26:40 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+[WebServer] 10:26:40 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:221:20)
+  ok 3 [chromium] тА║ e2e\chat-realtime.spec.js:185:1 тА║ message sent while the sender is offline goes out on reconnect exactly once (23.4s)
+
+  3 passed (1.9m)
