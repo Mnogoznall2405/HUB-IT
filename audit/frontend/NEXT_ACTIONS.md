@@ -175,3 +175,12 @@
 - Закрыть FE-0215 и FE-0259 на стенде с mail/1C-моками.
 - Довести функциональные сценарии до 30+/36 маршрутов.
 - Повторить PWA-тест на устаревшем app-shell и с истёкшей сессией.
+
+## Цикл 15 — очередь (2026-11-23)
+
+- Static-only High: FE-0215 (mailbox), FE-0230 (WebView2), FE-0232/FE-0239
+  (fixtures + mutations), FE-0259 (construction object/1C).
+- FE-0325: stale SW activation/prompt, expired session offline.
+- 11 Suspected: FE-0004, FE-0051, FE-0076, FE-0110, FE-0115, FE-0161,
+  FE-0194, FE-0265, FE-0300, FE-0323, FE-0324.
+- Довести E2E создания записей (не только диалоги) для ключевых маршрутов.

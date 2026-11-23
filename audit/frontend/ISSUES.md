@@ -258,6 +258,8 @@ best-effort, пользовательские ошибки не глотаютс
 
 
 
+
+
 ## Карточки записей FE-0078…FE-0325 (перепроверка циклов 12–13)
 
 > Карточки перегенерированы из ISSUES.json; исходные утверждения, текущие выводы
@@ -306,14 +308,14 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: PWA/Reliability | Серьёзность: Medium | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/main.jsx` :66-84
 - Суть/механизм: нет периодического registration.update() и prompt на обновление виден лишь в карточке настроек — пользователи с долгоживущими сессиями работают на устаревшем бандле (объясняет часть «странных» репортов типа FE-0004).
-- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] SW регистрируется и проверяет update на load (main.jsx:66-84), но skipWaiting не автоматический; applyPwaUpdate доступен только в HubItPwaSettingsCard (grep: других вхождений нет).
+- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] SW регистрируется и проверяет update на load (main.jsx:66-84), но skipWaiting не автоматический; applyPwaUpdate доступен только в HubItPwaSettingsCard (grep: других вхождений нет).; [cycle15:live] Stale-SW probe on built app :5223: changed sw.js version; registration.update() produced waiting=true while active/controller remained the old worker and old app-shell/assets caches were still used. Visiting /settings/app did not show an update/refresh label.
 - Связано: FE-0004
 
 ### FE-0085 — После применения SW-обновления соседние вкладки остаются на старом бандле
 - Категория: PWA/State | Серьёзность: Low | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/lib/pwaInstall.js` :184-192,266-276
 - Суть/механизм: controllerchange обрабатывается только во вкладке-инициаторе; остальные вкладки не уведомляются.
-- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] После skipWaiting новая SW обслуживает новые запросы, но уже открытые вкладки остаются на старом бандле до перезагрузки; механизма broadcast/reload в pwaInstall.js нет.
+- Доказательства: статическая проверка по file:line (цикл 9, перепроверено вручную); [cycle12:confirmed] После skipWaiting новая SW обслуживает новые запросы, но уже открытые вкладки остаются на старом бандле до перезагрузки; механизма broadcast/reload в pwaInstall.js нет.; [cycle15:live] Stale-SW probe: new worker waiting, old controller still serves the page; other tabs would remain on the old bundle until skipWaiting+reload.
 
 ### FE-0086 — Поздний suppressed-401 всё равно стирает localStorage.user → вкладки расходятся в auth-состоянии
 - Категория: Auth/State | Серьёзность: Low | Статус: Confirmed
@@ -1055,7 +1057,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: DataLoss/Mail | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx` :524-539 + MailRichTextEditor.jsx:151-157,228-242 + mailComposeHtml.js:138-145: после saveDraftMultipart blob: отозван, DOM Quill не переписан (эффект выходит по nextValue===valueRef), buildPortableComposeHtml удаляет img как не-cid
 - Суть/механизм: вставленная картинка молча выпадает при следующем autosave/отправке
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] После autosave blob-URL inline-превью отзываются (MailComposeHost.jsx:524-539), DOM Quill не переписывается (эффект выходит по nextValue===valueRef, MailRichTextEditor.jsx:228-242), а buildPortableComposeHtml удаляет img с не-cid src (mailComposeHtml.js:138-145).; [cycle13:confirmed] Static remains confirmed; live mail check not possible: isolated stack runs MAIL_MODULE_ENABLED=0 and has no mailbox.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] После autosave blob-URL inline-превью отзываются (MailComposeHost.jsx:524-539), DOM Quill не переписывается (эффект выходит по nextValue===valueRef, MailRichTextEditor.jsx:228-242), а buildPortableComposeHtml удаляет img с не-cid src (mailComposeHtml.js:138-145).; [cycle13:confirmed] Static remains confirmed; live mail check not possible: isolated stack runs MAIL_MODULE_ENABLED=0 and has no mailbox.; [cycle15:blocked] Cycle 15 mailbox investigation: local_backend forcibly sets MAIL_MODULE_ENABLED=0; no IMAP/SMTP fixture or test mailbox exists. Route-mocking can validate UI only, not server-side autosave/attachment persistence, so live check remains blocked.
 
 ### FE-0216 — Почта: редактор стрипает inline-превью с data:/абсолютным URL при синхронизации значения
 - Категория: DataLoss/Mail | Серьёзность: Medium | Статус: Rejected
@@ -1145,7 +1147,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: React/Hooks | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/account/settings/notifications/ChatNotificationsSettingsCard.jsx` :36 (if(isNativeShellRuntime()) return null до хуков 38-117); ChatNotificationsSettingsCard.jsx:30; platform.js:14-16; desktopBridge.js:905-907 (bridgeReady асинхронный)
 - Суть/механизм: при готовности моста WebView2 карточка возвращает null до хуков → React crash страницы настроек в HUB Desktop; вспышка PWA-карточки в десктопе
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] High, ручная проверка: isNativeShellRuntime() возвращает null до хуков (HubItPwaSettingsCard.jsx:36-38; ChatNotificationsSettingsCard.jsx:30-32, файл переехал в pages/account/settings/notifications/). Флаг зависит от асинхронного desktopBridgeReady (platform.js:14-16), поэтому смена false→true меняет число хуков и роняет рендер.; [cycle13:confirmed] Static remains confirmed; live simulation with a late desktop.hostReady on the isolated stand did not reproduce a hooks error (card subtree unmounted on re-render), so live reproduction is inconclusive.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] High, ручная проверка: isNativeShellRuntime() возвращает null до хуков (HubItPwaSettingsCard.jsx:36-38; ChatNotificationsSettingsCard.jsx:30-32, файл переехал в pages/account/settings/notifications/). Флаг зависит от асинхронного desktopBridgeReady (platform.js:14-16), поэтому смена false→true меняет число хуков и роняет рендер.; [cycle13:confirmed] Static remains confirmed; live simulation with a late desktop.hostReady on the isolated stand did not reproduce a hooks error (card subtree unmounted on re-render), so live reproduction is inconclusive.; [cycle15:blocked] Cycle 15 Desktop investigation: C# DesktopBridgeHost sends hostReady only after WebView2 bridge initialization; no Windows Desktop host/build is available in this audit, and browser simulation is not a valid WebView2 proof. Need a real WebView2 host with delayed CoreWebView2 init.
 
 ### FE-0231 — Аккаунт: isAdmin в useAccountSectionData без toLowerCase → пустые admin-разделы при роли «Admin»
 - Категория: Permissions/Admin | Серьёзность: Medium | Статус: Rejected
@@ -1157,7 +1159,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: DataLoss/Admin | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js` :244-251 (catch→merge с items:[] + console.error),637-644 (updateTaskDelegates из черновика); accountUserModel.js:27-39
 - Суть/механизм: временный сбой одного эндпоинта → при любом сохранении карточки связи удаляются на сервере без предупреждения
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] High, ручная проверка: при ошибке bulk-загрузки делегатов users остаются с task_delegate_links=[] (useAccountSectionData.js:244-251, accountUserModel.js:27-39); сохранение пользователя отправляет этот пустой список в updateTaskDelegates (637-644) и стирает связи.; [cycle13:confirmed] Static remains confirmed; live account-admin race not executed in cycle 13 (no test-data mutation outside throwaway stack).
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] High, ручная проверка: при ошибке bulk-загрузки делегатов users остаются с task_delegate_links=[] (useAccountSectionData.js:244-251, accountUserModel.js:27-39); сохранение пользователя отправляет этот пустой список в updateTaskDelegates (637-644) и стирает связи.; [cycle13:confirmed] Static remains confirmed; live account-admin race not executed in cycle 13 (no test-data mutation outside throwaway stack).; [cycle15:blocked] Cycle 15 account fixtures not prepared; no approved mutation of delegate links in the isolated DB. Static catch->empty merge->save chain remains confirmed.
 
 ### FE-0233 — Аккаунт: частичный успех create/update пользователя показывается как полный провал
 - Категория: ErrorHandling/Admin | Серьёзность: Medium | Статус: Confirmed
@@ -1199,7 +1201,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: DataLoss/Admin | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/pages/account/admin/DepartmentsTab.jsx` :58-89 (loadMembers без seq-guard),129-142 (handleSaveManagers шлёт draftManagerIds в selectedDepartmentId)
 - Суть/механизм: быстрый A→B → ответ по A перезаписывает memberships/draftManagerIds → роли отдела A уходят в отдел B
-- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] High, ручная проверка: loadMembers без seq-guard (DepartmentsTab.jsx:58-89) может применить ответ старого отдела; handleSaveManagers отправляет draftManagerIds в текущий selectedDepartmentId (129-142).; [cycle13:confirmed] Static remains confirmed; live department-manager race not executed in cycle 13.
+- Доказательства: статическая проверка по file:line (цикл 11, агент + ручная перепроверка); [cycle12:confirmed] High, ручная проверка: loadMembers без seq-guard (DepartmentsTab.jsx:58-89) может применить ответ старого отдела; handleSaveManagers отправляет draftManagerIds в текущий selectedDepartmentId (129-142).; [cycle13:confirmed] Static remains confirmed; live department-manager race not executed in cycle 13.; [cycle15:blocked] Cycle 15 department/user fixtures not prepared; no approved mutation. Static race remains confirmed.
 
 ### FE-0240 — Аккаунт: loadLookups без seq-защиты → устаревшие справочники под новой базой
 - Категория: Race/Admin | Серьёзность: Medium | Статус: Confirmed
@@ -1319,7 +1321,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: DataLoss/Construction | Серьёзность: High | Статус: Confirmed
 - Файл: `WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.jsx` :dirty/useConstructionWorkLeaveGuard(dirty||saving) без beforeunload; в Panel.jsx:163-168 и TaskCanvasWorkspace.jsx:342-350 он есть
 - Суть/механизм: потеря несохранённой сводки/плана/посещаемости молча
-- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] High, ручная проверка: ConstructionWorkWorkspace использует только SPA-guard useConstructionWorkLeaveGuard (строка 41), beforeunload нет; в ConstructionWorkPanel.jsx:165-167 и TaskCanvasWorkspace.jsx:348-349 он есть. F5/закрытие теряет черновик.; [cycle13:confirmed] Static remains confirmed; live construction-workspace check blocked: local stack has no 1C/SQL construction data.
+- Доказательства: статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company); [cycle12:confirmed] High, ручная проверка: ConstructionWorkWorkspace использует только SPA-guard useConstructionWorkLeaveGuard (строка 41), beforeunload нет; в ConstructionWorkPanel.jsx:165-167 и TaskCanvasWorkspace.jsx:348-349 он есть. F5/закрытие теряет черновик.; [cycle13:confirmed] Static remains confirmed; live construction-workspace check blocked: local stack has no 1C/SQL construction data.; [cycle15:blocked] Cycle 15 mocked construction attempt reached the page but the workspace requires a configured object/direction («сначала настройте объект»); mocked planning alone is insufficient. F5/close/unmount still blocked by missing configured construction fixture.
 
 ### FE-0260 — Construction: data.items.find(id).version без fallback → TypeError при числовом id/исчезнувшем item
 - Категория: ErrorHandling/Construction | Серьёзность: Medium | Статус: Rejected
@@ -1715,7 +1717,7 @@ best-effort, пользовательские ошибки не глотаютс
 - Категория: Reliability/PWA | Серьёзность: Medium | Статус: Confirmed
 - Страница: все маршруты (проверено /login)
 - Файл: `WEB-itinvent/frontend/src/contexts/AuthContext.jsx` :310-339
-- Доказательства: live local E2E (cycle 13): built app served by vite preview :5221, SW active and controls the page, app-shell/assets cached; offline reload /login stays on «Загружаем раздел… | Подготавливаем интерфейс HUB-IT» at 10/30/55/65 s.; AuthContext verifySession: error with HTTP status 0 (offline) is not a definitive 401/403, so scheduleRetry repeats forever with max 30 s delay; setLoading(false) is never called on this path (AuthContext.jsx:310-339).; SW itself serves the shell offline (200), so the hang is in auth recovery, not in the service worker navigation fallback.; [cycle14:live] PWA deep test on built app :5223: fresh offline reload stays on loader >50 s; only 2 refresh attempts during 50 s (no request storm); reconnect recovers to /login in ~2 s; offline reload with existing session shows /dashboard and «Нет подключения · Показываем сохранённые данные»; two tabs both show the loader.
+- Доказательства: live local E2E (cycle 13): built app served by vite preview :5221, SW active and controls the page, app-shell/assets cached; offline reload /login stays on «Загружаем раздел… | Подготавливаем интерфейс HUB-IT» at 10/30/55/65 s.; AuthContext verifySession: error with HTTP status 0 (offline) is not a definitive 401/403, so scheduleRetry repeats forever with max 30 s delay; setLoading(false) is never called on this path (AuthContext.jsx:310-339).; SW itself serves the shell offline (200), so the hang is in auth recovery, not in the service worker navigation fallback.; [cycle14:live] PWA deep test on built app :5223: fresh offline reload stays on loader >50 s; only 2 refresh attempts during 50 s (no request storm); reconnect recovers to /login in ~2 s; offline reload with existing session shows /dashboard and «Нет подключения · Показываем сохранённые данные»; two tabs both show the loader.; [cycle15:live] Cycle 15 PWA: three offline/online reload cycles with existing session recovered to /dashboard each time (~2.6 s offline render, cached «Нет подключения» banner); stale-SW probe installed a new waiting worker while the old controller/caches stayed active and no settings update text appeared.
 - Связано: FE-0084, FE-0085, FE-0070
 
 ## Счётчики (цикл 14, после runtime-проверок и очистки схемы verification)

@@ -41,7 +41,7 @@
         }
       ],
       "verification": [
-        "static",
+        "static-code",
         "production-observer"
       ],
       "evidence": [
@@ -87,7 +87,7 @@
       "file": "WEB-itinvent/frontend/src/pages/Login.jsx",
       "lines": "282-294,416-439",
       "verification": [
-        "static",
+        "static-code",
         "production-observer"
       ],
       "evidence": [
@@ -222,7 +222,7 @@
       "file": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
       "lines": "1413-1611 (tick 1577-1588, onVisible 1589-1593)",
       "verification": [
-        "static",
+        "static-code",
         "production-observer"
       ],
       "evidence": [
@@ -265,7 +265,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "isMyFilesPublicRequestUrl матчит только /my-files/public/ и /my-files/public? — реальные папочные эндпоинты /my-files/public-folders/ не матчатся; folder-запросы идут без suppressAuthRequired; тест client.test.js:200 проверяет URL-паттерн, отсутствующий в рантайме",
@@ -386,7 +386,7 @@
       "file": "WEB-itinvent/frontend/src/components/tickets/TicketRequestList.jsx",
       "lines": "151-166",
       "verification": [
-        "static",
+        "static-code",
         "production-observer"
       ],
       "evidence": [
@@ -436,7 +436,7 @@
         }
       ],
       "verification": [
-        "static",
+        "static-code",
         "production-observer"
       ],
       "evidence": [
@@ -556,7 +556,7 @@
         }
       ],
       "verification": [
-        "static",
+        "static-code",
         "production-observer"
       ],
       "evidence": [
@@ -837,7 +837,7 @@
       "file": "WEB-itinvent/frontend/src/pages/ConstructionObjects.jsx",
       "lines": "604",
       "verification": [
-        "static",
+        "static-code",
         "production-observer"
       ],
       "evidence": [
@@ -876,13 +876,15 @@
       "file": "WEB-itinvent/frontend/src/pages/Warehouse1C.jsx",
       "lines": "2163-2216,1975-1980",
       "verification": [
-        "static"
+        "static-code",
+        "local-browser-mock"
       ],
       "evidence": [
         "TableRow onClick + cursor:pointer без role/tabIndex/onKeyDown (2163-2167)",
         "TableCell onClick handleOpenHubMatch без клавиатуры (1975-1980)",
         "мобильный рядок (:487) корректно имеет role/tabIndex/Enter — асимметрия",
-        "[cycle12:confirmed] High, ручная проверка: TableRow onClick без role/tabIndex/onKeyDown (Warehouse1C.jsx:2163-2167), TableCell onClick (1975-1980); мобильная строка :487 имеет клавиатурную семантику."
+        "[cycle12:confirmed] High, ручная проверка: TableRow onClick без role/tabIndex/onKeyDown (Warehouse1C.jsx:2163-2167), TableCell onClick (1975-1980); мобильная строка :487 имеет клавиатурную семантику.",
+        "[cycle15:live] Warehouse1C balances route-mocked (one row, search «кабель», real CSS build :5223): the clickable nomenclature cell renders inside a TableRow with trTabIndex=null, trRole=null, cellTabIndex=null, cellRole=null; no keyboard-focusable element on the cell. The row is reachable only by mouse."
       ],
       "impact": "Пользователи клавиатуры/скринридеров не могут открыть документы и сопоставления",
       "recommendation": "Дублировать паттерн мобильного рядка или добавить кнопку «Открыть»",
@@ -899,9 +901,16 @@
           "date": "2026-11-23",
           "verdict": "confirmed",
           "note": "High, ручная проверка: TableRow onClick без role/tabIndex/onKeyDown (Warehouse1C.jsx:2163-2167), TableCell onClick (1975-1980); мобильная строка :487 имеет клавиатурную семантику."
+        },
+        {
+          "cycle": 15,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Mocked Warehouse1C row demonstrates no keyboard focus target on the clickable nomenclature cell.",
+          "sourceFile": "manual-live-warehouse-keyboard"
         }
       ],
-      "currentConclusion": "Подтверждено: High, ручная проверка: TableRow onClick без role/tabIndex/onKeyDown (Warehouse1C.jsx:2163-2167), TableCell onClick (1975-1980); мобильная строка :487 имеет клавиатурную семантику.",
+      "currentConclusion": "Подтверждено на мокированных данных: кликабельная ячейка номенклатуры не имеет tabIndex/role и не фокусируется с клавиатуры.",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)"
@@ -927,7 +936,7 @@
         }
       ],
       "verification": [
-        "static",
+        "static-code",
         "local-browser-mock"
       ],
       "evidence": [
@@ -994,7 +1003,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "перечисленные IconButton не имеют aria-label (у части только Tooltip)",
@@ -1028,7 +1037,7 @@
       "file": "WEB-itinvent/frontend/src/components/hub/tasks/TaskCard.jsx",
       "lines": "322,335,363",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "«Удалить» (:352) подписан — непоследовательность",
@@ -1069,7 +1078,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "sx: outline:'none' и '&:focus, &:focus-visible': { outline:'none' } (1853-1856); aria-label при этом есть (1825)",
@@ -1103,7 +1112,7 @@
       "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceLogViewer.jsx",
       "lines": "240-242",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "DialogContent bgcolor #1a1b23; loading Box color text.secondary; соседний empty-state корректно использует rgba(255,255,255,0.4)",
@@ -1137,7 +1146,7 @@
       "file": "WEB-itinvent/frontend/src/pages/Mfu.jsx",
       "lines": "1297-1298",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "Drawer Box width:{xs:360, sm:480}",
@@ -1171,7 +1180,7 @@
       "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
       "lines": "2055-2074",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "deps — незамемоизированные cancelEditPort/savePortEdit + displayedPorts",
@@ -1205,7 +1214,7 @@
       "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
       "lines": "138-311",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "любой ввод перерисовывает всю страницу с картой",
@@ -1239,7 +1248,7 @@
       "file": "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx",
       "lines": "530-544,55-105",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "setDraggedPoint без троттлинга -> пересчёт кластеризации всех точек",
@@ -1273,7 +1282,7 @@
       "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx",
       "lines": "1332-1337",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "выбор десятков файлов -> десятки параллельных загрузок",
@@ -1307,7 +1316,7 @@
       "file": "WEB-itinvent/frontend/src/pages/Warehouse1C.jsx",
       "lines": "903,923,1922,1970,2121,2162",
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent C",
       "evidence": [
@@ -1359,7 +1368,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent A",
       "evidence": [
@@ -1409,7 +1418,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent A",
       "evidence": [
@@ -1443,7 +1452,7 @@
       "file": "WEB-itinvent/frontend/src/pages/Networks.jsx",
       "lines": "302-304",
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent A",
       "evidence": [
@@ -1477,7 +1486,7 @@
       "file": "WEB-itinvent/frontend/src/pages/account/admin/HubDesktopDeploySection.jsx",
       "lines": "422",
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent A",
       "evidence": [
@@ -1512,7 +1521,7 @@
       "file": "WEB-itinvent/frontend/vite.config.js",
       "lines": "3 (import), ~30 (plugins: tailwindcss())",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "Login.jsx/чат — Tailwind-разметка; остальной портал — MUI sx + переменные --chat-*",
@@ -1546,7 +1555,7 @@
       "file": "WEB-itinvent/frontend/src/theme/index.js",
       "lines": "31",
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent A",
       "evidence": [
@@ -1586,7 +1595,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent C",
       "evidence": [
@@ -1620,7 +1629,7 @@
       "file": "WEB-itinvent/frontend/src/pages/SharedFile.jsx",
       "lines": "576-579",
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent C",
       "evidence": [
@@ -1654,7 +1663,7 @@
       "file": "WEB-itinvent/frontend/src/pages/Statistics.jsx",
       "lines": "290-296",
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent C",
       "evidence": [
@@ -1688,7 +1697,7 @@
       "file": "WEB-itinvent/frontend/src/components/feed/FeedCommentsPanel.jsx",
       "lines": "130-138",
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent C",
       "evidence": [
@@ -1797,7 +1806,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "loadSectionSummary принимает signal, но ветка passwords не передаёт его в getEntries; getEntries вообще без signal — дублирование при remount, не отменяется при смене :objectRef",
@@ -1832,7 +1841,7 @@
       "file": "WEB-itinvent/frontend/src/api/http.js",
       "lines": "61-64,281-283",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "resetAuthRejectionEpoch только после /auth/login и /auth/verify-2fa*; passkey (/auth/passkey-login/verify) и trusted-device (/auth/trusted-devices/auth/verify) её не сбрасывают",
@@ -1870,7 +1879,7 @@
       "file": "WEB-itinvent/frontend/src/lib/swrCache.js",
       "lines": "114-117",
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent D",
       "evidence": [
@@ -1904,7 +1913,7 @@
       "file": "WEB-itinvent/frontend/src/pages/Computers.jsx",
       "lines": "950-960",
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent D",
       "evidence": [
@@ -1939,7 +1948,7 @@
       "file": "WEB-itinvent/frontend/src/pages/ChatOpen.jsx",
       "lines": "56",
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent D",
       "evidence": [
@@ -1982,7 +1991,7 @@
       "file": "WEB-itinvent/frontend/src/lib/swrCache.js",
       "lines": "63-77 (invalidateSWRCacheByPrefix: отсоединение in-flight), 120-129 (runDedupedFetch: отсоединённый fetch всё равно резолвится данными вызвавшему — публикация в кэш блокируется, возврат данных нет)",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "статический анализ субагента; цитаты кода в audit/frontend/evidence/agent-D-state-report.md (позиции перепроверены: файл/строки указаны выше)",
@@ -2026,7 +2035,7 @@
       "file": "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx",
       "lines": "2028",
       "verification": [
-        "static",
+        "static-code",
         "production-observer"
       ],
       "evidence": [
@@ -2102,7 +2111,7 @@
         }
       ],
       "verification": [
-        "static",
+        "static-code",
         "production-observer"
       ],
       "evidence": [
@@ -2149,7 +2158,7 @@
         }
       ],
       "verification": [
-        "static",
+        "static-code",
         "production-observer"
       ],
       "evidence": [
@@ -2192,7 +2201,7 @@
       "file": "WEB-itinvent/frontend/src/components/mail/MailPreviewHeader.jsx",
       "lines": "398-400 (дата noWrap), 403-474 (тулбар)",
       "verification": [
-        "static",
+        "static-code",
         "production-observer"
       ],
       "evidence": [
@@ -2249,7 +2258,7 @@
         }
       ],
       "verification": [
-        "static",
+        "static-code",
         "production-observer"
       ],
       "evidence": [
@@ -2290,14 +2299,16 @@
         }
       ],
       "verification": [
-        "static",
+        "static-code",
+        "local-api",
         "production-observer"
       ],
       "evidence": [
         "live: офлайн 5+ c на /chat при сессии ~50 мин -> post-online auth/me 401 + auth/refresh 401 -> logout -> /login; localStorage user удалён",
         "консоль: ERR_INTERNET_DISCONNECTED xN, WS failed xN",
         "AUTH_SECURITY_STACK.md:18-19 — задокументированный компромисс («recovered only within the configured grace window»)",
-        "[cycle12:confirmed] High, ручная проверка: grace допускает 1 повтор, затем отзывает family (auth.py:135,1648-1675); runtime-разлогин после офлайна подтверждён."
+        "[cycle12:confirmed] High, ручная проверка: grace допускает 1 повтор, затем отзывает family (auth.py:135,1648-1675); runtime-разлогин после офлайна подтверждён.",
+        "[cycle15:live] Auth disconnect probe on isolated backend (refresh grace 180 s from root .env): login, rotate refresh while discarding the new cookies (lost response), wait 185 s, retry the old refresh cookie -> 401 \"Refresh token has been revoked\"; old access cookie /auth/me -> 401. Reproduces forced logout after a lost rotation response."
       ],
       "impact": "Пользователи нестабильных сетей (Wi-Fi-роуминг, мобильный интернет, VPN) теряют сессию и несохранённый ввод",
       "recommendation": "Решение владельца: рассмотреть grace 60-120 c для web или мягкое восстановление; замерить refresh_reuse_detected/refresh_expired_or_already_used в метриках",
@@ -2318,9 +2329,16 @@
           "date": "2026-11-23",
           "verdict": "confirmed",
           "note": "High, ручная проверка: grace допускает 1 повтор, затем отзывает family (auth.py:135,1648-1675); runtime-разлогин после офлайна подтверждён."
+        },
+        {
+          "cycle": 15,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Lost rotation response + retry after grace -> family revoked and access rejected; FE-0059 confirmed live.",
+          "sourceFile": "manual-live-refresh-loss"
         }
       ],
-      "currentConclusion": "Подтверждено: High, ручная проверка: grace допускает 1 повтор, затем отзывает family (auth.py:135,1648-1675); runtime-разлогин после офлайна подтверждён.",
+      "currentConclusion": "Подтверждено: потерянный ответ ротации + повтор старой cookie после grace даёт 401 revoked и 401 на /auth/me; пользователь разлогинен.",
       "verificationLegacy": [
         "live-production",
         "static",
@@ -2338,7 +2356,7 @@
       "file": "WEB-itinvent/frontend/src/components/chat/ChatThreadHeader.jsx",
       "lines": "37-61",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "resolveChatConnectionLabel: offline -> «Нет сети» (:40); слушатели online/offline (:46-61)",
@@ -2493,7 +2511,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "единственный contentEditable в кодовой базе без onPaste (81-91); начальное значение санируется (:30 markdownToEditorHtml), чтение безопасно (:37 editorHtmlToMarkdown), вставка из буфера — сырой HTML в DOM origin до конвертации",
@@ -2531,7 +2549,7 @@
       "file": "WEB-itinvent/frontend/public/web.config",
       "lines": "186",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "Content-Security-Policy-Report-Only; drawio iframe наследует default-src 'self'",
@@ -2571,7 +2589,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "файлы добавляются без проверок; web.config maxAllowedContentLength=67108864; в чате лимиты есть (chatHelpers.js:10-11, FeedComposerDialog.jsx:345, ImportDialog.jsx:34)",
@@ -2606,7 +2624,7 @@
       "file": "WEB-itinvent/frontend/src/pages/voice-video/VoiceMeetingSummary.jsx",
       "lines": "301",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "MarkdownRenderer.jsx:12 использует [rehypeSanitize] — здесь нет; прямого XSS нет (react-markdown v9 без rehype-raw), защита держится на дефолтах библиотеки",
@@ -2646,7 +2664,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "applySafeBlankLinkRel есть только в buildRenderedMailHtml; sanitizeMailHtmlFragment его не добавляет; современные браузеры неявно изолируют opener",
@@ -2686,7 +2704,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "hasPermission: role==='admin' -> true; alwaysGrantedPermissions даёт всем ролям mail.access/my_files.write/tasks.create и др.; при отсутствии permissions от сервера — rolePermissionFallback",
@@ -2722,7 +2740,7 @@
       "file": "WEB-itinvent/frontend/src/main.jsx",
       "lines": "44-54",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "unhandledrejection обрабатывает только 'Failed to fetch dynamically imported module'",
@@ -2756,7 +2774,7 @@
       "file": "WEB-itinvent/frontend/src/components/mail/mailErrorModel.js",
       "lines": "16-24,72-74",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "«Request failed with status code 500»/«Network Error» в fallback; не-HTML не-JSON текст ответа показывается целиком",
@@ -2797,7 +2815,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "isDefinitiveAuthRejection: 401 ИЛИ 403; если сервер отдаёт 403-из-за-прав на auth-цепочке — незапланированный logout",
@@ -2842,7 +2860,7 @@
       "file": "WEB-itinvent/frontend/package.json",
       "lines": "42",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "все входы/выходы quill обёрнуты DOMPurify-санитайзерами (MailRichTextEditor.jsx:161-192 и др.)",
@@ -2876,7 +2894,7 @@
       "file": "WEB-itinvent/frontend/src/pages/MyFiles.jsx",
       "lines": "401",
       "verification": [
-        "static"
+        "static-code"
       ],
       "source": "agent E",
       "evidence": [
@@ -2916,7 +2934,7 @@
         }
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "event.source-чек остаётся; при дефолтном embed.diagrams.net origin валиден",
@@ -2960,7 +2978,7 @@
       "file": "WEB-itinvent/frontend/src/pages/chat/AiMailActionEditDialog.jsx",
       "lines": "119-129",
       "verification": [
-        "static"
+        "static-code"
       ],
       "evidence": [
         "тело из TextField (plain) отправляется с is_html:true — если сервер не экранирует, пользовательские < станут разметкой у получателя",
@@ -3052,7 +3070,7 @@
         "[cycle13:fixed-externally] Live E2E cycle 13: chat-realtime.spec.js «sender is offline» прошёл на 8462d971 (3/3, 1.9m), включая sender count=1 после reconnect и reload."
       ],
       "verification": [
-        "static",
+        "static-code",
         "local-browser",
         "test-harness"
       ],
@@ -3100,7 +3118,7 @@
         "[cycle12:confirmed] setLoadingOlder(true) на 591, сброс в finally только при совпадении activeConversationIdRef (855-859); при смене диалога флаг залипает и loadOlderMessages блокируется проверкой loadingOlder (895)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: loadingOlder залипает true при смене диалога — дозагрузка истории мёртва",
       "originalEvidence": [
@@ -3138,7 +3156,7 @@
         "[cycle12:confirmed] HEARTBEAT_MS=25s, maxMissedPongs=2 (chatSocket.js:32-33,245); при мёртвом TCP статус остаётся connected до ~50 c, индикатор обрыва не появляется."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: мёртвый TCP-сокет → до ~50 c «подключено» без индикатора обрыва",
       "originalEvidence": [
@@ -3173,7 +3191,7 @@
         "[cycle12:confirmed] resetTracking очищает pendingReadIdsRef/optimisticReadIdsRef при смене normalizedConversationId (useReadReceipts.js:112-124,139-172) — неотправленные read-receipt IDs теряются."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: pending read-receipt IDs сбрасываются при переключении диалога",
       "originalEvidence": [
@@ -3208,7 +3226,7 @@
         "[cycle12:confirmed] Ключ таймаута включает conversationId, но setTypingUsers — плоский список имён; таймаут старого диалога удаляет того же пользователя из индикатора нового (useChatSocketEvents.js:543-560)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: коллизия typing-таймаутов между диалогами — сброс чужого индикатора",
       "originalEvidence": [
@@ -3257,7 +3275,7 @@
         "[cycle14:live] Two-tab browser race on isolated stack 5219/18002: three concurrent POST /auth/refresh from two pages sharing cookies -> [200,401,200]; /auth/me -> 401; a NEW refresh cookie after the race -> 401 \"Refresh token has been revoked\"; both tabs reloaded to /login."
       ],
       "verification": [
-        "static",
+        "static-code",
         "local-browser",
         "local-api",
         "test-harness"
@@ -3324,10 +3342,12 @@
       ],
       "evidence": [
         "статическая проверка по file:line (цикл 9, перепроверено вручную)",
-        "[cycle12:confirmed] SW регистрируется и проверяет update на load (main.jsx:66-84), но skipWaiting не автоматический; applyPwaUpdate доступен только в HubItPwaSettingsCard (grep: других вхождений нет)."
+        "[cycle12:confirmed] SW регистрируется и проверяет update на load (main.jsx:66-84), но skipWaiting не автоматический; applyPwaUpdate доступен только в HubItPwaSettingsCard (grep: других вхождений нет).",
+        "[cycle15:live] Stale-SW probe on built app :5223: changed sw.js version; registration.update() produced waiting=true while active/controller remained the old worker and old app-shell/assets caches were still used. Visiting /settings/app did not show an update/refresh label."
       ],
       "verification": [
-        "static"
+        "static-code",
+        "local-browser"
       ],
       "lines": "66-84",
       "originalClaim": "Service Worker обновляется только полной перезагрузкой приложения; уведомление об обновлении — только в Settings",
@@ -3340,9 +3360,16 @@
           "date": "2026-11-23",
           "verdict": "confirmed",
           "note": "SW регистрируется и проверяет update на load (main.jsx:66-84), но skipWaiting не автоматический; applyPwaUpdate доступен только в HubItPwaSettingsCard (grep: других вхождений нет)."
+        },
+        {
+          "cycle": 15,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Waiting worker is not activated and update is not surfaced outside a full reload/settings state.",
+          "sourceFile": "manual-live-stale-sw"
         }
       ],
-      "currentConclusion": "Подтверждено: SW регистрируется и проверяет update на load (main.jsx:66-84), но skipWaiting не автоматический; applyPwaUpdate доступен только в HubItPwaSettingsCard (grep: других вхождений нет).",
+      "currentConclusion": "Подтверждено: новый SW уходит в waiting, старый controller и кэши остаются; в /settings/app текст обновления не появился.",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)"
@@ -3359,10 +3386,12 @@
       "source": "agent pwa/auth",
       "evidence": [
         "статическая проверка по file:line (цикл 9, перепроверено вручную)",
-        "[cycle12:confirmed] После skipWaiting новая SW обслуживает новые запросы, но уже открытые вкладки остаются на старом бандле до перезагрузки; механизма broadcast/reload в pwaInstall.js нет."
+        "[cycle12:confirmed] После skipWaiting новая SW обслуживает новые запросы, но уже открытые вкладки остаются на старом бандле до перезагрузки; механизма broadcast/reload в pwaInstall.js нет.",
+        "[cycle15:live] Stale-SW probe: new worker waiting, old controller still serves the page; other tabs would remain on the old bundle until skipWaiting+reload."
       ],
       "verification": [
-        "static"
+        "static-code",
+        "local-browser"
       ],
       "lines": "184-192,266-276",
       "originalClaim": "После применения SW-обновления соседние вкладки остаются на старом бандле",
@@ -3375,9 +3404,16 @@
           "date": "2026-11-23",
           "verdict": "confirmed",
           "note": "После skipWaiting новая SW обслуживает новые запросы, но уже открытые вкладки остаются на старом бандле до перезагрузки; механизма broadcast/reload в pwaInstall.js нет."
+        },
+        {
+          "cycle": 15,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Waiting worker does not claim clients; neighboring tabs stay on old bundle.",
+          "sourceFile": "manual-live-stale-sw"
         }
       ],
-      "currentConclusion": "Подтверждено: После skipWaiting новая SW обслуживает новые запросы, но уже открытые вкладки остаются на старом бандле до перезагрузки; механизма broadcast/reload в pwaInstall.js нет.",
+      "currentConclusion": "Подтверждено: waiting worker не активируется, соседние вкладки остаются на старом бандле.",
       "verificationLegacy": [
         "static",
         "перепроверено (цикл 12)"
@@ -3397,7 +3433,7 @@
         "[cycle12:confirmed] http.js:370 удаляет localStorage.user при 401 независимо от suppressAuthRequired; поздний ответ подавленного запроса расходится с состоянием вкладки."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "316-371",
       "originalClaim": "Поздний suppressed-401 всё равно стирает localStorage.user → вкладки расходятся в auth-состоянии",
@@ -3432,7 +3468,7 @@
         "[cycle12:confirmed] handleStaticAssetRequest запускает fetch и cache.put в фоне (sw.js:608-626), не оборачивая networkPromise в event.waitUntil — SW может быть остановлен до записи."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "SW: фоновая ревалидация runtime-кэша не обёрнута в waitUntil — может не завершиться",
       "originalEvidence": [
@@ -3467,7 +3503,7 @@
         "[cycle12:confirmed] activeSection хранится только в useState (ScanCenterPage.jsx:522), onChange/onNavigate вызывают setActiveSection (2062,2076) без searchParams — deep-link, Back/Forward и reload не работают."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Scan Center: вкладки не синхронизированы с URL — нет deep-link, ломаны Back/Forward и reload",
       "originalEvidence": [
@@ -3501,7 +3537,7 @@
         "[cycle12:confirmed] При ошибке не-silent загрузки Dashboard делает setPayload(EMPTY_DASHBOARD) (Dashboard.jsx:736-743), стирая ранее показанные карточки."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Dashboard: ошибка ручного обновления стирает все карточки в empty-state",
       "originalEvidence": [
@@ -3535,7 +3571,7 @@
         "[cycle12:confirmed] Ошибка показывается верхним Alert (Dashboard.jsx:1537) и warning-пленкой секции внимания (1046) — дубль."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Dashboard: ошибка загрузки показана дважды (верхний Alert + warning секции)",
       "originalEvidence": [
@@ -3569,7 +3605,7 @@
         "[cycle12:confirmed] handleSaveSections пишет ошибку через setError (Dashboard.jsx:1003-1004), не закрывая диалог customizeOpen, — текст скрыт за диалогом."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Dashboard: ошибка сохранения раскладки невидима за диалогом редактирования",
       "originalEvidence": [
@@ -3603,7 +3639,7 @@
         "[cycle12:confirmed] Dashboard.jsx:50 импортирует hubAPI из legacy-барреля ../api/client вместо отдельного api-файла."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Dashboard импортирует hubAPI через legacy client.js-баррель (нарушение конвенции api/)",
       "originalEvidence": [
@@ -3637,7 +3673,7 @@
         "[cycle12:confirmed] Эффект активности зависит от scanSsePulse (ScanCenterPage.jsx:1467), поэтому каждый SSE-pulse перезапускает tick и делает лишний getAgentsActivity."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "scanSSE-pulse перезапускает эффект активности → лишний getAgentsActivity на каждый SSE-event",
       "originalEvidence": [
@@ -3671,7 +3707,7 @@
         "[cycle12:confirmed] Unmount-cleanup абортирует только review/agents/hosts (ScanCenterPage.jsx:1339-1343); остальные fetch-семейства продолжаются в фоне."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Scan Center: cleanup при unmount абортирует только 3 семейства запросов — остальные завершаются в фоне",
       "originalEvidence": [
@@ -3705,7 +3741,7 @@
         "[cycle12:confirmed] handleDownload/handleDownloadAll при активной загрузке делают return без сообщения (SharedFolder.jsx:60,77) — повторный клик молча игнорируется."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "SharedFolder: download-guard молча глотает ошибку скачивания",
       "originalEvidence": [
@@ -3739,7 +3775,7 @@
         "[cycle12:confirmed] resolveError для любого 4xx возвращает «Папка недоступна — ссылка отключена…» (SharedFolder.jsx:29-36), хотя ошибка скачивания файла может быть иной."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "SharedFolder: ошибка скачивания мапится в «не удалось связаться» (неверное сообщение)",
       "originalEvidence": [
@@ -3773,7 +3809,7 @@
         "[cycle12:confirmed] Состояние ошибки — только Alert без кнопки повтора (SharedFolder.jsx:137-139)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "SharedFolder: состояние ошибки без кнопки повтора",
       "originalEvidence": [
@@ -3810,7 +3846,7 @@
         "[cycle14:live] Synthetic 2000-file public folder on isolated stand: 8.38 s first render, 20180 DOM nodes, 98184 px body, 186 MB heap."
       ],
       "verification": [
-        "static",
+        "static-code",
         "local-browser-mock",
         "test-harness"
       ],
@@ -3872,7 +3908,7 @@
         "[cycle12:confirmed] Mail.jsx повторно грузит bootstrap при переходе scope pending→resolved; код Mail.jsx после 1a94d39a не менялся, прежний network-захват 2× GET /mail/bootstrap остаётся в силе."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "455-457,1062-1064",
       "originalClaim": "Почта: двойной GET /mail/bootstrap на свежей вкладке (scope pending → resolved → повторная выборка)",
@@ -3914,7 +3950,7 @@
         "[cycle12:confirmed] buildMailSandboxSrcDoc не добавляет base target=_blank и не переписывает ссылки (mailHtmlSandboxDocument.js:36-63); ссылка без target навигирует сам sandbox-iframe, уводя внешний сайт внутрь панели чтения."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "36-63",
       "originalClaim": "Почта: ссылки без target уводят внешний сайт ВНУТРИ sandbox-iframe чтения",
@@ -3949,7 +3985,7 @@
         "[cycle12:confirmed] Для обычного превью loading не выставляется до await (useMailMessageFileActions.js:373-388), повторный клик не блокируется, AbortSignal нет — только generation-guard."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Почта: превью вложения без индикатора загрузки; повторный клик молча проглатывается; abort нет",
       "originalEvidence": [
@@ -3985,7 +4021,7 @@
         "[cycle12:confirmed] Optimistic mark-read откатывается только через refetch; при его сбое счётчики остаются рассинхронизированными (useMailReadMutations.js)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "300-319",
       "originalClaim": "Почта: optimistic-откат mark-read опирается только на refetch — при его сбое счётчики расходятся",
@@ -4020,7 +4056,7 @@
         "[cycle12:confirmed] closeCompose при наличии контента всегда открывает «Сохранить черновик?» (MailComposeHost.jsx:641-677), не проверяя draftSyncState==='synced' — повторный upsert."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Почта: «Сохранить черновик?» спрашивается даже при синхронизированном состоянии → дубль upsert",
       "originalEvidence": [
@@ -4060,7 +4096,7 @@
         "[cycle12:confirmed] Черновик быстрого ответа хранится в состоянии поля и теряется при переключении письма; отдельного per-message хранилища нет (MailQuickReplyDraftField.jsx)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "26-30",
       "originalClaim": "Почта: черновик быстрого ответа теряется при переключении писем",
@@ -4095,7 +4131,7 @@
         "[cycle12:confirmed] saveDraftMultipart вызывается без AbortSignal (MailComposeHost.jsx:505-521); прогресс ограничен draftSyncState='saving', отмены нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Почта: автосохранение черновика multipart без AbortSignal и индикации прогресса",
       "originalEvidence": [
@@ -4134,7 +4170,7 @@
         "[cycle12:not-a-defect] Запись уже опровергнута перепроверкой (статус в реестре): /my-files/edit/:fileId обслуживается отдельным MyFilesEditor и не наследует портальный chrome; текущий App.jsx:600-602 это подтверждает."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "lines": "594-602",
@@ -4178,7 +4214,7 @@
         "[cycle12:confirmed] compareVersion передаётся только активному документу (MyFilesEditorWorkspace.jsx:173), а workspace создаёт документ один раз (25-28); повторный ?compare= для уже открытого fileId не переинициализирует сравнение."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "183-186,459",
       "originalClaim": "Повторный ?compare= молча игнорируется для уже открытого документа",
@@ -4219,7 +4255,7 @@
         "[cycle12:confirmed] isValidWorkspaceEditorRoute требует точный путь /my-files/edit/<id> без query (desktopBridge.js:540-542), поэтому route с ?compare= отклоняется и редактор деградирует до in-window диалога."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "540-542",
       "originalClaim": "Desktop: isValidWorkspaceEditorRoute отклоняет ?compare= → деградация до in-window диалога",
@@ -4254,7 +4290,7 @@
         "[cycle12:confirmed] Лимиты MAXIMUM_WORKSPACE_DOCUMENTS=16 и MAXIMUM_WORKSPACE_DOCUMENT_TITLE_LENGTH=128 (desktopBridge.js:46-47) отбрасывают всю нативную ленту при превышении."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "46-47,551,561",
       "originalClaim": "Desktop: нативная лента вкладок отклоняется целиком при >16 документов или заголовке >128 символов",
@@ -4291,7 +4327,7 @@
         "[cycle13:unverifiable] Код действительно не имеет таймаута или fallback: close() при frameReady вызывает editor.requestClose() и ждёт события onRequestClose, которое остаётся единственным путём к onClose (useMyFilesEditorSession.js:209,436-440). Даже аварийный крестик, показываемый в phase error/loading, вызывает тот же handleClose → requestClose (MyFilesEditorShell.jsx:46-47,61-65,172-177), а MUI Dialog onClose делегирует туда же (MyFilesOfficeEditorDialog.jsx:10-16). Сценарий «iframe убит после frameReady» в этой среде не воспроизводим: живого Document Server и убитого renderer нет, поэтому user-visible зависание не подтверждено."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Закрытие редактора может зависнуть, если iframe DocSpace упал — editor.requestClose() не отвечает",
       "originalEvidence": [
@@ -4339,7 +4375,7 @@
         "[cycle12:not-a-defect] Факт не подтверждён: бэкенд после restore чистит office_session_key (my_files_collab_service.py:844) и отклоняет save старой сессии как stale (199-211,512-514), поэтому живой сеанс не может перезаписать восстановленную версию."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "lines": "795,844",
@@ -4375,7 +4411,7 @@
         "[cycle12:confirmed] loadDocsApi возвращает уже загруженный window.DocsAPI.DocEditor, игнорируя новый publicPath (useMyFilesEditorSession.js:22-24); смена settings.public_path не перезагружает SDK."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Устаревший DocsAPI SDK переиспользуется при смене settings.public_path",
       "originalEvidence": [
@@ -4409,7 +4445,7 @@
         "[cycle12:confirmed] officeUiTheme вычисляется один раз при вызове хука (useMyFilesEditorSession.js:69), а эффект создания редактора зависит от fileId/accountKey/restart (459), не от темы."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "officeUiTheme зафиксирован на mount на весь сеанс — смена темы во время редактирования не применяется",
       "originalEvidence": [
@@ -4453,7 +4489,7 @@
         "[cycle12:confirmed] В useMailMessageFileActions.js нет передачи ui_theme/theme в office-view конфиг — превью не учитывает тёмную тему."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "19,34-38",
       "originalClaim": "Почтовый office-просмотр не передаёт ui_theme — превью игнорирует тёмную тему",
@@ -4510,7 +4546,7 @@
         "[cycle13:unverifiable] Ссылка на useMailMessageFileActions.js была ошибочной: синхронный revoke находится в downloadBlobFile (mailMessageFileActions.js:354-359), и в якорной ветке для iOS Safari вне standalone-режима он сохраняется; 60-секундная задержка включена только для popup-ветки iOS standalone с безопасными типами (343-352). Тот же паттерн остаётся в networksHelpers.js:75-84, MyFiles.jsx:674-681, Statistics.jsx:324-331, useTasksPageController.jsx:457-464 и ObjectNetmapTab.jsx:402-413, тогда как KnowledgeBase.jsx:308-309 уже отложил revoke на 60 с из-за обрыва загрузки в Safari/Firefox. Проверить фактическое поведение iOS Safari здесь нечем (нет устройства и WebKit), поэтому пользовательский обрыв загрузки не подтверждён."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "notes": " Ещё 2 точки: networksHelpers.js:75-84, ObjectNetmapTab.jsx:402-413 (в Networks.jsx:1237 для оригинала сделан setTimeout — несогласованность). +MyFiles.jsx:handleExportPdf (~:676) — тот же паттерн revoke сразу после click().",
       "reverificationVerdict": "wrong-evidence",
@@ -4555,7 +4591,7 @@
         "[cycle12:not-a-defect] block() действительно не очищает readyTimer (useMyFilesEditorSession.js:147-152), но при phase=blocked поверхность показывает статус блокировки (MyFilesEditorSurface.jsx:21-24), а не устаревшее «редактор грузится долго» — пользовательского дефекта нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "originalClaim": "block() не снимает readyTimer → устаревшее предупреждение «редактор грузится долго»",
@@ -4592,7 +4628,7 @@
         "[cycle12:confirmed] Цепочка mail office-view в useMailMessageFileActions.js не принимает AbortSignal; отмена ограничена previewGenerationRef, сетевой запрос продолжается."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "291-299,319-328",
       "originalClaim": "Почтовый office-view: цепочка fetch без AbortSignal (контроллер страницы абортит, путь почты — нет)",
@@ -4627,7 +4663,7 @@
         "[cycle12:confirmed] download/restore в MyFilesVersionHistory.jsx:107-135 пишут busyId/error после await без mounted/cancelled-проверки."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "MyFilesVersionHistory: async-действия без защиты от unmount",
       "originalEvidence": [
@@ -4661,7 +4697,7 @@
         "[cycle12:confirmed] Начальный config передаётся в DocEditor без проверки key/token (useMyFilesEditorSession.js:306-335); refresh-путь такую проверку делает (263-266)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Начальный конфиг редактора не валидирует key/token (путь refresh — валидирует)",
       "originalEvidence": [
@@ -4701,7 +4737,7 @@
         "[cycle12:confirmed] MailOfficeAttachmentInlinePreview и buildOfficeInlinePreviewState определены, но нигде не импортируются/вызываются (поиск по components/mail и Mail.jsx — только определения)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "12",
       "originalClaim": "Мёртвый код: MailOfficeAttachmentInlinePreview + buildOfficeInlinePreviewState не используются",
@@ -4736,7 +4772,7 @@
         "[cycle12:confirmed] History-view сравнивает editorConfig.user.id только с id (MyFilesOfficeHistoryView.jsx:13,82), тогда как сессия допускает fallback на username — user без id всегда invalid."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "History-view: проверка аккаунта строже, чем у сессии — user без id всегда «invalid»",
       "originalEvidence": [
@@ -4770,7 +4806,7 @@
         "[cycle12:confirmed] Deep-link ?edit= сразу вызывает setOfficeEditorFile (MyFiles.jsx:365-372) без проверок preferredWindow/opening, которые есть у обычного открытия."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Deep-link ?edit= обходит проверки preferredWindow/opening",
       "originalEvidence": [
@@ -4807,7 +4843,7 @@
         "[cycle12:confirmed] Drop на строку папки не проверяет активную загрузку и запускает собственную очередь (MyFiles.jsx, обработчик drop папки); параллельная очередь с основной загрузкой."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "1007-1039",
       "originalClaim": "MyFiles: drop файлов на строку папки во время активной загрузки запускает параллельную очередь",
@@ -4843,7 +4879,7 @@
         "[cycle13:confirmed] Эффект очистки не зависит от libraryId (MyFiles.jsx:1097-1099), а navigateToLibrary меняет только library/view и не трогает folder (594-596), поэтому при переходе между корнями библиотек currentFolderId остаётся null и выделение сохраняется. Действия при этом не применяются к скрытым файлам: selectedFiles и selectedFolders фильтруются по текущим visibleItems/visibleFolders (1196-1203), поэтому bulk-delete с count=0 просто выходит, а bulk-move с count=0 показывает ложный успех «Выбранные объекты перемещены» (1343-1397). Реальный дефект — залипший счётчик «Выбрано: N» (1954-1972) и ложный успех перемещения, а не операции над файлами старой библиотеки."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "notes": "перепроверка: clearSelection-эффект зависит от [currentFolderId, viewParam, searchQuery, typeFilter, dateFilter] — если переключение библиотеки меняет viewParam, выделение сбрасывается корректно; дефект есть только если библиотека переключается без смены viewParam — требует рантайм-пробы.",
       "originalClaim": "MyFiles: выделение не сбрасывается при смене библиотеки — действия применяются к невидимым файлам",
@@ -4887,7 +4923,7 @@
         "[cycle13:confirmed] При удалённой или чужой папке бэкенд отдаёт 404: _folder_row_locked требует совпадения owner и deleted_at is None (my_files_service.py:1864-1871), а list_my_files маппит MyFilesNotFoundError в 404 (my_files.py:278-297,120-124). Фронтенд в catch только показывает notifyApiError и не чистит searchParams (MyFiles.jsx:320-322), а currentFolderId продолжает читаться из ?folder= (163); после reload запрос повторяется и снова падает, при этом список остаётся пустым или старым. Параметр остаётся в URL, и по коду повторная ошибка воспроизводится при каждом открытии ссылки."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "MyFiles: deep-link на удалённую/чужую папку — только тост; ?folder= остаётся → повторные ошибки",
       "originalEvidence": [
@@ -4929,7 +4965,7 @@
         "[cycle12:confirmed] Bulk delete/move по-прежнему выполняет отдельный запрос на каждый элемент в последовательном for-of (MyFiles.jsx:1292-1309, 1354-1371); добавлен лишь bulkBusy-гард (1276, 1344) и итоговый счётчик, живого прогресса нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "MyFiles: массовые delete/move — по запросу на элемент, последовательно, без прогресса",
       "originalEvidence": [
@@ -4964,7 +5000,7 @@
         "[cycle12:confirmed] handleAddTaskChecklistItem читает task.checklist_items (759) и сразу вызывает updateTask (762), минуя checklistMutationRef, тогда как toggle сериализуется через chain (733-742); гонка toggle/add теряет обновления."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Tasks: добавление пункта чек-листа идёт в обход очереди мутаций → гонка toggle/add теряет обновления",
       "originalEvidence": [
@@ -5004,7 +5040,7 @@
         "[cycle12:confirmed] TaskDetailChecklist не прокидывает updatingItemId (TaskDetailChecklist.jsx:3-15), поэтому условие disabled в TaskChecklist.jsx:39 никогда не истинно; чекбокс управляется только данными задачи (38), optimistic-отклика нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "6-7,39-40",
       "originalClaim": "Tasks: чекбокс чек-листа без optimistic-отклика; мёртвый проп updatingItemId",
@@ -5039,7 +5075,7 @@
         "[cycle12:confirmed] После await openTaskDiscussion (483) нет проверки актуальности задачи, а updateSearch с устаревшим замыканием выставляет task=normalizedTaskId (489-494) — возврат к ранее активной задаче."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Tasks: ensureTaskDiscussion с устаревшим completion → переход к ранее активной задаче",
       "originalEvidence": [
@@ -5073,7 +5109,7 @@
         "[cycle12:confirmed] getTaskComments (161-163) отсекает только чужой taskId, а handleAddTaskComment добавляет комментарий локально (462-465); ответ старого запроса заменяет массив setDetailsComments и теряет добавленный комментарий."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Tasks: устаревший ответ getTaskComments затирает только что добавленный комментарий",
       "originalEvidence": [
@@ -5107,7 +5143,7 @@
         "[cycle12:confirmed] openTaskDetails читает visibleTaskItems (329), но в deps useCallback только [taskDiscussionChatEnabled, updateSearch] (353) — возможен показ устаревшей строки списка."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Tasks: openTaskDetails без зависимости visibleTaskItems → открывает устаревшую позицию списка",
       "originalEvidence": [
@@ -5142,7 +5178,7 @@
         "[cycle13:refuted] Unmount-cleanup действительно выходит без flush при savingRef.current === true (332-340), но это не теряет правки: savePending в finally после успешного ответа сам планирует таймер, если pendingSceneRef непуст (308-320), а savePendingRef после размонтирования не обнуляется (324-326). Поэтому сценарий «правки, накопленные во время in-flight save» сохраняется отложенным вызовом; потеря возможна только при отказе самой save-операции, что не является заявленным механизмом."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Tasks: несохранённые изменения canvas теряются при unmount во время in-flight save",
       "originalEvidence": [
@@ -5184,7 +5220,7 @@
         "[cycle12:confirmed] handleDeleteTask (163-176) без busy-guard, а selectedTaskRef мутируется в теле рендера (158-161); повторный confirm даёт второй DELETE и ложный тост ошибки."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Tasks: handleDeleteTask без busy-guard → двойной confirm даёт ложный тост ошибки; ref мутируется в render",
       "originalEvidence": [
@@ -5219,7 +5255,7 @@
         "[cycle13:confirmed] setTaskDetailTab вызывает updateSearch с replace: false (373-378), а updateSearch делает navigate с replace:false (115-125), то есть каждое переключение вкладки деталей добавляет запись в history. Пользователь нажимает Back и возвращается на предыдущую вкладку вместо выхода из карточки; цикл повторяется по числу переключений."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Tasks: переключение вкладок деталей задачи пушит записи в history — Back циклит по вкладкам",
       "originalEvidence": [
@@ -5262,7 +5298,7 @@
         "[cycle13:confirmed] Подтверждается: экспорт запрашивается с responseType:'blob' (json_client.js:252-255), а catch передаёт ошибку в notifyApiError (Statistics.jsx:333-335). extractApiDetail (NotificationContext.jsx:92-110) читает только строковые detail/message/error и не разбирает Blob, поэтому серверный detail (json_operations.py:743-747) теряется. В тосте остаётся техническое «Request failed with status code N» на английском вместо причины отказа — это не дамп «[object Blob]», но пользователь причины не видит; в проекте уже есть образец разбора через blob.text() (EquipmentDetailPhotosPanel.jsx:54-65)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Statistics: текст ошибки blob-ответа нечитаем в тосте экспорта",
       "originalEvidence": [
@@ -5308,7 +5344,7 @@
         "WEB-itinvent/backend/services/authorization_service.py"
       ],
       "verification": [
-        "static",
+        "static-code",
         "test-harness"
       ],
       "reverificationVerdict": "not-a-defect",
@@ -5349,7 +5385,7 @@
         "[cycle12:confirmed] Кэшированный user применяется из localStorage до валидации сессии (AuthContext.jsx:270-288), после чего LoginRoute сразу редиректит по isAuthenticated (App.jsx:237-249); комментарий 281-282 подтверждает намеренную offline-политику."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "lines": "270-296",
       "originalClaim": "Маршрутизация доверяет кэшированному localStorage.user до валидации сессии — вспышка чужого экрана",
@@ -5384,7 +5420,7 @@
       "notes": "механизм handoff ожидаем, но ошибка засоряет консоль и путает диагностику.",
       "source": "ручной прогон cycle9",
       "verification": [
-        "static",
+        "static-code",
         "test-harness"
       ],
       "lines": "240-276",
@@ -5421,7 +5457,7 @@
         "[cycle12:confirmed] saveThenClose (104-108) игнорирует false от save() и безусловно зовёт onCloseRef.current(); saveError (96-98) адресована уже закрытому диалогу."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Drawio-редактор: при ошибке сохранения диалог закрывается и несохранённые правки теряются",
       "originalEvidence": [
@@ -5455,7 +5491,7 @@
         "[cycle12:confirmed] Поля точки мутируют mapPoints на каждый ввод (2576-2588, 2601-2603; мобильный дубль 3218-3224), а «Отмена» делает только setPointEditMode(false) (2606, 3227)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: «Отмена» редактирования точки карты не откатывает локальные изменения mapPoints",
       "originalEvidence": [
@@ -5489,7 +5525,7 @@
         "[cycle12:confirmed] На мобильном onPointDrop/onCanvasClick передаются лишь при mobileMapEditMode (2872-2873), а togglePlacingMarker (337-347) и applySocketPointDraft (1340-1352) ставят только placingMarker — тапы по карте игнорируются до нажатия «замка» (2919)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: мобильный режим размещения точки не работает — клики по карте игнорируются",
       "originalEvidence": [
@@ -5523,7 +5559,7 @@
         "[cycle12:confirmed] isPointPointerDownRef ставится на pointerdown маркера (519, 646) и сбрасывается только в handlePointerUp контейнера (305-307), куда событие не всплывает из-за stopPropagation (521, 547/677); следующий pointerdown панорамы отсекается на 205-207."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: первый жест панорамы карты после касания маркера «съедается»",
       "originalEvidence": [
@@ -5557,7 +5593,7 @@
         "[cycle12:confirmed] Эффект автосинка (1562-1590) не проверяет canEdit и вызывает syncSocketHostContext (1577), а бэкенд требует networks.write (networks.py:403-410) — read-only пользователь получает 403 и notifyWarning."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: автосинк MAC/ФИО дёргает write-эндпоинт у read-only пользователей → 403-тосты",
       "originalEvidence": [
@@ -5591,7 +5627,7 @@
         "[cycle12:confirmed] При смене selectedMapId прежние mapBlobUrl/mapIsPdf/mapRenderedFrom не сбрасываются до конца downloadMapFile (1079-1100), а cleanup отзывает старый URL (1108-1110); при ошибке <img> остаётся с revoked-URL, точки новой карты рисуются поверх."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: устаревшее изображение карты при смене/ошибке загрузки — точки новой карты поверх старой",
       "originalEvidence": [
@@ -5625,7 +5661,7 @@
         "[cycle12:confirmed] saveMap (1259), commitPendingPoint (1354), saveSelectedPoint (1413), removeSelectedPoint (1436) и removeMap (1292) не имеют busy-guard; кнопки MapDialog.jsx:76-78 и панелей не блокируются на время запроса."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: нет busy-guards на saveMap/commitPendingPoint/saveSelectedPoint/removeSelectedPoint/removeMap",
       "originalEvidence": [
@@ -5659,7 +5695,7 @@
         "[cycle12:confirmed] site_name жёстко выбирается между «Первомайская 21/19» по site_code (1267, 1278), хотя MapDialog получает sites с именами; для прочих площадок в БД пишется неверное имя."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: site_name карты захардкожен в «Первомайская 19/21»",
       "originalEvidence": [
@@ -5693,7 +5729,7 @@
         "[cycle12:confirmed] Глобальный window keydown (2055-2074) на Escape вызывает cancelEditPort без проверки открытых Dialog/Drawer, а на Ctrl+S сохраняет порт (2063-2068) — Escape в диалоге уничтожает draft."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: Escape глобально отменяет редактирование порта поверх любых диалогов",
       "originalEvidence": [
@@ -5727,7 +5763,7 @@
         "[cycle12:confirmed] startSocketPointCreation (1450-1475) и applySocketPointDraft (1340-1352) не проверяют canEdit; вызовы из handleSocketRowClick (1477-1492) и handlePortRowClick (2086-2114) открывают панель размещения read-only пользователю, далее 403 на createMapPoint."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: read-only пользователь попадает в режим размещения точки → серия 403",
       "originalEvidence": [
@@ -5761,7 +5797,7 @@
         "[cycle12:confirmed] openEditBranchDialog выставляет branchEditId и грузит getBranchDbMapping без seq/abort-guard (1737-1752); ответ по филиалу A перезаписывает branchEditDbId уже открытого B (1746)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: гонка загрузки db-mapping при быстром переоткрытии диалога филиала",
       "originalEvidence": [
@@ -5796,7 +5832,7 @@
         "[cycle13:confirmed] На протухшей записи getOrFetchSWR запускает runDedupedFetch и сразу возвращает старый entry.data (swrCache.js:151-165), а setCacheEntry (79-85) не имеет подписчиков — обновлённый кэш некому применить к UI. loadBranchContext применяет только синхронный data (Networks.jsx:756-805), эффект перезапускается лишь при смене branchIdNum (972-993), а SWR_STALE_MS=60 с при retention 30 мин и отсутствии focus/visibility-ревалидации делает окно реальным. Собственная проба на реальном swrCache.js воспроизвела сценарий: вызов вернул v1 (isFresh=false), фоновая выборка прошла один раз и через 120 мс в кэше был v2, а вызывающий остался с v1. Итог: после возврата на филиал через минуту UI держит старый снапшот до смены филиала или мутации (refreshBranchContext вызывается только после мутаций, 898-906)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks/SWR: протухшие данные показываются бессрочно — фоновая ревалидация не доходит до UI",
       "originalEvidence": [
@@ -5838,7 +5874,7 @@
         "[cycle12:confirmed] handlePointerMove пишет offset без ограничений (274-277), zoomBy клампит только scale (161); сброс offset только по кнопке (424) — карту можно утащить за экран."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: панорама карты не ограничена — карту можно утащить за экран",
       "originalEvidence": [
@@ -5873,7 +5909,7 @@
         "[cycle13:confirmed] scrollTop хранится в state хука (33-35), а эффект [enabled, itemCount] при перемонтировании таблицы с теми же deps не перезапускается (46-67). В SocketsTab/EquipmentTab TableContainer рендерится только на desktop (220, 308), поэтому после перехода mobile→desktop контейнер новый со scrollTop=0, но окно виртуализации считается по старому scrollTop: сверху остаётся большой spacer, таблица выглядит пустой до первого скролла."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: виртуализация — stale scrollTop после размонтирования контейнера → «пустая» таблица",
       "originalEvidence": [
@@ -5915,7 +5951,7 @@
         "[cycle12:confirmed] removeSelectedPoint удаляет сразу, без confirm (1436-1448), а deleteDevice вызывается прямо из кнопки DeviceDialog.jsx:136-143 и тоже без подтверждения (1989-2009)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: удаление точки карты и устройства без подтверждения",
       "originalEvidence": [
@@ -5949,7 +5985,7 @@
         "[cycle12:confirmed] CSV собирается join(';') без кавычек и кодируется encodeURI (EquipmentTab.jsx:194-196), который не экранирует # ; + & =; значения с ведущими =/+/- уходят в Excel как формулы."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: CSV-экспорт портов — data-URI без кавычек/экранирования; возможна CSV formula-injection",
       "originalEvidence": [
@@ -5983,7 +6019,7 @@
         "[cycle12:confirmed] CardActionArea рендерит <button>, внутри которого лежат IconButton (BranchList.jsx:50-86, SocketsTab.jsx:241-298, EquipmentTab.jsx:376-430) — невалидная вложенность button."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: вложенные <button> внутри CardActionArea — невалидный DOM",
       "originalEvidence": [
@@ -6017,7 +6053,7 @@
         "[cycle12:confirmed] Маркеры и кластеры — <Box onClick> без role/tabIndex/onKeyDown (516-565, 644-695); Tooltip здесь с React-node title, так что фокусируемого имени у маркера нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: маркеры карты недоступны с клавиатуры",
       "originalEvidence": [
@@ -6052,7 +6088,7 @@
         "[cycle13:refuted] Клик по маркеру гасится stopPropagation в onClick (559-565), а handleCanvasClick дополнительно отбрасывает цель внутри [data-map-point=1] (317-319). pointDragRef при перетаскивании ставит pointer capture на маркер (522-528), поэтому pointerup и производный click остаются на маркере; достижимого пути, где click доходит до контейнера после drag, в поддерживаемых браузерах нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "unverifiable",
       "originalClaim": "Networks: клик после перетаскивания точки может «просочиться» на canvas",
@@ -6095,7 +6131,7 @@
         "[cycle12:confirmed] openMapDialogCreate жёстко ставит setMapSiteCode('p19') (1217), тогда как диалог устройства берёт selectedBranch.default_site_code (1895) — для другого филиала сайт карты приходится менять вручную."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: openMapDialogCreate игнорирует default_site_code филиала",
       "originalEvidence": [
@@ -6129,7 +6165,7 @@
         "[cycle12:confirmed] createBranchCity инициализируется 'tmn' и сеттера нигде нет (217), city_code при создании падает в 'tmn' (1637), а список филиалов грузится только getBranches('tmn') (746-747)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: город филиала захардкожен в «tmn» + мёртвый createBranchCity",
       "originalEvidence": [
@@ -6163,7 +6199,7 @@
         "[cycle12:confirmed] ImportDialog.jsx нигде не импортируется; equipmentLoading (302) и hasBranchDbChanges (491) не читаются, mobilePortEditorOpen только set (204/1858/1868), focusPointId (732) не используется, SocketsTab не принимает pointEditMode (125-134), а containerWidth из хука (35) не деструктурируется."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: пакет мёртвого кода (ImportDialog, mobilePortEditorOpen, equipmentLoading, hasBranchDbChanges, focusPointId, containerWidth)",
       "originalEvidence": [
@@ -6198,7 +6234,7 @@
         "[cycle13:unverifiable] Лимиты 10000/5000 действительно жёстко заданы на клиенте (765, 871, 1059, 2030), бэкенд принимает не больше 10000 (313, 330), а признака усечения/общего total в ответе нет. При этом вкладка показывает длину загруженного списка (SocketsTab.jsx:185), тогда как обзорный блок показывает истинный sockets_count из metrics (Networks.jsx:2723-2727), то есть расхождение возможно. Но достижимость требует филиала с более 10000 розеток/портов, а таких данных в репозитории нет, поэтому пользовательский эффект не подтверждён."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: молчаливое усечение выборок по limit (10000/5000) — неверные счётчики и «не найдено»",
       "originalEvidence": [
@@ -6241,7 +6277,7 @@
         "[cycle13:refuted] Все четыре пункта — защитные мелочи без наблюдаемого состояния: setTimeout(0) вызывает applySocketPointDraft, который лишь применяет уже сохранённый черновик (1467-1468), expectedRef синхронизируется с версией того же map-объекта, которую родитель обновляет после сохранения (ObjectNetmapTab.jsx:72, 87-88), setPointerCapture на pointerdown поддерживается браузерами, а ключ AuditTab использует index только как fallback при отсутствии id (AuditTab.jsx:84), при этом бэкенд всегда отдаёт id. Воспроизводимого пользовательского дефекта нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Networks: мелкие хронометражи — setTimeout(0) без очистки, expectedRef безусловный, setPointerCapture без try, ключ AuditTab",
       "originalEvidence": [
@@ -6283,7 +6319,7 @@
         "[cycle12:confirmed] Загрузчики списков держат selectedArticleId/selectedTemplateId/selectedCardId в deps (679, 710, 742), а эффекты вызывают их (749-759); клик меняет selected (1490/1535), вызывая повторный запрос списка и повторную загрузку детали (666-669)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "KnowledgeBase: клик по элементу списка перезагружает весь список и дублирует загрузку детали",
       "originalEvidence": [
@@ -6317,7 +6353,7 @@
         "[cycle12:confirmed] Автосейв-эффект (318-335) срабатывает при открытии без dirty-проверки и создаёт draft (326) с пустыми title/body; бэкенд принимает пустой draft — проверка title только для не-draft (hub_service.py:5393-5394)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Feed: автосохранение создаёт пустой черновик при простом открытии композера",
       "originalEvidence": [
@@ -6351,7 +6387,7 @@
         "[cycle12:confirmed] Таймер автосейва не отменяет in-flight createDraft, а draftId читается из замыкания (320-328); при вводе до ответа уходит второй createDraft — дубли черновиков и setState после закрытия (327, 329)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Feed: параллельные автосохранения плодят дубли черновиков",
       "originalEvidence": [
@@ -6385,7 +6421,7 @@
         "[cycle12:confirmed] Unmount-cleanup есть: useEffect(() => () => revokePreviewObjectUrl()) на Docflow.jsx:1788 (с baseline 6eccf3ce), поэтому «утечка при уходе» не подтверждается. Остаётся out-of-order: previewObjectUrl.current присваивается до проверки sequence (1745-1751), и поздний ответ оставляет ref на уже отозванном URL (1755-1758)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Docflow: objectURL предпросмотра утекает при уходе; out-of-order ответ ломает учёт URL",
       "originalEvidence": [
@@ -6419,7 +6455,7 @@
         "[cycle12:confirmed] Эффект 140-166 зависит от items и при каждом фоновом полле (130-138, интервал 15 с) заново делает getComments по каждому root с ответами; отмены/seq нет, только .catch(() => undefined)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Feed: hash-эффект комментария повторно дёргает N запросов на каждый 15-с полл",
       "originalEvidence": [
@@ -6453,7 +6489,7 @@
         "[cycle12:confirmed] openArticle (265-279) после await безусловно пишет setDetail/setDetailLoading, без seq/abort, а ошибка гасится в setDetail(null); поздний ответ перетирает выбранную статью."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "KB Help: открытие статьи без упорядочивания ответов → показ чужой статьи",
       "originalEvidence": [
@@ -6487,7 +6523,7 @@
         "[cycle12:confirmed] На 224 запрашивается limit:300, total из ответа (kb_service.py:328) не используется, счётчик 308/330 считает только загруженные статьи; пагинации и предупреждения о срезе нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "KB Help: жёсткий лимит 300 статей без пагинации — тихое усечение базы",
       "originalEvidence": [
@@ -6521,7 +6557,7 @@
         "[cycle12:confirmed] warehouseRef уходит в запрос (834), а renderValue (1071) при отсутствии ref в facets рисует «Все склады», не сбрасывая warehouseRef; facets считаются до фильтра по складу (backend 1630-1638), поэтому расхождение возникает при поиске/смене снимка."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "IT-заявки: устаревший фильтр склада фильтрует, пока Select рисует «Все склады»",
       "originalEvidence": [
@@ -6555,7 +6591,7 @@
         "[cycle12:confirmed] RequestDetail при !request (669-681) возвращает «Выберите заявку» до рендера error (693); detailError, переданный на 1136, не виден, если заявки нет ни в списке, ни в detail."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "IT-заявки: ошибка загрузки детали невидима, когда заявки нет в списке",
       "originalEvidence": [
@@ -6589,7 +6625,7 @@
         "[cycle12:not-a-defect] У openAnalytics (589-601) нет busy-guard, но единственный триггер — MenuItem FeedPostCard.jsx:269, а menuAction (145-147) сначала закрывает меню; повторный вызов практически недостижим."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "originalClaim": "Feed: openAnalytics без busy-guard → дубли запросов",
@@ -6624,7 +6660,7 @@
         "[cycle12:not-a-defect] archive/delete получают тот же объект из items (Feed.jsx:677-679, selectedPost ищется в items 273-277), поэтому item.id !== post.id для этого элемента ложно при любом типе; String-нормализация в patchPost (358-361) — защитная."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "originalClaim": "Feed: архив/удаление поста — сравнение id без нормализации типов",
@@ -6659,7 +6695,7 @@
         "[cycle12:not-a-defect] request_ref формируется как UUID из 36 символов (warehouse_1c_it_requests.py:131-144), слэшей и спецсимволов не бывает; navigate на 910/946 безопасен."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "originalClaim": "IT-заявки: request_ref подставляется в URL без encodeURIComponent",
@@ -6695,7 +6731,7 @@
         "[cycle13:refuted] Гонка достижима только при двух перекрывающихся openAttachmentPreview (закрыть превью во время загрузки и открыть другое): stale-ветка пишет previewObjectUrl.current = objectUrl (1749), затем отзывает его (1755-1759), оставляя в ref мёртвый URL. Однако следующий close/open отзывает именно мёртвый URL, а актуальный URL остаётся живым, то есть превью показывается корректно; последствие — утечка blob-URL (память), а не потеря/подмена превью."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Docflow: dangling previewObjectUrl.current после отозванного URL",
       "originalEvidence": [
@@ -6737,7 +6773,7 @@
         "[cycle12:confirmed] runAction (132-142) хранит один actionBusyKey и в finally ставит null; параллельные действия с разными ключами (имя встречи 453-462, id задачи 828-848) перетирают друг друга, снимая блокировку с ещё идущего действия."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: единый actionBusyKey затирается параллельными действиями → двойной сабмит",
       "originalEvidence": [
@@ -6771,7 +6807,7 @@
         "[cycle12:confirmed] retryTopics/retryAssignments/retryTranscript (980-1001) вызывают API без signal и без сверки base; cleanup (1003-1004) отменяет только transcriptAbortRef, поэтому ответ ретрая пишется в уже другую встречу."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: ретраи в карточке встречи обходят AbortController → stale-запись чужой встречи",
       "originalEvidence": [
@@ -6805,7 +6841,7 @@
         "[cycle12:confirmed] el.play?.() на 849, 864, 868 и 1268 не имеет .catch; AbortError при смене src или паузе даёт unhandled promise rejection."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: el.play() без .catch → unhandled promise rejection",
       "originalEvidence": [
@@ -6839,7 +6875,7 @@
         "[cycle12:confirmed] isTypingTarget (90-94) не относит button/a к полям ввода, а глобальный keydown делает preventDefault для Space (505-507) и удаляет сегмент по Delete (528-529)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: Space и Delete перехватываются глобально при фокусе на кнопках — кнопки не активируются, Delete удаляет сегмент",
       "originalEvidence": [
@@ -6873,7 +6909,7 @@
         "[cycle12:confirmed] Escape на 530-531 безусловно вызывает setSelectedId(null); проверки открытых Menu (884-938) или Dialog (841-882) нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: Escape в редакторе сбрасывает выделение даже при открытых меню/диалогах",
       "originalEvidence": [
@@ -6907,7 +6943,7 @@
         "[cycle12:confirmed] На Box (143-148) есть только onPointerDown/Move/Up (81-114), onPointerCancel отсутствует; pressRef и drag не сбрасываются при системной отмене жеста."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: waveform без pointercancel — застрявший drag на тач-устройствах",
       "originalEvidence": [
@@ -6942,7 +6978,7 @@
         "[cycle13:confirmed] Подтверждается с исправленной формулировкой: старого TypeError нет — при отсутствии navigator.clipboard опциональная цепочка короткозамыкает всё выражение вместе с .then (проверено в node), поэтому «undefined.then» невозможен. Реальный дефект — отсутствие .catch и fallback: при отказе Clipboard API (нет разрешения, документ не в фокусе, ограничение политики или встроенного браузера) клик «Копировать всё» молча ничего не делает, copied не выставляется, а отклонение уходит в unhandledrejection. Общий helper lib/clipboard.js:1-12 с textarea-fallback здесь не используется; setTimeout на VoiceLogViewer.jsx:169 также не очищается, поэтому повторное копирование и закрытие диалога оставляют висящий таймер."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "wrong-evidence",
       "originalClaim": "Voice: navigator.clipboard?.writeText().then — TypeError без Clipboard API",
@@ -6985,7 +7021,7 @@
         "[cycle12:confirmed] getSummary на 172-173 вызывает .then(setSummary) без проверки controller.signal.aborted, тогда как для статусов на 179 такая проверка есть; при смене base возможен показ старой сводки."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: getSummary .then без проверки abort → чужая сводка при смене встречи",
       "originalEvidence": [
@@ -7019,7 +7055,7 @@
         "[cycle12:not-a-defect] Эндпоинт /voice/meetings/{base}/summary всегда возвращает decisions/open_questions/topics/participants массивами (voice_server/pipeline.py:256-264), поэтому .length на 221-222,234,348,355 не может упасть на текущем контракте."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "originalClaim": "Voice: summary.decisions/open_questions/participants без защиты .length → крах вкладки",
@@ -7054,7 +7090,7 @@
         "[cycle12:confirmed] updateAssignmentStatus вызывается fire-and-forget с .catch(() => {}) (242-244) после успешного patchStatus; task_id на сервере не сохраняется, а UI уже показывает успех."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: связь поручения с задачей сохраняется с .catch(()=>{}) — тихая потеря task_id",
       "originalEvidence": [
@@ -7088,7 +7124,7 @@
         "[cycle12:confirmed] removeVariant (82-89) без busy-состояния, кнопка удаления (149) не disabled ни во время запроса, ни при variantJobActive; второй DELETE даёт 404 и ошибку при уже выполненном удалении."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: removeVariant без busy-защиты — двойной DELETE → ложная ошибка",
       "originalEvidence": [
@@ -7122,7 +7158,7 @@
         "[cycle12:confirmed] load() в калибровке (78-92), качестве (54-64), лицах (118-126) и getAssignees в карточке (872-876) не имеют abort/mounted-проверок: два load могут перезаписать друг друга, setState идёт после размонтирования."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: панели калибровки/качества/лиц — load() без abort и mounted-флага",
       "originalEvidence": [
@@ -7156,7 +7192,7 @@
         "[cycle12:confirmed] Превью лиц — Box component=\"img\" с onClick и alt=\"\" (50-68), без role/tabIndex/onKeyDown; выбор лиц недоступен с клавиатуры."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: превью лиц кликабельны только мышью — <img onClick> с пустым alt",
       "originalEvidence": [
@@ -7190,7 +7226,7 @@
         "[cycle12:confirmed] onOrderChange={setMeetingsOrder} на 790 не сбрасывает meetingsPage, тогда как остальные фильтры (394-414) вызывают setMeetingsPage(0); смена порядка оставляет страницу 3."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: смена порядка сортировки встреч не сбрасывает страницу",
       "originalEvidence": [
@@ -7224,7 +7260,7 @@
         "[cycle12:confirmed] addFiles (145-151) фильтрует только по расширению и добавляет файлы без сверки name/size; handleSubmit отправляет каждый элемент files (238-259), дубликат создаёт второй job."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: загрузка файлов без дедупликации — один файл можно отправить дважды",
       "originalEvidence": [
@@ -7258,7 +7294,7 @@
         "[cycle12:confirmed] act (169-177) не имеет busy-состояния и не блокирует повторные клики по статусу/удалению. Часть про крах data.items.map (239) не подтверждается — backend всегда возвращает items (glossary_store.py:82), но отсутствие busy реально."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: glossary — мутации без busy-защиты + data.items без guard",
       "originalEvidence": [
@@ -7292,7 +7328,7 @@
         "[cycle12:confirmed] isStale (17) при битой дате получает NaN, и сравнение NaN > seconds*1000 даёт false, поэтому повреждённый checked_at считается свежим."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Monitoring: isStale считает повреждённую дату «свежей» (NaN > x → false)",
       "originalEvidence": [
@@ -7326,7 +7362,7 @@
         "[cycle12:not-a-defect] Tombstone deletedIds (72,112-113) может скрыть только тот же id, а id целей — uuid4 (network_monitor_store.py:145); переиспользование id после удаления невозможно, Set ограничен сессией и чистится при перезагрузке."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "originalClaim": "Monitoring: deletedIds — вечный tombstone; устройство с переиспользованным id не появится",
@@ -7362,7 +7398,7 @@
         "[cycle13:confirmed] Подтверждается как незащищённое обращение, а не как частый пользовательский сценарий: MonitoringDeviceGrid.jsx:34 вызывает target.name.split без ?., хотя displayTargetName рядом использует ?. и fallback. В БД name NOT NULL (monitoring_models.py:29), поэтому нормальный ответ API имя содержит; путь к записи без name даёт только частичный patchTarget({id, summary}) при сохранении интерфейса (Monitoring.jsx:198), если цели уже нет в списке (рассинхронизация списка и детали), после чего при возврате к сетке рендер падает. Падение ловит RouteErrorBoundary (App.jsx:308-338) — пользователь увидит экран ошибки маршрута, а не «белый экран»; сценарий редкий, поэтому Low оправдана, но guard в строке 34 нужен."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Monitoring: target.name.split без защиты — target без name роняет всю сетку",
       "originalEvidence": [
@@ -7405,7 +7441,7 @@
         "[cycle12:confirmed] loadFree (24-31), эффект открытия (33-38) и change (40-52) не имеют abort/mounted-флага; при быстром закрытии/переоткрытии возможен setState после unmount и запись устаревшего ответа."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Monitoring: диалог устройств — loadFree/change без mounted-флага",
       "originalEvidence": [
@@ -7439,7 +7475,7 @@
         "[cycle12:not-a-defect] overview всегда возвращает targets (network_monitor_service.py:148), поэтому result.targets.filter на 148 не может получить undefined с текущим API; catch там маскирует только реальные сетевые ошибки."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "originalClaim": "Monitoring: result.targets.filter без проверки поля — TypeError маскируется generic-ошибкой",
@@ -7476,7 +7512,7 @@
         "[cycle14:live] Real 2FA flow on isolated stack 18004/5222 (policy=all, loopback=external, seeded e2e_admin): login -> 2fa_setup_required -> enable-2fa (real otpauth secret) -> TOTP -> verify-2fa. URL became /dashboard immediately; backup-code screen and codes did not appear at 4 s."
       ],
       "verification": [
-        "static",
+        "static-code",
         "local-browser",
         "local-browser-mock"
       ],
@@ -7529,7 +7565,7 @@
         "[cycle14:live] Real second login after enabling 2FA on 5222: login -> 2fa_required -> TOTP -> verify. External zone, discoverable_trusted_devices_count=0. URL became /dashboard; mandatory remember-device sheet did not appear."
       ],
       "verification": [
-        "static",
+        "static-code",
         "local-browser",
         "local-browser-mock"
       ],
@@ -7580,7 +7616,7 @@
         "[cycle12:confirmed] Кастомный role=\"dialog\" aria-modal (2342-2399) не имеет focus trap/autoFocus/Escape/aria-hidden фона; на 976-993 обрабатывается только overflow body."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Login: кастомный диалог «Запомнить устройство» без управления фокусом/Escape/inert",
       "originalEvidence": [
@@ -7614,7 +7650,7 @@
         "[cycle12:confirmed] localStorage/sessionStorage используются без try/catch в интерцепторе (http.js:248,370), восстановлении сессии (AuthContext.jsx:270,293), route-функциях (aboutOnboarding.js:36,43,46 из App.jsx:244) и MainLayout.jsx:1121,1139,1762,1770,1937; при заблокированном хранилище это ломает запросы и рендер."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Незащищённые Web Storage в горячих путях: интерцептор, restore сессии, route-функции",
       "originalEvidence": [
@@ -7648,7 +7684,7 @@
         "[cycle12:confirmed] redirectAfterAuthentication (1102-1115) делает window.location.assign, если pathname ещё /login; вызовы после passkey/trusted-device (1353, 1642) идут сразу после setUser, до коммита SPA-навигации LoginRoute, поэтому полный reload срабатывает."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Login: полный reload вместо SPA-навигации после passkey-входа",
       "originalEvidence": [
@@ -7682,7 +7718,7 @@
         "[cycle12:confirmed] scheduleLoginPresentationRecovery (179-194) снимает слушатели только по visible-событию, а возвращённый cleanup в Login.jsx (1327, 1373-1390) нигде не вызывается; пара слушателей копится на каждую попытку."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Login: утечка window-слушателей в scheduleLoginPresentationRecovery",
       "originalEvidence": [
@@ -7716,7 +7752,7 @@
         "[cycle12:confirmed] setInterval(markWebReady, 50) (50) очищается только при появлении API (34-37) или unmount; timeout на 52-56 лишь ставит timedOut, поэтому без PublicKeyCredential опрос идёт 20 раз/с всё время жизни страницы."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Login: 50-мс опрос WebAuthn API работает бесконечно",
       "originalEvidence": [
@@ -7750,7 +7786,7 @@
         "[cycle12:confirmed] isMailRoute добавлен в deps fetchUnreadCounts (1296), но в теле 1142-1298 не используется; смена /mail пересоздаёт колбэк и перезапускает эффект 1652-1661 — очистку/навешивание слушателей и внеочередной pollNotifications (1576)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Layout: мёртвая зависимость isMailRoute перезапускает весь цикл поллинга",
       "originalEvidence": [
@@ -7784,7 +7820,7 @@
         "[cycle12:confirmed] refreshBellInbox (1327-1356) после Promise.allSettled безусловно вызывает setNotifications(nextHubItems) и setMailNotifications(nextMailItems); при отказе одного запроса его next* остаётся [], и секция колокольчика очищается."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Layout: частичный сбой refreshBellInbox визуально очищает колокольчик",
       "originalEvidence": [
@@ -7818,7 +7854,7 @@
         "[cycle12:confirmed] pendingNavigation снимается только при совпадении pathname с целью (607-623) или по таймауту 10 000 мс (1892-1899); PermissionRoute (App.jsx:265/272) может увести на другой путь, и оверлей висит до таймаута."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Layout: оверлей pendingNavigation зависает до 10 с при редиректе целевого роута",
       "originalEvidence": [
@@ -7852,7 +7888,7 @@
         "[cycle12:confirmed] handleOpenMailNotification (1827-1844) после markAsRead вызывает fetchUnreadCounts без forceMailUnread, а TTL-ветка (1191-1195) до 20 с (199) переиспользует старое mail_unread; дельту applyMailUnreadDelta никто не применяет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Layout: бейдж непрочитанной почты завышен до 20 с после прочтения из колокольчика",
       "originalEvidence": [
@@ -7886,7 +7922,7 @@
         "[cycle12:confirmed] Мутация chatSerialQueueRef выполняется внутри setState-апдейтера (NotificationContext.jsx:347-380); в StrictMode апдейтер может вызываться дважды, очередь меняется повторно."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Notifications: побочный эффект внутри setState-апдейтера — очередь чат-тостов",
       "originalEvidence": [
@@ -7921,7 +7957,7 @@
         "[cycle13:confirmed] Seen-ids читаются из localStorage один раз при монтировании (NotificationContext.jsx:56-65,194) и дальше живут в state каждой вкладки; storage-слушателя для itinvent_hub_seen_ids нет, есть только запись (76-83,222-226). Два окна с visibilityState=visible независимо опрашивают /hub/notifications/poll и обе показывают toast, потому что проверка идёт по локальному ref (MainLayout.jsx:1479,1504-1513), а dedupeMode:'recent' работает только внутри вкладки. Системные уведомления уже дедуплицируются через общий localStorage в systemNotificationRouter (45-82), поэтому остаётся дубль именно in-app тостов."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Notifications: seen-маркеры не синхронизируются между вкладками → дубли уведомлений",
       "originalEvidence": [
@@ -7963,7 +7999,7 @@
         "[cycle12:not-a-defect] selected_database — намеренно общий контекст пользователя: X-Database-ID читается из localStorage на каждый запрос (http.js:248-251). Смена БД в одной вкладке обязана менять контекст остальных, отдельного per-tab состояния продукт не заявляет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "originalClaim": "Смена selected_database в одной вкладке молча меняет контекст остальных",
@@ -7998,7 +8034,7 @@
         "[cycle12:not-a-defect] Приложение публикуется в корень IIS-сайта (web.config в public, Vite base='/'), поэтому абсолютные /sw.js и pathname /my-files корректны; basename-деплой не поддерживается и не заявлен."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "originalClaim": "SW регистрируется по абсолютному пути; pathname-проверки игнорируют basename",
@@ -8033,7 +8069,7 @@
         "[cycle12:not-a-defect] alwaysGrantedPermissions гарантирует dashboard.read и другие базовые права (AuthContext.jsx:17-34), поэтому resolveFirstAccessiblePath не может вернуть пустой набор у аутентифицированного пользователя."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "originalClaim": "Пользователь с нулевым набором прав после логина попадает в пустой редирект",
@@ -8069,7 +8105,7 @@
         "[cycle13:confirmed] isCompleteBackupInput возвращает true для любой строки длиной >=6 (Login.jsx:82-88), и effect на compact-viewport отправляет форму через 650 мс (1584-1601), тогда как коды генерируются 9-символьными XXXX-XXXX (twofa_service.py:149-160). При паузе после шестого символа на проверку уходит часть кода, пользователь видит ложную ошибку, а бэкенд списывает попытку в лимите 3 за 60 c (auth.py:1446-1453). Несколько таких пауз приводят к 429, поэтому дефект воспроизводим на мобильной ширине."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Login: преждевременный авто-submit backup-кода при length>=6 (формат 8-9 символов)",
       "originalEvidence": [
@@ -8111,7 +8147,7 @@
         "[cycle12:confirmed] useState(consumeConnectionRestoredMarker) выполняет побочный эффект в инициализаторе (MainLayout.jsx:284); в StrictMode dev инициализатор вызывается дважды и маркер теряется. Production не затронут."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Layout: маркер «соединение восстановлено» теряется при StrictMode-двойном init",
       "originalEvidence": [
@@ -8143,10 +8179,11 @@
       "evidence": [
         "статическая проверка по file:line (цикл 11, агент + ручная перепроверка)",
         "[cycle12:confirmed] После autosave blob-URL inline-превью отзываются (MailComposeHost.jsx:524-539), DOM Quill не переписывается (эффект выходит по nextValue===valueRef, MailRichTextEditor.jsx:228-242), а buildPortableComposeHtml удаляет img с не-cid src (mailComposeHtml.js:138-145).",
-        "[cycle13:confirmed] Static remains confirmed; live mail check not possible: isolated stack runs MAIL_MODULE_ENABLED=0 and has no mailbox."
+        "[cycle13:confirmed] Static remains confirmed; live mail check not possible: isolated stack runs MAIL_MODULE_ENABLED=0 and has no mailbox.",
+        "[cycle15:blocked] Cycle 15 mailbox investigation: local_backend forcibly sets MAIL_MODULE_ENABLED=0; no IMAP/SMTP fixture or test mailbox exists. Route-mocking can validate UI only, not server-side autosave/attachment persistence, so live check remains blocked."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Почта: inline-изображение теряется из письма после autosave черновика",
       "originalEvidence": [
@@ -8173,7 +8210,7 @@
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Live mail check blocked: isolated stack runs MAIL_MODULE_ENABLED=0 and has no mailbox/provider; static Quill/autosave chain remains confirmed."
+      "statusRationale": "Cycle 15 mailbox investigation: local_backend forcibly sets MAIL_MODULE_ENABLED=0; no IMAP/SMTP fixture or test mailbox exists. Route-mocking can validate UI only, not server-side autosave/attachment persistence, so live check remains blocked."
     },
     {
       "id": "FE-0216",
@@ -8190,7 +8227,7 @@
         "[cycle13:refuted] Текущий бэкенд отдаёт для inline-вложений относительный inline_src (/api/v1/mail/...), а не data: или https: (mail_reference_codec.py:333-340; mail_message_serializer.py:436-440), и compose-контекст берёт inline_src в приоритете (MailComposeHost.jsx:281-294). Синхронизация значения вычищает http(s):/data:-источники (mailComposeHtml.js:50-63,70-77), но относительный inline_src и blob:-превью переживают setQuillHtml; data: остаётся только как fallback inline_data_url, когда inline_src не построен. Удаление remote/data-картинок — намеренная защита от трекинга, закреплённая тестом (mailComposeHtml.test.js:18-26), а не потеря восстановленных превью."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Почта: редактор стрипает inline-превью с data:/абсолютным URL при синхронизации значения",
       "originalEvidence": [
@@ -8232,7 +8269,7 @@
         "[cycle12:confirmed] localDraftDirtyRef выставляется служебными патчами autosave/синхронизации (MailComposeHost.jsx:144-152,503,527-538,547,848-853,916-926,978), поэтому межвкладочная синхронизация считает черновик изменённым и не применяет чужой."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Почта: localDraftDirtyRef засоряется служебными патчами → межвкладочная синхронизация черновика мертва",
       "originalEvidence": [
@@ -8266,7 +8303,7 @@
         "[cycle12:confirmed] to/cc/bcc читаются из снапшота до ожидания draftSaveInFlight (MailComposeHost.jsx:782-784), тело и вложения — из sendState после ожидания (802-814); правки получателей во время ожидания не попадут в отправку."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Почта: получатели письма читаются из снапшота до ожидания автосохранения — уходит старый список",
       "originalEvidence": [
@@ -8300,7 +8337,7 @@
         "[cycle12:confirmed] searchContacts имеет только .then/.finally без .catch (MailComposeHost.jsx:173-181) — отклонённый запрос даёт unhandled rejection."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Почта: автодополнение получателей — searchContacts без .catch → unhandled rejection",
       "originalEvidence": [
@@ -8334,7 +8371,7 @@
         "[cycle12:confirmed] Guard подготовки файлов опирается на render-state (useChatFileSending.js:112-119,137,202-237); повторный вызов до ре-рендера теряет уже подготовленные файлы. Аналогично для image edit (274-312,324-355)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: гонка подготовки файлов — guard на render-state теряет уже подготовленные файлы",
       "originalEvidence": [
@@ -8368,7 +8405,7 @@
         "[cycle12:confirmed] handleTouchCancel/pointerCancel сбрасывают long-press только при !mobileMessageInteractionsEnabled (useChatBubbleGestures.js:189-199), тогда как long-press активен при включённых интеракциях — «призрачный» жест."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: инвертированный guard touchCancel/pointerCancel → «призрачный» long-press",
       "originalEvidence": [
@@ -8402,7 +8439,7 @@
         "[cycle12:confirmed] retryFailedMessage не имеет busy-guard (useChatComposerSending.js:344-409); uploadAttempt не сохраняется (useChatFileSending.js:503,538-541), повторный retry запускает параллельную отправку и полный re-upload."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: retryFailedMessage без busy-guard → параллельные повторные отправки (файлы — полный re-upload)",
       "originalEvidence": [
@@ -8436,7 +8473,7 @@
         "[cycle12:confirmed] sendVoiceFile не использует AbortController и не входит в fileUploadAbortRef/sendingFiles (useChatFileSending.js:634-651) — голосовое нельзя отменить и оно не координируется с отправкой файлов."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: отправка голосового не отменяется и не координируется с отправкой файлов",
       "originalEvidence": [
@@ -8470,7 +8507,7 @@
         "[cycle12:confirmed] Обработчик chat-sticker-packs-changed перезагружает паки без cancelled/cleanup (TelegramStickersTab.jsx:156-164), в отличие от первичной загрузки (139-154)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: chat-sticker-packs-changed перезагружает паки без guard на размонтирование",
       "originalEvidence": [
@@ -8504,7 +8541,7 @@
         "[cycle12:fixed-externally] useChatStickerSending.js:17-26 — ref-based in-flight guard; :37-49 — client_message_id всегда → двойной send исключён ниже по стеку, дедуп есть"
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "fixed-externally",
       "originalClaim": "Чат: отправка стикера — guard через render-state → возможен двойной send без client_message_id",
@@ -8539,7 +8576,7 @@
         "[cycle12:confirmed] getCachedGet не принимает signal и вызывает apiClient.get без него (http.js:388-419) — кэшированные GET неотменяемы."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "API: getCachedGet не принимает AbortSignal — кэшированные GET неотменяемы",
       "originalEvidence": [
@@ -8573,7 +8610,7 @@
         "[cycle12:confirmed] Video-стикер использует src + preload=auto (ChatStickerMedia.jsx:213-227); при возврате в viewport активность снова включает загрузку (useChatStickerMediaActivity.js:97-111)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: video-стикер перекачивается при возврате во viewport (src+preload=auto)",
       "originalEvidence": [
@@ -8607,7 +8644,7 @@
         "[cycle12:confirmed] onDrop/onFileChange добавляют файлы без дедупликации по имени/размеру/lastModified (MailComposeHost.jsx:993-1007) — повторный выбор создаёт дубли."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Почта: дубли файлов при повторном выборе/drag-drop в композере",
       "originalEvidence": [
@@ -8641,7 +8678,7 @@
         "[cycle12:confirmed] Контейнер объявляет role=menu, пункты role=menuitem (ChatMessageContextMenu.jsx:376,83,520), но обработчиков ArrowUp/Down/Home/End и roving tabindex нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: контекстное меню сообщения декларирует role=menu/menuitem без клавиатурной навигации",
       "originalEvidence": [
@@ -8673,10 +8710,11 @@
       "evidence": [
         "статическая проверка по file:line (цикл 11, агент + ручная перепроверка)",
         "[cycle12:confirmed] High, ручная проверка: isNativeShellRuntime() возвращает null до хуков (HubItPwaSettingsCard.jsx:36-38; ChatNotificationsSettingsCard.jsx:30-32, файл переехал в pages/account/settings/notifications/). Флаг зависит от асинхронного desktopBridgeReady (platform.js:14-16), поэтому смена false→true меняет число хуков и роняет рендер.",
-        "[cycle13:confirmed] Static remains confirmed; live simulation with a late desktop.hostReady on the isolated stand did not reproduce a hooks error (card subtree unmounted on re-render), so live reproduction is inconclusive."
+        "[cycle13:confirmed] Static remains confirmed; live simulation with a late desktop.hostReady on the isolated stand did not reproduce a hooks error (card subtree unmounted on re-render), so live reproduction is inconclusive.",
+        "[cycle15:blocked] Cycle 15 Desktop investigation: C# DesktopBridgeHost sends hostReady only after WebView2 bridge initialization; no Windows Desktop host/build is available in this audit, and browser simulation is not a valid WebView2 proof. Need a real WebView2 host with delayed CoreWebView2 init."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: ранний return null до хуков при runtime-флаге Desktop → крах рендера «Rendered fewer hooks»",
       "originalEvidence": [
@@ -8703,7 +8741,7 @@
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Live simulation with late desktop.hostReady did not reproduce a React hooks error because the card subtree unmounted on re-render; real WebView2 host is required."
+      "statusRationale": "Cycle 15 Desktop investigation: C# DesktopBridgeHost sends hostReady only after WebView2 bridge initialization; no Windows Desktop host/build is available in this audit, and browser simulation is not a valid WebView2 proof. Need a real WebView2 host with delayed CoreWebView2 init."
     },
     {
       "id": "FE-0231",
@@ -8719,7 +8757,7 @@
         "[cycle12:not-a-defect] user.role нормализуется в нижний регистр в normalizeUserWithPermissions (AuthContext.jsx:134) до попадания в useAccountSectionData (строка 69); значение «Admin» в этот хук не приходит."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "not-a-defect",
       "originalClaim": "Аккаунт: isAdmin в useAccountSectionData без toLowerCase → пустые admin-разделы при роли «Admin»",
@@ -8752,10 +8790,11 @@
       "evidence": [
         "статическая проверка по file:line (цикл 11, агент + ручная перепроверка)",
         "[cycle12:confirmed] High, ручная проверка: при ошибке bulk-загрузки делегатов users остаются с task_delegate_links=[] (useAccountSectionData.js:244-251, accountUserModel.js:27-39); сохранение пользователя отправляет этот пустой список в updateTaskDelegates (637-644) и стирает связи.",
-        "[cycle13:confirmed] Static remains confirmed; live account-admin race not executed in cycle 13 (no test-data mutation outside throwaway stack)."
+        "[cycle13:confirmed] Static remains confirmed; live account-admin race not executed in cycle 13 (no test-data mutation outside throwaway stack).",
+        "[cycle15:blocked] Cycle 15 account fixtures not prepared; no approved mutation of delegate links in the isolated DB. Static catch->empty merge->save chain remains confirmed."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: падение bulk-загрузки делегатов → сохранение пользователя стирает все связи помощник/зам",
       "originalEvidence": [
@@ -8782,7 +8821,7 @@
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Live delegates test blocked: no prepared user/delegate fixtures and no approved mutation workflow in cycle 14; static catch->empty merge->save chain remains confirmed."
+      "statusRationale": "Cycle 15 account fixtures not prepared; no approved mutation of delegate links in the isolated DB. Static catch->empty merge->save chain remains confirmed."
     },
     {
       "id": "FE-0233",
@@ -8798,7 +8837,7 @@
         "[cycle12:confirmed] Пользователь создан/обновлён, затем падение updateTaskDelegates уходит в общий catch и возвращает ok:false с текстом «Не удалось создать/обновить» (useAccountSectionData.js:586-605,636-666) — частичный успех показан как полный провал."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: частичный успех create/update пользователя показывается как полный провал",
       "originalEvidence": [
@@ -8832,7 +8871,7 @@
         "[cycle12:confirmed] Кнопка удаления в диалоге не disabled во время запроса (UsersTab.jsx:601-617), handleDeleteUser не имеет deleting-state (useAccountSectionData.js:672-686) — повторный DELETE даёт 404 и ложную ошибку."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: удаление пользователя без busy-guard → повторный DELETE и ложная 404-ошибка",
       "originalEvidence": [
@@ -8866,7 +8905,7 @@
         "[cycle12:confirmed] handleSaveDraft делает return при username<3, нецелом telegram_id или невалидной квоте без подсветки полей (UsersTab.jsx:208-210) — «Сохранить» молчит."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: тихие отказы валидации в handleSaveDraft — «Сохранить» ничего не делает без объяснения",
       "originalEvidence": [
@@ -8900,7 +8939,7 @@
         "[cycle12:confirmed] Завершение сессии из меню строки вызывает onTerminate без confirm (SessionsTab.jsx:149-156); текущая сессия не помечена."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: завершение сессии без подтверждения, включая собственную сессию админа",
       "originalEvidence": [
@@ -8934,7 +8973,7 @@
         "[cycle12:confirmed] «Очистить устаревшие»/«Удалить неактивные» выполняются без подтверждения (SessionsTab.jsx:44-60), тогда как normalize использует confirm (useAccountSectionData.js:749-753)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: массовые операции над сессиями без подтверждения (несогласованно с normalize+confirm)",
       "originalEvidence": [
@@ -8968,7 +9007,7 @@
         "[cycle12:confirmed] reload бампает requestRef (FeedbackAdminSection.jsx:133-151), а finally сбрасывает loadingMore только при совпадении requestId (157-173) — при гонке флаг залипает."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: loadingMore навсегда застревает при гонке loadMore↔reload — пагинация ломается",
       "originalEvidence": [
@@ -9000,10 +9039,11 @@
       "evidence": [
         "статическая проверка по file:line (цикл 11, агент + ручная перепроверка)",
         "[cycle12:confirmed] High, ручная проверка: loadMembers без seq-guard (DepartmentsTab.jsx:58-89) может применить ответ старого отдела; handleSaveManagers отправляет draftManagerIds в текущий selectedDepartmentId (129-142).",
-        "[cycle13:confirmed] Static remains confirmed; live department-manager race not executed in cycle 13."
+        "[cycle13:confirmed] Static remains confirmed; live department-manager race not executed in cycle 13.",
+        "[cycle15:blocked] Cycle 15 department/user fixtures not prepared; no approved mutation. Static race remains confirmed."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: гонка loadMembers между отделами → «Сохранить начальников» пишет роли в чужой отдел",
       "originalEvidence": [
@@ -9030,7 +9070,7 @@
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Live department-manager race blocked: no prepared departments/users fixture and no approved mutation workflow in cycle 14; static race remains confirmed."
+      "statusRationale": "Cycle 15 department/user fixtures not prepared; no approved mutation. Static race remains confirmed."
     },
     {
       "id": "FE-0240",
@@ -9046,7 +9086,7 @@
         "[cycle12:confirmed] loadLookups не имеет loadSeq, в отличие от loadRows (ItinventReferencesTab.jsx:328-364) — устаревший ответ может перезаписать справочники новой базы."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: loadLookups без seq-защиты → устаревшие справочники под новой базой",
       "originalEvidence": [
@@ -9080,7 +9120,7 @@
         "[cycle12:confirmed] openDelete не защищён seq-проверкой (ItinventReferencesTab.jsx:452-464), usage приходит асинхронно; диалог может показать usage другой записи (220,252)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: гонка openDelete — usage другой записи в диалоге удаления",
       "originalEvidence": [
@@ -9114,7 +9154,7 @@
         "[cycle12:confirmed] Иконка сброса сразу вызывает reset→deleteSchedule без confirm (WorkSchedulesAdminSection.jsx:158-170,293-299)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: сброс графика работы филиала без подтверждения",
       "originalEvidence": [
@@ -9148,7 +9188,7 @@
         "[cycle12:confirmed] Эффект сбрасывает draftValues на новый items (EnvVariablesTab.jsx:39-46), onRefresh не учитывает dirtyCount (232) — несохранённые правки .env теряются."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: «Обновить»/повторный вход в раздел стирает несохранённые правки .env",
       "originalEvidence": [
@@ -9182,7 +9222,7 @@
         "[cycle12:confirmed] useEffect по новому массиву currentIps перезаписывает черновик IP-allowlist (AdminLoginAllowlistSettingsCard.jsx:24-32) при сохранении соседней карточки."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: черновик IP-allowlist стирается сохранением соседней карточки",
       "originalEvidence": [
@@ -9216,7 +9256,7 @@
         "[cycle12:confirmed] autosave обновляет только локальный state и возвращает true без запроса (useAccountSectionData.js:845-856); любой loadPasswordGroups затирает псевдо-сохранение серверными значениями."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: псевдо-автосохранение групп паролей затирается любым рефрешем",
       "originalEvidence": [
@@ -9250,7 +9290,7 @@
         "[cycle12:confirmed] Навигация пускает по ad_users.read (accountNavigationConfig.jsx:88-94), а getImportCandidates и другие эндпоинты требуют get_current_admin_user (backend/api/v1/ad_users.py:79-86 и далее) — гарантированный 403 для не-админа с этим правом."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: раздел «Пользователи AD» доступен по ad_users.read, но эндпоинты admin-only → гарантированный 403",
       "originalEvidence": [
@@ -9284,7 +9324,7 @@
         "[cycle12:confirmed] Шесть загрузчиков (databases/env/appSettings/passwordGroups/aiBots/security) не имеют seq/unmount-защиты (useAccountSectionData.js:202-217,283-376), защищены только beginUsers/beginSessions (219-281)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: шесть загрузчиков хука без seq/unmount-защиты (databases/env/appSettings/passwordGroups/aiBots/security)",
       "originalEvidence": [
@@ -9318,7 +9358,7 @@
         "[cycle12:confirmed] MyFilesStats.load не имеет seq-защиты (MyFilesAdminTab.jsx:111-125,129-132,140,204) — ответ старого поиска может перезаписать новый."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: MyFilesStats.load без seq-защиты → старый поиск перезаписывает новый",
       "originalEvidence": [
@@ -9352,7 +9392,7 @@
         "[cycle12:confirmed] Confirm удаления ящика говорит «Отключить ящик» (ProfileTab.jsx:311), но вызывает mailAPI.deleteMailbox (313); рядом есть отдельное действие «Отключить» (469)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: confirm «Отключить ящик…» при фактическом удалении ящика",
       "originalEvidence": [
@@ -9387,7 +9427,7 @@
         "[cycle13:confirmed] Подтверждается вторая половина: resolveAvailableSettingsTabs (accountConstants.jsx:32-40) вместе со всем SETTINGS_TABS используется только тестом SettingsAiBots.test.jsx:26-57 и в рантайме не вызывается. adminOnlyFallback формально не мёртв — он читается в accountNavigationConfig.jsx:179, — но эффекта не даёт: для admin строка 180 всё равно вернёт true, а для ad-users срабатывает ветка permissions (176-178); флаг можно удалить без изменения поведения. Пользовательского дефекта здесь нет, это мёртвый код и лишняя конфигурация, поэтому severity следует понизить с Low до Info и отдельно решить судьбу теста мёртвой функции."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "wrong-evidence",
       "originalClaim": "Аккаунт: мёртвая конфигурация adminOnlyFallback + test-only resolveAvailableSettingsTabs",
@@ -9436,7 +9476,7 @@
         "[cycle12:confirmed] Пакет подтверждён по перечисленным точкам: удаление аватара/ящика без busy-guard, сброс порога AiBalance, Enter во время сохранения, syncFromAD и общий savingBotId, NaN fontScale (ProfileTab.jsx:150,282-307; AiBalanceCard.jsx:42-45,95; MyFilesAdminTab.jsx:58-60,88-95; DepartmentsTab.jsx:144-159; BotSettingsWorkspace.jsx:48; AppearanceTab.jsx:63)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Аккаунт: пакет пропусков подтверждений/гардов (avatar delete, mailbox busy, AiBalance threshold wipe, Enter-during-saving, syncFromAD, shared savingBotId, NaN fontScale)",
       "originalEvidence": [
@@ -9470,7 +9510,7 @@
         "[cycle12:confirmed] Runtime-замер цикла 11: /database при масштабе 200% даёт горизонтальное переполнение ~400px; фиксированного overflow-контейнера нет."
       ],
       "verification": [
-        "static",
+        "static-code",
         "test-harness"
       ],
       "originalClaim": "Database: горизонтальное переполнение ~400px при масштабе 200%",
@@ -9508,7 +9548,7 @@
         "[cycle14:refuted] Cycle 13/14 memory probe: 12 rounds x 8 routes with forced GC; heap 37.1→51 plateau→23.3 after full GC; no monotonic growth."
       ],
       "verification": [
-        "static",
+        "static-code",
         "local-browser",
         "test-harness"
       ],
@@ -9539,14 +9579,14 @@
           "sourceFile": "manual-live-memory-12"
         }
       ],
-      "currentConclusion": "Опровергнуто циклом 13/14: 12 раундов по 8 SPA-маршрутам с HeapProfiler.collectGarbage перед каждым чтением дали плато 49–51 MB и падение до 23 MB после полного GC. Исходные 85→143 MB — отложенный GC/кэш lazy-чанков, а не утечка.",
+      "currentConclusion": "В проверенном сценарии (8 SPA-маршрутов, 12 раундов, принудительный GC) утечка не воспроизведена: heap плато 49–51 MB, после полного GC 23 MB. Это опровергает исходное «85→143 MB за 3 раунда», но не доказывает отсутствие утечек в других маршрутах, компонентах и длительных сценариях.",
       "verificationLegacy": [
         "static",
         "tooling",
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Положительный статический вердикт цикла 13 (механизм кэша) не подтвердил пользовательскую утечку; 12-раундовый GC-замер её опроверг."
+      "statusRationale": "Rejected относится к конкретному утверждению о монотонном росте heap в проверенном сценарии, а не ко всему приложению."
     },
     {
       "id": "FE-0254",
@@ -9562,7 +9602,7 @@
         "[cycle12:confirmed] Запуск hubit://open/dashboard в обычном браузере даёт console-ошибку (desktopProtocolHandoff.js); это Info, на функциональность веб-версии не влияет."
       ],
       "verification": [
-        "static",
+        "static-code",
         "test-harness"
       ],
       "originalClaim": "hubit://open/dashboard protocol launch вызывает console-ошибку в обычном браузере",
@@ -9598,7 +9638,7 @@
         "[cycle12:confirmed] void revealMessage().then(...) без .catch (useChatActiveConversationLifecycleEffects.js:129) — ошибка поиска сообщения даёт unhandled rejection."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: revealMessage().then без .catch — unhandled rejection при падении поиска сообщения",
       "originalEvidence": [
@@ -9633,7 +9673,7 @@
         "[cycle13:refuted] loadMeetings не бросает: весь запрос обёрнут в try/catch, ошибка кладётся в errors.meetings и возвращается false (170-206), поэтому .then без .catch в эффекте фильтров (495-497) не создаёт unhandled rejection. loadExportCount также сам ловит ошибку, выставляет exportCountError и возвращает false (208-229), после чего флаг передаётся в дочерний компонент (805-806); описанной необработанной ошибки нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Voice: loadMeetings().then без .catch в эффекте фильтров",
       "originalEvidence": [
@@ -9676,7 +9716,7 @@
         "[cycle13:refuted] JSON.parse находится в decryptPayload (mobileOfflineCache.js:185-193), но его единственный вызов — внутри getCachedMobileGetResponse, где decrypt и parse обёрнуты в try/catch с возвратом null при любой ошибке (337-369). Повреждённая или нерасшифровываемая запись превращается в cache miss, а не в reject у потребителей; inventory записи не расшифровывает (407-440). Описанного падения чтения кэша в текущем коде нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "mobileOfflineCache: JSON.parse расшифрованного payload без обработки повреждённой записи",
       "originalEvidence": [
@@ -9719,7 +9759,7 @@
         "[cycle13:refuted] JSON.parse в decodeTgsPayload не обёрнут локально, но вызывается внутри try/catch эффекта загрузки (ChatStickerMedia.jsx:109-138): SyntaxError перехватывается, выставляется loadFailed и рендерится fallback-эмодзи (189-197). Битый TGS не роняет компонент, не даёт unhandled rejection и не ломает экран чата; gzip определяется по сигнатуре байтов (:34). Пользовательского дефекта нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: decodeTgsPayload JSON.parse без fallback — битый TGS-стикер",
       "originalEvidence": [
@@ -9759,10 +9799,11 @@
       "evidence": [
         "статическая проверка по file:line (цикл 11, агент Tasks/Construction/Company)",
         "[cycle12:confirmed] High, ручная проверка: ConstructionWorkWorkspace использует только SPA-guard useConstructionWorkLeaveGuard (строка 41), beforeunload нет; в ConstructionWorkPanel.jsx:165-167 и TaskCanvasWorkspace.jsx:348-349 он есть. F5/закрытие теряет черновик.",
-        "[cycle13:confirmed] Static remains confirmed; live construction-workspace check blocked: local stack has no 1C/SQL construction data."
+        "[cycle13:confirmed] Static remains confirmed; live construction-workspace check blocked: local stack has no 1C/SQL construction data.",
+        "[cycle15:blocked] Cycle 15 mocked construction attempt reached the page but the workspace requires a configured object/direction («сначала настройте объект»); mocked planning alone is insufficient. F5/close/unmount still blocked by missing configured construction fixture."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Construction-workspace: нет beforeunload — черновики недельной сводки теряются при F5/закрытии",
       "originalEvidence": [
@@ -9789,7 +9830,7 @@
         "перепроверено (цикл 12)",
         "перепроверено (цикл 13)"
       ],
-      "statusRationale": "Live browser attempt blocked: construction workspace requires a configured object/direction and 1C/SQL data; isolated stand returns «Для ведения хода работ сначала настройте объект». Static beforeunload gap remains confirmed."
+      "statusRationale": "Cycle 15 mocked construction attempt reached the page but the workspace requires a configured object/direction («сначала настройте объект»); mocked planning alone is insufficient. F5/close/unmount still blocked by missing configured construction fixture."
     },
     {
       "id": "FE-0260",
@@ -9806,7 +9847,7 @@
         "[cycle13:refuted] ID работ — UUID-строки (appdb/models.py:117, construction_work_service.py:188-196), а daily/attendance наполняются ключами из тех же data.items (69, 182-188), поэтому строгое сравнение i.id === id совпадает. data не перезагружается, пока есть dirty (44), а «Обновить» и смена режима заблокированы при dirty (110-114); исчезнувшая работа приводит к 409 от сервера, а не к TypeError. Числовой id и пропавший item в текущем контракте недостижимы."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Construction: data.items.find(id).version без fallback → TypeError при числовом id/исчезнувшем item",
       "originalEvidence": [
@@ -9849,7 +9890,7 @@
         "[cycle13:refuted] Дата учёта в панели заблокирована при dirty || saving (239), а objectId/groupRef меняются только через страницу, где workspace принудительно перемонтируется ключом key={`${objectId}:${groupRef}`} (ConstructionDirectionDetail.jsx:724). Поэтому эффект 157-160 не может сменить scope при непустом черновике; сценарий осиротевших ключей в текущем UI недостижим."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Construction-panel: эффект перезагрузки при смене scope не проверяет dirty → осиротевшие ключи черновика",
       "originalEvidence": [
@@ -9891,7 +9932,7 @@
         "[cycle12:confirmed] handleCloseCreateDialog очищает createFiles и createChecklistItems (useTaskCreateForm.js:343-357); Escape/backdrop/X вызывают его без подтверждения."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Tasks: закрытие диалога создания молча стирает выбранные файлы и чек-лист (несогласованно с createData)",
       "originalEvidence": [
@@ -9926,7 +9967,7 @@
         "[cycle13:refuted] При открытой детали задачи список полностью скрыт display:none (Tasks.jsx:72-83), поэтому действия над другой задачей B в этот момент недоступны: меню действий живёт только в TasksListLayout (135) и открывает диалоги для выбранной задачи. Конфликт обрабатывается для id текущей задачи (useTaskWorkflowActions.js:43-55), и loadTaskDetails перезагружает ту же карточку, а не подменяет A на B."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Tasks: workflow-конфликт по задаче B перебивает открытую деталь задачи A (detailsTask=B)",
       "originalEvidence": [
@@ -9968,7 +10009,7 @@
         "[cycle12:confirmed] loadTaskActivity имеет пустой catch (useTaskDetails.jsx:180-181) — лента активности молча остаётся пустой без ошибки/retry."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Tasks: loadTaskActivity глотает ошибку пустым catch — лента активности молча пуста",
       "originalEvidence": [
@@ -10003,7 +10044,7 @@
         "[cycle13:unverifiable] Единый Suspense fallback=null действительно охватывает весь слой (28-341), и suspend любого lazy-диалога снимет с экрана соседние. Но почти все lazy-диалоги смонтированы безусловно (162, 260, 305-339) и грузятся при монтировании слоя; условно монтируется только TasksCreateDialog (30-83, 214-258), а штатные сценарии не открывают два диалога одновременно. Теоретический путь через глобальный шорткат 'n' (useTasksPageController.jsx:683-686) поверх открытого review-диалога с потерей локального comment (TaskActionDialogs.jsx:640) есть, но его пользовательская достижимость не подтверждена."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Tasks: единый Suspense(fallback=null) на весь dialogs-слой — suspend размонтирует все открытые диалоги",
       "originalEvidence": [
@@ -10046,7 +10087,7 @@
         "[cycle13:confirmed] loadTree не имеет ни sequence, ни AbortController: два параллельных GET применяются в порядке resolve через setTree и updateUrlState (144-178). Параллельность достижима: background-загрузка после админ-изменения не выставляет loading (535, 144-145), поэтому кнопка «Обновить», заблокированная только по loading (332-333), остаётся активной, и ответ старого запроса может перезаписать более свежее дерево и URL."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "CompanyStructure: loadTree без seq/abort-guard — устаревшее дерево побеждает и делает replaceState",
       "originalEvidence": [
@@ -10089,7 +10130,7 @@
         "[cycle13:refuted] updateUrlState действительно использует сырой history.pushState/replaceState со старым state (117-125), но страница нигде не читает location роутера: состояние берётся из window.location.search (76-85) и popstate (184-200). React Router 7 (package.json:61) на каждый popstate вызывает listener и обновляет location даже при delta=0, поэтому Back/Forward восстанавливают URL и выбранный узел; ломаного back-стека в текущем коде нет, каждый клик по узлу просто добавляет запись."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "CompanyStructure: updateUrlState через сырой history.pushState мимо роутера — ломаный back-стек",
       "originalEvidence": [
@@ -10131,7 +10172,7 @@
         "[cycle12:confirmed] getElk кэширует import() в elkInstancePromise (CompanyStructureOverview.jsx:45-52); при reject промис остаётся rejected навсегда, catch на 316-381 только гасит спиннер — граф пуст без retry."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "CompanyStructureOverview: ошибка layout/импорта ELK → перманентно пустой граф без ошибки и retry",
       "originalEvidence": [
@@ -10165,7 +10206,7 @@
         "[cycle12:confirmed] Ошибка getNodePeople приводит к setPeople([]) (CompanyStructure.jsx:228-231) — UI показывает «нет сотрудников» вместо ошибки."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "CompanyStructure: ошибка getNodePeople → setPeople([]) — ложное «нет сотрудников»",
       "originalEvidence": [
@@ -10200,7 +10241,7 @@
         "[cycle13:refuted] У Autocomplete нет prop value (340-352), поэтому isOptionEqualToValue не участвует в выборе: сравнение применяется только к контролируемому value, а здесь компонент неконтролируемый. Ключ опции уже включает node_id (370), так что утверждение о ключе без node_id устарело; коллизия тёзок не даёт пользовательского эффекта."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "CompanyStructure: автокомплит — isOptionEqualToValue по kind+title, key без node_id → коллизия тёзок",
       "originalEvidence": [
@@ -10242,7 +10283,7 @@
         "[cycle12:confirmed] onClose формы бригады — setCrewEditor(null) без confirm (ConstructionWorkWorkspace.jsx:163), хотя crewEditor входит в dirty (40)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Construction-workspace: Escape/backdrop молча сбрасывает форму бригады (при этом входит в dirty)",
       "originalEvidence": [
@@ -10276,7 +10317,7 @@
         "[cycle12:confirmed] Рендер истории читает entry.after.targets.length без optional chain (ConstructionWorkWorkspace.jsx:164), а entry.before — с ?. — TypeError на битой записи."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Construction-workspace: рендер истории без optional chain → TypeError на битой записи",
       "originalEvidence": [
@@ -10311,7 +10352,7 @@
         "[cycle13:refuted] data?.items.length безопасен: при data=null optional chain обрывает всю цепочку, а при непустом data контракт read всегда содержит items (construction_work_service.py:168-174). Для day-записей before/after формируются сервисом как {date, values} (construction_work_service.py:219), поэтому entry.after.date определён; неполный ответ, на котором эти строки падали бы, текущим API не выдаётся."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Construction-panel: data?.items.length===0 при необязательном data.items; entry.after.date без guard",
       "originalEvidence": [
@@ -10353,7 +10394,7 @@
         "[cycle12:confirmed] onComposeEmail передан дважды в JSX (AddressBook.jsx:958-963,993-998) — dev-предупреждение React о дублирующемся prop."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "AddressBook: onComposeEmail продублирован в JSX — dev-предупреждение о дубле prop",
       "originalEvidence": [
@@ -10387,7 +10428,7 @@
         "[cycle12:confirmed] В ConstructionWorkWorkspace editDay/setAttendance не ограничивают batch 300 записями, тогда как в Panel.jsx:184-187 лимит и сообщение есть."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Construction-workspace: нет лимита 300 записей на batch (в Panel есть с сообщением)",
       "originalEvidence": [
@@ -10422,7 +10463,7 @@
         "[cycle13:refuted] activePopGuard действительно модульный синглтон (4, 8, 129-133), но в текущих маршрутах одновременно не монтируются два dirty-гарда: workspace и его details-панель взаимоисключающи по dirty (Workspace.jsx:41-44, 110, 116), а ConstructionObjectSettingsDialog живёт на другой странице (ConstructionObjectDetail.jsx:340). Навигационный патч мультиплексирует подписчиков через Set (16-54), и тест на двух редакторов проходит; пользовательского сценария «гард достался последнему» в текущем UI нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "useConstructionWorkLeaveGuard: activePopGuard — модульный синглтон → гард достаётся последнему подписчику",
       "originalEvidence": [
@@ -10464,7 +10505,7 @@
         "[cycle12:confirmed] TaskCanvasWorkspace.jsx:764: disabled={!pendingSceneRef.current} читает ref в рендере; работает только благодаря парному setSaveState, реактивности нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "TaskCanvas: disabled читает pendingSceneRef.current в рендере — нереактивный ref",
       "originalEvidence": [
@@ -10499,7 +10540,7 @@
         "[cycle13:confirmed] При task_canvas.error с code=forbidden выставляется can_edit=false (545-549), но pendingSceneRef не очищается и saveState не сбрасывается. Кнопка сохранения исчезает из-за canvas.can_edit (759), unmount-flush пропускает правки из-за canEditRef=false (332-340), а statusLabel при saveState='dirty' продолжает показывать «Есть несохранённые изменения» и beforeunload предупреждает (342-350). Сценарий достижим при отзыве прав/закрытии задачи во время редактирования (WS перепроверяет доступ каждые 5 c, task_canvas_ws.py:32, 221-235)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "TaskCanvas: forbidden/error выставляет can_edit=false, но pendingSceneRef не чистится → вечный dirty",
       "originalEvidence": [
@@ -10542,7 +10583,7 @@
         "[cycle13:refuted] Как пользовательский дефект не подтверждается, хотя зазор в реализации есть: inert действительно снимается один раз (TaskCanvasWorkspace.jsx:366-398). Оба примера из описания не работают: ToastViewport рендерится инлайново (ToastViewport.jsx:235-258) внутри стека NotificationContext.jsx:471-521, который является сиблингом ветки воркспейса и потому сам получает inert, а MUI Snackbar в этом пути не порталится. Портируемые MUI Dialog-ы (Modal.js:188) в pseudo-fullscreen на странице задач открыть нечем: канвас не вызывает ни useConfirmDialog, ни Dialog, а глобальные диалоги срабатывают только по действию пользователя, недоступному за пределами инертного слоя. Остаётся теоретический риск для будущих порталов, но демонстрируемого ухода фокуса в текущем коде нет."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "TaskCanvas: inert выставляется один раз — поздние порталы остаются фокусируемыми вне aria-modal",
       "originalEvidence": [
@@ -10585,7 +10626,7 @@
         "[cycle13:refuted] Scope-ключ действительно склеивает cityFilter и listMode без разделителя (213-214), но listMode принимает только фиксированные all/favorites/recent, а cityFilter — значение из списка городов, а не произвольный текст. Коллизия потребовала бы город, оканчивающийся на 'all'/'recent'/'favorites', либо подмену режима; в текущем UI такая пара состояний недостижима, поэтому устаревший ответ не может быть принят за актуальный."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "AddressBook: scope-ключ request-guard конкатенирует cityFilter+listMode без разделителя",
       "originalEvidence": [
@@ -10627,7 +10668,7 @@
         "[cycle12:confirmed] useState-инициализаторы читают localStorage.getItem без try (Computers.jsx:883-889; EmployeeHistoryPanel.jsx:155) — при заблокированном storage страница падает."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Computers: незащищённые localStorage.getItem в инициализаторах useState → крах страницы при заблокированном storage",
       "originalEvidence": [
@@ -10661,7 +10702,7 @@
         "[cycle12:confirmed] localStorage.setItem в эффектах без try (Computers.jsx:1405-1455; EmployeeHistoryPanel.jsx:157) — quota/security error ломает эффект."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Computers: незащищённые localStorage.setItem в эффектах (флаги/seen-карта до 500 записей)",
       "originalEvidence": [
@@ -10695,7 +10736,7 @@
         "[cycle12:confirmed] openActFile без seq-guard и с перетиранием objectUrlRef без revoke (useEquipmentActFilePreview.js:47-165): ответ A может перезаписать preview файла B."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: гонка openActFile — нет seq-guard + утечка blob-URL при клике по акту B во время загрузки A",
       "originalEvidence": [
@@ -10729,7 +10770,7 @@
         "[cycle12:confirmed] ObjectAccessMatrix PersonRow сбрасывает values при изменении ссылки person.sections (ObjectAccessMatrix.jsx:41-46); каждый load создаёт новый объект — несохранённые правки теряются."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "ItObjects: тихая потеря несохранённых правок матрицы доступа при сохранении соседней строки",
       "originalEvidence": [
@@ -10763,7 +10804,7 @@
         "[cycle12:confirmed] IconButton отзыва доступа сразу вызывает onSave(userId, all NONE) без confirm (ObjectAccessMatrix.jsx:61-70)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "ItObjects: отзыв всего доступа пользователя одним кликом без подтверждения",
       "originalEvidence": [
@@ -10797,7 +10838,7 @@
         "[cycle12:confirmed] «Снять» ответственного вызывает clearOwner сразу (ItObjectDetail.jsx:298-308), удаление объекта при этом идёт через диалог."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "ItObjects: «Снять» ответственного объекта без подтверждения",
       "originalEvidence": [
@@ -10831,7 +10872,7 @@
         "[cycle12:confirmed] При пустом поле локации options.find даёт null (LocationAutocompleteField.jsx:79-82), но transferLocationNo сохраняет старый id (useTransferFormState.js:232-261) и уходит в payload."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: stale loc_no остаётся в состоянии при «пустом» поле локации после смены филиала",
       "originalEvidence": [
@@ -10865,7 +10906,7 @@
         "[cycle12:confirmed] ObjectPasswordsPanel запрашивает limit=100 и не показывает «N из M» (ObjectPasswordsPanel.jsx:17,52) — панель тихо обрезана."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "ItObjects: панель паролей объекта тихо обрезана до 100 записей без индикатора",
       "originalEvidence": [
@@ -10899,7 +10940,7 @@
         "[cycle12:confirmed] onCleaningSaved вызывает loadPcStats(() => true) (Statistics.jsx:598), обходя seq-guard; при смене периода/вкладки старые данные могут перезаписать новые."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Statistics: обновление статистики после чистки обходит seq-guard → данные не того периода",
       "originalEvidence": [
@@ -10933,7 +10974,7 @@
         "[cycle12:confirmed] Экспорт Excel делает revokeObjectURL сразу после anchor.click() (Statistics.jsx:324-331); в useTransferActJob.js:147-148 для того же сценария задержка 60 с."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Statistics: немедленный revokeObjectURL после anchor.click() при экспорте Excel",
       "originalEvidence": [
@@ -10967,7 +11008,7 @@
         "[cycle12:confirmed] loadFree в ObjectMonitoringDevicesDialog.jsx:24-38 без abort/seq — ответ старого запроса может перезаписать новый список."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "ItObjects: loadFree в диалоге мониторинг-устройств без abort/seq — stale список",
       "originalEvidence": [
@@ -11001,7 +11042,7 @@
         "[cycle12:confirmed] Ошибка загрузки филиалов в ObjectCreateDialog.jsx:22-24 приводит к setBranches([]), форма продолжает создание без привязки и без ошибки."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "ItObjects: тихий провал загрузки филиалов в диалоге создания → объект создаётся без привязки",
       "originalEvidence": [
@@ -11035,7 +11076,7 @@
         "[cycle12:confirmed] handleCopy не имеет try/catch (useDiscrepanciesCopy.js:55-64, lib/clipboard.js:28); отказ clipboard даёт unhandled rejection."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: unhandled rejection при провале копирования расхождений",
       "originalEvidence": [
@@ -11069,7 +11110,7 @@
         "[cycle12:confirmed] TransferActionContent.jsx:344 обрезает result.failed до 5 без пометки «и ещё N» — остальные ошибки скрыты."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: список ошибок перемещения обрезан до 5 без пометки «и ещё N»",
       "originalEvidence": [
@@ -11103,7 +11144,7 @@
         "[cycle12:confirmed] catch в useConsumableQrPrinterPicker.js:161-163 делает setSearchResults([]) — ошибка поиска принтеров выглядит как «ничего не найдено»."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: ошибка поиска принтеров неотличима от «не найдено»",
       "originalEvidence": [
@@ -11137,7 +11178,7 @@
         "[cycle12:confirmed] «Обновить» и «Актуальный отчёт» в FileEgress.jsx:163-178,253-262,308 не имеют busy-guard — повторные клики запускают параллельные запросы/отчёты."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "DLP: «Обновить»/«Актуальный отчёт» без busy-guard — дубли запросов/отчётов",
       "originalEvidence": [
@@ -11171,7 +11212,7 @@
         "[cycle12:confirmed] BrowserVisitsPanel.jsx:205-206 при ошибке скриншота делает catch { setUrl('') } — пользователь не узнаёт, что превью не загрузилось."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "DLP: тихий провал загрузки скриншота браузерного визита",
       "originalEvidence": [
@@ -11205,7 +11246,7 @@
         "[cycle12:confirmed] Строки таблицы хостов/доменов кликабельны только мышью: DlpHostList.jsx:412-416, BrowserVisitsPanel.jsx:629-635 без tabIndex/onKeyDown."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "DLP: строки таблицы хостов/доменов доступны только мышью (без tabIndex/onKeyDown)",
       "originalEvidence": [
@@ -11239,7 +11280,7 @@
         "[cycle12:confirmed] В reloadRemaining .then пишет setItems без проверки cancelled (PcRemainingDialog.jsx:82-90); cancelled проверяется только в catch/finally."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Statistics: setItems после cancelled в reloadRemaining — запись на размонтированном диалоге",
       "originalEvidence": [
@@ -11274,7 +11315,7 @@
         "[cycle13:confirmed] Чаты запрашиваются с limit=200 на хост (FileEgress.jsx:220-223), бэкенд режет SQL LIMIT (le=500) и сортирует по updated_at desc без total/hasMore (fs_egress.py:401-409, file_egress_store.py:869-872). Панель Telegram/MAX не показывает признак усечения, а заголовки вкладок берут tgChats.length/maxChats.length (FileEgress.jsx:302-303) — при >200 диалогов счётчик «200» выглядит как полный, а более старые диалоги невидимы. Для сравнения, BrowserVisitsPanel явно пишет «Показаны последние N из total» (BrowserVisitsPanel.jsx:796), то есть паттерн в проекте есть, но здесь не применён. Требуется >200 диалогов на хост; механизм подтверждён по коду."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "DLP: список telegram/max-чатов обрезан limit=200 без индикатора",
       "originalEvidence": [
@@ -11318,7 +11359,7 @@
         "[cycle13:confirmed] Cancelled-флаг защищает от применения устаревшего ответа (48-58, 127-143), поэтому отсутствие AbortController само по себе не портит состояние — отменяется только таймер, а запрос доигрывается вхолостую. Но при reject поиска catch лишь логирует (54-56, 139-141) и не очищает transferRecipientOptions/transferEmployeeOptions: под новым запросом остаются варианты предыдущего поиска, и получателя можно выбрать по неверному списку. Ошибка при этом пользователю не показывается."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: поиск получателя/сотрудника без AbortController + устаревшие options при ошибке",
       "originalEvidence": [
@@ -11360,7 +11401,7 @@
         "[cycle12:confirmed] При падении prefetch перемещений экспорт оборудования продолжается без листа перемещений, только console.warn (useEmployeeEquipmentExport.js:41-53)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: экспорт оборудования без листа перемещений при падении prefetch — только console.warn",
       "originalEvidence": [
@@ -11395,7 +11436,7 @@
         "[cycle13:refuted] У runGroupAction нет раннего return по busy (ChatContextPanel.jsx:1931-1946), но флаг ставится синхронно до первого await, а все видимые точки запуска получают disabled={groupActionBusy} (2498-2580, 3355-3505) либо закрывают диалог до старта действия (2125-2135). React 18 сбрасывает состояние дискретного клика синхронно до следующего события, поэтому второй клик приходит уже в disabled-контрол; повторный запуск «в одном кадре» через UI не воспроизводится. Единый слот на все групповые действия — сериализация, а не наблюдаемый дефект."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: groupActionBusy — единый слот на все действия группы; повторный запуск в одном кадре проходит",
       "originalEvidence": [
@@ -11437,7 +11478,7 @@
         "[cycle12:confirmed] loadAddMembersUsers вызывает getUsers без requestId/abort (ChatContextPanel.jsx:1957-1967) — устаревший поиск может перезаписать новый."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Чат: loadAddMembersUsers без seq-guard — устаревшие результаты поиска при быстром вводе",
       "originalEvidence": [
@@ -11471,7 +11512,7 @@
         "[cycle12:confirmed] useDatabaseDbTransfer.js:58 вызывает crypto.randomUUID() напрямую; в не-secure context (HTTP IIS) метода нет, перенос падает. В useTransferActJob.js:32-37 fallback есть."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: crypto.randomUUID() без fallback — перенос в другую БД падает на HTTP-развёртывании",
       "originalEvidence": [
@@ -11505,7 +11546,7 @@
         "[cycle12:confirmed] При падении догрузки nextEquipmentPage не сдвигается, catch только console.error (useDatabaseEquipmentData.js:344-349,407-414) — sentinel повторно вызывает onLoadMore без backoff."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: storm-ретрай догрузки списка при падении эндпоинта — бесконечный поток запросов без backoff",
       "originalEvidence": [
@@ -11539,7 +11580,7 @@
         "[cycle12:confirmed] Универсальный поиск имеет .catch(()=>{}) с комментарием «next sentinel retries» (useDatabaseSearch.js:313-315) без backoff/лимита/ошибки в UI."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: тот же storm-ретрай для универсального поиска (осознанный механизм без предохранителя)",
       "originalEvidence": [
@@ -11573,7 +11614,7 @@
         "[cycle12:confirmed] setEquipmentTypes/Branches/Statuses выполняются без isCurrent (useDatabaseEquipmentData.js:168-232); generation проверяется только для fetchAllEquipment (430-441)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: метаданные (типы/статусы/филиалы) без generation-защиты — чужие справочники под новой БД",
       "originalEvidence": [
@@ -11607,7 +11648,7 @@
         "[cycle12:confirmed] Ошибка fetchAllEquipment только console.error (useDatabaseEquipmentData.js:416-418); состояния ошибки нет — пустая база без индикации."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: ошибка первичной загрузки проглатывается — пустая база без индикации",
       "originalEvidence": [
@@ -11641,7 +11682,7 @@
         "[cycle12:confirmed] refreshRecentCards/touchRecentCard без requestId (useDatabaseRecentCards.js:30-72,99-130), список не чистится при смене dbName — чужие недавние карточки."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: «недавние карточки» без scope-защиты — чужие карточки при смене БД",
       "originalEvidence": [
@@ -11675,7 +11716,7 @@
         "[cycle12:confirmed] switchDatabase без busy-guard (useDatabaseSelection.js:79-99): параллельные переключения дают двойной database-changed, catch откатывает к захваченному previousDbId."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: смена БД без busy-guard + откат селекта к stale-значению при ошибке",
       "originalEvidence": [
@@ -11709,7 +11750,7 @@
         "[cycle12:confirmed] Не-append ошибка observations кэшируется как {total:0,items:[]} (ScanCenterPage.jsx:1130,1148-1155); dedupe по currentBucket блокирует повторный запрос — ретрай заблокирован."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "ScanCenter: ошибка observations кэшируется как «пусто» — ретрай навсегда заблокирован",
       "originalEvidence": [
@@ -11743,7 +11784,7 @@
         "[cycle12:confirmed] Поллинг transfer-job живёт в хуке без useEffect (useTransferActJob.js:155-229,39-44); seq инвалидируется только reset/новым poll — после unmount страницы запросы продолжаются до ~10 мин."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: transfer-job поллинг продолжается ~10 мин после unmount страницы",
       "originalEvidence": [
@@ -11777,7 +11818,7 @@
         "[cycle12:confirmed] setTimeout(300мс) с setSelectedItems без cleanup (useDatabaseWorkspaceIdentity.js:30-32) — галочки применяются к чужому контексту после смены БД."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: setTimeout(300мс) setSelectedItems без cleanup — галочки на чужой контекст",
       "originalEvidence": [
@@ -11811,7 +11852,7 @@
         "[cycle12:confirmed] 500мс long-press таймер карточки не очищается при unmount (ModernEquipmentCard.jsx:184-200) — «призрачное» выделение."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: long-press таймер карточки без unmount-cleanup — «призрачное» выделение",
       "originalEvidence": [
@@ -11845,7 +11886,7 @@
         "[cycle12:confirmed] allEquipment — grouped-объект ({}), поэтому guard !allEquipment?.length всегда истинен (useDatabaseListController.js:154-168); prefetch import() никогда не выполняется."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: мёртвый prefetch чанков диалогов — guard !allEquipment?.length всегда истинен",
       "originalEvidence": [
@@ -11879,7 +11920,7 @@
         "[cycle12:confirmed] busyIncident/busyTaskAgent — одиночные слоты без входного guard (ScanCenterPage.jsx:1486-1508,1773-1823); finally первого снимает busy второго."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "ScanCenter: busyIncident/busyTaskAgent — одиночный слот без входного guard",
       "originalEvidence": [
@@ -11913,7 +11954,7 @@
         "[cycle12:confirmed] refreshFirstPage не принимает AbortSignal (useScanIncidentInbox.js:121-152), в отличие от loadFirstPage/loadMore (95-104) — запросы наслаиваются."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Scan: refreshFirstPage без AbortSignal — запросы наслаиваются на медленном бэкенде",
       "originalEvidence": [
@@ -11947,7 +11988,7 @@
         "[cycle12:confirmed] Drawer-запросы host incidents/runs без abort (ScanCenterPage.jsx:992-997,1034-1047,1090-1093; scanIncidents.js:20-25) — продолжаются после закрытия."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "ScanCenter: drawer-запросы (host incidents/runs) без abort — живут после закрытия",
       "originalEvidence": [
@@ -11981,7 +12022,7 @@
         "[cycle12:confirmed] loadWorkConsumables/loadCartridgeHistory и другие загрузчики пишут после await без canceled-флага (useDatabaseMaintenanceData.js:86-141,162-197) — чужая история при переоткрытии."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: загрузчики истории обслуживания без canceled-флага — чужая история при переоткрытии",
       "originalEvidence": [
@@ -12015,7 +12056,7 @@
         "[cycle12:confirmed] openLinkedConsumable не отменяет предыдущий запрос (useConsumableCard.js:242-289) — модалка может открыть не тот deeplink."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Database: deep-link openLinkedConsumable без отмены — модалка не того deeplink",
       "originalEvidence": [
@@ -12049,7 +12090,7 @@
         "[cycle12:confirmed] Таймеры вспышек (flash 120мс, pathCopied 1500мс) не очищаются при unmount: HostDrawer.jsx:192, QuickCameraDialog.jsx:71, IncidentsInboxSection.jsx:122."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "originalClaim": "Scan/UI: таймеры вспышек без cleanup (flash 120мс, pathCopied 1500мс)",
       "originalEvidence": [
@@ -12084,7 +12125,7 @@
         "[cycle13:unverifiable] Функция действительно запрашивает только max(limit*4,500) инцидентов, игнорирует offset и не отдаёт признак усечения, поэтому при подключении список хостов был бы неполным (scanHosts.js:123-131). Но у экспортированного scanHostsAPI.getHosts в текущем дереве нет ни одного продакшн-вызова: client.js лишь отдаёт геттер (1166-1167), а Scan Center использует getHostsTable (ScanCenterPage.jsx:929). Латентный риск не проявляется, прод-дефект не демонстрируется; формулировка «только тесты» верна для внешнего API, хотя сама fallback-функция вызывается из getHosts (:136,147)."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "unverifiable",
       "originalClaim": "API: getHostsFallbackFromIncidents молча усекает список хостов до incidentLimit (латентный)",
@@ -12128,7 +12169,7 @@
         "[cycle13:confirmed] API не может вернуть больше запрошенного: FastAPI ограничивает limit 2000 (equipment.py:1982), SQL — TOP с клампом (queries.py:3595-3602), а ответ — голый {\"departments\": [...]} без total/hasMore. Форма перевода в режиме MOVE с ручным сотрудником запрашивает 1000 (useTransferFormState.js:172) и рендерит обязательный Select (TransferActionContent.jsx:210-233): при >1000 отделов хвост по алфавиту недоступен и выбрать его нельзя, индикатора усечения нет; 500 — дефолт хука и API (useDatabaseLookups.js:29), в этом пути не используется. Для movements экспорт запрашивает 500 (useEmployeeEquipmentExport.js:43-49), хотя API отдаёт meta с truncated/hasMore (warehouse1c.js:76-85) — экспорт читает только items и meta игнорирует. Фактическое переполнение не измерялось (прод-БД не запрашивалась), поэтому дефект латентный, но механизм тихого усечения подтверждён."
       ],
       "verification": [
-        "static"
+        "static-code"
       ],
       "reverificationVerdict": "unverifiable",
       "originalClaim": "Database: справочники departments/movements с limit 500/1000 — переполнение зависит от данных",
@@ -12178,7 +12219,7 @@
         }
       ],
       "verification": [
-        "static",
+        "static-code",
         "local-browser",
         "test-harness"
       ],
@@ -12186,7 +12227,8 @@
         "live local E2E (cycle 13): built app served by vite preview :5221, SW active and controls the page, app-shell/assets cached; offline reload /login stays on «Загружаем раздел… | Подготавливаем интерфейс HUB-IT» at 10/30/55/65 s.",
         "AuthContext verifySession: error with HTTP status 0 (offline) is not a definitive 401/403, so scheduleRetry repeats forever with max 30 s delay; setLoading(false) is never called on this path (AuthContext.jsx:310-339).",
         "SW itself serves the shell offline (200), so the hang is in auth recovery, not in the service worker navigation fallback.",
-        "[cycle14:live] PWA deep test on built app :5223: fresh offline reload stays on loader >50 s; only 2 refresh attempts during 50 s (no request storm); reconnect recovers to /login in ~2 s; offline reload with existing session shows /dashboard and «Нет подключения · Показываем сохранённые данные»; two tabs both show the loader."
+        "[cycle14:live] PWA deep test on built app :5223: fresh offline reload stays on loader >50 s; only 2 refresh attempts during 50 s (no request storm); reconnect recovers to /login in ~2 s; offline reload with existing session shows /dashboard and «Нет подключения · Показываем сохранённые данные»; two tabs both show the loader.",
+        "[cycle15:live] Cycle 15 PWA: three offline/online reload cycles with existing session recovered to /dashboard each time (~2.6 s offline render, cached «Нет подключения» banner); stale-SW probe installed a new waiting worker while the old controller/caches stayed active and no settings update text appeared."
       ],
       "impact": "Пользователь PWA/Desktop после холодного запуска без сети видит бесконечный загрузчик вместо экрана входа/офлайн-режима; приложение кажется зависшим.",
       "recommendation": "При navigator.onLine=false или после N повторов status=0 завершать recovery с loading=false и показывать офлайн-экран/вход; добавить общий таймаут recovery и тест offline cold reload.",
@@ -12215,6 +12257,13 @@
           "verdict": "confirmed",
           "note": "Offline cold start hangs for fresh session, but reconnect recovers quickly and existing-session offline shell works; no infinite request storm.",
           "sourceFile": "manual-live-pwa-deep"
+        },
+        {
+          "cycle": 15,
+          "date": "2026-11-23",
+          "verdict": "confirmed",
+          "note": "Existing-session offline cycles are stable; stale-worker waits without activation and is not surfaced in settings.",
+          "sourceFile": "manual-live-pwa-cycle15"
         }
       ],
       "verificationLegacy": [
@@ -12275,5 +12324,61 @@
       "production-observer": "Историческое read-only наблюдение production; не новые мутации."
     },
     "note": "verification[] — очищенные методы; verificationLegacy[] сохраняет исходные значения циклов 1–13."
+  },
+  "highBreakdown": {
+    "historical": [
+      "FE-0022",
+      "FE-0023",
+      "FE-0059",
+      "FE-0078",
+      "FE-0083",
+      "FE-0197",
+      "FE-0198",
+      "FE-0215",
+      "FE-0230",
+      "FE-0232",
+      "FE-0239",
+      "FE-0259"
+    ],
+    "current": [
+      "FE-0022",
+      "FE-0023",
+      "FE-0059",
+      "FE-0083",
+      "FE-0197",
+      "FE-0198",
+      "FE-0215",
+      "FE-0230",
+      "FE-0232",
+      "FE-0239",
+      "FE-0259"
+    ],
+    "fixed": [
+      "FE-0078"
+    ],
+    "runtimeProven": [
+      "FE-0022",
+      "FE-0023",
+      "FE-0059",
+      "FE-0078",
+      "FE-0083",
+      "FE-0197",
+      "FE-0198"
+    ],
+    "runtimeUnresolved": [
+      "FE-0022",
+      "FE-0023",
+      "FE-0059",
+      "FE-0083",
+      "FE-0197",
+      "FE-0198"
+    ],
+    "staticOnly": [
+      "FE-0215",
+      "FE-0230",
+      "FE-0232",
+      "FE-0239",
+      "FE-0259"
+    ]
   }
 }

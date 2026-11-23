@@ -27,8 +27,7 @@ const issuesPath = resolve(scriptDir, 'ISSUES.json');
 
 const SEVERITIES = new Set(['Critical', 'High', 'Medium', 'Low', 'Info']);
 const STATUSES = new Set(['Confirmed', 'Suspected', 'Fixed-externally', 'Rejected']);
-const VERIFICATION_PREFIXES = ['static', 'local-browser', 'local-browser-mock', 'local-api', 'test-harness', 'production-observer'];
-const VERIFICATION_EXACT = new Set(['перепроверено (цикл 12)', 'перепроверено (цикл 13)', 'перепроверено (цикл 14)']);
+const VERIFICATION_METHODS = new Set(['static-code', 'local-browser', 'local-browser-mock', 'local-api', 'test-harness', 'production-observer']);
 const ID_PATTERN = /^FE-\d{4}$/;
 const REQUIRED_FIELDS = ['id', 'title', 'category', 'severity', 'status', 'evidence', 'verification'];
 
@@ -82,8 +81,8 @@ for (const issue of parsed.issues) {
   if (Array.isArray(verification)) {
     if (verification.length === 0) pushError(id, 'verification пуст');
     for (const value of verification) {
-      if (!VERIFICATION_EXACT.has(String(value)) && !VERIFICATION_PREFIXES.some((prefix) => String(value).startsWith(prefix))) {
-        pushError(id, `verification вне допустимых префиксов (${VERIFICATION_PREFIXES.join('/')}): ${value}`);
+      if (!VERIFICATION_METHODS.has(String(value))) {
+        pushError(id, `verification вне enum (${[...VERIFICATION_METHODS].join('/')}): ${value}`);
       }
     }
   }

@@ -1,0 +1,23 @@
+{
+  "environment": "built app :5223 + isolated backend :18002; e2e_admin",
+  "level": "functional (main action executed and result checked; not E2E record creation)",
+  "routes": [
+    { "route": "/help", "action": "открыть раздел «Первый вход»", "result": "article opened, content visible" },
+    { "route": "/menu", "action": "перейти в «Задачи»", "result": "URL /tasks" },
+    { "route": "/it/objects", "action": "Повторить/Обновить", "result": "error state preserved" },
+    { "route": "/it/requests", "action": "вкладка «История»", "result": "aria-selected=true" },
+    { "route": "/groups-access", "action": "Обновить", "result": "651 group/VCS data state" },
+    { "route": "/voice", "action": "вкладка «Задачи» + Обновить", "result": "tab switched, refresh ran, error state visible" },
+    { "route": "/monitoring", "action": "empty/search state", "result": "0/0 devices, search field present" },
+    { "route": "/shared-files/invalid-token", "action": "Повторить загрузку", "result": "error state remains" },
+    { "route": "/admin", "action": "раздел «Отделы»", "result": "URL /admin/departments, content visible" },
+    { "route": "/file-egress", "action": "Обновить", "result": "DLP summary rerendered" },
+    { "route": "/dlp", "action": "Обновить", "result": "DLP summary rerendered" },
+    { "route": "/chat/open", "action": "К списку чатов", "result": "URL /chat" }
+  ],
+  "not_counted": {
+    "/feed": "composer button did not open a dialog in this pass",
+    "/mail": "credentials gate; cancel did not dismiss; no mailbox provider",
+    "/my-files/edit/:fileId": "server-side editor error/disabled History in this pass"
+  }
+}

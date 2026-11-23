@@ -1,0 +1,23 @@
+{
+  "generatedAt": "2026-11-23",
+  "baseAuditCommit": "eb83a0c0",
+  "testedBuild": "5513db68",
+  "currentHead": "467512e5",
+  "total": 323,
+  "statuses": { "Confirmed": 269, "Suspected": 11, "Fixed-externally": 2, "Rejected": 41 },
+  "severity": { "High": 12, "Medium": 123, "Low": 173, "Info": 15 },
+  "high": {
+    "historical": 12,
+    "current": 11,
+    "runtimeProven": ["FE-0022", "FE-0023", "FE-0059", "FE-0078", "FE-0083", "FE-0197", "FE-0198"],
+    "staticOnly": ["FE-0215", "FE-0230", "FE-0232", "FE-0239", "FE-0259"]
+  },
+  "newlyConfirmed": ["FE-0022", "FE-0059"],
+  "coverage": {
+    "smoke": 36,
+    "functional": 36,
+    "e2e": 3,
+    "routesAdded": ["/help", "/menu", "/it/objects", "/it/requests", "/groups-access", "/voice", "/monitoring", "/shared-files/:token", "/admin", "/file-egress", "/dlp", "/chat/open"]
+  },
+  "verificationMethods": ["static-code", "local-browser", "local-browser-mock", "local-api", "test-harness", "production-observer"]
+}
