@@ -142,3 +142,46 @@ A1: `execute_bounded` capacity/timeout/admission не тронуты — про�
 
 - Реальные p50/p95 JEV/LLM и e2e через живой оркестратор: нет доступа к прод-моделям — не выдумываем. Готовность измерений обеспечена `ai_run_profile` + laps (`routing_inputs`, `tool_routing`, `context`, `tools`, LLM-стадии) — воспроизводимый staging-прогон требует только синтетические данные и включённый флаг.
 - Доказано тестами: классификация fail-closed, mode-only при ≤1 группе, отказ исполнения action/artifact/delivery в READ, подавление keyword/expansion в CHAT, tool-mode chat. Доказано статически: стрип `artifacts`/`kb_attachment_send` в CHAT+READ (интеграционный прогон — residual).
+
+---
+
+## Цикл 4 (финал) — ложный CHAT при timeout, e2e через оркестратор, единый профиль
+
+### Исправления
+
+| # | Дефект | Исправление |
+|---|---|---|
+| 1 | `_route_tools_jev` — пустой fallback при JEV timeout → `intent_mode=CHAT` (ошибка маршрутизации выдавалась за намерение пользователя) | Mode-вопросы (`m_mode_chat`/`m_mode_act`) добавлены в tool-mode тем же `decide()` — 0 доп. сетевых вызовов. Режим: `act>chat`, `read` при выбранных core-инструментах, `None` при низких вероятностях. `_route_for_run` читает `intent_mode` из решения JEV — пустой выбор/пустой fallback сам по себе CHAT не даёт |
+| 2 | «Отсутствие выбранных инструментов» = «подтверждённый CHAT» | Пустой core + `chat_p >= threshold` → CHAT (без resolver-tools). Пустой core + неуверенность → `None` (recovery через `ai.request_tool_group` сохранён). JEV timeout/failure → fallback `intent_mode=None`, не CHAT |
+| 3 | CHAT мог завершиться без видимого ответа | Пустой `answer_markdown` в CHAT/READ → текстовый fallback «Не удалось сформировать ответ...» — без инструментов и файлов |
+| 4 | Разрозненные таймеры | `ai_run_profile` дополнен `suppress_kb`, `elapsed_ms` (wall-clock от начала рана), `tokens` из `final_usage`; рядом существующие laps `ai_chat.run.*` (queue_wait, routing_inputs, context, llm_first, tool rounds) — суммарный профиль без двойного учёта вложенных стадий |
+
+### Доказано e2e (`tests/test_e2e_ai_intent_modes.py`, 8/8 PASS — реальный AiChatService + queue + SQLite, фейк только JEV/LLM/внешние сервисы)
+
+| Сценарий | Результат |
+|---|---|
+| CHAT — обычный ответ | `intent_mode=chat`, 0 tool_traces, 0 files |
+| CHAT + hallucinated `directory.people.search` | вызов не дошёл до исполнения (0 спеков → цикл пропущен), 0 used_tools, ответ доставлен |
+| CHAT + model `artifacts` | `artifacts_count=0` |
+| CHAT + пустой `answer_markdown` | текстовый fallback доставлен пользователю |
+| READ (tool-mode) + search + artifacts | search исполнен, `artifacts_count=0`, `intent_mode=read` |
+| Tool-mode + JEV timeout | `intent_mode != chat` — fallback без ложного CHAT, run завершён ответом |
+| CHAT → READ → ACT → CHAT в одном диалоге | chat/read/act/chat; ACT создал ровно 1 карточку `office.mail.*` (через contacts.resolve → draft, проверки A3); CHAT-раны — 0 карточек |
+| Бот с тривиальным набором групп | mode-классификация работает, `intent_mode=chat` |
+
+### Метрики
+
+- Поля профиля (`intent_mode`, `mode_denied_calls`, `used_tools`, `artifacts_count`, cache hit/miss, elapsed_ms, tokens) коррелируются по настоящему `run_id` и проверены e2e.
+- **NOT MEASURED**: реальные сетевые p50/p95/токены — нет доступа к прод-JEV/LLM. Staging-прогон: `AI_JEV_ROUTING=1` + синтетические диалоги → парсинг `ai_chat.run.*` + `ai_run_profile` из логов worker'а.
+
+### Реестр проверок (честный статус)
+
+- **Воспроизведены тестами**: fail-closed `tool_effect`, пустой fallback ≠ CHAT, mode при 0/1/N группах, strip artifacts/kb_send в CHAT+READ, блокировка hallucinated calls, fallback пустого ответа, переходы режимов, draft через A3, tool-mode read/timeout.
+- **Статически**: потолок `execute_bounded` покрывает autopagination; `kb_attachment_send` strip симметричен artifacts.
+- **Не выполнено**: реальная точность JEV и сетевые p50/p95 (блокер — нет моделей); прочие e2e-ветви (`kb_attachment_send` с реальным кандидатом шаблона, `me.files.attach`) покрыты unit-уровнем.
+
+### Итоговый прогон (этот HEAD)
+
+- Полный suite (A1 stability, A3 injection, A4 serialization, routing, permissions, mail lifecycle, e2e draft reliability, e2e intent modes): **379/380 PASS, 1 FAIL** — только `test_claude_transport_keeps_recipient_arguments_through_http_worker` (pre-existing, воспроизводится на `2fdb29bc` до A5, вне scope).
+- `test_e2e_ai_intent_modes.py`: **8/8 PASS** через реальный оркестратор.
+- `test_ai_jev_intent_modes.py`: **74/74** (+2 новых: empty-core без уверенной метки ≠ chat; act-метка с resolver-tools).

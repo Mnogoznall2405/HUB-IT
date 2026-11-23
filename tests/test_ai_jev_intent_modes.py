@@ -505,8 +505,9 @@ def _tool_mode(monkeypatch, decide):
 
 
 def test_tool_mode_empty_core_is_chat_without_resolvers(monkeypatch):
-    """JEV selects nothing -> CHAT; ALWAYS_KEEP resolver tools do NOT mask it."""
-    _tool_mode(monkeypatch, lambda **kw: _jev_decision({}))
+    """Confident m_mode_chat + no core tools -> CHAT; resolver tools do NOT
+    mask it (they are added only after a real selection)."""
+    _tool_mode(monkeypatch, lambda **kw: _jev_decision({"m_mode_chat": 0.9}))
     specs = [
         {"tool_id": "itinvent.equipment.search", "description": "поиск"},
         {"tool_id": "itinvent.entity.resolve", "description": "resolver"},
@@ -515,6 +516,18 @@ def test_tool_mode_empty_core_is_chat_without_resolvers(monkeypatch):
         trigger_text="расскажи анекдот", tool_specs=specs)
     assert result == set()
     assert getattr(result, "intent_mode", None) == "chat"
+
+
+def test_tool_mode_empty_core_without_confident_label_is_not_chat(monkeypatch):
+    """Low tool probabilities alone never prove CHAT (cycle 4)."""
+    _tool_mode(monkeypatch, lambda **kw: _jev_decision({"t00": 0.1}))
+    specs = [
+        {"tool_id": "itinvent.equipment.search", "description": "поиск"},
+        {"tool_id": "itinvent.entity.resolve", "description": "resolver"},
+    ]
+    result = service_module._route_tools_jev(
+        trigger_text="неоднозначный запрос", tool_specs=specs)
+    assert getattr(result, "intent_mode", None) != "chat"
 
 
 def test_tool_mode_nonempty_selection_keeps_resolvers(monkeypatch):
@@ -527,7 +540,20 @@ def test_tool_mode_nonempty_selection_keeps_resolvers(monkeypatch):
         trigger_text="найди ноутбук Иванова", tool_specs=specs)
     assert "itinvent.equipment.search" in result
     assert "itinvent.entity.resolve" in result  # resolver kept for real work
-    assert getattr(result, "intent_mode", None) is None
+    # Selected tools without a confident chat/act label -> READ ceiling.
+    assert getattr(result, "intent_mode", None) == "read"
+
+
+def test_tool_mode_act_label_keeps_resolver_tools(monkeypatch):
+    _tool_mode(monkeypatch, lambda **kw: _jev_decision({"t00": 0.9, "m_mode_act": 0.9}))
+    specs = [
+        {"tool_id": "itinvent.equipment.search", "description": "поиск"},
+        {"tool_id": "itinvent.entity.resolve", "description": "resolver"},
+    ]
+    result = service_module._route_tools_jev(
+        trigger_text="перемести ноутбук Иванова", tool_specs=specs)
+    assert "itinvent.equipment.search" in result
+    assert getattr(result, "intent_mode", None) == "act"
 
 
 def test_tool_mode_jev_failure_is_not_chat(monkeypatch):

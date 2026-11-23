@@ -1665,6 +1665,14 @@ def _route_tools_jev(
         key = f"t{index:02d}"
         questions[key] = jev_noul(f"Нужен ли инструмент '{tool_id}'? {description}")
         key_to_tool[key] = tool_id
+    # A5: intent-mode questions ride the same decide() call in tool mode too —
+    # no extra network round trip. m_mode_* keys never collide with tNN tools.
+    for key, spec in _JEV_MODE_QUESTIONS.items():
+        questions[key] = jev_noul(
+            spec.get("question", ""),
+            true_label=spec.get("true_label", ""),
+            false_label=spec.get("false_label", ""),
+        )
     try:
         started_at = time.perf_counter()
         decision = jev_client.decide(
@@ -1694,20 +1702,33 @@ def _route_tools_jev(
         for key, tool_id in key_to_tool.items()
         if float(getattr(decision.answers.get(key), "probability", 0.0) or 0.0) >= threshold
     }
-    if not core_selected:
+    act_prob = float(getattr(decision.answers.get("m_mode_act"), "probability", 0.0) or 0.0)
+    chat_prob = float(getattr(decision.answers.get("m_mode_chat"), "probability", 0.0) or 0.0)
+    if act_prob >= threshold:
+        intent_mode = JEV_INTENT_ACT
+    elif chat_prob >= threshold:
+        intent_mode = JEV_INTENT_CHAT
+    elif core_selected:
+        intent_mode = JEV_INTENT_READ
+    else:
+        # Low tool probabilities without a confident label is UNDECIDED —
+        # never a confident CHAT (keeps the expansion recovery path).
+        intent_mode = None
+    if intent_mode == JEV_INTENT_CHAT:
         _jev_routing_cache_set(cache_key, set(), JEV_INTENT_CHAT)
         logger.info("ai_jev_routing(mode=tool) empty core -> chat latency_ms=%.0f", (time.perf_counter() - started_at) * 1000)
         return JevRoutingResult(intent_mode=JEV_INTENT_CHAT)
     selected = core_selected | (_JEV_ALWAYS_KEEP_TOOLS & enabled_ids)
     logger.info(
-        "ai_jev_routing(mode=tool) selected=%s/%s latency_ms=%.0f model=%s",
+        "ai_jev_routing(mode=tool) selected=%s/%s intent=%s latency_ms=%.0f model=%s",
         len(selected),
         len(enabled_ids),
+        intent_mode or "-",
         (time.perf_counter() - started_at) * 1000,
         decision.model,
     )
-    _jev_routing_cache_set(cache_key, selected)
-    return JevRoutingResult(selected)
+    _jev_routing_cache_set(cache_key, selected, intent_mode)
+    return JevRoutingResult(selected, intent_mode=intent_mode)
 
 
 def _unattached_tool_group_hint(group: str, title: str) -> str:
@@ -6209,9 +6230,9 @@ class AiChatService:
             )
             if jev_selected_tools is not None:
                 jev_routed = None
-                # tool-mode: JEV picked no tools at all -> conversational run.
-                if not jev_selected_tools:
-                    intent_mode = JEV_INTENT_CHAT
+                # Mode comes from JEV's explicit decision — an empty selection
+                # alone never proves CHAT (a JEV failure can also yield empty).
+                intent_mode = getattr(jev_selected_tools, "intent_mode", None)
             else:
                 jev_routed = _route_tool_groups_jev(
                     trigger_text=trigger_text,
@@ -7428,7 +7449,8 @@ class AiChatService:
         # mode, ceilings, offered-vs-used tools and denied model calls.
         logger.info(
             "ai_run_profile run_id=%s intent=%s routed_groups=%s expanded_groups=%s "
-            "tool_specs=%s allowed_tools=%s used_tools=%s mode_denied=%s",
+            "tool_specs=%s allowed_tools=%s used_tools=%s mode_denied=%s "
+            "suppress_kb=%s elapsed_ms=%.0f tokens=%s",
             run_id,
             intent_mode or "-",
             sorted(routed_groups),
@@ -7441,6 +7463,9 @@ class AiChatService:
             ),
             used_tool_ids,
             int(getattr(tool_context, "mode_denied_calls", 0) or 0),
+            suppress_kb,
+            (time.perf_counter() - context_started_at) * 1000,
+            (final_usage or {}).get("total_tokens") if isinstance(final_usage, dict) else final_usage,
         )
         memory_command = re.match(r"^\s*(?:запомни|забудь|удали\s+из\s+памяти)", policy.trigger_text, re.I)
         memory_claim = re.search(r"запомнил|(?:памят|предпочтени).{0,60}(?:сохран|обновлен|удален|записан)", answer_markdown, re.I)
@@ -7456,6 +7481,10 @@ class AiChatService:
         # execute_bounded, so they are stripped here server-side.
         if intent_mode in (JEV_INTENT_CHAT, JEV_INTENT_READ):
             artifacts, kb_attachment_send = [], None
+        # A5 final cycle: a successful run must never end with an invisible
+        # answer. Recovery is a plain text fallback — no tools, no files.
+        if intent_mode in (JEV_INTENT_CHAT, JEV_INTENT_READ) and not _normalize_text(answer_markdown):
+            answer_markdown = "Не удалось сформировать ответ. Пожалуйста, переформулируйте вопрос."
         extracted_context["mode_denied_calls"] = int(getattr(tool_context, "mode_denied_calls", 0) or 0)
         return answer_markdown, artifacts, kb_attachment_send, final_usage, extracted_context, tool_traces, generated_file_specs, sorted(routed_groups)
 
