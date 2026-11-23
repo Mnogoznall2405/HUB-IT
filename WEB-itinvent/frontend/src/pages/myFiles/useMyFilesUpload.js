@@ -524,16 +524,6 @@ export function useMyFilesUpload({
 
   useEffect(() => {
     if (!uploading) return undefined;
-    const onBeforeUnload = (event) => {
-      event.preventDefault();
-      event.returnValue = '';
-    };
-    window.addEventListener('beforeunload', onBeforeUnload);
-    return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [uploading]);
-
-  useEffect(() => {
-    if (!uploading) return undefined;
     const timer = window.setInterval(() => {
       const now = Date.now();
       setUploadProgress((current) => {

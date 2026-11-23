@@ -699,7 +699,7 @@ describe('MyFiles page', () => {
     renderPage();
     await screen.findByText('report.txt');
 
-    fireEvent.click(screen.getByTestId('my-files-view-toggle'));
+    fireEvent.click(screen.getByTestId('my-files-view-grid'));
 
     const grid = await screen.findByTestId('my-files-grid');
     expect(within(grid).getByText('Документы')).toBeInTheDocument();
@@ -745,7 +745,7 @@ describe('MyFiles page', () => {
     ));
     renderPage();
     await screen.findByText('pic.png');
-    fireEvent.click(screen.getByTestId('my-files-view-toggle'));
+    fireEvent.click(screen.getByTestId('my-files-view-grid'));
     await screen.findByTestId('my-files-grid');
     await waitFor(() => expect(mockDownloadPreviewContent).toHaveBeenCalledWith('img-1', { variant: 'thumb' }));
 
