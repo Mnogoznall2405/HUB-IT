@@ -41,17 +41,41 @@ const GIB = 1024 ** 3;
 // и текущее значение сравниваются после одной и той же нормализации.
 export const quotaBytesToGbInput = (bytes) => {
   const value = Number(bytes || 0);
-  // До 4 значащих цифр: 1 МиБ отображается как «0.0009766», а не «0»;
-  // точные байты при этом всё равно хранятся на сервере и не переотправляются.
-  return value > 0 ? String(Number((value / GIB).toPrecision(4))) : '';
+  if (!(value > 0)) return '';
+  const gb = value / GIB;
+  // Малые лимиты — точной десятичной записью без e-нотации
+  // (1 МиБ → «0.0009765625», а не «0»); больше — до 6 знаков после запятой.
+  return gb < 0.001
+    ? gb.toFixed(30).replace(/\.?0+$/, '')
+    : String(Number(gb.toFixed(6)));
 };
 
+// Поле хранит ровно введённый текст; невалидные значения дают ошибку,
+// а не вырезаются молча («-2» ≠ «2», «abc» ≠ «без лимита»).
+const QUOTA_GB_PATTERN = /^\d+([.,]\d+)?$/;
+
 export const parseQuotaGbInput = (raw) => {
-  const text = String(raw ?? '').trim().replace(',', '.');
+  const text = String(raw ?? '').trim();
+  // Пустая строка — осознанное снятие лимита (0 байт).
   if (!text) return { ok: true, gb: 0, bytes: 0 };
-  const gb = Number(text);
-  if (!Number.isFinite(gb) || gb < 0) return { ok: false, gb: NaN, bytes: 0 };
-  return { ok: true, gb, bytes: Math.round(gb * GIB) };
+  if (/^-/.test(text)) return { ok: false, reason: 'negative', gb: NaN, bytes: 0 };
+  if (!QUOTA_GB_PATTERN.test(text)) return { ok: false, reason: 'format', gb: NaN, bytes: 0 };
+  const gb = Number(text.replace(',', '.'));
+  const bytes = Math.round(gb * GIB);
+  // Положительное значение, округляющееся до 0 байт, — ошибка, а не «без лимита».
+  if (gb > 0 && bytes <= 0) return { ok: false, reason: 'too_small', gb, bytes: 0 };
+  // Сервер хранит bigint; клиентский потолок — безопасные целые JS.
+  if (!Number.isFinite(bytes) || bytes > Number.MAX_SAFE_INTEGER) {
+    return { ok: false, reason: 'too_large', gb, bytes };
+  }
+  return { ok: true, gb, bytes };
+};
+
+const QUOTA_GB_ERROR_TEXT = {
+  negative: 'Укажите число не меньше 0',
+  format: 'Укажите число ГБ, например «10» или «1,5»',
+  too_small: 'Лимит меньше 1 байта — увеличьте значение или очистите поле',
+  too_large: 'Лимит больше поддерживаемого',
 };
 
 const normalizeQuotaGbText = (raw) => {
@@ -558,9 +582,9 @@ export default function MyFilesLibraryDialog({ open, library, membersOnly = fals
         <TextField
           label="Лимит хранения, ГБ"
           value={quotaGb}
-          onChange={(event) => { setQuotaGb(event.target.value.replace(/[^\d.,]/g, '')); setQuotaError(''); }}
+          onChange={(event) => { setQuotaGb(event.target.value); setQuotaError(''); }}
           error={Boolean(quotaError) || quotaInvalid}
-          helperText={quotaError || (quotaInvalid ? 'Укажите число не меньше 0' : 'Пусто — без отдельного лимита. Файлы общей папки хранятся бессрочно и занимают место в лимите папки, а не в личных квотах участников.')}
+          helperText={quotaError || (quotaParsed.ok ? 'Пусто — без отдельного лимита. Файлы общей папки хранятся бессрочно и занимают место в лимите папки, а не в личных квотах участников.' : QUOTA_GB_ERROR_TEXT[quotaParsed.reason] || QUOTA_GB_ERROR_TEXT.format)}
           size="small"
           fullWidth
           placeholder="Без лимита"

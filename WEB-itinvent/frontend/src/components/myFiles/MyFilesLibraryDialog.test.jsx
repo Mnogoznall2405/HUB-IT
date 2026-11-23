@@ -281,12 +281,60 @@ describe('MyFilesLibraryDialog', () => {
     await screen.findByRole('dialog');
     fireEvent.change(screen.getByTestId('my-files-library-quota'), { target: { value: '..' } });
 
-    expect(await screen.findByText('Укажите число не меньше 0')).toBeInTheDocument();
+    expect(await screen.findByText(/Укажите число ГБ/)).toBeInTheDocument();
     expect(screen.getByTestId('my-files-library-save')).toBeDisabled();
     fireEvent.click(screen.getByTestId('my-files-library-save'));
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(mockSetMembers).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['abc', /Укажите число ГБ/],
+    ['10abc', /Укажите число ГБ/],
+    ['-2', /не меньше 0/],
+    ['1.2.3', /Укажите число ГБ/],
+    ['0.0000000001', /меньше 1 байта/],
+    ['99999999999', /больше поддерживаемого/],
+  ])('shows a validation error for %s instead of silently correcting input', async (value, message) => {
+    mockListMembers.mockResolvedValue({ items: [] });
+    const onClose = vi.fn();
+
+    render(<MyFilesLibraryDialog open library={{ id: 'lib-6x', name: 'Архив', quota_bytes: 10 * GIB }} onClose={onClose} />);
+
+    await screen.findByRole('dialog');
+    const quota = screen.getByTestId('my-files-library-quota');
+    fireEvent.change(quota, { target: { value } });
+
+    // Введённая строка хранится как есть — молчаливой правки нет.
+    expect(quota).toHaveValue(value);
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    const saveButton = screen.getByTestId('my-files-library-save');
+    expect(saveButton).toBeDisabled();
+    fireEvent.click(saveButton);
+    // Ни «quotaBytes: 0», ни исправленного значения не уходит.
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockSetMembers).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('clears the limit only when the user explicitly empties the field', async () => {
+    mockListMembers.mockResolvedValue({ items: [] });
+    mockUpdate.mockResolvedValue({ id: 'lib-6y', name: 'Архив', quota_bytes: 0 });
+    const onClose = vi.fn();
+
+    render(<MyFilesLibraryDialog open library={{ id: 'lib-6y', name: 'Архив', quota_bytes: 10 * GIB }} onClose={onClose} />);
+
+    await screen.findByRole('dialog');
+    const quota = screen.getByTestId('my-files-library-quota');
+    expect(quota).toHaveValue('10');
+    fireEvent.change(quota, { target: { value: '' } });
+
+    expect(screen.getByTestId('my-files-library-unsaved')).toHaveTextContent(/^Несохранённые изменения: 1$/);
+    fireEvent.click(screen.getByTestId('my-files-library-save'));
+
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledWith('lib-6y', { quotaBytes: 0 }));
+    expect(onClose).toHaveBeenCalledWith(true);
   });
 
   it('sends only setMembers when a member role changed', async () => {
