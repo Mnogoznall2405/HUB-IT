@@ -273,3 +273,4 @@ move_log.csv
 scan_result*.csv
 scan_s*.csv
 scan_all.csv
+pgdata/

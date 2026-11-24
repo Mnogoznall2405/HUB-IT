@@ -1455,6 +1455,15 @@ class AppAiBotConversation(AppBase):
     rolling_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     summary_until_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     context_reset_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # A8c2: LLM-quality summary checkpoint. ``rolling_summary`` is the
+    # prompt-facing text covering (context_reset_seq, summary_until_seq] — it
+    # may be a cheap head/tail fallback written synchronously by a run. The
+    # background upgrade folds messages into ``rolling_summary_llm`` in
+    # batches and promotes it into ``rolling_summary`` once the whole covered
+    # range is LLM-summarized. ``summary_llm_until_seq <= summary_until_seq``
+    # always; a smaller value means the tail was only fallback-compressed.
+    rolling_summary_llm: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    summary_llm_until_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     # A4: per-conversation enqueue counter, incremented under the FOR UPDATE
     # lock on this row -> server-side monotone FIFO key for ai_bot_runs.queue_seq.
     last_run_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
