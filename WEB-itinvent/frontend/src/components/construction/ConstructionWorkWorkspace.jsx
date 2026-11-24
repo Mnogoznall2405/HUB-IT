@@ -39,6 +39,12 @@ export default function ConstructionWorkWorkspace({ objectId, groupRef, active =
   const sequence = useRef(0);
   const dirty = planDirty || Object.keys(daily).length > 0 || Object.keys(attendance).length > 0 || Boolean(crewEditor);
   const leave = useConstructionWorkLeaveGuard(dirty || saving);
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const warn = (event) => { event.preventDefault(); event.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
   useEffect(() => { if (initialSection) setSection(initialSection); }, [initialSection]);
   useEffect(() => {
     if (!active || mode === 'details' || dirty) return undefined;
