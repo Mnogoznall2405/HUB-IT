@@ -2,7 +2,15 @@
 
 Обновлять при каждом checkpoint. Восстановление контекста: читать `PROGRESS.json` (все 324), этот файл, `MASTER_PLAN.md`, `DECISIONS.md`.
 
-## Текущее состояние (2026-11-24, checkpoint 4)
+## Текущее состояние (2026-11-25, checkpoint 5)
+- **FIXED 39** из 324 (OPEN 229, NEEDS_EVIDENCE 12, REJECTED 42, IN_PROGRESS 2: FE-0064 чужой PR #10 + FE-0159 residual).
+- **Networks карта** закрыта ранее: FE-0031/0140/0141/0142/0151 -> PR **#37** (ix/networks-map 43b356be). Остаток батча — только FE-0030 (декомпозиция Networks.jsx ~80 useState, отдельная задача).
+- **Account-батч 10/17**: PR **#38** (ix/account-guards, main-based): FE-0234/0235 (UsersTab notify+delete busy+aria), FE-0236 (SessionsTab chip+confirm), FE-0237 (cleanup/purge confirm), FE-0242 (schedules reset confirm), FE-0249 (mailbox delete wording), FE-0251 (avatar confirm, mailbox busy+валидация, AiBalanceCard threshold draft, QuotaEditor Enter+notify, syncFromAD confirm, savingAiBotId guards, fontScale NaN-guard), FE-0034 leftovers (aria-labels Mfu.jsx + MailTemplatesDialog.jsx), FE-0250 (test-only resolver удалён + mock-echo describe). Тесты: 73/73 account+Settings зелёные; WorkSchedules test — стаб window.confirm; preferences test — NaN-guard без клэмпа (1.25 легитимно).
+- **FE-0233** -> PR **#27** дополнен (4a10b583, на ветке delegates): частичный успех create/update user при падении updateTaskDelegates -> notifyInfo вместо полного провала.
+- **Account остаток (следующий кластер)**: seq-guards FE-0238 (FeedbackAdminSection loadMore race), FE-0240/0241 (ItinventReferencesTab lookups seq + openDelete race), FE-0247 (шесть loader-ов в useAccountSectionData), FE-0248 (MyFilesStats.load seq); draft-loss FE-0243 (EnvVariablesTab refresh wipe), FE-0244 (AdminLoginAllowlistSettingsCard draft), FE-0245 (password groups pseudo-autosave); perf FE-0019 (30 API calls on admin load, authSessions.js).
+- **Потом**: database 11, voice 9, chat 6, tasks 6, mail 5; финал — REMEDIATION_FINAL_REPORT.md.
+## Сессия 2 (checkpoint 4)
+
 
 - **FIXED 24** из 324 (OPEN 244, NEEDS_EVIDENCE 12, REJECTED 42, IN_PROGRESS 2: FE-0064 чужой PR #10 + FE-0159 residual).
 - **Сессия 2 (эта)**: FE-0154 → PR **#34** (CSV formula-injection); FE-0029/0145/0153 → PR **#35** (keydown-ref, mapBusy/pointBusy, confirm-ы); FE-0036/0146/0158/0159/0160/0143/0144 → PR **#36** (`fix/networks-sites-deadcode`, **stacked на #35** — мержить после него): site code/name из данных филиала, мёртвый код (ImportDialog.jsx, mobilePortEditorOpen, hasBranchDbChanges, focusPointId, pointEditMode-проп, containerWidth), canEdit-guard на MAC sync, сброс stale map image.
