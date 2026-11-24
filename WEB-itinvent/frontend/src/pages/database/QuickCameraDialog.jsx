@@ -19,6 +19,7 @@ export default function QuickCameraDialog({ open, onClose, onShot, label = '' })
   const [error, setError] = useState('');
   const [shots, setShots] = useState(0);
   const [flash, setFlash] = useState(false);
+  const flashTimerRef = useRef(null);
   const [busy, setBusy] = useState(false);
 
   const stopStream = useCallback(() => {
@@ -52,6 +53,8 @@ export default function QuickCameraDialog({ open, onClose, onShot, label = '' })
     return () => { cancelled = true; stopStream(); };
   }, [open, stopStream]);
 
+  useEffect(() => () => window.clearTimeout(flashTimerRef.current), []);
+
   const handleShot = async () => {
     const video = videoRef.current;
     if (!video || !ready || busy || !video.videoWidth) return;
@@ -68,7 +71,8 @@ export default function QuickCameraDialog({ open, onClose, onShot, label = '' })
       const file = new File([blob], `photo-${stamp}.jpg`, { type: 'image/jpeg', lastModified: stamp });
       setShots((count) => count + 1);
       setFlash(true);
-      setTimeout(() => setFlash(false), 120);
+      window.clearTimeout(flashTimerRef.current);
+      flashTimerRef.current = window.setTimeout(() => setFlash(false), 120);
       await onShot(file);
     } catch {
       setError('Не удалось сделать снимок. Попробуйте ещё раз.');
