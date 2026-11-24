@@ -572,6 +572,7 @@ function Login() {
 
   const usernameInputRef = useRef(null);
   const loginContentRef = useRef(null);
+  const loginChromeRef = useRef(null);
   const rememberDeviceContinueRef = useRef(null);
   const dismissRememberDevicePromptRef = useRef(null);
   const passwordSubmitLockRef = useRef(false);
@@ -1014,6 +1015,10 @@ function Login() {
       if (contentEl) {
         contentEl.setAttribute('inert', '');
       }
+      const chromeEl = loginChromeRef.current;
+      if (chromeEl) {
+        chromeEl.setAttribute('inert', '');
+      }
       const focusTarget = document.getElementById('trusted-device-label')
         || rememberDeviceContinueRef.current;
       focusTarget?.focus?.();
@@ -1028,6 +1033,9 @@ function Login() {
         document.body.style.overflow = previousOverflow;
         if (contentEl) {
           contentEl.removeAttribute('inert');
+        }
+        if (chromeEl) {
+          chromeEl.removeAttribute('inert');
         }
         document.removeEventListener('keydown', onKeyDown);
       };
@@ -2343,15 +2351,17 @@ function Login() {
         />
       ) : null}
 
-      <LoginVpnHintBanner
-        visible={vpnHintVisible}
-        onDismiss={dismissVpnHint}
-        reducedMotion={prefersReducedMotion}
-      />
-      <LoginTopNotice
-        notice={topNotice}
-        reducedMotion={prefersReducedMotion}
-      />
+      <div ref={loginChromeRef}>
+        <LoginVpnHintBanner
+          visible={vpnHintVisible}
+          onDismiss={dismissVpnHint}
+          reducedMotion={prefersReducedMotion}
+        />
+        <LoginTopNotice
+          notice={topNotice}
+          reducedMotion={prefersReducedMotion}
+        />
+      </div>
 
       <div
         ref={loginContentRef}
