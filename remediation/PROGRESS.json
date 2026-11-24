@@ -20,10 +20,10 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 215,
+    "OPEN": 210,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
-    "FIXED": 53,
+    "FIXED": 58,
     "IN_PROGRESS": 2
   },
   "issues": [
@@ -5444,7 +5444,7 @@
       "id": "FE-0313",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "database",
       "page": null,
@@ -5452,16 +5452,17 @@
       "lines": "155-229,39-44: хук без useEffect; seq инвалидируется только reset/новым poll",
       "title": "Database: transfer-job поллинг продолжается ~10 мин после unmount страницы",
       "related": [],
-      "pr": null,
+      "pr": 42,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | lifecycle/cancel cluster in PR#42",
+      "commit": "0d37e949"
     },
     {
       "id": "FE-0314",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "database",
       "page": null,
@@ -5469,16 +5470,17 @@
       "lines": "30-32",
       "title": "Database: setTimeout(300мс) setSelectedItems без cleanup — галочки на чужой контекст",
       "related": [],
-      "pr": null,
+      "pr": 42,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | lifecycle/cancel cluster in PR#42",
+      "commit": "0d37e949"
     },
     {
       "id": "FE-0315",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "database",
       "page": null,
@@ -5486,10 +5488,11 @@
       "lines": "184-200: 500мс таймер не очищается",
       "title": "Database: long-press таймер карточки без unmount-cleanup — «призрачное» выделение",
       "related": [],
-      "pr": null,
+      "pr": 42,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | lifecycle/cancel cluster in PR#42",
+      "commit": "0d37e949"
     },
     {
       "id": "FE-0316",
@@ -5564,7 +5567,7 @@
       "id": "FE-0320",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "database",
       "page": null,
@@ -5572,16 +5575,17 @@
       "lines": "86-141,162-197: loadWorkConsumables/loadCartridgeHistory и далее пишут после await",
       "title": "Database: загрузчики истории обслуживания без canceled-флага — чужая история при переоткрытии",
       "related": [],
-      "pr": null,
+      "pr": 42,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | lifecycle/cancel cluster in PR#42",
+      "commit": "0d37e949"
     },
     {
       "id": "FE-0321",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "database",
       "page": null,
@@ -5589,10 +5593,11 @@
       "lines": "242-289",
       "title": "Database: deep-link openLinkedConsumable без отмены — модалка не того deeplink",
       "related": [],
-      "pr": null,
+      "pr": 42,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | lifecycle/cancel cluster in PR#42",
+      "commit": "0d37e949"
     },
     {
       "id": "FE-0322",
