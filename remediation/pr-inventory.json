@@ -1,0 +1,803 @@
+[
+  {
+    "number": 23,
+    "title": "fix(auth): post-auth UI hold for 2FA backup codes and trusted-device prompt (FE-0197/0198/0199)",
+    "state": "open",
+    "head": "bcb41ca04edc84c93909b47df6812b63cd5bea7a",
+    "branch": "fix/auth-2fa-flow",
+    "base": "main",
+    "base_sha": "8c31457ca63a11b5cf4a02cbc998c080d55da7b3",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/App.jsx",
+      "WEB-itinvent/frontend/src/App.postAuthHold.test.jsx",
+      "WEB-itinvent/frontend/src/contexts/AuthContext.jsx",
+      "WEB-itinvent/frontend/src/pages/Login.jsx",
+      "WEB-itinvent/frontend/src/pages/Login.postAuthHold.test.jsx",
+      "WEB-itinvent/frontend/src/pages/Login.test.jsx"
+    ]
+  },
+  {
+    "number": 27,
+    "title": "fix(account): stop wiping task delegates after failed bulk load (FE-0232)",
+    "state": "open",
+    "head": "4a10b583275f59fbecbf63f0d621140ec638cb4d",
+    "branch": "fix/account-delegate-integrity",
+    "base": "main",
+    "base_sha": "609108f6974c76dc32b5faf153625db6a6716385",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/pages/account/admin/UsersTab.delegates.test.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/UsersTab.jsx",
+      "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.delegates.test.jsx",
+      "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js"
+    ]
+  },
+  {
+    "number": 28,
+    "title": "fix(account): department managers race writes roles to wrong dept (FE-0239)",
+    "state": "open",
+    "head": "2f80488b6d14073830a71d09c66c8e54a7edcfcc",
+    "branch": "fix/account-department-race",
+    "base": "main",
+    "base_sha": "609108f6974c76dc32b5faf153625db6a6716385",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/pages/account/admin/DepartmentsTab.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/DepartmentsTab.race.test.jsx"
+    ]
+  },
+  {
+    "number": 29,
+    "title": "fix(auth): coordinate refresh-token rotation across tabs (FE-0059/FE-0083)",
+    "state": "open",
+    "head": "faa065f17611945e908f787c14c226ec23a2b051",
+    "branch": "fix/auth-refresh-coordination",
+    "base": "main",
+    "base_sha": "609108f6974c76dc32b5faf153625db6a6716385",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/api/client.test.js",
+      "WEB-itinvent/frontend/src/api/http.js",
+      "WEB-itinvent/frontend/src/api/http.refreshCoordination.test.js"
+    ]
+  },
+  {
+    "number": 30,
+    "title": "fix(construction): warn on beforeunload for unsaved drafts (FE-0259)",
+    "state": "open",
+    "head": "5ff5c620a34b57fb24c574e685977080693e65f5",
+    "branch": "fix/construction-beforeunload",
+    "base": "main",
+    "base_sha": "609108f6974c76dc32b5faf153625db6a6716385",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.jsx",
+      "WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.test.jsx"
+    ]
+  },
+  {
+    "number": 31,
+    "title": "perf(networks): chunk mobile card lists on Equipment/Sockets tabs (FE-0023)",
+    "state": "open",
+    "head": "e4532f81bff26fb08dbbea165e185b1c0af36a14",
+    "branch": "fix/networks-mobile-render",
+    "base": "main",
+    "base_sha": "609108f6974c76dc32b5faf153625db6a6716385",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/networks/EquipmentTab.jsx",
+      "WEB-itinvent/frontend/src/components/networks/SocketsTab.jsx",
+      "WEB-itinvent/frontend/src/components/networks/mobileRenderWindow.test.jsx"
+    ]
+  },
+  {
+    "number": 32,
+    "title": "a11y(warehouse1c): keyboard access for clickable desktop rows/cells (FE-0022)",
+    "state": "open",
+    "head": "6785b0ed3b60759bc082424138531405488c34bf",
+    "branch": "fix/warehouse1c-keyboard",
+    "base": "main",
+    "base_sha": "609108f6974c76dc32b5faf153625db6a6716385",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/pages/Warehouse1C.jsx",
+      "WEB-itinvent/frontend/src/pages/Warehouse1C.keyboard.test.jsx"
+    ]
+  },
+  {
+    "number": 33,
+    "title": "a11y(networks): labels, keyboard access, valid card DOM (FE-0024/0035/0155/0156)",
+    "state": "open",
+    "head": "d947914f286dc0a9a28983e8ba124fa43da476a8",
+    "branch": "fix/networks-a11y",
+    "base": "main",
+    "base_sha": "609108f6974c76dc32b5faf153625db6a6716385",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/networks/BranchDialogs.jsx",
+      "WEB-itinvent/frontend/src/components/networks/BranchList.jsx",
+      "WEB-itinvent/frontend/src/components/networks/EquipmentTab.jsx",
+      "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx",
+      "WEB-itinvent/frontend/src/components/networks/SocketsTab.jsx",
+      "WEB-itinvent/frontend/src/components/networks/networksA11y.test.jsx",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx"
+    ]
+  },
+  {
+    "number": 34,
+    "title": "fix(networks): sanitize CSV export cells against formula injection (FE-0154)",
+    "state": "open",
+    "head": "75c7a0ddcbeaf9c7d919ad08bbd9a1624ec291fa",
+    "branch": "fix/networks-csv-sanitize",
+    "base": "main",
+    "base_sha": "609108f6974c76dc32b5faf153625db6a6716385",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/networks/EquipmentTab.jsx",
+      "WEB-itinvent/frontend/src/components/networks/csvExport.test.jsx"
+    ]
+  },
+  {
+    "number": 35,
+    "title": "fix(networks): busy-guards, delete confirms, stable keydown listener (FE-0029/0145/0153)",
+    "state": "open",
+    "head": "554601eb698f30e95b8c8cb05bb2e5f89a569958",
+    "branch": "fix/networks-correctness",
+    "base": "main",
+    "base_sha": "609108f6974c76dc32b5faf153625db6a6716385",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/networks/MapDialog.jsx",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx"
+    ]
+  },
+  {
+    "number": 36,
+    "title": "fix(networks): branch-aware map site, dead code, read-only sync, stale map (FE-0036/0143/0144/0146/0158/0159/0160)",
+    "state": "open",
+    "head": "18083545244e31b012a523c6ecc3885c723da683",
+    "branch": "fix/networks-sites-deadcode",
+    "base": "fix/networks-correctness",
+    "base_sha": "554601eb698f30e95b8c8cb05bb2e5f89a569958",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/networks/ImportDialog.jsx",
+      "WEB-itinvent/frontend/src/components/networks/useVirtualizedTableWindow.js",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx"
+    ]
+  },
+  {
+    "number": 37,
+    "title": "fix(networks): map pan clamp, gesture fixes, memoized markers, point-edit rollback (FE-0031/0140/0141/0142/0151)",
+    "state": "open",
+    "head": "43b356befba81b6ebcf43e2e5a56381d0e6a7ed0",
+    "branch": "fix/networks-map",
+    "base": "fix/networks-sites-deadcode",
+    "base_sha": "18083545244e31b012a523c6ecc3885c723da683",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/networks/InteractiveMapCanvas.jsx",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx"
+    ]
+  },
+  {
+    "number": 38,
+    "title": "fix(account): confirm+busy guards, validation feedback, draft-loss and a11y (FE-0034/0234/0235/0236/0237/0242/0249/0251)",
+    "state": "open",
+    "head": "92c7413ea437245665ddff0e939368f420ad4015",
+    "branch": "fix/account-guards",
+    "base": "main",
+    "base_sha": "c8a1d0578f8e8f848eafb53209b31157871fc072",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/mail/MailTemplatesDialog.jsx",
+      "WEB-itinvent/frontend/src/pages/Mfu.jsx",
+      "WEB-itinvent/frontend/src/pages/SettingsAiBots.test.jsx",
+      "WEB-itinvent/frontend/src/pages/account/accountConstants.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/AiBalanceCard.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/DepartmentsTab.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/MyFilesAdminTab.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/SessionsTab.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/UsersTab.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/WorkSchedulesAdminSection.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/WorkSchedulesAdminSection.test.jsx",
+      "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js",
+      "WEB-itinvent/frontend/src/pages/account/index.js",
+      "WEB-itinvent/frontend/src/pages/account/profile/ProfileTab.jsx"
+    ]
+  },
+  {
+    "number": 39,
+    "title": "fix(account): seq-guards for loaders and list pagination races (FE-0238/0240/0241/0247/0248)",
+    "state": "open",
+    "head": "c2c358e5cc2675afe8df021ed6946cfc72e07c59",
+    "branch": "fix/account-seq-guards",
+    "base": "fix/account-guards",
+    "base_sha": "92c7413ea437245665ddff0e939368f420ad4015",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/pages/account/admin/FeedbackAdminSection.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/ItinventReferencesTab.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/MyFilesAdminTab.jsx",
+      "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js"
+    ]
+  },
+  {
+    "number": 40,
+    "title": "fix(account): preserve unsaved drafts across refreshes + real password-group autosave (FE-0243/0244/0245)",
+    "state": "open",
+    "head": "1f9100e62ed9e0e0c0b8d105b13b0bd6efab740d",
+    "branch": "fix/account-draft-loss",
+    "base": "fix/account-seq-guards",
+    "base_sha": "c2c358e5cc2675afe8df021ed6946cfc72e07c59",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/pages/account/admin/AdminLoginAllowlistSettingsCard.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/EnvVariablesTab.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/TransferActReminderSettingsCard.jsx",
+      "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js"
+    ]
+  },
+  {
+    "number": 41,
+    "title": "fix(account): lazy-load AI bot runs only when diagnostics tab opens (FE-0019)",
+    "state": "open",
+    "head": "a0800f68ae014c60ea1e982a851569aa2cf1967b",
+    "branch": "fix/account-aibots-lazy",
+    "base": "fix/account-draft-loss",
+    "base_sha": "1f9100e62ed9e0e0c0b8d105b13b0bd6efab740d",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/pages/account/AccountWorkspace.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/AiBotsAdminSection.jsx",
+      "WEB-itinvent/frontend/src/pages/account/admin/BotSettingsWorkspace.jsx",
+      "WEB-itinvent/frontend/src/pages/account/hooks/useAccountSectionData.js"
+    ]
+  },
+  {
+    "number": 42,
+    "title": "fix(database): error surfaces, UUID fallback, dead prefetch, lifecycle cancels (FE-0293/0294/0295/0305/0313/0314/0315/0316/0320/0321)",
+    "state": "open",
+    "head": "0d37e94909976a1f908bcbc5e3277621f93682ad",
+    "branch": "fix/database-misc",
+    "base": "main",
+    "base_sha": "c8a1d0578f8e8f848eafb53209b31157871fc072",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/pages/database/ConsumableQrResultDialog.jsx",
+      "WEB-itinvent/frontend/src/pages/database/EmployeeEquipmentDialog.jsx",
+      "WEB-itinvent/frontend/src/pages/database/ModernEquipmentCard.jsx",
+      "WEB-itinvent/frontend/src/pages/database/TransferActionContent.jsx",
+      "WEB-itinvent/frontend/src/pages/database/useConsumableCard.js",
+      "WEB-itinvent/frontend/src/pages/database/useConsumableQrPrinterPicker.js",
+      "WEB-itinvent/frontend/src/pages/database/useDatabaseDbTransfer.js",
+      "WEB-itinvent/frontend/src/pages/database/useDatabaseListController.js",
+      "WEB-itinvent/frontend/src/pages/database/useDatabaseMaintenanceData.js",
+      "WEB-itinvent/frontend/src/pages/database/useDatabaseWorkspaceIdentity.js",
+      "WEB-itinvent/frontend/src/pages/database/useDiscrepanciesCopy.js",
+      "WEB-itinvent/frontend/src/pages/database/useTransferActJob.js"
+    ]
+  },
+  {
+    "number": 43,
+    "title": "fix(database): race guards + a11y/overflow/export polish",
+    "state": "open",
+    "head": "8095ee623dcb7ffaeb18e29e1b5963a9583431bc",
+    "branch": "fix/database-races",
+    "base": "fix/database-misc",
+    "base_sha": "0d37e94909976a1f908bcbc5e3277621f93682ad",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/pages/AdUsers.jsx",
+      "WEB-itinvent/frontend/src/pages/Login.jsx",
+      "WEB-itinvent/frontend/src/pages/database/QrScannerDialog.jsx",
+      "WEB-itinvent/frontend/src/pages/database/QrScannerDialog.test.jsx",
+      "WEB-itinvent/frontend/src/pages/database/useDatabaseEquipmentData.js",
+      "WEB-itinvent/frontend/src/pages/database/useDatabaseListController.js",
+      "WEB-itinvent/frontend/src/pages/database/useDatabaseRecentCards.js",
+      "WEB-itinvent/frontend/src/pages/database/useDatabaseSearch.js",
+      "WEB-itinvent/frontend/src/pages/database/useDatabaseSelection.js",
+      "WEB-itinvent/frontend/src/pages/database/useEmployeeEquipmentExport.js",
+      "WEB-itinvent/frontend/src/pages/database/useEquipmentActFilePreview.js",
+      "WEB-itinvent/frontend/src/pages/database/useTransferFormState.js",
+      "WEB-itinvent/frontend/src/theme/index.js",
+      "WEB-itinvent/frontend/src/theme/officeUiTokens.js"
+    ]
+  },
+  {
+    "number": 44,
+    "title": "fix(voice): 18 записей — busy/abort guards, клавиатура/a11y, perf",
+    "state": "open",
+    "head": "00a00bd39c8b5044795d40858207bd803343b94b",
+    "branch": "fix/voice-batch",
+    "base": "main",
+    "base_sha": "c8a1d0578f8e8f848eafb53209b31157871fc072",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceAssignmentsTab.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceGlossarySection.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceJobsSection.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceLabelCalibrationPanel.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceLabelEditor.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceLabelFacesPanel.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceLabelQualityPanel.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceLabelWaveform.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceLogViewer.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceMeetingDrawer.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceMeetingSummary.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceMeetingsSection.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceUploadDialog.jsx",
+      "WEB-itinvent/frontend/src/pages/voice-video/VoiceVideoPage.jsx"
+    ]
+  },
+  {
+    "number": 45,
+    "title": "fix(chat): 15 записей — pending reads, heartbeat degrade, busy/seq guards, a11y",
+    "state": "open",
+    "head": "ea9ca06b9ea8b596731e633b1564f24a11de0367",
+    "branch": "fix/chat-batch",
+    "base": "main",
+    "base_sha": "c8a1d0578f8e8f848eafb53209b31157871fc072",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/chat/ChatBubble.jsx",
+      "WEB-itinvent/frontend/src/components/chat/ChatContextPanel.jsx",
+      "WEB-itinvent/frontend/src/components/chat/ChatMessageContextMenu.jsx",
+      "WEB-itinvent/frontend/src/components/chat/ChatStickerMedia.jsx",
+      "WEB-itinvent/frontend/src/components/chat/TelegramStickersTab.jsx",
+      "WEB-itinvent/frontend/src/components/chat/chatRegressionFlows.test.jsx",
+      "WEB-itinvent/frontend/src/components/chat/useChatBubbleGestures.js",
+      "WEB-itinvent/frontend/src/components/chat/useChatComposerSending.js",
+      "WEB-itinvent/frontend/src/components/chat/useChatFileSending.js",
+      "WEB-itinvent/frontend/src/components/chat/useChatSocketEvents.js",
+      "WEB-itinvent/frontend/src/components/chat/useReadReceipts.js",
+      "WEB-itinvent/frontend/src/components/chat/useReadReceipts.test.jsx",
+      "WEB-itinvent/frontend/src/components/layout/ToastHistoryList.jsx",
+      "WEB-itinvent/frontend/src/lib/chatSocket.js",
+      "WEB-itinvent/frontend/src/pages/chat/useChatActiveConversationLifecycleEffects.js",
+      "WEB-itinvent/frontend/src/pages/chat/useChatThreadController.js"
+    ]
+  },
+  {
+    "number": 46,
+    "title": "fix(tasks): batch audit fixes (13 records)",
+    "state": "open",
+    "head": "46add41e44bd1ad4d763b4a200c314b3a80d7aef",
+    "branch": "fix/tasks-batch",
+    "base": "main",
+    "base_sha": "c8a1d0578f8e8f848eafb53209b31157871fc072",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/hub/TaskWorkspacePanel.jsx",
+      "WEB-itinvent/frontend/src/components/hub/tasks/TaskCanvasWorkspace.jsx",
+      "WEB-itinvent/frontend/src/components/hub/tasks/TasksCreateDialog.jsx",
+      "WEB-itinvent/frontend/src/pages/Tasks.test.jsx",
+      "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskCreateForm.js",
+      "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskDetails.jsx",
+      "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskEditForm.js",
+      "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskWorkflowActions.js",
+      "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskWorkflowActions.test.js",
+      "WEB-itinvent/frontend/src/pages/tasks/hooks/useTasksListQuery.js",
+      "WEB-itinvent/frontend/src/pages/tasks/hooks/useTasksListQuery.test.jsx",
+      "WEB-itinvent/frontend/src/pages/tasks/useTasksPageController.test.jsx"
+    ]
+  },
+  {
+    "number": 47,
+    "title": "fix(mail): batch audit fixes - draft lifecycle, preview fetch, read-state rollback, a11y (21 records)",
+    "state": "open",
+    "head": "5b3651fe063650d097fb1576c02a22f763917bfc",
+    "branch": "fix/mail-batch",
+    "base": "main",
+    "base_sha": "c8a1d0578f8e8f848eafb53209b31157871fc072",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/api/equipmentDirectories.js",
+      "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx",
+      "WEB-itinvent/frontend/src/components/mail/MailOfficeAttachmentInlinePreview.jsx",
+      "WEB-itinvent/frontend/src/components/mail/MailPreviewHeader.jsx",
+      "WEB-itinvent/frontend/src/components/mail/MailQuickReplyDraftField.jsx",
+      "WEB-itinvent/frontend/src/components/mail/mailErrorModel.js",
+      "WEB-itinvent/frontend/src/components/mail/mailErrorModel.test.js",
+      "WEB-itinvent/frontend/src/components/mail/mailHtmlContent.js",
+      "WEB-itinvent/frontend/src/components/mail/officeAttachmentPreview.js",
+      "WEB-itinvent/frontend/src/components/mail/useMailListDataController.js",
+      "WEB-itinvent/frontend/src/components/mail/useMailListItemActions.js",
+      "WEB-itinvent/frontend/src/components/mail/useMailMessageFileActions.js",
+      "WEB-itinvent/frontend/src/components/mail/useMailMessageFileActions.test.js",
+      "WEB-itinvent/frontend/src/components/mail/useMailReadMutations.js",
+      "WEB-itinvent/frontend/src/components/mail/useMailReadMutations.test.js",
+      "WEB-itinvent/frontend/src/components/mail/useMailSelectedPreviewActions.js",
+      "WEB-itinvent/frontend/src/components/tickets/TicketRequestList.jsx",
+      "WEB-itinvent/frontend/src/pages/Mail.jsx",
+      "WEB-itinvent/frontend/src/pages/database/useDatabaseLookups.js",
+      "WEB-itinvent/frontend/src/pages/database/useTransferEmail.js",
+      "WEB-itinvent/frontend/src/pages/database/useTransferFormState.js"
+    ]
+  },
+  {
+    "number": 48,
+    "title": "fix(auth-misc): storage guards, epoch reset, SPA nav, Login a11y/UX (15 records)",
+    "state": "open",
+    "head": "8c20ce0c8ad12d0fc8a2a09c6b26cd66ce4868d4",
+    "branch": "fix/auth-misc-batch",
+    "base": "main",
+    "base_sha": "c8a1d0578f8e8f848eafb53209b31157871fc072",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/api/http.js",
+      "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
+      "WEB-itinvent/frontend/src/contexts/AuthContext.jsx",
+      "WEB-itinvent/frontend/src/lib/aboutOnboarding.js",
+      "WEB-itinvent/frontend/src/lib/loginPagePresentation.js",
+      "WEB-itinvent/frontend/src/lib/safeStorage.js",
+      "WEB-itinvent/frontend/src/lib/useWebAuthnAvailability.js",
+      "WEB-itinvent/frontend/src/pages/Login.jsx",
+      "WEB-itinvent/frontend/src/pages/Login.test.jsx"
+    ]
+  },
+  {
+    "number": 49,
+    "title": "fix(my-files): upload-queue guard, bulk progress, deep-link and editor-session fixes (13 records)",
+    "state": "open",
+    "head": "e82dfd295ff043415a5830fa24e56a291c80c80a",
+    "branch": "fix/myfiles-batch",
+    "base": "main",
+    "base_sha": "926dd9f542d578a156ee7239549caf041d38da21",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/myFiles/MyFilesOfficeHistoryView.jsx",
+      "WEB-itinvent/frontend/src/components/myFiles/MyFilesVersionHistory.jsx",
+      "WEB-itinvent/frontend/src/components/myFiles/useMyFilesEditorSession.js",
+      "WEB-itinvent/frontend/src/pages/MyFiles.jsx",
+      "WEB-itinvent/frontend/src/pages/myFiles/useMyFilesUpload.js"
+    ]
+  },
+  {
+    "number": 50,
+    "title": "fix(scan-center): URL-synced tabs, abort coverage, busy guards",
+    "state": "open",
+    "head": "1998a488bc348f59a35b13f2e5864f512514504a",
+    "branch": "fix/scancenter-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/api/client.test.js",
+      "WEB-itinvent/frontend/src/api/scanAgents.js",
+      "WEB-itinvent/frontend/src/api/scanIncidents.js",
+      "WEB-itinvent/frontend/src/hooks/useScanIncidentInbox.js",
+      "WEB-itinvent/frontend/src/pages/ScanCenter.test.jsx",
+      "WEB-itinvent/frontend/src/pages/database/QuickCameraDialog.jsx",
+      "WEB-itinvent/frontend/src/pages/scan-center/HostDrawer.jsx",
+      "WEB-itinvent/frontend/src/pages/scan-center/IncidentsInboxSection.jsx",
+      "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterOverview.jsx",
+      "WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx"
+    ]
+  },
+  {
+    "number": 51,
+    "title": "fix(it-objects): abort signal, save-failure guard, confirm revokes",
+    "state": "open",
+    "head": "6d700d6b27e00effe0a00ac5ae03bb33fdbf451e",
+    "branch": "fix/itobjects-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/api/passwords.js",
+      "WEB-itinvent/frontend/src/components/itObjects/ObjectAccessMatrix.jsx",
+      "WEB-itinvent/frontend/src/components/itObjects/ObjectCreateDialog.jsx",
+      "WEB-itinvent/frontend/src/components/itObjects/ObjectNetmapTab.jsx",
+      "WEB-itinvent/frontend/src/components/itObjects/ObjectPasswordsPanel.jsx",
+      "WEB-itinvent/frontend/src/pages/ItObjectDetail.jsx",
+      "WEB-itinvent/frontend/src/pages/ItObjectDetail.test.jsx"
+    ]
+  },
+  {
+    "number": 52,
+    "title": "fix(layout): notification drawer semantics, badge accuracy, nav overlay",
+    "state": "open",
+    "head": "37317636126966edf9cbaaa686a9f42bfa7c8abf",
+    "branch": "fix/layout-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx"
+  },
+  {
+    "number": 53,
+    "title": "fix(networks): global key guards, edit-permission gates, race and virtual-scroll fixes",
+    "state": "open",
+    "head": "d9bf6dc1a9026dba613ee92ada57de75fbb36947",
+    "branch": "fix/networks-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/networks/useVirtualizedTableWindow.js",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx"
+    ]
+  },
+  {
+    "number": 54,
+    "title": "fix(feed): attachment stubs, draft autosave guards, comment poll/lookup fixes",
+    "state": "open",
+    "head": "ada99787268977b874fd7c7ef04a705203924029",
+    "branch": "fix/feed-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/feed/FeedCommentsPanel.jsx",
+      "WEB-itinvent/frontend/src/components/feed/FeedComposerDialog.jsx",
+      "WEB-itinvent/frontend/src/components/feed/FeedPostCard.jsx"
+    ]
+  },
+  {
+    "number": 55,
+    "title": "fix(statistics): SWR dedupe, seq-guarded refresh, blob error text, URL revoke delay",
+    "state": "open",
+    "head": "5459e652d3152faf4f9238a15c02a052db4fccad",
+    "branch": "fix/stats-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/pages/Statistics.jsx",
+      "WEB-itinvent/frontend/src/pages/statistics/PcRemainingDialog.jsx"
+    ]
+  },
+  {
+    "number": 56,
+    "title": "fix(shared-files): download error text, retry action, list cap, visible-only tick",
+    "state": "open",
+    "head": "671375ca9976747ec20d3691de894a8fdff5c5ea",
+    "branch": "fix/shared-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/pages/SharedFile.jsx",
+      "WEB-itinvent/frontend/src/pages/SharedFolder.jsx",
+      "WEB-itinvent/frontend/src/pages/SharedFolder.test.jsx"
+    ]
+  },
+  {
+    "number": 57,
+    "title": "fix(dashboard): keep cards on refresh error, dedupe alerts, in-dialog save error",
+    "state": "open",
+    "head": "9041657ad67681ccd8145bb07265c724b9efe065",
+    "branch": "fix/dash-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
+      "WEB-itinvent/frontend/src/pages/Dashboard.jsx",
+      "WEB-itinvent/frontend/src/pages/Dashboard.test.jsx"
+    ]
+  },
+  {
+    "number": 58,
+    "title": "fix(computers): audit fixes for Computers page and employee history panel",
+    "state": "open",
+    "head": "1e8e982afb1bf5eb3fb850f3874f92fbadeef470",
+    "branch": "fix/computers-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/pages/Computers.jsx",
+      "WEB-itinvent/frontend/src/pages/database/EmployeeHistoryPanel.jsx"
+    ]
+  },
+  {
+    "number": 59,
+    "title": "fix(swr-cache): guaranteed force refetch and stale revalidation delivery",
+    "state": "open",
+    "head": "400c482f57d8966429319153368958c3db32bf02",
+    "branch": "fix/swr-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/lib/swrCache.js",
+      "WEB-itinvent/frontend/src/lib/swrCache.test.js",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx"
+    ]
+  },
+  {
+    "number": 60,
+    "title": "fix(construction): audit fixes for work workspace and objects page",
+    "state": "open",
+    "head": "11e7cffc3a551daf15acef782fcb517f90321556",
+    "branch": "fix/constr-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/construction/ConstructionWorkWorkspace.jsx",
+      "WEB-itinvent/frontend/src/pages/ConstructionObjects.jsx"
+    ]
+  },
+  {
+    "number": 61,
+    "title": "fix(company-structure): audit fixes for structure page and absences panel",
+    "state": "open",
+    "head": "189bfe97adc506373892dc5974304d39b69584a0",
+    "branch": "fix/company-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/addressBook/AddressBookEntryDetail.jsx",
+      "WEB-itinvent/frontend/src/components/addressBook/useDocflowAbsenceMarks.js",
+      "WEB-itinvent/frontend/src/components/docflow/DocflowAbsencesPanel.jsx",
+      "WEB-itinvent/frontend/src/pages/AddressBook.jsx",
+      "WEB-itinvent/frontend/src/pages/CompanyStructure.jsx",
+      "WEB-itinvent/frontend/src/pages/company-structure/CompanyStructureFocus.jsx",
+      "WEB-itinvent/frontend/src/pages/company-structure/CompanyStructureOverview.jsx",
+      "WEB-itinvent/frontend/src/pages/company-structure/EmployeeDirectoryPanel.jsx"
+    ]
+  },
+  {
+    "number": 62,
+    "title": "fix(frontend): pwa/desktop batch — 6 findings",
+    "state": "open",
+    "head": "bdf76d63a5201c74c579f566093db910b4246e0d",
+    "branch": "fix/pwa-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/public/sw.js",
+      "WEB-itinvent/frontend/src/components/layout/DesktopProtocolHandoff.jsx",
+      "WEB-itinvent/frontend/src/components/layout/DesktopProtocolHandoff.test.jsx",
+      "WEB-itinvent/frontend/src/contexts/AuthContext.jsx",
+      "WEB-itinvent/frontend/src/lib/desktopBridge.js",
+      "WEB-itinvent/frontend/src/lib/pwaInstall.js"
+    ]
+  },
+  {
+    "number": 63,
+    "title": "fix(frontend): monitoring+docflow batch — 5 findings",
+    "state": "open",
+    "head": "1ca6a29cee4de6e89cb57074a797568efd07d9c0",
+    "branch": "fix/mon-docflow-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/itObjects/ObjectMonitoringDevicesDialog.jsx",
+      "WEB-itinvent/frontend/src/pages/Docflow.jsx",
+      "WEB-itinvent/frontend/src/pages/monitoring/monitoringFormat.js"
+    ]
+  },
+  {
+    "number": 64,
+    "title": "fix(frontend): kb+dlp batch — 6 findings",
+    "state": "open",
+    "head": "ef002c1069dcbaeb3539bb41237aff5f5cd1721c",
+    "branch": "fix/kb-dlp-batch",
+    "base": "main",
+    "base_sha": "9b94ddef92f7798dfefef092b256abf2e692eaef",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/dlp/BrowserVisitsPanel.jsx",
+      "WEB-itinvent/frontend/src/components/dlp/DlpHostHeader.jsx",
+      "WEB-itinvent/frontend/src/components/dlp/DlpHostList.jsx",
+      "WEB-itinvent/frontend/src/pages/FileEgress.jsx",
+      "WEB-itinvent/frontend/src/pages/KnowledgeBase.jsx",
+      "WEB-itinvent/frontend/src/pages/KnowledgeBase.test.jsx",
+      "WEB-itinvent/frontend/src/pages/help/KbHelpSection.jsx"
+    ]
+  },
+  {
+    "number": 65,
+    "title": "fix(frontend): misc batch — notifications, tasks, ad-users, drawers",
+    "state": "open",
+    "head": "8a9b62c350410e38fa09c4ef34822e62018454c8",
+    "branch": "fix/misc-batch",
+    "base": "main",
+    "base_sha": "926dd9f542d578a156ee7239549caf041d38da21",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/account/accountNavigationConfig.jsx",
+      "WEB-itinvent/frontend/src/components/account/accountNavigationConfig.test.jsx",
+      "WEB-itinvent/frontend/src/components/hub/TaskWorkspacePanel.jsx",
+      "WEB-itinvent/frontend/src/components/hub/tasks/TaskDetailChecklist.jsx",
+      "WEB-itinvent/frontend/src/contexts/NotificationContext.jsx",
+      "WEB-itinvent/frontend/src/lib/windowsNotifications.js",
+      "WEB-itinvent/frontend/src/pages/AdUsers.jsx",
+      "WEB-itinvent/frontend/src/pages/AdUsers.test.jsx",
+      "WEB-itinvent/frontend/src/pages/ItPurchaseRequests.jsx",
+      "WEB-itinvent/frontend/src/pages/Mfu.jsx",
+      "WEB-itinvent/frontend/src/pages/tasks/hooks/useTaskDetails.jsx"
+    ]
+  },
+  {
+    "number": 66,
+    "title": "fix(frontend): final polish — a11y, PWA updates, errors, mail inline, perf",
+    "state": "open",
+    "head": "cef65a20741f1890bd5a3ce9d15ff748b866f910",
+    "branch": "fix/final-polish",
+    "base": "main",
+    "base_sha": "926dd9f542d578a156ee7239549caf041d38da21",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/index.html",
+      "WEB-itinvent/frontend/public/robots.txt",
+      "WEB-itinvent/frontend/src/components/layout/MainLayout.jsx",
+      "WEB-itinvent/frontend/src/components/mail/MailComposeHost.jsx",
+      "WEB-itinvent/frontend/src/components/mail/MailComposeHost.test.jsx",
+      "WEB-itinvent/frontend/src/lib/clientErrorReporting.js",
+      "WEB-itinvent/frontend/src/lib/pwaInstall.js",
+      "WEB-itinvent/frontend/src/main.jsx",
+      "WEB-itinvent/frontend/src/pages/Warehouse1C.jsx"
+    ]
+  },
+  {
+    "number": 67,
+    "title": "fix(frontend): close NEEDS_EVIDENCE records (8 fixes)",
+    "state": "open",
+    "head": "5b9f7bd693e44a7f3ee7c1cbf52518ecd3fccc05",
+    "branch": "fix/evidence-batch",
+    "base": "main",
+    "base_sha": "926dd9f542d578a156ee7239549caf041d38da21",
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "files": [
+      "WEB-itinvent/frontend/src/components/mail/mailMessageFileActions.js",
+      "WEB-itinvent/frontend/src/components/myFiles/useMyFilesEditorSession.js",
+      "WEB-itinvent/frontend/src/pages/FileEgress.jsx",
+      "WEB-itinvent/frontend/src/pages/Networks.jsx",
+      "WEB-itinvent/frontend/src/pages/account/settings/notifications/ChatNotificationsSettingsCard.jsx",
+      "WEB-itinvent/frontend/src/pages/chat/AiMailActionEditDialog.jsx",
+      "WEB-itinvent/frontend/src/pages/monitoring/MonitoringDeviceGrid.jsx",
+      "WEB-itinvent/frontend/src/pages/tasks/TasksDialogsLayer.jsx"
+    ]
+  }
+]

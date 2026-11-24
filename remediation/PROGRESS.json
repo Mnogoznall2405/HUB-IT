@@ -20,12 +20,9 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 20,
-    "NEEDS_EVIDENCE": 12,
-    "REJECTED": 42,
-    "FIXED": 247,
-    "IN_PROGRESS": 2,
-    "updated": "2026-11-24"
+    "fixed": 270,
+    "rejected": 49,
+    "open": 5
   },
   "issues": [
     {
@@ -550,7 +547,7 @@
       "id": "FE-0030",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "REJECTED",
+      "status": "OPEN",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -561,7 +558,7 @@
       "pr": null,
       "tests": [],
       "review": null,
-      "notes": "Out-of-scope architectural refactor: god-component split (~80 useState / ~3300-line Networks.jsx) carries regression risk disproportionate to audit benefit; no functional defect identified"
+      "notes": "Deferred: god-component refactor is an architectural decision for the owner; confirmed finding stands (was REJECTED in PR #66 — scope-based rejection reclassified per integration review)"
     },
     {
       "id": "FE-0031",
@@ -697,7 +694,7 @@
       "id": "FE-0038",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "REJECTED",
+      "status": "OPEN",
       "priority": "P3",
       "batch": "build",
       "page": null,
@@ -708,13 +705,13 @@
       "tests": [],
       "review": null,
       "pr": 66,
-      "notes": "Design decision: Tailwind (Login/chat) vs MUI sx — full restyle out of remediation scope; both systems co-exist intentionally."
+      "notes": "Deferred: dual styling (Tailwind vs MUI) needs a product design decision; confirmed finding stands (was REJECTED in PR #66 — scope-based rejection reclassified per integration review)"
     },
     {
       "id": "FE-0039",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "REJECTED",
+      "status": "OPEN",
       "priority": "P3",
       "batch": "theme",
       "page": null,
@@ -725,7 +722,7 @@
       "tests": [],
       "review": null,
       "pr": 66,
-      "notes": "Design decision: light-only theme is the shipped product; dark theme per AGENTS.md is a feature request, not a bug."
+      "notes": "Deferred: dark theme requires product decision per AGENTS.md; confirmed finding stands (was REJECTED in PR #66 — scope-based rejection reclassified per integration review)"
     },
     {
       "id": "FE-0040",
@@ -1167,7 +1164,7 @@
       "id": "FE-0065",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "REJECTED",
+      "status": "OPEN",
       "priority": "P3",
       "batch": "infra",
       "page": null,
@@ -1178,7 +1175,7 @@
       "tests": [],
       "review": null,
       "pr": 66,
-      "notes": "CSP stays report-only: enforce requires staged rollout — drawio needs frame-src and violation reports must drain first; noted in web.config comment."
+      "notes": "Deferred: CSP enforce needs staged rollout (drawio frame-src); confirmed finding stands (was REJECTED in PR #66 — scope-based rejection reclassified per integration review)"
     },
     {
       "id": "FE-0066",
@@ -1378,7 +1375,7 @@
       "id": "FE-0077",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "REJECTED",
+      "status": "OPEN",
       "priority": "P3",
       "batch": "mail",
       "page": null,
@@ -1391,7 +1388,7 @@
       "tests": [],
       "review": null,
       "pr": 66,
-      "notes": "Backend perf (POST /drafts/upsert-multipart 7-26s) — outside frontend-audit remediation scope; needs backend profiling."
+      "notes": "Deferred: backend draft-upsert latency is outside frontend scope; confirmed finding stands (was REJECTED in PR #66 — scope-based rejection reclassified per integration review)"
     },
     {
       "id": "FE-0078",
