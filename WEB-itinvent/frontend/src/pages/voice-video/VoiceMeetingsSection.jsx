@@ -789,7 +789,7 @@ function VoiceMeetingsSection({
                   jobs={jobs}
                   isMobile={isMobile}
                   canManage={canManage}
-                  busy={busyBase === meeting.base_filename}
+                  busy={busyBase?.has?.(meeting.base_filename) ?? busyBase === meeting.base_filename}
                   onOpen={onOpen}
                   onDelete={onDelete}
                 />

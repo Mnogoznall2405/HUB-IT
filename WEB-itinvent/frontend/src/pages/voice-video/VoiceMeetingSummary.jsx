@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import rehypeSanitize from 'rehype-sanitize';
+import remarkGfm from 'remark-gfm';
 import {
   Alert,
   Chip,
@@ -170,7 +172,7 @@ function VoiceMeetingSummary({
     setError('');
     setSummary(null);
     voiceJobsAPI.getSummary(base, { signal: controller.signal })
-      .then(setSummary)
+      .then((data) => { if (!controller.signal.aborted) setSummary(data); })
       .catch((err) => {
         if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') return;
         setError('Не удалось загрузить сводку');
@@ -298,7 +300,7 @@ function VoiceMeetingSummary({
         <Box>
           <SectionTitle>Кратко</SectionTitle>
           <Box sx={markdownSx}>
-            <ReactMarkdown>{shownSummary}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>{shownSummary}</ReactMarkdown>
           </Box>
           {longSummary && (
             <Button size="small" onClick={() => setExpanded((v) => !v)} sx={{ mt: 0.5, px: 0.5 }}>

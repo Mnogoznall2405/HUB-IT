@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -48,6 +48,9 @@ function VoiceLabelQualityPanel({ projectId, auxJob, variants, dirty, savedVersi
   const [exclusive, setExclusive] = useState(false);
   const duplicateOfDraft = separator === 'none' && !exclusive;
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(null);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
   const variantJobActive = auxJob?.action === 'variant' && ['queued', 'processing'].includes(auxJob.status);
   const anyAuxActive = auxJob && ['queued', 'processing'].includes(auxJob.status);
 
@@ -55,11 +58,12 @@ function VoiceLabelQualityPanel({ projectId, auxJob, variants, dirty, savedVersi
     setLoading(true);
     setError('');
     try {
-      setMetrics(await voiceLabelingAPI.getMetrics(projectId));
+      const data = await voiceLabelingAPI.getMetrics(projectId);
+      if (mountedRef.current) setMetrics(data);
     } catch (err) {
-      setError(extractDetail(err, 'Не удалось посчитать метрики'));
+      if (mountedRef.current) setError(extractDetail(err, 'Не удалось посчитать метрики'));
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   }, [projectId]);
 
@@ -80,11 +84,15 @@ function VoiceLabelQualityPanel({ projectId, auxJob, variants, dirty, savedVersi
   };
 
   const removeVariant = async (name) => {
+    if (deleting) return;
+    setDeleting(name);
     setError('');
     try {
       onProjectUpdate(await voiceLabelingAPI.deleteVariant(projectId, name));
     } catch (err) {
       setError(extractDetail(err, 'Не удалось удалить вариант'));
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -146,7 +154,7 @@ function VoiceLabelQualityPanel({ projectId, auxJob, variants, dirty, savedVersi
                   <TableCell align="right">{m.hypothesis_speakers} / {m.reference_speakers}</TableCell>
                   <TableCell padding="none">
                     {m.name !== 'auto' && (
-                      <IconButton size="small" aria-label={`Удалить вариант ${m.title}`} onClick={() => removeVariant(m.name)}>
+                      <IconButton size="small" aria-label={`Удалить вариант ${m.title}`} disabled={deleting === m.name} onClick={() => removeVariant(m.name)}>
                         <DeleteOutlineOutlinedIcon fontSize="inherit" />
                       </IconButton>
                     )}

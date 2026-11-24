@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -75,16 +75,20 @@ function VoiceLabelCalibrationPanel({ projectId, auxJob, dirty, hasNamedSpeakers
   const running = calibrateJob && ['queued', 'processing'].includes(calibrateJob.status);
   const anyAuxActive = auxJob && ['queued', 'processing'].includes(auxJob.status);
 
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   const load = useCallback(async () => {
     try {
       const [own, all] = await Promise.all([
         voiceLabelingAPI.getCalibration(projectId),
         voiceLabelingAPI.getOverallCalibration(),
       ]);
+      if (!mountedRef.current) return;
       setData(own);
       setOverall(all);
     } catch (err) {
-      setError(extractDetail(err, 'Не удалось загрузить подбор порога'));
+      if (mountedRef.current) setError(extractDetail(err, 'Не удалось загрузить подбор порога'));
     }
   }, [projectId]);
 
