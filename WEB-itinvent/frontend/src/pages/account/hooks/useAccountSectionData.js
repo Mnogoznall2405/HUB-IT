@@ -377,18 +377,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
       const items = Array.isArray(data) ? data : [];
       if (!isCurrent()) return items;
       setAiBotsState(items);
-      const runsEntries = await Promise.all(
-        items.map(async (item) => {
-          try {
-            const runsResponse = await settingsAPI.getAiBotRuns(item.id);
-            return [item.id, Array.isArray(runsResponse?.items) ? runsResponse.items : []];
-          } catch {
-            return [item.id, []];
-          }
-        }),
-      );
-      if (!isCurrent()) return items;
-      setAiBotRunsById(Object.fromEntries(runsEntries));
+      setAiBotRunsById({});
       setBlockingError('');
       return items;
     } catch (error) {
@@ -400,6 +389,21 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
       if (isCurrent()) setAiBotsLoading(false);
     }
   }, [beginAiBots, canManageAiBots]);
+
+  const aiBotRunsSeqRef = useRef({});
+  const loadAiBotRuns = useCallback(async (botId) => {
+    if (botId == null || !canManageAiBots) return;
+    const seq = (aiBotRunsSeqRef.current[botId] || 0) + 1;
+    aiBotRunsSeqRef.current[botId] = seq;
+    try {
+      const response = await settingsAPI.getAiBotRuns(botId);
+      if (aiBotRunsSeqRef.current[botId] !== seq) return;
+      setAiBotRunsById((prev) => ({ ...prev, [botId]: Array.isArray(response?.items) ? response.items : [] }));
+    } catch {
+      if (aiBotRunsSeqRef.current[botId] !== seq) return;
+      setAiBotRunsById((prev) => ({ ...prev, [botId]: [] }));
+    }
+  }, [canManageAiBots]);
 
   const loadSecurity = useCallback(async () => {
     const isCurrent = beginSecurity();
@@ -1117,6 +1121,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     passwordGroupsLoading,
     passwordGroupsSaving,
     loadAiBotsAdmin,
+  loadAiBotRuns,
     loadEnv,
     loadPasswordGroups,
     handleCreateUser,
