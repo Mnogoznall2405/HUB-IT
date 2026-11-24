@@ -875,7 +875,7 @@
       "id": "FE-0048",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "api-client",
       "page": null,
@@ -883,10 +883,11 @@
       "lines": "114-117",
       "title": "swrCache: force-чтение присоединяется к уже идущему обычному запросу — «Обновить» не гарантирует fetch",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "400c482f",
+      "pr": 59
     },
     {
       "id": "FE-0049",
@@ -2697,7 +2698,7 @@
       "id": "FE-0150",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "api-client",
       "page": null,
@@ -2705,10 +2706,11 @@
       "lines": "151-165: stale-запись → фоновой fetch пишет только в кэш; loadBranchContext применяет только синхронный data",
       "title": "Networks/SWR: протухшие данные показываются бессрочно — фоновая ревалидация не доходит до UI",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "400c482f",
+      "pr": 59
     },
     {
       "id": "FE-0151",
