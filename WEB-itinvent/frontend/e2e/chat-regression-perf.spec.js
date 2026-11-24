@@ -15,7 +15,11 @@ const U1 = process.env.E2E_USERNAME || 'e2e_admin';
 const P1 = process.env.E2E_PASSWORD || 'e2e_admin_pass';
 const U2 = process.env.E2E_USERNAME2;
 const P2 = process.env.E2E_PASSWORD2 || process.env.E2E_PASSWORD;
-const RUNS = 20;
+const RUNS = Number(process.env.E2E_GATE_RUNS || 20);
+const COLD_RUNS = Number(process.env.E2E_GATE_COLD || 5);
+// E2E_GATE_GC=1: HeapProfiler.collectGarbage перед каждым измеренным
+// действием — убирает GC как скрытый конфаундер между ревизиями.
+const GATE_GC = process.env.E2E_GATE_GC === '1';
 const TOTAL_LONG = 1000;
 const CHAT_DB_PATH = fileURLToPath(new URL('./stack/.state/chat.sqlite3', import.meta.url));
 const SHOTS = 'e2e-artifacts/emoji-picker';
@@ -79,12 +83,29 @@ const installHook = () => {
 };
 
 // Готовность изнутри страницы: waitForFunction опрашивает каждый rAF,
-// возвращаем момент resolve из самой страницы.
+// возвращаем момент resolve из самой страницы. Таймаут → -1: вызывающий
+// код обязан учесть его явно (timeouts в отчёте), молча не выкидываем.
 const waitMark = async (page, predSrc, timeout = 8000) => {
   try {
     await page.waitForFunction(`(${predSrc})()`, undefined, { timeout, polling: 'raf' });
   } catch { return -1; }
   return page.evaluate(() => performance.now());
+};
+
+// Таймаут не исключается молча: сэмпл идёт в статистику цензурированным
+// значением = bound, плюс счётчик timeouts в сценарии.
+const pushSample = (arr, ready, t0, bound, bag) => {
+  if (ready < 0) { bag.timeouts = (bag.timeouts || 0) + 1; arr.push(bound); }
+  else arr.push(ready - t0);
+};
+
+// Cold-навигация: performance.now() сбрасывается на navigation → обе
+// отметки берём в Date.now() (единые часы до и после goto).
+const waitMarkDate = async (page, predSrc, timeout = 8000) => {
+  try {
+    await page.waitForFunction(`(${predSrc})()`, undefined, { timeout, polling: 'raf' });
+  } catch { return -1; }
+  return page.evaluate(() => Date.now());
 };
 
 const windowStats = (page, t0) => page.evaluate((t) => {
@@ -127,8 +148,7 @@ const openConvByTitle = async (page, title) => {
   await search.fill(title);
   const item = page.locator('[data-chat-active]', { hasText: title }).first();
   await item.click({ timeout: 15000 });
-  await search.fill('');
-  await page.waitForTimeout(200);
+  // Без слепого ожидания: waitMark сам подтвердит готовность в rAF.
 };
 
 // В overlay-режиме (узкая ширина) бэкдроп MUI перехватывает клик по
@@ -158,6 +178,10 @@ for (const vp of [{ width: 1440, height: 900 }, { width: 988, height: 838 }]) {
     const ctx = await browser.newContext({ viewport: vp });
     await ctx.addInitScript(installHook);
     const page = await ctx.newPage();
+    const gateCdp = await ctx.newCDPSession(page);
+    const gateGc = GATE_GC
+      ? async () => { try { await gateCdp.send('HeapProfiler.enable'); await gateCdp.send('HeapProfiler.collectGarbage'); } catch { /* noop */ } }
+      : async () => {};
     await apiLogin(page);
     await openChat(page);
 
@@ -221,30 +245,53 @@ for (const vp of [{ width: 1440, height: 900 }, { width: 988, height: 838 }]) {
     const convCount = await convItems.count();
 
     // ── conv_switch: переключение между диалогами ──
+    // Готовность = URL ?conversation=<id> целевой беседы + видимый
+    // контент именно этой переписки (сидовый marker conv-marker-N).
     {
+      const targets = switchConvIds.map((id, i) => ({ id, title: `PERF-switch-${i}`, marker: `conv-marker-${i}` }));
+      const useTargets = targets.length ? targets : [{ id: null, title: null, marker: null }];
       const samples = [];
+      const bag = { timeouts: 0 };
       for (let i = 0; i < RUNS; i += 1) {
-        const t0 = await clickConv(page, i + 1);
-        const ready = await waitMark(page, `() => document.querySelector('[data-testid="chat-composer-textarea"]') !== null`);
+        const t = useTargets[i % useTargets.length];
+        await gateGc();
+        const t0 = await page.evaluate(() => performance.now());
+        if (t.id) await openConvByTitle(page, t.title);
+        else await clickConv(page, i + 1);
+        const bound = 10000;
+        const ready = t.id
+          ? await waitMark(page, `() => location.search.includes('conversation=${t.id}') && document.querySelector('[data-testid="chat-thread-scroll"] [data-message-id]') && document.querySelector('[data-testid="chat-thread-scroll"]').innerText.includes(${JSON.stringify(t.marker)})`, bound)
+          : await waitMark(page, `() => document.querySelector('[data-testid="chat-thread-scroll"] [data-message-id]') !== null`, bound);
         const w = await windowStats(page, t0);
-        samples.push({ ms: ready - t0, ...w });
+        const ms = ready < 0 ? bound : ready - t0;
+        if (ready < 0) bag.timeouts += 1;
+        samples.push({ ms, ...w });
       }
-      res.scenarios.conv_switch = { ms: stats(samples.map((s) => s.ms)), commits: stats(samples.map((s) => s.commits)), longTasks: samples.reduce((a, s) => a + s.longTasks, 0) };
+      res.scenarios.conv_switch = { ms: stats(samples.map((s) => s.ms)), commits: stats(samples.map((s) => s.commits)), longTasks: samples.reduce((a, s) => a + s.longTasks, 0), timeouts: bag.timeouts };
       console.log(`[gate] conv_switch done ` + Date.now());
     }
 
-    // ── history_load: открыть диалог и дождаться пузыря ──
-    {
+    // ── history_load: контент переписки — marker внутри data-message-id ──
+    if (switchConvIds.length) {
+      const targets = switchConvIds.map((id, i) => ({ title: `PERF-switch-${i}`, marker: `conv-marker-${i}` }));
       const samples = [];
+      const bag = { timeouts: 0 };
       for (let i = 0; i < RUNS; i += 1) {
-        await clickConv(page, i % Math.max(1, convCount - 1));
+        const prev = targets[(i + 1) % targets.length];
+        const t = targets[i % targets.length];
+        await openConvByTitle(page, prev.title);
         await waitMark(page, `() => document.querySelector('[data-testid="chat-composer-textarea"]') !== null`);
-        const t0 = await clickConv(page, (i + 1) % Math.max(1, convCount - 1));
-        const ready = await waitMark(page, `() => document.querySelector('[data-testid="chat-thread-scroll"] [data-message-id], [data-testid="chat-thread-scroll"] .MuiTypography-body2') !== null`, 10000);
+        await gateGc();
+        const t0 = await page.evaluate(() => performance.now());
+        await openConvByTitle(page, t.title);
+        const bound = 10000;
+        const ready = await waitMark(page, `() => [...document.querySelectorAll('[data-testid="chat-thread-scroll"] [data-message-id]')].some((el) => el.innerText.includes(${JSON.stringify(t.marker)}))`, bound);
         const w = await windowStats(page, t0);
-        samples.push({ ms: ready - t0, ...w });
+        const ms = ready < 0 ? bound : ready - t0;
+        if (ready < 0) bag.timeouts += 1;
+        samples.push({ ms, ...w });
       }
-      res.scenarios.history_load = { ms: stats(samples.map((s) => s.ms)), commits: stats(samples.map((s) => s.commits)), longTasks: samples.reduce((a, s) => a + s.longTasks, 0) };
+      res.scenarios.history_load = { ms: stats(samples.map((s) => s.ms)), commits: stats(samples.map((s) => s.commits)), longTasks: samples.reduce((a, s) => a + s.longTasks, 0), timeouts: bag.timeouts };
       console.log(`[gate] history_load done ${Date.now()}`);
     }
 
@@ -301,41 +348,57 @@ for (const vp of [{ width: 1440, height: 900 }, { width: 988, height: 838 }]) {
         await emojiButton.click();
         const ready = await waitMark(page, `() => { const d = document.querySelector('[data-testid="chat-emoji-dock"]'); return d && d.getBoundingClientRect().width > 0 && d.querySelector('.EmojiPickerReact button.epr-emoji img')?.complete; }`);
         const w = await windowStats(page, t0);
-        pinned.push({ ms: ready - t0, ...w });
+        pinned.push({ ms: ready < 0 ? 8000 : ready - t0, timedOut: ready < 0, ...w });
         await closeDock(page);
         await expect(dock).toBeHidden({ timeout: 10000 });
       }
-      res.scenarios.emoji_pinned = { ms: stats(pinned.map((s) => s.ms)), commits: stats(pinned.map((s) => s.commits)), threadRendered: stats(pinned.map((s) => s.threadRendered)), longTasks: pinned.reduce((a, s) => a + s.longTasks, 0) };
+      res.scenarios.emoji_pinned = { ms: stats(pinned.map((s) => s.ms)), commits: stats(pinned.map((s) => s.commits)), threadRendered: stats(pinned.map((s) => s.threadRendered)), longTasks: pinned.reduce((a, s) => a + s.longTasks, 0), timeouts: pinned.filter((s) => s.timedOut).length };
 
       const hover = [];
+      const hoverBag = { timeouts: 0, missedEnter: 0 };
       for (let i = 0; i < RUNS; i += 1) {
-        await page.evaluate(() => { window.__perf.hoverT0 = null;
-          document.addEventListener('pointerenter', (e) => {
-            if (window.__perf.hoverT0 === null && e.target instanceof Element && e.target.closest('[data-testid="chat-composer-emoji-button"]')) window.__perf.hoverT0 = performance.now();
-          }, { capture: true, once: true }); });
+        // pointerenter не всплывает и не ходит capture — слушатель вешаем
+        // прямо на кнопку, t0 = момент события, без синтетики.
+        await page.evaluate(() => {
+          window.__perf.hoverT0 = null;
+          const btn = document.querySelector('[data-testid="chat-composer-emoji-button"]');
+          btn?.addEventListener('pointerenter', () => {
+            if (window.__perf.hoverT0 === null) window.__perf.hoverT0 = performance.now();
+          }, { once: true });
+        });
         await emojiButton.hover();
-        const ready = await waitMark(page, `() => { const p = document.querySelector('[data-testid="chat-desktop-emoji-panel"]'); return p && p.getBoundingClientRect().width > 0; }`, 6000);
-        const ht0 = await page.evaluate(() => window.__perf.hoverT0 ?? performance.now() - 140);
-        hover.push(ready - ht0);
+        const bound = 6000;
+        const ready = await waitMark(page, `() => { const p = document.querySelector('[data-testid="chat-desktop-emoji-panel"]'); return p && p.getBoundingClientRect().width > 0; }`, bound);
+        const ht0 = await page.evaluate(() => window.__perf.hoverT0);
+        // Без синтетического t0: pointerenter не пришёл → сэмпл недействителен,
+        // считаем отдельно (missedEnter), в статистику не подставляем.
+        if (ht0 === null || ready < 0) {
+          if (ready < 0) hoverBag.timeouts += 1;
+          if (ht0 === null) hoverBag.missedEnter += 1;
+        } else {
+          hover.push(ready - ht0);
+        }
         // Отвод курсора в левый верхний угол — поповер занимает низ-право,
         // точка (700,300) на 988px попадает внутрь и hover не снимается.
         await page.mouse.move(60, 60);
         await page.keyboard.press('Escape').catch(() => {});
         await expect(popover).toBeHidden({ timeout: 6000 });
       }
-      res.scenarios.emoji_hover_ms = stats(hover);
+      res.scenarios.emoji_hover_ms = { ...stats(hover), timeouts: hoverBag.timeouts, missedEnter: hoverBag.missedEnter };
 
       const tabs = { to: [], back: [] };
       await emojiButton.click();
       await expect(dock.locator('.EmojiPickerReact button.epr-emoji').first()).toBeVisible({ timeout: 20000 });
       for (let i = 0; i < RUNS; i += 1) {
+        // Готовность вкладок = активная вкладка (aria-selected) + видимое
+        // содержимое (rect>0), а не наличие скрытого keep-alive DOM.
         const t0 = await page.evaluate(() => performance.now());
         await dock.getByRole('tab', { name: 'Стикеры' }).click();
-        const r1 = await waitMark(page, `() => { const d = document.querySelector('[data-testid="chat-emoji-dock"]'); return d && (d.querySelector('[data-sticker-section]') || d.querySelector('.MuiAlert-root')); }`, 8000);
+        const r1 = await waitMark(page, `() => { const d = document.querySelector('[data-testid="chat-emoji-dock"]'); if (!d) return false; const tab = d.querySelector('[role="tab"][aria-selected="true"]'); const s = d.querySelector('[data-sticker-section]') || d.querySelector('.MuiAlert-root'); return tab && /стикер/i.test(tab.textContent) && s && s.getBoundingClientRect().width > 0; }`, 8000);
         tabs.to.push(r1 - t0);
         const t1 = await page.evaluate(() => performance.now());
         await dock.getByRole('tab', { name: 'Эмодзи' }).click();
-        const r2 = await waitMark(page, `() => { const d = document.querySelector('[data-testid="chat-emoji-dock"]'); return d && d.querySelector('.EmojiPickerReact button.epr-emoji'); }`, 8000);
+        const r2 = await waitMark(page, `() => { const d = document.querySelector('[data-testid="chat-emoji-dock"]'); if (!d) return false; const tab = d.querySelector('[role="tab"][aria-selected="true"]'); const s = d.querySelector('.EmojiPickerReact button.epr-emoji'); return tab && /эмодзи/i.test(tab.textContent) && s && s.getBoundingClientRect().width > 0; }`, 8000);
         tabs.back.push(r2 - t1);
       }
       res.scenarios.tab_to_stickers_ms = stats(tabs.to);
@@ -348,15 +411,18 @@ for (const vp of [{ width: 1440, height: 900 }, { width: 988, height: 838 }]) {
     // ── send: ввод + Enter → пузырь ──
     {
       const samples = [];
+      let sendTimeouts = 0;
       for (let i = 0; i < RUNS; i += 1) {
         const text = `perf-send-${i}-${Date.now().toString(36)}`;
         await composer.fill(text);
         const t0 = await page.evaluate(() => performance.now());
         await page.keyboard.press('Enter');
-        const ready = await waitMark(page, `() => [...document.querySelectorAll('[data-testid="chat-thread-scroll"] [data-message-id]')].some((el) => el.textContent.includes(${JSON.stringify(text)}))`, 10000);
-        samples.push(ready - t0);
+        const bound = 10000;
+        const ready = await waitMark(page, `() => [...document.querySelectorAll('[data-testid="chat-thread-scroll"] [data-message-id]')].some((el) => el.textContent.includes(${JSON.stringify(text)}))`, bound);
+        samples.push(ready < 0 ? bound : ready - t0);
+        if (ready < 0) sendTimeouts += 1;
       }
-      res.scenarios.send_echo_ms = stats(samples);
+      res.scenarios.send_echo_ms = { ...stats(samples), timeouts: sendTimeouts };
       console.log(`[gate] send done ${Date.now()}`);
     }
 
@@ -374,48 +440,66 @@ for (const vp of [{ width: 1440, height: 900 }, { width: 988, height: 838 }]) {
       await page.goto(`/chat?conversation=${switchConvIds[0] || target.id}`);
       await waitMark(page, `() => document.querySelector('[data-testid="chat-composer-textarea"]') !== null`, 10000);
       const samples = [];
+      let recvTimeouts = 0;
       for (let i = 0; i < Math.min(RUNS, 10); i += 1) {
         const text = `perf-recv-${i}-${Date.now().toString(36)}`;
         const t0 = await page.evaluate(() => performance.now());
         const resp = await page2.request.post(`/api/v1/chat/conversations/${target.id}/messages`, { data: { body: text, body_format: 'plain' } });
         if (!resp.ok()) break;
-        const ready = await waitMark(page, `() => document.body.innerText.includes(${JSON.stringify(text)})`, 8000);
-        samples.push(ready - t0);
+        const bound = 8000;
+        const ready = await waitMark(page, `() => document.body.innerText.includes(${JSON.stringify(text)})`, bound);
+        samples.push(ready < 0 ? bound : ready - t0);
+        if (ready < 0) recvTimeouts += 1;
       }
       await ctx2.close();
-      res.scenarios.receive_ms = stats(samples);
+      res.scenarios.receive_ms = { ...stats(samples), timeouts: recvTimeouts };
       console.log(`[gate] receive done ${Date.now()}`);
     }
 
-    // ── memory: 100 циклов open/close ──
+    // ── memory: серии open/close с контролируемым GC через CDP ──
     {
       const heap = () => page.evaluate(() => Math.round((performance.memory?.usedJSHeapSize || 0) / 1048576));
+      const cdp = await ctx.newCDPSession(page);
+      const gc = async () => {
+        try { await cdp.send('HeapProfiler.enable'); await cdp.send('HeapProfiler.collectGarbage'); } catch { /* noop */ }
+      };
       for (let i = 0; i < 10; i += 1) {
         await emojiButton.click(); await expect(dock).toBeVisible(); await closeDock(page); await expect(dock).toBeHidden();
       }
-      const before = await heap();
-      for (let i = 0; i < 100; i += 1) {
-        await emojiButton.click(); await expect(dock).toBeVisible({ timeout: 10000 }); await closeDock(page); await expect(dock).toBeHidden({ timeout: 10000 });
+      const series = [];
+      for (let s = 0; s < 3; s += 1) {
+        await gc();
+        const before = await heap();
+        for (let i = 0; i < 50; i += 1) {
+          await emojiButton.click(); await expect(dock).toBeVisible({ timeout: 10000 }); await closeDock(page); await expect(dock).toBeHidden({ timeout: 10000 });
+        }
+        await gc();
+        const after = await heap();
+        series.push({ before, after, delta: after - before });
       }
-      const after = await heap();
-      res.scenarios.memory_100_cycles_mb = { before, after, delta: after - before };
+      res.scenarios.memory_cycles_mb = { cyclesPerSeries: 50, series, meanDelta: Math.round(series.reduce((a, x) => a + x.delta, 0) / series.length) };
       console.log(`[gate] memory done ${Date.now()}`);
     }
 
     // ── chat_open cold: свежий контекст ──
     {
       const samples = [];
-      for (let i = 0; i < 5; i += 1) {
+      let coldTimeouts = 0;
+      for (let i = 0; i < COLD_RUNS; i += 1) {
         const c2 = await browser.newContext({ viewport: vp });
         const p2 = await c2.newPage();
         await apiLogin(p2);
-        const t0 = await p2.evaluate(() => performance.now());
+        // Единые часы Date.now(): performance.now() сбрасывается при
+        // навигации — t0 до goto и отметка после были бы из разных шкал.
+        const t0 = Date.now();
         await p2.goto('/chat');
-        const ready = await waitMark(p2, `() => document.querySelector('[data-testid="chat-sidebar-list-scroll"]') && document.querySelector('[data-chat-active]')`, 20000);
-        samples.push(ready - t0);
+        const bound = 20000;
+        const ready = await waitMarkDate(p2, `() => document.querySelector('[data-testid="chat-sidebar-list-scroll"]') && document.querySelector('[data-chat-active]')`, bound);
+        if (ready < 0) { coldTimeouts += 1; samples.push(bound); }
+        else samples.push(ready - t0);
         await c2.close();
       }
-      res.scenarios.chat_open_cold_ms = stats(samples);
+      res.scenarios.chat_open_cold_ms = { ...stats(samples), timeouts: coldTimeouts };
       console.log(`[gate] cold done ${Date.now()}`);
     }
 

@@ -551,6 +551,20 @@ test('phase2 attribution: rendered components, list churn, layout cost', async (
   const wClosed = await threadWidth();
   await expect(dock).toBeHidden();
 
+  // ── Positive control: отправка сообщения обязана дать апдейт
+  // ChatMessageList в profiles. Пустой profiles = сборка не profiling,
+  // и тогда «actual=0» в остальных сценариях ничего не доказывает.
+  await page.evaluate(() => { window.__perf.profiles = {}; });
+  const ctrlMsgCount = await page.locator('[data-message-id]').count();
+  const ta = page.getByTestId('chat-composer-textarea');
+  await ta.fill(`perf-control-${Date.now()}`);
+  await ta.press('Enter');
+  await expect(page.locator('[data-message-id]')).toHaveCount(ctrlMsgCount + 1, { timeout: 15_000 });
+  await page.waitForTimeout(300);
+  const positiveControl = await page.evaluate(() => window.__perf.profiles || {});
+  const controlList = positiveControl['chat-message-list'] || { mount: 0, update: 0 };
+  const controlOk = (controlList.mount + controlList.update) > 0;
+
   const summarize = (list) => ({
     commits: stats(list.map((x) => x.commitCount)),
     renderedComponents: stats(list.map((x) => x.renderedComponents)),
@@ -576,10 +590,12 @@ test('phase2 attribution: rendered components, list churn, layout cost', async (
     },
     threadWidthClosed: wClosed,
     threadWidthOpen: wOpen,
+    positiveControl: { profiles: positiveControl, msgListCalls: controlList, ok: controlOk },
     traces: { pinnedOpen: attr.tracePinnedOpen, tabSwitch: attr.traceTabSwitch },
     measuredAt: new Date().toISOString(),
   };
   writeFileSync(`${SHOTS}/perf-phase2-attribution.json`, JSON.stringify(report2, null, 2));
   console.log('phase2 attribution:', JSON.stringify(report2, null, 2));
   expect(attr.pinnedOpen.length).toBe(ATTR_RUNS);
+  expect(controlOk).toBe(true);
 });

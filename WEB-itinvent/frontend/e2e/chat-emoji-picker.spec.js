@@ -72,6 +72,40 @@ async function openConversation(page, { title } = {}) {
   await expect(page.getByTestId('chat-composer-textarea')).toBeVisible();
 }
 
+// Скриншот только после реального декода картинок: кнопки epr-emoji в DOM
+// до загрузки img — кадр по «visible» получался пустым. Критерий: контейнер
+// имеет геометрию и ≥N img complete+naturalWidth>0+видимый rect.
+const waitDecodedImages = async (page, sel, minCount) => {
+  try {
+    await page.waitForFunction(({ s, n }) => {
+      const c = document.querySelector(s);
+      if (!c) return false;
+      const rect = c.getBoundingClientRect();
+      if (rect.width < 50 || rect.height < 50) return false;
+      const ok = [...c.querySelectorAll('img')].filter(
+        (i) => i.complete && i.naturalWidth > 0 && i.getBoundingClientRect().width > 0,
+      );
+      return ok.length >= n;
+    }, { s: sel, n: minCount }, { timeout: 25_000, polling: 'raf' });
+  } catch (e) {
+    const diag = await page.evaluate((s) => {
+      const c = document.querySelector(s);
+      if (!c) return { found: false };
+      const imgs = [...c.querySelectorAll('img')];
+      return {
+        found: true,
+        rect: c.getBoundingClientRect().toJSON?.() || null,
+        totalImgs: imgs.length,
+        decoded: imgs.filter((i) => i.complete && i.naturalWidth > 0).length,
+        sections: document.querySelectorAll('[data-sticker-section]').length,
+        html: c.outerHTML.slice(0, 600),
+      };
+    }, sel).catch(() => null);
+    console.log(`[waitDecodedImages] FAIL sel=${sel} diag=${JSON.stringify(diag)}`);
+    throw e;
+  }
+};
+
 test('hover opens preview, leaving closes it; click pins the right dock', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openConversation(page);
@@ -89,6 +123,8 @@ test('hover opens preview, leaving closes it; click pins the right dock', async 
   // скриншоте пустая панель.
   await expect(popover.locator('.EmojiPickerReact button.epr-emoji').first())
     .toBeVisible({ timeout: 20_000 });
+  // Кадр — только после декода ≥20 img сетки (иначе PNG пустой).
+  await waitDecodedImages(page, '[data-testid="chat-desktop-emoji-panel"]', 20);
   await page.screenshot({ path: `${SHOTS}/emoji-hover-preview.png` });
 
   // Курсор уходит в панель — не закрывается; уходит совсем — закрывается.
@@ -595,8 +631,63 @@ test('pinned dock and overlay render correctly in the dark theme', async ({ page
       await page.getByTestId('chat-composer-emoji-button').click();
     }
     await expect(dock).toHaveAttribute('data-layout', 'overlay');
+    await waitDecodedImages(page, '[data-testid="chat-emoji-dock"]', 20);
     await page.screenshot({ path: `${SHOTS}/emoji-dock-overlay-dark.png` });
   } finally {
     await patchTheme('system');
   }
+});
+
+test('grid screenshots: decoded emoji and stickers in light and dark', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  mkdirSync(SHOTS, { recursive: true });
+
+  const shootGrid = async (tag) => {
+    const dock = page.getByTestId('chat-emoji-dock');
+    const btn = page.getByTestId('chat-composer-emoji-button');
+    if (!(await dock.isVisible().catch(() => false))) await btn.click();
+    await expect(dock).toBeVisible();
+    await waitDecodedImages(page, '[data-testid="chat-emoji-dock"]', 20);
+    await page.screenshot({ path: `${SHOTS}/emoji-grid-${tag}.png` });
+    await dock.getByRole('tab', { name: 'Стикеры' }).click();
+    // «Недавние» по умолчанию пусты — открываем сидовый набор; стикеры —
+    // lazy-img, поэтому ждём ≥2 реально декодированных в видимой зоне.
+    // Ждём сам список/ошибку/пустоту — как в рабочем тесте кэша паков.
+    await expect(
+      dock.locator('[data-testid="chat-sticker-sections-scroll"], .MuiAlert-root, :text("Добавьте первый набор")').first(),
+    ).toBeVisible({ timeout: 15_000 });
+    const packTab = dock.getByRole('tab', { name: /E2E|Pack|набор/i }).first();
+    if (await packTab.count()) await packTab.click();
+    await waitDecodedImages(page, '[data-testid="chat-sticker-sections-scroll"]', 2);
+    await page.screenshot({ path: `${SHOTS}/sticker-grid-${tag}.png` });
+    await dock.getByRole('tab', { name: 'Эмодзи' }).click();
+    await page.keyboard.press('Escape');
+    await expect(dock).toBeHidden({ timeout: 10_000 });
+  };
+
+  await openConversation(page);
+  await shootGrid('light');
+
+  await page.evaluate(() => {
+    const key = 'web_preferences_cache';
+    const raw = window.localStorage.getItem(key);
+    const prefs = raw ? JSON.parse(raw) : {};
+    prefs.theme_mode = 'dark';
+    window.localStorage.setItem(key, JSON.stringify(prefs));
+  });
+  await page.reload();
+  await expect
+    .poll(() => page.evaluate(() => window.getComputedStyle(document.body).backgroundColor), { timeout: 20_000 })
+    .toBe('rgb(15, 17, 21)');
+  await openConversation(page);
+  await shootGrid('dark');
+
+  await page.evaluate(() => {
+    const key = 'web_preferences_cache';
+    const raw = window.localStorage.getItem(key);
+    const prefs = raw ? JSON.parse(raw) : {};
+    prefs.theme_mode = 'system';
+    window.localStorage.setItem(key, JSON.stringify(prefs));
+  });
 });

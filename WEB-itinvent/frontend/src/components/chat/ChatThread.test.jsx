@@ -17,6 +17,23 @@ import {
   shouldSuppressNativeMessageGesture,
 } from './chatBubbleGesturePolicy';
 import { buildChatUiTokens } from './chatUiTokens';
+import { ChatEmojiUiContext } from './ChatEmojiUiContext';
+
+// Phase 2: состояние emoji-панели живёт в ChatEmojiUiContext (см.
+// useChatThreadSection.emojiUiValue). Тесты, рендерящие ChatThread напрямую,
+// оборачивают его провайдером с тем же контрактом.
+const buildEmojiUi = (over = {}) => ({
+  emojiPickerOpen: true,
+  mobileEmojiPickerOpen: false,
+  emojiPanelMode: 'popover',
+  onOpenEmojiPicker: () => {},
+  onCloseEmojiPicker: () => {},
+  onEmojiHoverStart: () => {},
+  onEmojiHoverEnd: () => {},
+  onInsertEmoji: () => {},
+  onSendSticker: () => {},
+  ...over,
+});
 
 vi.mock('emoji-picker-react', () => ({ default: () => null }));
 vi.mock('../../api/chatConfig', () => ({ getChatConfigCached: () => Promise.resolve({ scheduled_messages_enabled: false }) }));
@@ -2252,15 +2269,17 @@ describe('ChatThread composer', () => {
     const onOpenEmojiPicker = vi.fn();
 
     renderWithTheme(
-      <ChatThread
-        {...buildThreadProps({
-          isMobile: false,
-          compactMobile: false,
-          desktopEmojiPickerOpen: true,
-          onCloseEmojiPicker,
-          onOpenEmojiPicker,
-        })}
-      />,
+      <ChatEmojiUiContext.Provider value={buildEmojiUi({ onCloseEmojiPicker, onOpenEmojiPicker })}>
+        <ChatThread
+          {...buildThreadProps({
+            isMobile: false,
+            compactMobile: false,
+            desktopEmojiPickerOpen: true,
+            onCloseEmojiPicker,
+            onOpenEmojiPicker,
+          })}
+        />
+      </ChatEmojiUiContext.Provider>,
     );
 
     const panel = await screen.findByTestId('chat-desktop-emoji-panel');
@@ -2303,7 +2322,11 @@ describe('ChatThread composer', () => {
       unobserve() {}
     };
     try {
-      const { unmount } = renderWithTheme(<ChatThread {...buildThreadProps({ isMobile: false, compactMobile: false, desktopEmojiPickerOpen: true })} />);
+      const { unmount } = renderWithTheme(
+        <ChatEmojiUiContext.Provider value={buildEmojiUi()}>
+          <ChatThread {...buildThreadProps({ isMobile: false, compactMobile: false, desktopEmojiPickerOpen: true })} />
+        </ChatEmojiUiContext.Provider>,
+      );
       const root = screen.getByTestId('chat-thread-root');
       const panel = screen.getByTestId('chat-desktop-emoji-panel');
       expect(panel).toHaveAttribute('data-layout', 'popover');
