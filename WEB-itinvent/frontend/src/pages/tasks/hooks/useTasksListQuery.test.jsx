@@ -41,6 +41,7 @@ function installMatchMedia() {
 describe('useTasksListQuery view-model gating', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearSWRCache();
     installMatchMedia();
     mockGetTasks.mockResolvedValue({ items: TASKS, total: 3, meta: {} });
     hubTasksAPI.getTasks = mockGetTasks;

@@ -545,6 +545,11 @@ export default function TaskCanvasWorkspace({ task, theme }) {
     if (eventType === 'task_canvas.error') {
       const code = String(payload?.code || '').trim();
       if (code === 'forbidden') {
+        // Pending edits can never be persisted without can_edit — drop them so
+        // the UI does not keep showing "unsaved changes" the user cannot save.
+        pendingSceneRef.current = null;
+        clearSaveTimer();
+        setSaveState('idle');
         setCanvas((previous) => (previous ? { ...previous, can_edit: false } : previous));
       }
       if (code !== 'rate_limited') {
@@ -761,7 +766,7 @@ export default function TaskCanvasWorkspace({ task, theme }) {
               size="small"
               variant="contained"
               startIcon={<SaveRoundedIcon />}
-              disabled={saveState === 'saving' || !pendingSceneRef.current}
+              disabled={saveState !== 'dirty' && saveState !== 'error'}
               onClick={() => void savePending()}
               sx={{ minHeight: 40, textTransform: 'none', fontWeight: 700, boxShadow: 'none' }}
             >

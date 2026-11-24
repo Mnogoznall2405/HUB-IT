@@ -36,6 +36,7 @@ import {
 } from '../../lib/hubTaskIntegrations';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
 import { buildTaskDetailPath } from '../../lib/taskNavigation';
+import { useConfirmDialog } from '../feedback/ConfirmDialogProvider';
 import MarkdownRenderer from './MarkdownRenderer';
 import TaskChecklist from './TaskChecklist';
 import { TaskEditDialog, TaskReopenDialog, TaskReviewDialog, TaskSubmitDialog, TaskCloseDialog } from './TaskActionDialogs';
@@ -163,6 +164,7 @@ function TaskWorkspacePanel({
   const [referencesLoading, setReferencesLoading] = useState(false);
   const [detailTab, setDetailTab] = useState('overview');
   const [moreMenuAnchor, setMoreMenuAnchor] = useState(null);
+  const { confirm: confirmDialog } = useConfirmDialog();
   const attachmentPreview = useTaskAttachmentPreview();
   const loadRequestIdRef = useRef(0);
   const onTaskUpdatedRef = useRef(onTaskUpdated);
@@ -353,7 +355,12 @@ function TaskWorkspacePanel({
 
   const handleDeleteTask = async () => {
     if (!canDeleteTask || busyAction) return;
-    if (!window.confirm(`Удалить задачу «${task?.title || 'Без названия'}»?`)) return;
+    const confirmed = await confirmDialog({
+      title: `Удалить задачу «${task?.title || 'Без названия'}»?`,
+      confirmLabel: 'Удалить',
+      destructive: true,
+    });
+    if (!confirmed) return;
     setBusyAction('delete');
     setError('');
     try {

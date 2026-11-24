@@ -6,6 +6,7 @@ import useTasksPageController from './useTasksPageController';
 import hubTasksAPI from '../../api/hubTasks';
 import hubTaskSupportAPI from '../../api/hubTaskSupport';
 import { departmentsAPI } from '../../api/departments';
+import { clearSWRCache } from '../../lib/swrCache';
 
 vi.mock('../../api/hubTasks', () => ({
   default: {
@@ -106,6 +107,7 @@ function installMatchMedia() {
 describe('useTasksPageController', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    clearSWRCache();
     installMatchMedia();
     hubTasksAPI.getTasks.mockResolvedValue({ items: [], total: 0, meta: {} });
     hubTaskSupportAPI.getControllers.mockResolvedValue({ items: [] });

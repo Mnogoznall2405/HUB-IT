@@ -110,6 +110,8 @@ it.each(['B', 'A'])('does not close a new selection %s while deletion is pending
   }), { initialProps: { selectedTaskId: 'A' } });
   let pending;
   act(() => { pending = result.current.handleDeleteTask({ id: 'A' }); });
+  // The confirm dialog is async now — wait until the delete call is issued.
+  await waitFor(() => expect(hubTasksAPI.deleteTask).toHaveBeenCalled());
   rerender({ selectedTaskId: 'B' });
   if (nextId === 'A') rerender({ selectedTaskId: 'A' });
   await act(async () => { finish(); await pending; });

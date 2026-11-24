@@ -840,12 +840,14 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(screen.getByTestId('tasks-role-assignee'));
 
     await waitFor(() => {
-      expect(hubTasksAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
-        role_scope: 'assignee',
-        scope: 'my',
-      }));
       expect(screen.getByTestId('location-probe')).toHaveTextContent('task_view=assignee');
     });
+    // SWR-дедуп: возврат к assignee в пределах TTL обслуживается из кэша,
+    // повторный сетевой запрос не отправляется.
+    const assigneeCalls = hubTasksAPI.getTasks.mock.calls.filter(
+      ([params]) => params?.role_scope === 'assignee',
+    );
+    expect(assigneeCalls).toHaveLength(1);
   });
 
   it('shows role scope switch on mobile and restores personal role from localStorage', async () => {
