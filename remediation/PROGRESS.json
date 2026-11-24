@@ -146,7 +146,7 @@
       "id": "FE-0007",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "feed",
       "page": "/feed",
@@ -154,10 +154,11 @@
       "lines": "40-82",
       "title": "Сломанные вложения публикаций ленты (410 Gone) — 8 шт. за загрузку, UI не показывает заглушку",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ada99787",
+      "pr": 54
     },
     {
       "id": "FE-0008",
@@ -778,7 +779,7 @@
       "id": "FE-0043",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "feed",
       "page": null,
@@ -786,10 +787,11 @@
       "lines": "130-138",
       "title": "FeedCommentsPanel: опрос 15 c -> K+1 запрос при K раскрытых ветках",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ada99787",
+      "pr": 54
     },
     {
       "id": "FE-0044",
@@ -2944,7 +2946,7 @@
       "id": "FE-0164",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "feed",
       "page": null,
@@ -2952,16 +2954,17 @@
       "lines": "318-335 (эффект без dirty-проверки),183,326",
       "title": "Feed: автосохранение создаёт пустой черновик при простом открытии композера",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ada99787",
+      "pr": 54
     },
     {
       "id": "FE-0165",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "feed",
       "page": null,
@@ -2969,10 +2972,11 @@
       "lines": "320-334: таймер читает draftId из замыкания без отмены in-flight запроса",
       "title": "Feed: параллельные автосохранения плодят дубли черновиков",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ada99787",
+      "pr": 54
     },
     {
       "id": "FE-0166",
@@ -2995,7 +2999,7 @@
       "id": "FE-0167",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "feed",
       "page": null,
@@ -3003,10 +3007,11 @@
       "lines": "130-138,140-166: эффект зависит от items → каждый полл перезапускает; нет cancelled",
       "title": "Feed: hash-эффект комментария повторно дёргает N запросов на каждый 15-с полл",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ada99787",
+      "pr": 54
     },
     {
       "id": "FE-0168",
