@@ -42,7 +42,7 @@ import { normalizeAppSettingsState } from '../admin/appSettingsModel';
 
 const normalizeFontScale = (value) => {
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.min(1.2, Math.max(0.9, parsed)) : 1;
+  return Number.isFinite(parsed) ? parsed : 1;
 };
 
 export function useAccountSectionData(area = 'settings') {
