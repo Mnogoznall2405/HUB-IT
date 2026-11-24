@@ -2005,6 +2005,7 @@ def _merge_usage(*items: dict[str, Any]) -> dict[str, Any]:
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "total_tokens": 0,
+        "cached_tokens": 0,
         "model": "",
     }
     for item in items:
@@ -2012,6 +2013,7 @@ def _merge_usage(*items: dict[str, Any]) -> dict[str, Any]:
         merged["prompt_tokens"] += int(payload.get("prompt_tokens") or 0)
         merged["completion_tokens"] += int(payload.get("completion_tokens") or 0)
         merged["total_tokens"] += int(payload.get("total_tokens") or 0)
+        merged["cached_tokens"] += int(payload.get("cached_tokens") or payload.get("prompt_cache_hit_tokens") or 0)
         if _normalize_text(payload.get("model")):
             merged["model"] = _normalize_text(payload.get("model"))
     return merged
@@ -2963,6 +2965,94 @@ _MEMORY_PREFERENCE_RE = re.compile(
 
 def _estimated_tokens(value: object) -> int:
     return max(0, (len(str(value or "")) + 3) // 4)
+
+
+# A9 telemetry: per-block prompt accounting. Blocks are identified by the
+# fixed header prefixes produced at prompt assembly time; unmatched segments
+# fall into "other" so the totals always reconcile with the full prompt size.
+_PROMPT_BLOCK_HEADERS: tuple[tuple[str, str], ...] = (
+    ("Bot title:", "bot_title"),
+    ("Rolling summary of older messages", "rolling_summary"),
+    ("Recent conversation", "conversation_history"),
+    ("Allowed personal memory", "personal_memory"),
+    ("Authoritative task/action state", "task_state"),
+    ("Memory reconciliation result", "memory_status"),
+    ("Current user request:", "current_request"),
+    ("Active draft to update", "active_draft"),
+    ("Attached file content", "file_context"),
+    ("Knowledge base snippets", "kb_context"),
+    ("Template document candidates", "template_candidates"),
+    ("Template auto-send allowed", "template_flag"),
+    ("Write a useful markdown answer", "answer_instructions"),
+    ("Enabled ITinvent tools:", "tool_specs_itinvent"),
+    ("Enabled file tools:", "tool_specs_files"),
+    ("Enabled office tools:", "tool_specs_office"),
+    ("Enabled MFU tools:", "tool_specs_mfu"),
+    ("Enabled network tools:", "tool_specs_network"),
+    ("Enabled AD tools:", "tool_specs_ad"),
+    ("Enabled knowledge base tools:", "tool_specs_kb"),
+    ("Enabled Hub chat tools:", "tool_specs_chat"),
+    ("Enabled self-service tools", "tool_specs_self"),
+    ("Enabled company directory tools:", "tool_specs_directory"),
+    ("Enabled 1C warehouse tools:", "tool_specs_warehouse"),
+    ("Other enabled tools:", "tool_specs_other"),
+    ("Tool groups allowed for this employee", "unattached_groups_hint"),
+    ("CURRENT USER REQUEST (authoritative", "current_request_tail"),
+    ("Enabled tools:", "tool_specs_other"),
+    ("Current ITinvent database:", "db_label"),
+    ("Accumulated tool results", "tool_results"),
+    ("Running summary", "running_summary"),
+    ("Tool validation errors to fix", "tool_validation_errors"),
+    ("Tool routing for live ITinvent requests:", "guide_itinvent"),
+    ("File generation routing:", "guide_files"),
+    ("Office tool routing:", "guide_office"),
+    ("MFU/printer tool routing:", "guide_mfu"),
+    ("Network infrastructure tool routing:", "guide_network"),
+    ("Active Directory tool routing:", "guide_ad"),
+    ("Use kb tools when the user asks", "guide_kb"),
+    ("To message a colleague or group", "guide_chat"),
+    ("Self-service tools answer only", "guide_self"),
+    ("Company directory: phones", "guide_directory"),
+    ("1C warehouse (read-only):", "guide_warehouse"),
+    ("Answer style and structure rules", "guide_answer_style"),
+    ("User request understanding and query coaching:", "guide_understanding"),
+    ("When you answer with live ITinvent data", "guide_itinvent_response"),
+)
+
+
+def _prompt_block_sizes(prompt: str) -> dict[str, int]:
+    """Estimated tokens per labeled prompt block (headers + content)."""
+    blocks: dict[str, int] = {}
+    for segment in str(prompt or "").split("\n\n"):
+        if not segment.strip():
+            continue
+        label = "other"
+        head = segment.lstrip()[:400]
+        for prefix, name in _PROMPT_BLOCK_HEADERS:
+            if head.startswith(prefix):
+                label = name
+                break
+        blocks[label] = blocks.get(label, 0) + _estimated_tokens(segment)
+    return blocks
+
+
+def _llm_call_log_file() -> str:
+    return _normalize_text(os.environ.get("AI_LLM_CALL_LOG_FILE"))
+
+
+def _append_llm_call_record(record: dict[str, Any]) -> None:
+    """Append one per-call telemetry line when the artifact sink is configured.
+
+    Contains sizes/ids only — never prompt or tool payload content.
+    """
+    path = _llm_call_log_file()
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except OSError:
+        logger.debug("llm call log write failed: %s", path)
 
 
 def _truncate_tokens(value: object, token_limit: int) -> str:
@@ -7748,12 +7838,16 @@ class AiChatService:
             ]
         )
 
+        llm_call_records: list[dict[str, Any]] = []
+
         def _complete_json_step(
             *,
             current_system_prompt: str,
             current_user_prompt: str,
             response_schema: dict[str, Any],
             schema_name: str,
+            call_kind: str = "chat",
+            tool_round: int = 0,
         ) -> tuple[dict[str, Any], dict[str, Any]]:
             bounded_system_prompt, bounded_user_prompt = _fit_prompt_pair(
                 current_system_prompt,
@@ -7764,7 +7858,10 @@ class AiChatService:
             stream_kwargs: dict[str, Any] = {}
             if AI_STREAM_ANSWER_ENABLED and callable(report_preview):
                 stream_kwargs["on_text_delta"] = report_preview
+            call_started_at = time.perf_counter()
+            attempts = 0
             for attempt in range(2):
+                attempts += 1
                 try:
                     payload, usage = openrouter_client.complete_json(
                         system_prompt=bounded_system_prompt,
@@ -7786,7 +7883,26 @@ class AiChatService:
                             report_preview("")
                         else:
                             report_preview(_normalize_text(payload.get("answer_markdown")), force=True)
-                    return payload, usage or {}
+                    usage_dict = usage or {}
+                    record = {
+                        "run_id": run_id,
+                        "call_seq": len(llm_call_records) + 1,
+                        "call_kind": call_kind,
+                        "tool_round": tool_round,
+                        "model": _normalize_text(usage_dict.get("model")) or _normalize_text(bot.model),
+                        "schema": schema_name,
+                        "est_system_tokens": _estimated_tokens(bounded_system_prompt),
+                        "est_user_tokens": _estimated_tokens(bounded_user_prompt),
+                        "prompt_blocks": _prompt_block_sizes(bounded_user_prompt),
+                        "usage": usage_dict,
+                        "attempts": attempts,
+                        "duration_ms": int((time.perf_counter() - call_started_at) * 1000),
+                        "tool_calls": len(_normalize_tool_calls(payload.get("tool_calls"), limit=100)),
+                        "answer_chars": len(_normalize_text(payload.get("answer_markdown"))),
+                    }
+                    llm_call_records.append(record)
+                    _append_llm_call_record(record)
+                    return payload, usage_dict
                 except OpenRouterClientError as exc:
                     if attempt == 0 and "invalid json payload" in str(exc).lower():
                         # Retry only model formatting, never replay completed tools.
@@ -7810,6 +7926,7 @@ class AiChatService:
                 else AI_CHAT_RESPONSE_SCHEMA_WITH_TOOLS
             ),
             schema_name="ai_chat_response_with_tools",
+            call_kind="first",
         )
         _log_ai_run_timing("llm_first", first_llm_started_at, run_id=run_id)
         tool_traces: list[dict[str, Any]] = []
@@ -8022,6 +8139,8 @@ class AiChatService:
                 else AI_CHAT_RESPONSE_SCHEMA_WITH_TOOLS
             ),
                     schema_name="ai_chat_response_with_tools",
+                    call_kind="followup",
+                    tool_round=tool_rounds_used,
                 )
                 _log_ai_run_timing("llm_followup", followup_started_at, run_id=run_id, round=tool_rounds_used)
                 next_tool_calls = _normalize_tool_calls(next_payload.get("tool_calls"))
@@ -8104,6 +8223,7 @@ class AiChatService:
                     current_user_prompt=budget_final_user_prompt,
                     response_schema=AI_CHAT_RESPONSE_SCHEMA_FINAL,
                     schema_name="ai_chat_response_final",
+                    call_kind="budget_final",
                 )
                 _log_ai_run_timing("llm_budget_final", budget_final_started_at, run_id=run_id)
                 final_payload = budget_final_payload
@@ -8171,6 +8291,7 @@ class AiChatService:
                     current_user_prompt=forced_final_user_prompt,
                     response_schema=AI_CHAT_RESPONSE_SCHEMA_FINAL,
                     schema_name="ai_chat_response_final",
+                    call_kind="forced_final",
                 )
                 _log_ai_run_timing("llm_final", forced_final_started_at, run_id=run_id)
                 final_payload = forced_final_payload
@@ -8339,6 +8460,8 @@ class AiChatService:
         if intent_mode in (JEV_INTENT_CHAT, JEV_INTENT_READ) and not _normalize_text(answer_markdown):
             answer_markdown = "Не удалось сформировать ответ. Пожалуйста, переформулируйте вопрос."
         extracted_context["mode_denied_calls"] = int(getattr(tool_context, "mode_denied_calls", 0) or 0)
+        if llm_call_records:
+            final_usage["llm_calls"] = llm_call_records
         return answer_markdown, artifacts, kb_attachment_send, final_usage, extracted_context, tool_traces, generated_file_specs, sorted(routed_groups)
 
     def _build_conversation_context(

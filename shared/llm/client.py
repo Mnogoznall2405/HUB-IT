@@ -380,11 +380,21 @@ def _schema_has_open_objects(value: Any) -> bool:
 
 def _usage_dict(completion: Any, *, model: str) -> dict[str, Any]:
     usage = getattr(completion, "usage", None)
+    # Prompt-cache accounting differs by provider: OpenAI-compatible exposes
+    # prompt_tokens_details.cached_tokens, OpenRouter may report
+    # prompt_cache_hit_tokens/prompt_cache_miss_tokens.
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached_tokens = int(
+        getattr(details, "cached_tokens", 0)
+        or getattr(usage, "prompt_cache_hit_tokens", 0)
+        or 0
+    )
     return {
         "model": model,
         "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
         "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
         "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+        "cached_tokens": cached_tokens,
     }
 
 
