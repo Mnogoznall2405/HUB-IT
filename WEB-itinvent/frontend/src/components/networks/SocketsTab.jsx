@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Button,
@@ -46,6 +46,9 @@ const COL = {
 const TOTAL_W = Object.values(COL).reduce((sum, item) => sum + item.w, 0);
 const TABLE_VIRTUALIZE_THRESHOLD = 120;
 const TABLE_OVERSCAN_PX = 320;
+// Mobile cards are much heavier than table rows; render them in chunks with a
+// "Показать ещё" footer instead of mounting thousands of Card nodes at once.
+const MOBILE_CARD_RENDER_CHUNK = 100;
 const LINE_H = 24;
 const ROW_PAD = 20;
 const MIN_ROW_H = 48;
@@ -158,6 +161,12 @@ export default function SocketsTab({
     [endIndex, filteredSockets, startIndex, useVirtualization],
   );
 
+  const [mobileSocketLimit, setMobileSocketLimit] = useState(MOBILE_CARD_RENDER_CHUNK);
+  useEffect(() => { setMobileSocketLimit(MOBILE_CARD_RENDER_CHUNK); }, [filteredSockets]);
+  const mobileSockets = filteredSockets.length > mobileSocketLimit
+    ? filteredSockets.slice(0, mobileSocketLimit)
+    : filteredSockets;
+
   const baseHeadCellSx = {
     py: 1,
     fontWeight: 700,
@@ -220,7 +229,7 @@ export default function SocketsTab({
         ) : isMobile ? (
           <Box sx={{ px: 1, py: 0.5 }}>
             <Stack spacing={0.8}>
-              {filteredSockets.map((socket) => {
+              {mobileSockets.map((socket) => {
                 const isDeleting = Number(deletingSocketId || 0) === Number(socket.id);
                 const ips = splitBySpace(socket.endpoint_ip_raw);
                 const macs = splitBySpace(socket.mac_address || socket.endpoint_mac_raw);
@@ -303,6 +312,15 @@ export default function SocketsTab({
                 );
               })}
             </Stack>
+            {filteredSockets.length > mobileSockets.length ? (
+              <Button
+                size="small"
+                onClick={() => setMobileSocketLimit((limit) => limit + MOBILE_CARD_RENDER_CHUNK)}
+                sx={{ mt: 1, alignSelf: 'center', textTransform: 'none' }}
+              >
+                {`Показать ещё ${Math.min(MOBILE_CARD_RENDER_CHUNK, filteredSockets.length - mobileSockets.length)} из ${filteredSockets.length - mobileSockets.length}`}
+              </Button>
+            ) : null}
           </Box>
         ) : (
           <TableContainer
