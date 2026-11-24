@@ -55,6 +55,7 @@ export function useMyFilesShares({ onFileShareChanged, onFolderShareChanged, not
   const shareFolder = useCallback(async (folder, { rotate = false } = {}) => {
     try {
       const payload = await myFilesAPI.createFolderShare(folder.id, { rotate });
+      if (!isCurrent()) return;
       const publicUrl = myFilesAPI.buildPublicFolderUrl(payload.token);
       let linkCopied = false;
       try {
@@ -63,6 +64,7 @@ export function useMyFilesShares({ onFileShareChanged, onFolderShareChanged, not
       } catch {
         notifyWarning('Ссылка создана. Скопируйте её из окна.', { source: 'my-files-folder-share', dedupeMode: 'none' });
       }
+      if (!isCurrent()) return;
       setFolderShareDialog({
         open: true,
         folderId: folder.id,
@@ -76,9 +78,9 @@ export function useMyFilesShares({ onFileShareChanged, onFolderShareChanged, not
       }
       onFolderShareChanged?.(folder.id, true);
     } catch (error) {
-      notifyApiError(error, 'Не удалось создать ссылку на папку.', { dedupeMode: 'none' });
+      if (isCurrent()) notifyApiError(error, 'Не удалось создать ссылку на папку.', { dedupeMode: 'none' });
     }
-  }, [onFolderShareChanged, notifyApiError, notifySuccess, notifyWarning]);
+  }, [isCurrent, onFolderShareChanged, notifyApiError, notifySuccess, notifyWarning]);
 
   const resetShareDialogs = useCallback(() => {
     setShareDialog(EMPTY_FILE_SHARE);
@@ -88,13 +90,14 @@ export function useMyFilesShares({ onFileShareChanged, onFolderShareChanged, not
   const revokeFolderShare = useCallback(async (folderId) => {
     try {
       await myFilesAPI.revokeFolderShare(folderId);
+      if (!isCurrent()) return;
       setFolderShareDialog(EMPTY_FOLDER_SHARE);
       onFolderShareChanged?.(folderId, false);
       notifySuccess('Ссылка на папку отключена.', { source: 'my-files-folder-share', dedupeMode: 'none' });
     } catch (error) {
-      notifyApiError(error, 'Не удалось отключить ссылку.', { dedupeMode: 'none' });
+      if (isCurrent()) notifyApiError(error, 'Не удалось отключить ссылку.', { dedupeMode: 'none' });
     }
-  }, [onFolderShareChanged, notifyApiError, notifySuccess]);
+  }, [isCurrent, onFolderShareChanged, notifyApiError, notifySuccess]);
 
   return {
     shareDialog,

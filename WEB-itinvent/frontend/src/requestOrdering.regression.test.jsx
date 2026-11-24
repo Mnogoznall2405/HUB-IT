@@ -215,6 +215,57 @@ describe('my-files loadData counter and cache', () => {
   });
 });
 
+// Folder-share handlers now run under the same staleness guard as the file
+// ones: a response resolved after the identity switch must not write the old
+// user's link to the clipboard nor reopen the dialog.
+describe('my-files folder share staleness guard', () => {
+  const makeContext = (isCurrent) => {
+    const seen = { clipboardWrites: [], dialogStates: [], changed: [], notices: [] };
+    const context = {
+      isCurrent,
+      myFilesAPI: {
+        createFolderShare: async () => ({ token: 'tok-folder' }),
+        buildPublicFolderUrl: () => 'http://x/f/tok-folder',
+        revokeFolderShare: async () => ({}),
+      },
+      navigator: { clipboard: { writeText: async (v) => seen.clipboardWrites.push(v) } },
+      setFolderShareDialog: (v) => seen.dialogStates.push(v),
+      setShareDialog: () => {},
+      onFolderShareChanged: (id, flag) => seen.changed.push([id, flag]),
+      notifySuccess: (m) => seen.notices.push(['ok', m]),
+      notifyWarning: () => {},
+      notifyApiError: (e, m) => seen.notices.push(['err', m]),
+    };
+    return { context, seen };
+  };
+
+  it('shareFolder writes no clipboard and opens no dialog when stale', async () => {
+    const { context, seen } = makeContext(() => false);
+    const handler = bindLoader('./pages/myFiles/useMyFilesShares.js', 'shareFolder', context);
+    await handler({ id: 'd1', name: 'Проект' });
+    expect(seen.clipboardWrites).toEqual([]);
+    expect(seen.dialogStates).toEqual([]);
+    expect(seen.changed).toEqual([]);
+  });
+
+  it('revokeFolderShare applies no state updates when stale', async () => {
+    const { context, seen } = makeContext(() => false);
+    const handler = bindLoader('./pages/myFiles/useMyFilesShares.js', 'revokeFolderShare', context);
+    await handler('d1');
+    expect(seen.dialogStates).toEqual([]);
+    expect(seen.changed).toEqual([]);
+    expect(seen.notices).toEqual([]);
+  });
+
+  it('a stale error does not surface an error notification', async () => {
+    const { context, seen } = makeContext(() => false);
+    context.myFilesAPI.createFolderShare = async () => { throw new Error('boom'); };
+    const handler = bindLoader('./pages/myFiles/useMyFilesShares.js', 'shareFolder', context);
+    await handler({ id: 'd1', name: 'Проект' });
+    expect(seen.notices).toEqual([]);
+  });
+});
+
 describe('my-files loadLibraries identity guard', () => {
   it('discards a response that started under the previous auth identity', async () => {
     const authUserKeyRef = { current: 'u7' };
