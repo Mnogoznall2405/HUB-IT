@@ -20,11 +20,11 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 251,
+    "OPEN": 246,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
-    "FIXED": 18,
-    "IN_PROGRESS": 1
+    "FIXED": 22,
+    "IN_PROGRESS": 2
   },
   "issues": [
     {
@@ -637,7 +637,7 @@
       "id": "FE-0036",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "networks",
       "page": null,
@@ -645,10 +645,13 @@
       "lines": "302-304",
       "title": "Мёртвые состояния loading в Networks (сеттеры не вызываются)",
       "related": [],
-      "pr": null,
+      "pr": 36,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "b483d2ce",
+      "note": "PR #36 fix/networks-sites-deadcode @b483d2ce (stacked on #35): site code/name from branch data; dead states/props/file removed. Build pass."
     },
     {
       "id": "FE-0037",
@@ -2515,7 +2518,7 @@
       "id": "FE-0146",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2523,10 +2526,13 @@
       "lines": "1267,1278: site_name = p21 ? Первомайская 21 : Первомайская 19 — для любого другого site пишется неверное имя",
       "title": "Networks: site_name карты захардкожен в «Первомайская 19/21»",
       "related": [],
-      "pr": null,
+      "pr": 36,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "b483d2ce",
+      "note": "PR #36 fix/networks-sites-deadcode @b483d2ce (stacked on #35): site code/name from branch data; dead states/props/file removed. Build pass."
     },
     {
       "id": "FE-0147",
@@ -2731,7 +2737,7 @@
       "id": "FE-0158",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "networks",
       "page": null,
@@ -2739,16 +2745,19 @@
       "lines": "1217: setMapSiteCode(p19) жёстко vs диалог устройства :1895 использует selectedBranch.default_site_code",
       "title": "Networks: openMapDialogCreate игнорирует default_site_code филиала",
       "related": [],
-      "pr": null,
+      "pr": 36,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "b483d2ce",
+      "note": "PR #36 fix/networks-sites-deadcode @b483d2ce (stacked on #35): site code/name from branch data; dead states/props/file removed. Build pass."
     },
     {
       "id": "FE-0159",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "IN_PROGRESS",
       "priority": "P3",
       "batch": "networks",
       "page": null,
@@ -2756,16 +2765,19 @@
       "lines": "217 (createBranchCity без UI),1637 (city_code fallback tmn),747 (getBranches tmn)",
       "title": "Networks: город филиала захардкожен в «tmn» + мёртвый createBranchCity",
       "related": [],
-      "pr": null,
+      "pr": 36,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "b483d2ce",
+      "note": "PR #36: dead createBranchCity state removed, city_code tmn made explicit. Residual: city selector needs product decision (no cities source). Record stays open."
     },
     {
       "id": "FE-0160",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "networks",
       "page": null,
@@ -2773,10 +2785,13 @@
       "lines": "весь файл не импортируется; Networks.jsx:204,302-304,491-494,1714-1735,732-742; SocketsTab prop pointEditMode; useVirtualizedTableWindow.js:35",
       "title": "Networks: пакет мёртвого кода (ImportDialog, mobilePortEditorOpen, equipmentLoading, hasBranchDbChanges, focusPointId, containerWidth)",
       "related": [],
-      "pr": null,
+      "pr": 36,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "b483d2ce",
+      "note": "PR #36 fix/networks-sites-deadcode @b483d2ce (stacked on #35): site code/name from branch data; dead states/props/file removed. Build pass."
     },
     {
       "id": "FE-0161",
