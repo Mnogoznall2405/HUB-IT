@@ -311,8 +311,12 @@ describe('Login hybrid internal/external flow', () => {
     submitPasswordStep({ username: 'new.user', password: 'secret' });
 
     await waitFor(() => {
-      expect(locationAssignMock).toHaveBeenCalledWith('/about');
+      expect(mockLogin).toHaveBeenCalledWith('new.user', 'secret');
     });
+    await act(async () => {});
+    // In-app post-auth navigation is owned by LoginRoute/PostAuthNavigate; the
+    // component must not force a full reload or consume the stored return path.
+    expect(locationAssignMock).not.toHaveBeenCalled();
     expect(sessionStorage.getItem('hubit.auth.return-to')).toBe('/tasks?filter=mine');
   });
 
@@ -721,8 +725,11 @@ describe('Login hybrid internal/external flow', () => {
     await waitFor(() => {
       expect(mockStartPasskeyLogin).toHaveBeenCalledTimes(1);
       expect(mockVerifyPasskeyLogin).toHaveBeenCalledTimes(1);
-      expect(locationAssignMock).toHaveBeenCalledWith('/dashboard');
     });
+    await act(async () => {});
+    // Successful passkey sign-in sets AuthContext.user — LoginRoute performs
+    // the SPA navigation, no full-page reload is issued.
+    expect(locationAssignMock).not.toHaveBeenCalled();
     expect(screen.getByTestId('password-auth-form')).toBeInTheDocument();
   });
 
@@ -851,8 +858,9 @@ describe('Login hybrid internal/external flow', () => {
     fireEvent.click(dialogButtons[0]);
 
     await waitFor(() => {
-      expect(locationAssignMock).toHaveBeenCalledWith('/dashboard');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
+    expect(locationAssignMock).not.toHaveBeenCalled();
     expect(mockGetTrustedDeviceRegistrationOptions).not.toHaveBeenCalled();
   });
 
@@ -909,8 +917,9 @@ describe('Login hybrid internal/external flow', () => {
     fireEvent.click(dialogButtons[0]);
 
     await waitFor(() => {
-      expect(locationAssignMock).toHaveBeenCalledWith('/dashboard');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
+    expect(locationAssignMock).not.toHaveBeenCalled();
   });
 
   it('keeps backup-code completion and opens enrollment prompt before redirect for external first setup', async () => {

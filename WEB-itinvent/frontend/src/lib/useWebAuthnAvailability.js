@@ -50,6 +50,12 @@ export function useWebAuthnAvailability() {
     intervalId = window.setInterval(markWebReady, WEB_POLL_INTERVAL_MS);
 
     timeoutId = window.setTimeout(() => {
+      if (intervalId !== null) {
+        // The API is injected before first paint; polling past the timeout is
+        // pointless and ran forever on browsers without WebAuthn.
+        window.clearInterval(intervalId);
+        intervalId = null;
+      }
       if (!cancelled && !isWebAuthnApiAvailable()) {
         setTimedOut(true);
       }
