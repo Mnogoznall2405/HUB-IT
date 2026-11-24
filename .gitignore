@@ -231,6 +231,7 @@ temp_test_*.py
 !tests/**/*_test.py
 !WEB-itinvent/backend/tests/test_*.py
 !WEB-itinvent/backend/tests/**/test_*.py
+!WEB-itinvent/frontend/e2e/stack/tests/test_*.py
 !WEB-itinvent/frontend/src/lib/
 !WEB-itinvent/frontend/src/lib/**
 

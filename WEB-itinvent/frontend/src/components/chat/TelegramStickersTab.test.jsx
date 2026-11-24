@@ -3,14 +3,19 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { chatStickersAPI } from '../../api/chatStickers';
+import { chatStickersAPI, primeStickerPacksCache } from '../../api/chatStickers';
 import TelegramStickersTab from './TelegramStickersTab';
 
+const stickerEpochRef = { value: 0 };
 vi.mock('../../api/chatStickers', () => ({
   chatStickersAPI: {
     listPacks: vi.fn(),
     importPack: vi.fn(),
   },
+  getStickerPacksEpoch: vi.fn(() => stickerEpochRef.value),
+  peekStickerPacksCache: vi.fn(() => null),
+  primeStickerPacksCache: vi.fn((scope, payload) => payload),
+  invalidateStickerPacksCache: vi.fn(() => { stickerEpochRef.value += 1; }),
 }));
 
 const theme = createTheme();
@@ -62,6 +67,7 @@ const renderTab = (onSendSticker = vi.fn().mockResolvedValue(true), props = {}) 
 describe('TelegramStickersTab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    stickerEpochRef.value = 0;
     window.localStorage.clear();
     chatStickersAPI.listPacks.mockResolvedValue({ items: [] });
   });
@@ -84,6 +90,42 @@ describe('TelegramStickersTab', () => {
     });
     expect(await screen.findByText('Офисные звери')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Отправить стикер 🐈' })).toBeInTheDocument();
+  });
+
+  it('drops a pack response that resolves after cache invalidation', async () => {
+    let resolveStale;
+    chatStickersAPI.listPacks.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveStale = resolve; }),
+    );
+    renderTab();
+
+    // Инвалидация между запросом и ответом (logout / импорт в другом табе) —
+    // устаревший payload не должен ни попасть в кэш, ни отрисоваться.
+    stickerEpochRef.value += 1;
+    await act(async () => { resolveStale({ items: [stickerPack] }); });
+
+    expect(primeStickerPacksCache).not.toHaveBeenCalled();
+    expect(screen.queryByText('Офисные звери')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Загрузка наборов стикеров')).not.toBeInTheDocument();
+    });
+  });
+
+  it('applies a pack response while the cache epoch is unchanged', async () => {
+    let resolveFresh;
+    chatStickersAPI.listPacks.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveFresh = resolve; }),
+    );
+    renderTab();
+
+    await act(async () => { resolveFresh({ items: [stickerPack] }); });
+
+    expect(primeStickerPacksCache).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ items: [stickerPack] }),
+      expect.anything(),
+    );
+    expect(await screen.findByText('Офисные звери')).toBeInTheDocument();
   });
 
   it('sends a selected sticker without opening its file', async () => {

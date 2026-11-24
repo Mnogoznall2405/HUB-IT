@@ -81,6 +81,9 @@ export default function useChatPageOverlayDialogs({
   });
   const [selectedMessageIds, setSelectedMessageIds] = useState([]);
   const [emojiAnchorEl, setEmojiAnchorEl] = useState(null);
+  // 'popover' — временная панель (hover-превью или мобильный док под полем),
+  // 'pinned' — закреплённая колонка справа от переписки (Telegram Desktop).
+  const [emojiPanelMode, setEmojiPanelMode] = useState('popover');
   const [messageReadsOpen, setMessageReadsOpen] = useState(false);
   const [messageReadsLoading, setMessageReadsLoading] = useState(false);
   const [messageReadsItems, setMessageReadsItems] = useState([]);
@@ -163,6 +166,8 @@ export default function useChatPageOverlayDialogs({
     setSelectedMessageIds,
     emojiAnchorEl,
     setEmojiAnchorEl,
+    emojiPanelMode,
+    setEmojiPanelMode,
     messageReadsOpen,
     setMessageReadsOpen,
     messageReadsLoading,

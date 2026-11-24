@@ -1,0 +1,210 @@
+{
+  "runs": 20,
+  "viewport": "1440x900",
+  "cold": {
+    "dockVisible": {
+      "n": 20,
+      "p50": 103,
+      "p95": 205,
+      "min": 77,
+      "max": 316
+    },
+    "firstEmojiDom": {
+      "n": 20,
+      "p50": 205,
+      "p95": 230,
+      "min": 174,
+      "max": 316
+    },
+    "firstEmojiLoaded": {
+      "n": 20,
+      "p50": 419,
+      "p95": 563,
+      "min": 353,
+      "max": 624
+    },
+    "imagesDecoded": {
+      "n": 20,
+      "p50": 1098,
+      "p95": 1871,
+      "min": 986,
+      "max": 1916
+    },
+    "interactive": {
+      "n": 20,
+      "p50": 138,
+      "p95": 205,
+      "min": 102,
+      "max": 317
+    },
+    "visibleEmojiImgs": 180,
+    "resources": {
+      "chunks": [
+        {
+          "name": "chatDirectory-Ca8KzTAp.js",
+          "responseEnd": 441,
+          "transferKB": 1,
+          "decodedKB": 2
+        },
+        {
+          "name": "ChatCallsProvider-B41hpBh2.js",
+          "responseEnd": 499,
+          "transferKB": 22,
+          "decodedKB": 64
+        },
+        {
+          "name": "Chat-DANFL-qi.js",
+          "responseEnd": 601,
+          "transferKB": 0,
+          "decodedKB": 3
+        },
+        {
+          "name": "ChatPageContent-Cw1I9N6N.js",
+          "responseEnd": 716,
+          "transferKB": 0,
+          "decodedKB": 667
+        },
+        {
+          "name": "ChatBubbleOutlineRounded-CjmzBJOV.js",
+          "responseEnd": 611,
+          "transferKB": 0,
+          "decodedKB": 0
+        },
+        {
+          "name": "ChatEmoji-Wbw4Lgv6.js",
+          "responseEnd": 717,
+          "transferKB": 0,
+          "decodedKB": 2
+        },
+        {
+          "name": "chatComposePrefill-DJTa4JBR.js",
+          "responseEnd": 758,
+          "transferKB": 0,
+          "decodedKB": 1
+        },
+        {
+          "name": "ChatEmojiPanel-Jw5vam0y.js",
+          "responseEnd": 1104,
+          "transferKB": 0,
+          "decodedKB": 22
+        },
+        {
+          "name": "ChatStickerThumbnail-BOd8jREy.js",
+          "responseEnd": 1134,
+          "transferKB": 0,
+          "decodedKB": 1
+        },
+        {
+          "name": "emoji-picker-react.esm-4_7d8Uq6.js",
+          "responseEnd": 1247,
+          "transferKB": 0,
+          "decodedKB": 302
+        },
+        {
+          "name": "ChatDialogs-B2Cgcu0Z.js",
+          "responseEnd": 1992,
+          "transferKB": 0,
+          "decodedKB": 96
+        },
+        {
+          "name": "ChatContextPanel-BgkwcQ1F.js",
+          "responseEnd": 2004,
+          "transferKB": 0,
+          "decodedKB": 85
+        },
+        {
+          "name": "ChatRightPanelHeader-HmMDS8qy.js",
+          "responseEnd": 1999,
+          "transferKB": 0,
+          "decodedKB": 1
+        },
+        {
+          "name": "addressBookChat-5GNDL_aG.js",
+          "responseEnd": 2028,
+          "transferKB": 0,
+          "decodedKB": 6
+        }
+      ],
+      "emojiChunkEnd": 1246.5,
+      "emojiImgCount": 128,
+      "emojiImgBytes": 723018,
+      "emojiImgDecodedBytes": 723018
+    },
+    "longTasks": 1,
+    "failedEmojiImgs": 0
+  },
+  "warm": {
+    "dockVisible": {
+      "n": 20,
+      "p50": 115,
+      "p95": 135,
+      "min": 105,
+      "max": 148
+    },
+    "firstEmojiDom": {
+      "n": 20,
+      "p50": 115,
+      "p95": 135,
+      "min": 105,
+      "max": 148
+    },
+    "firstEmojiLoaded": {
+      "n": 20,
+      "p50": 115,
+      "p95": 135,
+      "min": 105,
+      "max": 148
+    },
+    "imagesDecoded": {
+      "n": 20,
+      "p50": 122,
+      "p95": 143,
+      "min": 111,
+      "max": 483
+    },
+    "interactive": {
+      "n": 20,
+      "p50": 115,
+      "p95": 135,
+      "min": 105,
+      "max": 148
+    }
+  },
+  "tabs": {
+    "toStickers": {
+      "n": 20,
+      "p50": 116,
+      "p95": 172,
+      "min": 93,
+      "max": 184
+    },
+    "backToEmoji": {
+      "n": 20,
+      "p50": 143,
+      "p95": 176,
+      "min": 123,
+      "max": 178
+    }
+  },
+  "hoverDelay": {
+    "n": 20,
+    "p50": 270,
+    "p95": 289,
+    "min": 259,
+    "max": 323
+  },
+  "warmLongTaskMs": {
+    "n": 2,
+    "p50": 50,
+    "p95": 50,
+    "min": 50,
+    "max": 50
+  },
+  "memory100Cycles": {
+    "heapBeforeMB": 48.1,
+    "heapAfterMB": 35.8,
+    "domNodesBefore": 1109,
+    "domNodesAfter": 1111
+  },
+  "measuredAt": "2026-11-23T10:12:25.040Z"
+}

@@ -9,6 +9,7 @@ import {
 } from '@mui/material';
 import TextareaAutosize from '@mui/material/TextareaAutosize';
 import useAiAgentAccess from './useAiAgentAccess';
+import { useChatEmojiUi } from './ChatEmojiUiContext';
 import { ChatComposerScheduling, ScheduledMessagesBar } from './ChatScheduledMessages';
 import { alpha } from '@mui/material/styles';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
@@ -300,8 +301,10 @@ const ChatComposer = memo(function ChatComposer({
   onMessageTextChange,
   onComposerKeyDown,
   onComposerSelectionSync,
-  onOpenEmojiPicker,
-  onCloseEmojiPicker,
+  onOpenEmojiPicker: onOpenEmojiPickerProp,
+  onCloseEmojiPicker: onCloseEmojiPickerProp,
+  onEmojiHoverStart: onEmojiHoverStartProp,
+  onEmojiHoverEnd: onEmojiHoverEndProp,
   onSendMessage,
   onComposerPaste,
   onComposerDrop,
@@ -312,10 +315,11 @@ const ChatComposer = memo(function ChatComposer({
   onSearchMentionPeople,
   composerDockRef,
   keyboardInset = 0,
-  mobileEmojiPickerOpen = false,
-  emojiPickerOpen = false,
-  onInsertEmoji,
-  onSendSticker,
+  mobileEmojiPickerOpen: mobileEmojiPickerOpenProp = false,
+  emojiPickerOpen: emojiPickerOpenProp = false,
+  emojiPanelMode: emojiPanelModeProp = 'popover',
+  onInsertEmoji: onInsertEmojiProp,
+  onSendSticker: onSendStickerProp,
   currentUserId = null,
   voiceRecording = false,
   voiceRecordingDuration = 0,
@@ -329,6 +333,19 @@ const ChatComposer = memo(function ChatComposer({
   scheduled = null,
 }) {
   const agentAccess = useAiAgentAccess(activeConversationId, isAiConversation, currentUserId);
+  // Phase 2: emoji-состояние приходит из ChatEmojiUiContext, чтобы его
+  // переключение не перерисовывало ChatThread. Пропсы оставлены как fallback
+  // для изолированного рендера композера (тесты, сторонние потребители).
+  const emojiUi = useChatEmojiUi();
+  const mobileEmojiPickerOpen = emojiUi?.mobileEmojiPickerOpen ?? mobileEmojiPickerOpenProp;
+  const emojiPickerOpen = emojiUi?.emojiPickerOpen ?? emojiPickerOpenProp;
+  const emojiPanelMode = emojiUi?.emojiPanelMode ?? emojiPanelModeProp;
+  const onOpenEmojiPicker = emojiUi?.onOpenEmojiPicker ?? onOpenEmojiPickerProp;
+  const onCloseEmojiPicker = emojiUi?.onCloseEmojiPicker ?? onCloseEmojiPickerProp;
+  const onEmojiHoverStart = emojiUi?.onEmojiHoverStart ?? onEmojiHoverStartProp;
+  const onEmojiHoverEnd = emojiUi?.onEmojiHoverEnd ?? onEmojiHoverEndProp;
+  const onInsertEmoji = emojiUi?.onInsertEmoji ?? onInsertEmojiProp;
+  const onSendSticker = emojiUi?.onSendSticker ?? onSendStickerProp;
   // "Send later": right click (desktop) or long press (touch) on the send button.
   const [scheduleMenuAnchor, setScheduleMenuAnchor] = useState(null);
   const [scheduledListOpen, setScheduledListOpen] = useState(false);
@@ -1122,11 +1139,13 @@ const ChatComposer = memo(function ChatComposer({
                     <button
                       type="button"
                       data-testid="chat-composer-emoji-button"
-                      aria-label={mobileEmojiPickerOpen || emojiPickerOpen ? 'Закрыть панель эмодзи' : 'Открыть панель эмодзи'}
+                      aria-label={mobileEmojiPickerOpen || emojiPickerOpen
+                        ? (emojiPickerOpen && emojiPanelMode !== 'pinned' && !mobileEmojiPickerOpen ? 'Закрепить панель эмодзи' : 'Закрыть панель эмодзи')
+                        : 'Открыть панель эмодзи'}
                       aria-haspopup="dialog"
                       aria-expanded={mobileEmojiPickerOpen || emojiPickerOpen}
                       onMouseDown={compactMobile ? undefined : preserveComposerKeyboard}
-                      onClick={mobileEmojiPickerOpen || emojiPickerOpen ? onCloseEmojiPicker : onOpenEmojiPicker}
+                      onClick={onOpenEmojiPicker}
                       disabled={!activeConversationId}
                       className="inline-flex shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
                       style={{
@@ -1136,10 +1155,13 @@ const ChatComposer = memo(function ChatComposer({
                         color: composerIconColor,
                       }}
                       onMouseEnter={(event) => {
-                        if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(composerAccentColor, 0.08);
+                        if (compactMobile) return;
+                        event.currentTarget.style.backgroundColor = alpha(composerAccentColor, 0.08);
+                        onEmojiHoverStart?.(event);
                       }}
                       onMouseLeave={(event) => {
                         event.currentTarget.style.backgroundColor = 'transparent';
+                        if (!compactMobile) onEmojiHoverEnd?.();
                       }}
                     >
                       {mobileEmojiPickerOpen
