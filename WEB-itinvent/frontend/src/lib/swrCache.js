@@ -111,27 +111,30 @@ export const peekSWRCache = (
   };
 };
 
-const runDedupedFetch = async (cacheKey, fetcher) => {
-  if (inFlightStore.has(cacheKey)) {
-    return inFlightStore.get(cacheKey);
+const runDedupedFetch = async (cacheKey, fetcher, { force = false } = {}) => {
+  const existing = inFlightStore.get(cacheKey);
+  if (existing && (existing.forced || !force)) {
+    return existing.promise;
   }
 
   const generation = cacheGeneration;
   const requestPromise = Promise.resolve()
     .then(fetcher)
     .then((data) => {
+      const current = inFlightStore.get(cacheKey);
       // Publish only while still the registered read for this key: invalidation or a newer
       // fetch detaches this one.
-      if (generation === cacheGeneration && inFlightStore.get(cacheKey) === requestPromise) {
+      if (generation === cacheGeneration && current && current.promise === requestPromise) {
         setCacheEntry(cacheKey, data);
       }
       return data;
     })
     .finally(() => {
-      if (inFlightStore.get(cacheKey) === requestPromise) inFlightStore.delete(cacheKey);
+      const current = inFlightStore.get(cacheKey);
+      if (current && current.promise === requestPromise) inFlightStore.delete(cacheKey);
     });
 
-  inFlightStore.set(cacheKey, requestPromise);
+  inFlightStore.set(cacheKey, { promise: requestPromise, forced: force });
   return requestPromise;
 };
 
@@ -142,6 +145,7 @@ export const getOrFetchSWR = async (
     staleTimeMs = DEFAULT_STALE_TIME_MS,
     force = false,
     revalidateStale = true,
+    onRevalidated = null,
   } = {}
 ) => {
   trimSWRCache();
@@ -159,13 +163,20 @@ export const getOrFetchSWR = async (
         return { data: entry.data, fromCache: true, isFresh: true };
       }
 
-      if (revalidateStale) {
-        runDedupedFetch(cacheKey, fetcher).catch(() => {});
+      if (revalidateStale || typeof onRevalidated === 'function') {
+        runDedupedFetch(cacheKey, fetcher)
+          .then((data) => {
+            if (typeof onRevalidated !== 'function') return;
+            // Deliver only when this fetch actually published its result: a detached read
+            // (invalidation or a newer fetch) must not push discarded data into the UI.
+            if (getCacheEntry(cacheKey)?.data === data) onRevalidated(data);
+          })
+          .catch(() => {});
       }
       return { data: entry.data, fromCache: true, isFresh: false };
     }
   }
 
-  const data = await runDedupedFetch(cacheKey, fetcher);
+  const data = await runDedupedFetch(cacheKey, fetcher, { force });
   return { data, fromCache: false, isFresh: true };
 };
