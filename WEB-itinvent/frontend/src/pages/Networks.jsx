@@ -305,6 +305,8 @@ function Networks() {
   const [editingPortId, setEditingPortId] = useState(null);
   const [portDraft, setPortDraft] = useState(null);
   const [portSaving, setPortSaving] = useState(false);
+  const [mapBusy, setMapBusy] = useState(false);
+  const [pointBusy, setPointBusy] = useState(false);
   const [socketAutocompleteOpen, setSocketAutocompleteOpen] = useState(false);
   const [socketAutocompleteOptions, setSocketAutocompleteOptions] = useState([]);
   const [selectedSocketId, setSelectedSocketId] = useState(null);
@@ -1257,7 +1259,8 @@ function Networks() {
   };
 
   const saveMap = async () => {
-    if (!branchIdNum) return;
+    if (!branchIdNum || mapBusy) return;
+    setMapBusy(true);
     try {
       if (mapEditId) {
         await networksAPI.updateMap(mapEditId, {
@@ -1286,15 +1289,18 @@ function Networks() {
     } catch (requestError) {
       console.error(requestError);
       notifyError(requestError?.response?.data?.detail || 'Ошибка сохранения карты.');
+    } finally {
+      setMapBusy(false);
     }
   };
 
   const removeMap = async (map) => {
     const mapId = Number(map?.id || 0);
-    if (!mapId) return;
+    if (!mapId || mapBusy) return;
     const mapTitle = String(map?.title || map?.file_name || `#${mapId}`).trim();
     const confirmed = window.confirm(`Удалить карту "${mapTitle}"? Это действие нельзя отменить.`);
     if (!confirmed) return;
+    setMapBusy(true);
     try {
       await networksAPI.deleteMap(mapId);
       await refreshBranchContext();
@@ -1302,6 +1308,8 @@ function Networks() {
     } catch (requestError) {
       console.error(requestError);
       notifyError(requestError?.response?.data?.detail || 'Ошибка удаления карты.');
+    } finally {
+      setMapBusy(false);
     }
   };
 
@@ -1352,6 +1360,7 @@ function Networks() {
   }, [clearPendingPointDraft, isMobile]);
 
   const commitPendingPoint = async () => {
+    if (pointBusy) return;
     if (!pendingPoint || !selectedMapId || !branchIdNum) {
       notifyError('Сначала выберите позицию на карте.');
       return;
@@ -1367,6 +1376,7 @@ function Networks() {
       notifyError('Не удалось определить порт или розетку для привязки.');
       return;
     }
+    setPointBusy(true);
     try {
       await networksAPI.createMapPoint({
         branch_id: branchIdNum,
@@ -1386,6 +1396,8 @@ function Networks() {
     } catch (requestError) {
       console.error(requestError);
       notifyError(requestError?.response?.data?.detail || 'Ошибка привязки розетки.');
+    } finally {
+      setPointBusy(false);
     }
   };
 
@@ -1411,12 +1423,13 @@ function Networks() {
   };
 
   const saveSelectedPoint = async () => {
-    if (!selectedPoint) return;
+    if (!selectedPoint || pointBusy) return;
     const nextPortId = Number(selectedPoint.port_id || 0);
     if (!nextPortId) {
       notifyError('Для точки необходимо выбрать порт с заполненным PORT P/P.');
       return;
     }
+    setPointBusy(true);
     try {
       await networksAPI.updateMapPoint(selectedPoint.id, {
         port_id: nextPortId,
@@ -1430,11 +1443,16 @@ function Networks() {
     } catch (requestError) {
       console.error(requestError);
       notifyError(requestError?.response?.data?.detail || 'Ошибка обновления точки.');
+    } finally {
+      setPointBusy(false);
     }
   };
 
   const removeSelectedPoint = async () => {
-    if (!selectedPoint) return;
+    if (!selectedPoint || pointBusy) return;
+    const confirmed = window.confirm('Удалить точку с карты? Это действие нельзя отменить.');
+    if (!confirmed) return;
+    setPointBusy(true);
     try {
       await networksAPI.deleteMapPoint(selectedPoint.id);
       setSelectedPointId(null);
@@ -1444,6 +1462,8 @@ function Networks() {
     } catch (requestError) {
       console.error(requestError);
       notifyError(requestError?.response?.data?.detail || 'Ошибка удаления точки.');
+    } finally {
+      setPointBusy(false);
     }
   };
 
@@ -1991,6 +2011,9 @@ function Networks() {
       notifyError('Устройство не выбрано.');
       return;
     }
+    if (deviceDeleting) return;
+    const confirmed = window.confirm(`Удалить устройство "${deviceCode || deviceEditId}"? Это действие нельзя отменить.`);
+    if (!confirmed) return;
     try {
       setDeviceDeleting(true);
       await networksAPI.deleteDevice(deviceEditId);
@@ -2052,26 +2075,34 @@ function Networks() {
     }
   };
 
+  const portHotkeysRef = useRef(null);
+  portHotkeysRef.current = { editingPortId, displayedPorts, cancelEditPort, savePortEdit };
+
   useEffect(() => {
     const handleKeyDown = (e) => {
+      const {
+        editingPortId: editId,
+        displayedPorts: ports,
+        cancelEditPort: cancelEdit,
+        savePortEdit: saveEdit,
+      } = portHotkeysRef.current || {};
+
       // Escape key
-      if (e.key === 'Escape') {
-        if (editingPortId) cancelEditPort(e);
+      if (e.key === 'Escape' && editId) {
+        cancelEdit(e);
       }
 
       // Ctrl + S or Meta + S
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        if (editingPortId) {
-          e.preventDefault();
-          const portObj = displayedPorts.find(p => Number(p.id) === Number(editingPortId)) || { id: editingPortId };
-          savePortEdit(portObj, e);
-        }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && editId) {
+        e.preventDefault();
+        const portObj = ports.find(p => Number(p.id) === Number(editId)) || { id: editId };
+        saveEdit(portObj, e);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [editingPortId, displayedPorts, cancelEditPort, savePortEdit]);
+  }, []);
 
   const setDeviceChipRef = useCallback((deviceId, node) => {
     const key = Number(deviceId || 0);
@@ -2145,7 +2176,7 @@ function Networks() {
         {canEdit && (
           <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
             <Button size="small" onClick={() => selectedMap && openMapDialogEdit(selectedMap)} disabled={!selectedMap}>Правка</Button>
-            <Button size="small" color="error" onClick={() => selectedMap && void removeMap(selectedMap)} disabled={!selectedMap}>Удалить</Button>
+            <Button size="small" color="error" onClick={() => selectedMap && void removeMap(selectedMap)} disabled={!selectedMap || mapBusy}>Удалить</Button>
           </Stack>
         )}
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 0.8 }}>
@@ -2469,7 +2500,7 @@ function Networks() {
                     size="small"
                     startIcon={<PlaceIcon />}
                     onClick={() => void commitPendingPoint()}
-                    disabled={pendingCommitDisabled}
+                    disabled={pendingCommitDisabled || pointBusy}
                   >
                     Привязать розетку
                   </Button>
@@ -2602,15 +2633,15 @@ function Networks() {
                   <TextField size="small" label="Примечание" value={selectedPoint.note || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, note: event.target.value } : p)))} />
                   <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
                   <Stack direction="row" spacing={1}>
-                    <Button size="small" variant="contained" onClick={() => void saveSelectedPoint()}>Сохранить</Button>
+                    <Button size="small" variant="contained" onClick={() => void saveSelectedPoint()} disabled={pointBusy}>Сохранить</Button>
                     <Button size="small" onClick={() => setPointEditMode(false)}>Отмена</Button>
-                    <Button size="small" color="error" onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                    <Button size="small" color="error" onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                   </Stack>
                 </>
               ) : (
                 <Stack direction="row" spacing={1}>
                   <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
-                  <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                  <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                 </Stack>
               )}
             </Stack>
@@ -3107,15 +3138,15 @@ function Networks() {
                       <TextField size="small" label="Примечание" value={selectedPoint.note || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, note: event.target.value } : p)))} />
                       <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
                       <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                        <Button size="large" variant="contained" fullWidth onClick={() => void saveSelectedPoint()}>Сохранить</Button>
+                        <Button size="large" variant="contained" fullWidth onClick={() => void saveSelectedPoint()} disabled={pointBusy}>Сохранить</Button>
                         <Button size="large" variant="outlined" fullWidth onClick={() => setPointEditMode(false)}>Отмена</Button>
                       </Stack>
-                      <Button size="large" color="error" variant="outlined" fullWidth onClick={() => void removeSelectedPoint()}>Удалить точку</Button>
+                      <Button size="large" color="error" variant="outlined" fullWidth onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить точку</Button>
                     </>
                   ) : (
                     <Stack spacing={1} sx={{ mt: 0.5 }}>
                       <Button size="large" variant="outlined" fullWidth startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
-                      <Button size="large" color="error" variant="outlined" fullWidth startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                      <Button size="large" color="error" variant="outlined" fullWidth startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                     </Stack>
                   )}
                 </Stack>
@@ -3227,15 +3258,15 @@ function Networks() {
                     <TextField size="small" label="Примечание" value={selectedPoint.note || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, note: event.target.value } : p)))} />
                     <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
                     <Stack direction="row" spacing={1}>
-                      <Button size="small" variant="contained" onClick={() => void saveSelectedPoint()}>Сохранить</Button>
+                      <Button size="small" variant="contained" onClick={() => void saveSelectedPoint()} disabled={pointBusy}>Сохранить</Button>
                       <Button size="small" onClick={() => setPointEditMode(false)}>Отмена</Button>
-                      <Button size="small" color="error" onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                      <Button size="small" color="error" onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                     </Stack>
                   </>
                 ) : (
                   <Stack direction="row" spacing={1}>
                     <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
-                    <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                    <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                   </Stack>
                 )}
               </Stack>
@@ -3399,6 +3430,7 @@ function Networks() {
           mapSiteCode={mapSiteCode}
           setMapSiteCode={setMapSiteCode}
           saveMap={saveMap}
+          saving={mapBusy}
           sites={availableSites}
         />
 
