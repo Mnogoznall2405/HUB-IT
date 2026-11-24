@@ -49,6 +49,7 @@ import { useNotification } from '../../contexts/NotificationContext';
 import { usePreferences } from '../../contexts/PreferencesContext';
 import apiClient, { chatAPI, mailAPI, settingsAPI } from '../../api/client';
 import { databaseAPI } from '../../api/database';
+import { safeLocalGetItem, safeLocalSetItem } from '../../lib/safeStorage';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { buildOfficeUiTokens, getOfficeEmptyStateSx, getOfficePanelSx, getOfficeQuietActionSx } from '../../theme/officeUiTokens';
 import BrandedRouteLoader from './BrandedRouteLoader';
@@ -217,22 +218,17 @@ export function MainLayoutInner({
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pendingNavigation, setPendingNavigation] = useState(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    const saved = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
-    return saved === 'true';
-  });
-  const [sidebarPinned, setSidebarPinned] = useState(() => {
-    try {
-      return localStorage.getItem(SIDEBAR_PINNED_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => (
+    safeLocalGetItem(SIDEBAR_COLLAPSED_KEY) === 'true'
+  ));
+  const [sidebarPinned, setSidebarPinned] = useState(() => (
+    safeLocalGetItem(SIDEBAR_PINNED_KEY) === 'true'
+  ));
   const [sidebarToolsExpanded, setSidebarToolsExpanded] = useState(() => (
-    localStorage.getItem(SIDEBAR_TOOLS_EXPANDED_KEY) !== 'false'
+    safeLocalGetItem(SIDEBAR_TOOLS_EXPANDED_KEY) !== 'false'
   ));
   const [sidebarItExpanded, setSidebarItExpanded] = useState(() => (
-    localStorage.getItem(SIDEBAR_IT_EXPANDED_KEY) !== 'false'
+    safeLocalGetItem(SIDEBAR_IT_EXPANDED_KEY) !== 'false'
   ));
   const [accountMenuAnchorEl, setAccountMenuAnchorEl] = useState(null);
   const navigate = useNavigate();
@@ -1034,11 +1030,7 @@ useEffect(() => {
   const toggleSidebarPinned = useCallback(() => {
     setSidebarPinned((current) => {
       const next = !current;
-      try {
-        localStorage.setItem(SIDEBAR_PINNED_KEY, String(next));
-      } catch {
-        // Storage can be unavailable (private mode); the pin then lasts for the session only.
-      }
+      safeLocalSetItem(SIDEBAR_PINNED_KEY, String(next));
       return next;
     });
     setDrawerOpen(false);
@@ -1047,7 +1039,7 @@ useEffect(() => {
   const toggleSidebar = () => {
     const newState = !sidebarCollapsed;
     setSidebarCollapsed(newState);
-    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(newState));
+    safeLocalSetItem(SIDEBAR_COLLAPSED_KEY, String(newState));
   };
 
   // Fetch available databases
@@ -1118,7 +1110,7 @@ useEffect(() => {
     if (databases.length === 0) return;
 
     const currentId = normalizeDbId(currentDb?.id);
-    const storedId = normalizeDbId(localStorage.getItem('selected_database'));
+    const storedId = normalizeDbId(safeLocalGetItem('selected_database'));
     const preferredId = currentId || storedId;
 
     const selectedDb =
@@ -1136,7 +1128,7 @@ useEffect(() => {
       });
     }
 
-    localStorage.setItem('selected_database', selectedId);
+    safeLocalSetItem('selected_database', selectedId);
   }, [databases, currentDb?.id, currentDb?.name]);
 
   const fetchUnreadCounts = useCallback(async (
@@ -1759,7 +1751,7 @@ useEffect(() => {
   const toggleToolsGroup = () => {
     setSidebarToolsExpanded((current) => {
       const next = !current;
-      localStorage.setItem(SIDEBAR_TOOLS_EXPANDED_KEY, String(next));
+      safeLocalSetItem(SIDEBAR_TOOLS_EXPANDED_KEY, String(next));
       return next;
     });
   };
@@ -1767,7 +1759,7 @@ useEffect(() => {
   const toggleItGroup = () => {
     setSidebarItExpanded((current) => {
       const next = !current;
-      localStorage.setItem(SIDEBAR_IT_EXPANDED_KEY, String(next));
+      safeLocalSetItem(SIDEBAR_IT_EXPANDED_KEY, String(next));
       return next;
     });
   };
@@ -1934,7 +1926,7 @@ useEffect(() => {
         await databaseAPI.switchDatabase(newDbId);
         const selectedId = normalizeDbId(selectedDb.id);
         setCurrentDb({ id: selectedId, name: selectedDb.name });
-        localStorage.setItem('selected_database', selectedId);
+        safeLocalSetItem('selected_database', selectedId);
         window.dispatchEvent(new CustomEvent('database-changed', { detail: { databaseId: selectedId } }));
       } catch (error) {
         console.error('Error switching database:', error);

@@ -1,6 +1,5 @@
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import QRCode from 'qrcode';
 
 import { authAPI } from '../api/auth';
 import { windowsSsoAPI } from '../api/windowsSso';
@@ -84,7 +83,9 @@ function isCompleteBackupInput(value) {
   if (/^[A-Fa-f0-9]{4}-?[A-Fa-f0-9]{4}$/.test(trimmed)) {
     return true;
   }
-  return trimmed.length >= 6;
+  // Backup codes are 8-9 chars (optionally dashed); submitting at 6+ fired the
+  // request while the user was still typing the tail of the code.
+  return trimmed.replace(/-/g, '').length >= 8;
 }
 
 const PASSWORD_SUBMIT_LOCKOUT_COOLDOWN_MS = 2000;
@@ -93,6 +94,25 @@ function waitMs(ms) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
   });
+}
+
+const BACKEND_AUTH_ERROR_MESSAGES = {
+  'incorrect username or password': 'Неверное имя пользователя или пароль.',
+  'user is inactive': 'Учётная запись отключена. Обратитесь к администратору.',
+  'too many failed login attempts, try again later': 'Слишком много попыток входа. Подождите немного и попробуйте снова.',
+  'too many requests, try again later': 'Слишком много запросов. Подождите немного и попробуйте снова.',
+  'access denied from this network': 'Доступ запрещён из этой сети.',
+  'biometric login is disabled for internal network': 'Вход по биометрии отключён во внутренней сети.',
+  'windows sso is only available in the internal network': 'Вход через Windows доступен только во внутренней сети.',
+  'mobile device identifier is required': 'Не указан идентификатор устройства.',
+  'invalid assigned_database': 'Недопустимая база данных.',
+};
+
+// Backend `detail` strings are English; the login UI is Russian — localize the
+// known auth-server phrases and pass everything else through untouched.
+function localizeAuthErrorMessage(message) {
+  const text = String(message || '').trim();
+  return BACKEND_AUTH_ERROR_MESSAGES[text.toLowerCase()] || text;
 }
 
 function resolvePasswordLoginError(result) {
@@ -281,7 +301,9 @@ function InfoBanner({ tone = 'info', children, variant = 'inline' }) {
 
   return (
     <div
-      role="status"
+      // The toast shell already announces via its own role=status live region;
+      // a nested one here made screen readers read the notice twice.
+      role={variant === 'toast' ? undefined : 'status'}
       className={cn(
         'rounded-[18px] border px-4 py-3 text-sm leading-6',
         variant === 'toast'
@@ -616,7 +638,7 @@ function Login() {
   }, [dismissLoginNotice]);
 
   const reportLoginError = useCallback((message) => {
-    showLoginNotice('error', message, 5200);
+    showLoginNotice('error', localizeAuthErrorMessage(message), 5200);
   }, [showLoginNotice]);
 
   const dismissVpnHint = useCallback(() => {
@@ -719,11 +741,11 @@ function Login() {
     const loginAccountName = username.trim() || String(setupData?.account_name || '').trim();
     let qrUri = alignOtpAuthAccountName(otpauthUri, loginAccountName);
 
-    QRCode.toDataURL(qrUri, {
+    import('qrcode').then((mod) => (mod.default || mod).toDataURL(qrUri, {
       errorCorrectionLevel: 'M',
       margin: 1,
       width: 220,
-    })
+    }))
       .then((dataUrl) => {
         if (!cancelled) {
           setTotpQrDataUrl(String(dataUrl || ''));
@@ -1133,12 +1155,15 @@ function Login() {
     if (!window.location.pathname.startsWith('/login')) {
       return;
     }
-    const destination = resolvePostAuthenticationPath(userPayload);
     if (shouldForceCanonicalHost()) {
-      window.location.assign(buildCanonicalUrl(destination));
+      window.location.assign(buildCanonicalUrl(resolvePostAuthenticationPath(userPayload)));
       return;
     }
-    window.location.assign(destination);
+    // In-app navigation is owned by LoginRoute/PostAuthNavigate: every auth
+    // flow sets AuthContext.user before reaching this point, and the route
+    // guard peeks + consumes the stored return path on commit. A forced
+    // location.assign here used to reload the whole app (and raced the SPA
+    // navigation) after every passkey sign-in.
   };
 
   const closeRememberDevicePrompt = ({ redirect = true } = {}) => {
@@ -1977,7 +2002,7 @@ function Login() {
                     type="button"
                     onClick={() => setShowPassword((prev) => !prev)}
                     aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
-                    className="login-field-eye rounded-full p-1 text-white/72 transition hover:text-white"
+                    className="login-field-eye grid h-9 w-9 place-items-center rounded-full p-0 text-white/72 transition hover:text-white"
                   >
                     <EyeGlyph open={showPassword} className="h-5 w-5" />
                   </button>
@@ -2285,6 +2310,7 @@ function Login() {
 
   return (
     <div
+      role="main"
       data-testid={isCompactViewport ? 'login-mobile-layout' : 'login-desktop-layout'}
       className={cn(
         'relative min-h-[100dvh] w-full max-w-full overflow-x-hidden bg-[#07090c] text-white',

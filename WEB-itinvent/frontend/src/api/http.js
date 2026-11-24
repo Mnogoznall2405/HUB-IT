@@ -5,6 +5,7 @@
  */
 
 import axios from 'axios';
+import { safeLocalGetItem, safeLocalRemoveItem } from '../lib/safeStorage';
 import { buildCacheKey, getOrFetchSWR } from '../lib/swrCache';
 import {
   cacheMobileGetResponse,
@@ -43,13 +44,7 @@ const normalizeCacheValue = (value) => {
   return value ?? null;
 };
 
-const getSelectedDatabaseCachePart = () => {
-  try {
-    return normalizeDbId(window.localStorage.getItem('selected_database'));
-  } catch {
-    return '';
-  }
-};
+const getSelectedDatabaseCachePart = () => normalizeDbId(safeLocalGetItem('selected_database'));
 
 let refreshInFlight = null;
 // Fan-out guard: N параллельных 401 после финального отказа refresh иначе
@@ -379,7 +374,7 @@ apiClient.interceptors.request.use(
       }
     }
 
-    const selectedDatabase = localStorage.getItem('selected_database');
+    const selectedDatabase = safeLocalGetItem('selected_database');
     if (selectedDatabase && config.headers['X-Database-ID'] == null) {
       config.headers['X-Database-ID'] = selectedDatabase;
     }
@@ -412,15 +407,19 @@ apiClient.interceptors.response.use(
   (response) => {
     const metadata = response?.config?.metadata || {};
     const responseUrl = String(response?.config?.url || '');
-    // Exact-path match: '/auth/login-mode' is public (no cookies issued) and a
-    // substring check would let it mark the epoch, wrongly skipping queued
+    // Any interactive sign-in success (password, 2FA, passkey, trusted device)
+    // opens a new rejection epoch — suppressing the reset here left the
+    // auth-required fan-out muted for up to ~12 min after a passkey login.
+    // Suffix match on the *verify* endpoints only: '/auth/login-mode' and the
+    // '*/options' calls are public pre-auth probes (no cookies issued) — a
+    // substring match would let them mark the epoch and wrongly skip queued
     // refreshes for live sessions.
     const responsePath = responseUrl.split('?')[0];
     if (
-      responsePath === '/auth/login'
-      || responsePath.endsWith('/auth/login')
-      || responsePath.includes('/auth/verify-2fa')
-      || responsePath.includes('/auth/passkey-login/verify')
+      responsePath.endsWith('/auth/login')
+      || responsePath.endsWith('/auth/verify-2fa')
+      || responsePath.endsWith('/auth/passkey-login/verify')
+      || responsePath.endsWith('/auth/trusted-devices/auth/verify')
     ) {
       resetAuthRejectionEpoch();
       markRefreshEpoch();
@@ -511,7 +510,13 @@ apiClient.interceptors.response.use(
       }
 
       // Session expired or invalid - clear cached user and notify app state.
-      localStorage.removeItem('user');
+      // Suppressed calls are background probes: wiping localStorage.user here
+      // would race a fresh login on another tab (the stale response resolves
+      // after the new user was stored) and split tabs into different auth
+      // states. The next non-suppressed 401 still clears it.
+      if (!suppressAuthRequired) {
+        safeLocalRemoveItem('user');
+      }
       if (!suppressAuthRequired && !isLoginRequest && !isSessionTelemetryRequest && !authRequiredNotified) {
         authRequiredNotified = true;
         reportAuthSessionTelemetry({
@@ -537,6 +542,7 @@ export const getCachedGet = async (
     staleTimeMs = SYSTEM_GET_STALE_TIME_MS,
     force = false,
     suppressAuthRequired = false,
+    signal = undefined,
   } = {},
 ) => {
   const cacheKey = buildCacheKey(
@@ -552,6 +558,7 @@ export const getCachedGet = async (
       await apiClient.get(url, {
         params,
         suppressAuthRequired,
+        signal,
       })
     ).data,
     {

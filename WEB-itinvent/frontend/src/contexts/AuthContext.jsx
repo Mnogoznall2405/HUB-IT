@@ -10,11 +10,16 @@ import { clearAllMailRecentCache } from '../lib/mailRecentCache';
 import { clearMobileOfflineCache } from '../lib/mobileOfflineCache';
 import { isMailSessionEnabled, MAIL_SESSION_CHANGED_EVENT } from '../lib/mailSession';
 import { sweepLogoutSessionData } from '../lib/logoutDataSweep';
+import { safeLocalGetItem, safeLocalRemoveItem, safeLocalSetItem } from '../lib/safeStorage';
 import { clearSWRCache } from '../lib/swrCache';
 import { synchronizePrivateMediaSession } from '../lib/privateMediaSession';
 import { synchronizeBrowserAccount } from '../lib/browserAccountSession';
 
 const AuthContext = createContext(null);
+// Client-side grants are a UX layer only: they decide which routes/buttons the
+// UI shows. The backend re-checks permissions on every request
+// (require_permission across api/v1 routers), so widening these lists can
+// never grant real access — it only risks showing dead ends.
 const alwaysGrantedPermissions = [
   'address_book.read',
   'announcements.read',
@@ -200,7 +205,7 @@ export const AuthProvider = ({ children }) => {
     currentUserRef.current = null;
     mediaSessionUserKeyRef.current = '';
     clearSWRCache();
-    localStorage.removeItem('user');
+    safeLocalRemoveItem('user');
     synchronizeBrowserAccount();
     clearAllChatDrafts();
     clearAllMailRecentCache();
@@ -226,9 +231,9 @@ export const AuthProvider = ({ children }) => {
     currentUserRef.current = currentUser || null;
     setUser(currentUser || null);
     if (currentUser && typeof currentUser === 'object') {
-      localStorage.setItem('user', JSON.stringify(currentUser));
+      safeLocalSetItem('user', JSON.stringify(currentUser));
     } else {
-      localStorage.removeItem('user');
+      safeLocalRemoveItem('user');
     }
     synchronizeBrowserAccount(currentKey);
     return true;
@@ -269,9 +274,14 @@ export const AuthProvider = ({ children }) => {
     return sessionRefreshGateRef.current;
   }, [applySessionUser, invalidateSession]);
 
-  // Restore cached user and validate active cookie session
+  // Restore cached user and validate active cookie session.
+  // The cached profile renders before /auth/me answers (offline tolerance); if
+  // the cookie session belongs to a different account, applySessionUser swaps
+  // the divergent user as soon as validation resolves. The residual risk is a
+  // brief flash of the previous user's UI — accepted trade-off for instant
+  // startup; sensitive data still waits for the server response.
   useEffect(() => {
-    const savedUser = localStorage.getItem('user');
+    const savedUser = safeLocalGetItem('user');
     let cancelled = false;
     if (!savedUser) synchronizeBrowserAccount();
 
@@ -294,7 +304,7 @@ export const AuthProvider = ({ children }) => {
         }
       } catch (e) {
         console.error('Failed to parse saved user:', e);
-        localStorage.removeItem('user');
+        safeLocalRemoveItem('user');
         synchronizeBrowserAccount();
       }
     }
@@ -429,7 +439,12 @@ export const AuthProvider = ({ children }) => {
     };
 
     const onSharedAuthChanged = (event) => {
-      if (event.key !== 'user' || (event.storageArea && event.storageArea !== localStorage)) {
+      try {
+        if (event.key !== 'user' || (event.storageArea && event.storageArea !== window.localStorage)) {
+          return;
+        }
+      } catch {
+        // Storage access itself can throw when blocked; ignore the event.
         return;
       }
 
@@ -684,7 +699,7 @@ export const AuthProvider = ({ children }) => {
         await clearMobileOfflineCache().catch(() => 0);
         const lastUsername = String(user?.username || '').trim();
         if (lastUsername) {
-          localStorage.setItem('hubit.login.last-username', lastUsername);
+          safeLocalSetItem('hubit.login.last-username', lastUsername);
         }
         // Always clear local user cache
         await invalidateSession();
