@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -26,9 +26,13 @@ export function AdminLoginAllowlistSettingsCard({ appSettings, loading, saving, 
     [appSettings?.admin_login_allowed_ips],
   );
 
+  const syncedIpsRef = useRef(null);
   useEffect(() => {
-    setDraftIps(currentIps.join('\n'));
+    const synced = currentIps.join('\n');
+    if (syncedIpsRef.current === synced) return;
+    setDraftIps((prev) => (prev === syncedIpsRef.current || prev === '' ? synced : prev));
     setLocalError('');
+    syncedIpsRef.current = synced;
   }, [currentIps]);
 
   const parsedIps = useMemo(() => {
