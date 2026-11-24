@@ -90,7 +90,7 @@
       "id": "FE-0004",
       "severity": "Medium",
       "auditStatus": "Suspected",
-      "status": "NEEDS_EVIDENCE",
+      "status": "REJECTED",
       "priority": "SPIKE",
       "batch": "shared-links",
       "page": "/shared-folders/:token",
@@ -101,10 +101,10 @@
         "FE-0006",
         "FE-0084"
       ],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "unreproducible in clean profile",
+      "pr": 67
     },
     {
       "id": "FE-0005",
@@ -930,7 +930,7 @@
       "id": "FE-0051",
       "severity": "Low",
       "auditStatus": "Suspected",
-      "status": "NEEDS_EVIDENCE",
+      "status": "REJECTED",
       "priority": "SPIKE",
       "batch": "api-client",
       "page": null,
@@ -938,10 +938,10 @@
       "lines": "63-77 (invalidateSWRCacheByPrefix: отсоединение in-flight), 120-129 (runDedupedFetch: отсоединённый fetch всё равно резолвится данными вызвавшему — публикация в кэш блокируется, возврат данных нет)",
       "title": "swrCache: потребитель может применить «отсоединённый» ответ без перепроверки",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "theoretical: detached fetch resolves to caller; onRevalidated covers consumers",
+      "pr": 67
     },
     {
       "id": "FE-0052",
@@ -1360,7 +1360,7 @@
       "id": "FE-0076",
       "severity": "Low",
       "auditStatus": "Suspected",
-      "status": "NEEDS_EVIDENCE",
+      "status": "FIXED",
       "priority": "SPIKE",
       "batch": "chat",
       "page": null,
@@ -1368,10 +1368,11 @@
       "lines": "119-129",
       "title": "AI-письмо: plain-text body с is_html=true",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5b9f7bd6",
+      "pr": 67
     },
     {
       "id": "FE-0077",
@@ -1974,7 +1975,7 @@
       "id": "FE-0110",
       "severity": "Medium",
       "auditStatus": "Suspected",
-      "status": "NEEDS_EVIDENCE",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "onlyoffice-editor",
       "page": null,
@@ -1982,10 +1983,11 @@
       "lines": "436-440",
       "title": "Закрытие редактора может зависнуть, если iframe DocSpace упал — editor.requestClose() не отвечает",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5b9f7bd6",
+      "pr": 67
     },
     {
       "id": "FE-0111",
@@ -2062,7 +2064,7 @@
       "id": "FE-0115",
       "severity": "Low",
       "auditStatus": "Suspected",
-      "status": "NEEDS_EVIDENCE",
+      "status": "FIXED",
       "priority": "SPIKE",
       "batch": "mail",
       "page": null,
@@ -2070,10 +2072,11 @@
       "lines": "337-360",
       "title": "Синхронный revokeObjectURL сразу после click — хрупко на iOS Safari",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5b9f7bd6",
+      "pr": 67
     },
     {
       "id": "FE-0116",
@@ -2913,7 +2916,7 @@
       "id": "FE-0161",
       "severity": "Low",
       "auditStatus": "Suspected",
-      "status": "NEEDS_EVIDENCE",
+      "status": "FIXED",
       "priority": "SPIKE",
       "batch": "networks",
       "page": null,
@@ -2921,10 +2924,11 @@
       "lines": "765 (sockets limit 10000),871 (ports limit 10000),1059/2030 (поиск limit 5000) — UI не сигнализирует о неполноте",
       "title": "Networks: молчаливое усечение выборок по limit (10000/5000) — неверные счётчики и «не найдено»",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5b9f7bd6",
+      "pr": 67
     },
     {
       "id": "FE-0162",
@@ -3492,7 +3496,7 @@
       "id": "FE-0194",
       "severity": "Low",
       "auditStatus": "Suspected",
-      "status": "NEEDS_EVIDENCE",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "monitoring-guard",
       "page": null,
@@ -3500,10 +3504,11 @@
       "lines": "34: displayTargetName защищает, но прямой вызов split — нет",
       "title": "Monitoring: target.name.split без защиты — target без name роняет всю сетку",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5b9f7bd6",
+      "pr": 67
     },
     {
       "id": "FE-0195",
@@ -4135,7 +4140,7 @@
       "id": "FE-0230",
       "severity": "High",
       "auditStatus": "Suspected",
-      "status": "NEEDS_EVIDENCE",
+      "status": "FIXED",
       "priority": "SPIKE",
       "batch": "account",
       "page": null,
@@ -4143,10 +4148,11 @@
       "lines": "36 (if(isNativeShellRuntime()) return null до хуков 38-117); ChatNotificationsSettingsCard.jsx:30; platform.js:14-16; desktopBridge.js:905-907 (bridgeReady асинхронный)",
       "title": "Аккаунт: ранний return null до хуков при runtime-флаге Desktop → крах рендера «Rendered fewer hooks»",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5b9f7bd6",
+      "pr": 67
     },
     {
       "id": "FE-0231",
@@ -4761,7 +4767,7 @@
       "id": "FE-0265",
       "severity": "Low",
       "auditStatus": "Suspected",
-      "status": "NEEDS_EVIDENCE",
+      "status": "FIXED",
       "priority": "SPIKE",
       "batch": "tasks",
       "page": null,
@@ -4769,10 +4775,11 @@
       "lines": "28",
       "title": "Tasks: единый Suspense(fallback=null) на весь dialogs-слой — suspend размонтирует все открытые диалоги",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5b9f7bd6",
+      "pr": 67
     },
     {
       "id": "FE-0266",
@@ -5379,7 +5386,7 @@
       "id": "FE-0300",
       "severity": "Low",
       "auditStatus": "Suspected",
-      "status": "NEEDS_EVIDENCE",
+      "status": "FIXED",
       "priority": "SPIKE",
       "batch": "dlp",
       "page": null,
@@ -5387,10 +5394,11 @@
       "lines": "220-235",
       "title": "DLP: список telegram/max-чатов обрезан limit=200 без индикатора",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5b9f7bd6",
+      "pr": 67
     },
     {
       "id": "FE-0301",
@@ -5791,7 +5799,7 @@
       "id": "FE-0323",
       "severity": "Low",
       "auditStatus": "Suspected",
-      "status": "NEEDS_EVIDENCE",
+      "status": "REJECTED",
       "priority": "SPIKE",
       "batch": "scan-center",
       "page": null,
@@ -5799,16 +5807,16 @@
       "lines": "123-148: метод в проде не вызывается (только тесты) — латентный риск подключения",
       "title": "API: getHostsFallbackFromIncidents молча усекает список хостов до incidentLimit (латентный)",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "getHostsFallbackFromIncidents dead in prod (test-only path), latent risk noted",
+      "pr": 67
     },
     {
       "id": "FE-0324",
       "severity": "Low",
       "auditStatus": "Suspected",
-      "status": "NEEDS_EVIDENCE",
+      "status": "REJECTED",
       "priority": "SPIKE",
       "batch": "database",
       "page": null,
@@ -5816,10 +5824,10 @@
       "lines": "28-39 + useTransferFormState.js",
       "title": "Database: справочники departments/movements с limit 500/1000 — переполнение зависит от данных",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "deliberate perf bound (limit 500/20); UI flag needs hook contract change, real catalog size far below limit",
+      "pr": 67
     },
     {
       "id": "FE-0325",
