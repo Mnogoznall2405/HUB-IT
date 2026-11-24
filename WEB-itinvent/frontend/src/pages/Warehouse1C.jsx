@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import useRequestGuard from '../lib/useRequestGuard';
 import useDebounce from '../hooks/useDebounce';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
@@ -376,7 +376,31 @@ function NomenclatureCell({ code, name }) {
   );
 }
 
-function BalanceMobileRow({ row, onShowMovement, onOpenHubMatch }) {
+const WAREHOUSE_ROW_RENDER_STEP = 200;
+const EMPTY_ROW_LIST = [];
+
+// Списки доходят до ~1000 строк: рендерим порциями, чтобы первый кадр
+// не монтировал тысячу DOM-узлов (FE-0033). Сброс — по смене массива.
+function useVisibleRows(rows, step = WAREHOUSE_ROW_RENDER_STEP) {
+  const list = Array.isArray(rows) ? rows : EMPTY_ROW_LIST;
+  const [visibleCount, setVisibleCount] = useState(step);
+  useEffect(() => { setVisibleCount(step); }, [list, step]);
+  const visible = list.length <= visibleCount ? list : list.slice(0, visibleCount);
+  return [visible, list.length - visible.length, () => setVisibleCount((current) => current + step)];
+}
+
+function ShowMoreRowsButton({ hidden, onClick }) {
+  if (hidden <= 0) return null;
+  return (
+    <Box sx={{ display: 'flex', justifyContent: 'center', py: 1 }}>
+      <Button size="small" variant="outlined" onClick={onClick}>
+        Показать ещё (осталось {hidden})
+      </Button>
+    </Box>
+  );
+}
+
+const BalanceMobileRow = memo(function BalanceMobileRow({ row, onShowMovement, onOpenHubMatch }) {
   const [expanded, setExpanded] = useState(false);
   const seriesLabel = row.series_name || row.series_number || '';
   const characteristic = String(row.characteristic_name || '').trim();
@@ -475,9 +499,9 @@ function BalanceMobileRow({ row, onShowMovement, onOpenHubMatch }) {
       ) : null}
     </Box>
   );
-}
+});
 
-function MovementMobileRow({ row, onOpenDetail }) {
+const MovementMobileRow = memo(function MovementMobileRow({ row, onOpenDetail }) {
   const [expanded, setExpanded] = useState(false);
   const canOpen = canOpenMovementDetail(row);
   const hasRoute = Boolean(row.transfer_from_warehouse_name || row.transfer_to_warehouse_name);
@@ -559,7 +583,7 @@ function MovementMobileRow({ row, onOpenDetail }) {
       ) : null}
     </Box>
   );
-}
+});
 
 function DismissedWarehouseBalances({ rows, mobile = false, label }) {
   const balances = Array.isArray(rows) ? rows : [];
@@ -606,7 +630,7 @@ function DismissedWarehouseBalances({ rows, mobile = false, label }) {
   );
 }
 
-function DismissedWarehouseMobileRow({ row }) {
+const DismissedWarehouseMobileRow = memo(function DismissedWarehouseMobileRow({ row }) {
   const [expanded, setExpanded] = useState(false);
   const warehouseName = row.warehouse?.name || '-';
   const detailsId = `dismissed-mobile-${row.warehouse?.ref || 'warehouse'}`;
@@ -644,9 +668,9 @@ function DismissedWarehouseMobileRow({ row }) {
       </Collapse>
     </Paper>
   );
-}
+});
 
-function DismissedWarehouseDesktopRow({ row }) {
+const DismissedWarehouseDesktopRow = memo(function DismissedWarehouseDesktopRow({ row }) {
   const [expanded, setExpanded] = useState(false);
   const warehouseName = row.warehouse?.name || '-';
   const detailsId = `dismissed-desktop-${row.warehouse?.ref || 'warehouse'}`;
@@ -690,7 +714,7 @@ function DismissedWarehouseDesktopRow({ row }) {
       </TableRow>
     </>
   );
-}
+});
 
 const DISMISSED_SORT_FIELDS = [
   { value: 'employee', label: 'Уволенный сотрудник' },
@@ -792,6 +816,8 @@ export function DismissedWarehousesPanel({
       return compareDismissedValues(aValue, bValue, sortBy, sortDirection);
     });
   }, [warehouses, cityFilter, sortBy, sortDirection]);
+
+  const [visibleWarehouses, hiddenWarehouses, showMoreWarehouses] = useVisibleRows(filteredWarehouses);
 
   const hasActiveFilter = Boolean(cityFilter) || sortBy !== 'employee' || sortDirection !== 'asc';
 
@@ -900,11 +926,13 @@ export function DismissedWarehousesPanel({
             </Paper>
           ) : isMobile ? (
             <Stack spacing={1}>
-              {filteredWarehouses.map((row, index) => (
+              {visibleWarehouses.map((row, index) => (
                 <DismissedWarehouseMobileRow key={row.warehouse?.ref || row.warehouse?.name || index} row={row} />
               ))}
+              <ShowMoreRowsButton hidden={hiddenWarehouses} onClick={showMoreWarehouses} />
             </Stack>
           ) : (
+            <>
             <TableContainer component={Paper}>
               <Table size="small" stickyHeader>
                 <TableHead>
@@ -920,12 +948,14 @@ export function DismissedWarehousesPanel({
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {filteredWarehouses.map((row, index) => (
+                  {visibleWarehouses.map((row, index) => (
                     <DismissedWarehouseDesktopRow key={row.warehouse?.ref || row.warehouse?.name || index} row={row} />
                   ))}
                 </TableBody>
               </Table>
             </TableContainer>
+            <ShowMoreRowsButton hidden={hiddenWarehouses} onClick={showMoreWarehouses} />
+            </>
           )}
         </>
       ) : null}
@@ -1052,6 +1082,9 @@ function Warehouse1C() {
   const [movementsLoading, setMovementsLoading] = useState(false);
   const [movementsError, setMovementsError] = useState('');
   const [movementsSearched, setMovementsSearched] = useState(false);
+
+  const [visibleBalances, hiddenBalancesCount, showMoreBalances] = useVisibleRows(balances);
+  const [visibleMovements, hiddenMovementsCount, showMoreMovements] = useVisibleRows(movements);
 
   const [movementDetailOpen, setMovementDetailOpen] = useState(false);
   const [movementDetailRow, setMovementDetailRow] = useState(null);
@@ -1919,7 +1952,7 @@ function Warehouse1C() {
               ) : balances.length === 0 ? null : isMobile ? (
                 <Stack spacing={1}>
                   <Paper variant="outlined" sx={{ overflow: 'hidden' }}>
-                    {balances.map((row, index) => (
+                    {visibleBalances.map((row, index) => (
                       <BalanceMobileRow
                         key={`${row.nomenclature_ref}|${row.series_ref}|${row.warehouse_ref}|${index}`}
                         row={row}
@@ -1927,6 +1960,7 @@ function Warehouse1C() {
                         onOpenHubMatch={handleOpenHubMatch}
                       />
                     ))}
+                    <ShowMoreRowsButton hidden={hiddenBalancesCount} onClick={showMoreBalances} />
                   </Paper>
                   {balancesTotals ? (
                     <Paper variant="outlined" sx={{ px: 1.25, py: 1 }}>
@@ -1967,7 +2001,7 @@ function Warehouse1C() {
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {balances.map((row, index) => (
+                    {visibleBalances.map((row, index) => (
                       <TableRow
                         key={`${row.nomenclature_ref}|${row.series_ref}|${row.warehouse_ref}|${index}`}
                         hover
@@ -2034,6 +2068,7 @@ function Warehouse1C() {
               </TableContainer>
               )
             ) : null}
+            <ShowMoreRowsButton hidden={hiddenBalancesCount} onClick={showMoreBalances} />
           </>
         ) : tab === 'movements' ? (
           <>
@@ -2118,13 +2153,14 @@ function Warehouse1C() {
                 </Paper>
               ) : movements.length === 0 ? null : isMobile ? (
                 <Paper variant="outlined" sx={{ overflow: 'hidden' }}>
-                  {movements.map((row, index) => (
+                  {visibleMovements.map((row, index) => (
                     <MovementMobileRow
                       key={`${row.registrar_ref || row.registrar_name}|${row.period}|${index}`}
                       row={row}
                       onOpenDetail={handleOpenMovementDetail}
                     />
                   ))}
+                  <ShowMoreRowsButton hidden={hiddenMovementsCount} onClick={showMoreMovements} />
                 </Paper>
               ) : (
               <TableContainer component={Paper} sx={{ overflowX: 'auto' }}>
@@ -2159,7 +2195,7 @@ function Warehouse1C() {
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {movements.map((row, index) => (
+                    {visibleMovements.map((row, index) => (
                       <TableRow
                         key={`${row.registrar_ref || row.registrar_name}|${row.period}|${index}`}
                         hover
@@ -2212,6 +2248,7 @@ function Warehouse1C() {
               </TableContainer>
               )
             ) : null}
+            <ShowMoreRowsButton hidden={hiddenMovementsCount} onClick={showMoreMovements} />
           </>
         ) : null}
 

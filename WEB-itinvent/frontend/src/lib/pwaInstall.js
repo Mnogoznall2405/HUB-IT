@@ -7,6 +7,35 @@ let displayModeListenersBound = false;
 let pendingReloadAfterUpdate = false;
 let swMessageHandler = null;
 let swControllerChangeHandler = null;
+let updateChecksBound = false;
+let lastUpdateCheckAt = 0;
+
+const SW_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+const SW_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
+
+function requestSwUpdateCheck() {
+  const now = Date.now();
+  if (now - lastUpdateCheckAt < SW_UPDATE_CHECK_MIN_GAP_MS) return;
+  lastUpdateCheckAt = now;
+  try {
+    void currentRegistration?.update?.().catch(() => {});
+  } catch {
+    // Ignore update probe failures.
+  }
+}
+
+// Проверка обновлений без полной перезагрузки: по таймеру, при возврате на
+// вкладку и при восстановлении сети — иначе waiting-worker появлялся только
+// после перезапуска приложения (FE-0084).
+function bindSwUpdateChecks() {
+  if (updateChecksBound || typeof window === 'undefined' || typeof document === 'undefined') return;
+  updateChecksBound = true;
+  window.setInterval(requestSwUpdateCheck, SW_UPDATE_CHECK_INTERVAL_MS);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') requestSwUpdateCheck();
+  });
+  window.addEventListener('online', requestSwUpdateCheck);
+}
 
 let runtimeState = {
   updateAvailable: false,
@@ -243,6 +272,7 @@ export function bindPwaRuntime(registration) {
   currentRegistration = registration || currentRegistration;
   bindDisplayModeListeners();
   bindRuntimeListeners();
+  bindSwUpdateChecks();
 
   if (!currentRegistration) {
     void syncOfflineShellState();

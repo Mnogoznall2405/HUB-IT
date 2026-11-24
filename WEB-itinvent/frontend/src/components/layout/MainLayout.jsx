@@ -44,6 +44,7 @@ import GroupIcon from '@mui/icons-material/Group';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import CloudOffRoundedIcon from '@mui/icons-material/CloudOffRounded';
 import WifiRoundedIcon from '@mui/icons-material/WifiRounded';
+import SystemUpdateAltRoundedIcon from '@mui/icons-material/SystemUpdateAltRounded';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import { usePreferences } from '../../contexts/PreferencesContext';
@@ -157,7 +158,7 @@ import {
   normalizeNotificationPreferences,
   NOTIFICATION_PREFERENCES_CHANGED_EVENT,
 } from '../../lib/notificationPreferences';
-import { getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInstall';
+import { applyPwaUpdate, getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInstall';
 import { prefetchRouteByPath } from '../../lib/routeLoaders';
 import { resolveChatMessageNotificationPlan } from '../../lib/chatSocketNotificationPlan';
 import { playChatMessageSound } from '../../lib/chatMessageSound';
@@ -280,6 +281,7 @@ export function MainLayoutInner({
   });
   const [windowsNotificationState, setWindowsNotificationState] = useState(() => getWindowsNotificationState());
   const [pwaState, setPwaState] = useState(() => getPwaInstallState());
+  const [pwaUpdateBannerDismissed, setPwaUpdateBannerDismissed] = useState(false);
   const [isOffline, setIsOffline] = useState(() => (typeof navigator !== 'undefined' ? !navigator.onLine : false));
   const [connectionRestored, setConnectionRestored] = useState(consumeConnectionRestoredMarker);
   const [offlineCacheMeta, setOfflineCacheMeta] = useState(getMobileOfflineCacheMeta);
@@ -2517,6 +2519,42 @@ useEffect(() => {
             </Alert>
           </Box>
         </Collapse>
+
+        {pwaState?.updateAvailable && !pwaUpdateBannerDismissed ? (
+          <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, pb: 0.25 }}>
+            <Alert
+              severity="info"
+              variant="outlined"
+              icon={<SystemUpdateAltRoundedIcon fontSize="inherit" />}
+              onClose={() => setPwaUpdateBannerDismissed(true)}
+              action={(
+                <Button
+                  color="inherit"
+                  size="small"
+                  variant="outlined"
+                  onClick={() => { void applyPwaUpdate(); }}
+                  sx={{ borderColor: 'currentColor', whiteSpace: 'nowrap' }}
+                >
+                  Обновить
+                </Button>
+              )}
+              sx={{
+                width: 'fit-content',
+                maxWidth: 'min(720px, 100%)',
+                mx: 'auto',
+                py: 0.25,
+                px: 1.25,
+                borderRadius: 2.5,
+                alignItems: 'center',
+                '& .MuiAlert-icon': { py: 0.25, mr: 0.75, fontSize: '1.1rem' },
+                '& .MuiAlert-message': { py: 0.25, fontSize: '0.8125rem', lineHeight: 1.35, fontWeight: 600 },
+                '& .MuiAlert-action': { alignItems: 'center', pt: 0, mr: 0 },
+              }}
+            >
+              Доступна новая версия HUB-IT · Обновление перезагрузит приложение.
+            </Alert>
+          </Box>
+        ) : null}
       </Stack>
 
       {/* AppBar */}
