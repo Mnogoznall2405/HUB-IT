@@ -20,9 +20,10 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 269,
+    "OPEN": 254,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
+    "FIXED": 15,
     "IN_PROGRESS": 1
   },
   "issues": [
@@ -2644,7 +2645,7 @@
       "id": "FE-0154",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2652,10 +2653,13 @@
       "lines": "180-201: encodeURI не кодирует # ; + & =; поля без кавычек; значения =/+/- в начале → формулы в Excel",
       "title": "Networks: CSV-экспорт портов — data-URI без кавычек/экранирования; возможна CSV formula-injection",
       "related": [],
-      "pr": null,
+      "pr": 34,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "75c7a0dd",
+      "note": "PR #34 fix/networks-csv-sanitize @75c7a0dd: csvCell quotes all fields and prefixes formula chars (=+-@ TAB CR) with apostrophe. Test csvExport.test.jsx. PR open."
     },
     {
       "id": "FE-0155",
