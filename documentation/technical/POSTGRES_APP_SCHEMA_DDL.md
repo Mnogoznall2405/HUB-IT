@@ -1,7 +1,7 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-11-18 10:11 UTC_  
-_Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hub_chat_test@127.0.0.1:55432/chat_case_cfbbe35dd07e4d3cb97844b92cd556c0` (`127.0.0.1:55432/chat_case_cfbbe35dd07e4d3cb97844b92cd556c0`)_
+_Сгенерировано: 2026-11-24 10:24 UTC_  
+_Источник: `APP_DATABASE_URL` → `postgresql+psycopg://a8test@127.0.0.1:55432/a8stk_556a55_rb` (`127.0.0.1:55432/a8stk_556a55_rb`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 

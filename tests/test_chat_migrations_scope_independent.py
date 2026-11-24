@@ -32,8 +32,8 @@ def _load(path: Path, connection, scope: str) -> dict:
     return namespace
 
 
-def test_all_twenty_two_gated_revisions_are_covered():
-    assert len(CHAT_REVISIONS) == 22
+def test_all_gated_revisions_are_covered():
+    assert len(CHAT_REVISIONS) == 23
 
 
 @pytest.mark.parametrize("path", CHAT_REVISIONS, ids=lambda path: path.name[:13])
