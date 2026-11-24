@@ -1065,6 +1065,11 @@ function Networks() {
       setMapRenderedFrom('');
       return undefined;
     }
+    // Drop the previous map image before the new download resolves so
+    // stale tiles never sit under the newly selected map's points.
+    setMapBlobUrl('');
+    setMapIsPdf(false);
+    setMapRenderedFrom('');
     void (async () => {
       try {
         const response = await networksAPI.downloadMapFile(selectedMapId, { render: 'auto' });
@@ -1555,7 +1560,7 @@ function Networks() {
 
   useEffect(() => {
     const normalizedBranchId = Number(branchIdNum || 0);
-    if (!normalizedBranchId || fioResolving || branchDbLoading || !branchDbReady) return;
+    if (!normalizedBranchId || !canEdit || fioResolving || branchDbLoading || !branchDbReady) return;
     const normalizedDbId = String(branchDbId || '').trim();
     const attemptKey = `${normalizedBranchId}:${normalizedDbId || '-'}`;
     if (attemptKey === fioResolveAttemptKey) return;
@@ -1581,7 +1586,7 @@ function Networks() {
       }
     };
     resolveSilently();
-  }, [branchIdNum, branchDbId, branchDbLoading, branchDbReady, fioResolveAttemptKey, fioResolving, notifySuccess, notifyWarning, refreshBranchContext]);
+  }, [branchIdNum, branchDbId, branchDbLoading, branchDbReady, canEdit, fioResolveAttemptKey, fioResolving, notifySuccess, notifyWarning, refreshBranchContext]);
 
   const handleEquipImport = async (e) => {
     const file = e.target.files?.[0];
