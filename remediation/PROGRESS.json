@@ -20,10 +20,10 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 254,
+    "OPEN": 251,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
-    "FIXED": 15,
+    "FIXED": 18,
     "IN_PROGRESS": 1
   },
   "issues": [
@@ -512,7 +512,7 @@
       "id": "FE-0029",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -520,10 +520,13 @@
       "lines": "2055-2074",
       "title": "Networks: keydown-листенер переустанавливается на каждый рендер",
       "related": [],
-      "pr": null,
+      "pr": 35,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "554601eb",
+      "note": "PR #35 fix/networks-correctness @554601eb: keydown listener via ref (once); mapBusy/pointBusy guards + disabled buttons; confirm on removeSelectedPoint/deleteDevice. Build pass; no Networks test scaffold."
     },
     {
       "id": "FE-0030",
@@ -2492,7 +2495,7 @@
       "id": "FE-0145",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2500,10 +2503,13 @@
       "lines": "1259-1290,1354-1390,1413-1448; кнопки MapDialog.jsx:77,:2467-2475,:2605-2607,:3110-3113,:3230-3232",
       "title": "Networks: нет busy-guards на saveMap/commitPendingPoint/saveSelectedPoint/removeSelectedPoint/removeMap",
       "related": [],
-      "pr": null,
+      "pr": 35,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "554601eb",
+      "note": "PR #35 fix/networks-correctness @554601eb: keydown listener via ref (once); mapBusy/pointBusy guards + disabled buttons; confirm on removeSelectedPoint/deleteDevice. Build pass; no Networks test scaffold."
     },
     {
       "id": "FE-0146",
@@ -2628,7 +2634,7 @@
       "id": "FE-0153",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2636,10 +2642,13 @@
       "lines": "1436-1448 (removeSelectedPoint DELETE сразу),1989-2009 (deleteDevice без confirm); у карты/розетки/филиала подтверждения есть",
       "title": "Networks: удаление точки карты и устройства без подтверждения",
       "related": [],
-      "pr": null,
+      "pr": 35,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "554601eb",
+      "note": "PR #35 fix/networks-correctness @554601eb: keydown listener via ref (once); mapBusy/pointBusy guards + disabled buttons; confirm on removeSelectedPoint/deleteDevice. Build pass; no Networks test scaffold."
     },
     {
       "id": "FE-0154",
