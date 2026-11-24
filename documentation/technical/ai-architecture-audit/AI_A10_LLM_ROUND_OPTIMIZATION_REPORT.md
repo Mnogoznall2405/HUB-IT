@@ -113,7 +113,21 @@
 
 **Реальный LLM-прогон:** `a9_real_run.py` на RouterAI `google/gemini-3.7-flash` + JEV `typesafe/jev-1.14` (live-верифицировано: `jev-1.14-20261014`). Baseline = `HUB-IT-a9-base-wt@926dd9f5`, candidate A9 = `perf/a9-ai-token-budget@4f5349c9`. Метрики на сценарий: llm_calls, jev_calls, tool_calls, tokens in/out, cost_usd, wall_ms, expected_coverage, violations, fast_path_hit.
 
-**Статус прогонов:** см. артефакты `real_run_*_jev1.json` (в процессе на момент фиксации отчёта).
+**Статус прогонов:** полный 100-сценарный corpus (baseline `@926dd9f5` vs candidate `@4f5349c9`) выполняется — см. артефакты `real_run_*_jev1.json`.
+
+**Live-smoke A10 (реальный RouterAI + JEV 1.14, `a10_round_corpus.json`, все флаги ON):**
+
+| Сценарий | LLM-вызовов | fast_path | direct_read | Инструменты |
+|---|---|---|---|---|
+| a10_fast_01 «Найди сотрудника по фамилии Иванов» | **1** | ✅ | — | directory.people.search |
+| a10_fast_02 «Принтеры с низким тонером» | **1** | ✅ | — | mfu.devices.low_toner |
+| a10_direct_04 «Покажи мои активные задачи» | **0 основных** (1 = memory planner, write-intent «мои») | ✅ | ✅ | office.tasks.search (server-side) |
+| a10_mem_01 «Запомни: отчёты в docx» | 2 (planner сохранён для явной команды) | — | — | — |
+| a10_act_01 «Отправь письмо…» | 2, draft-only, forbidden `mail_send` не вызван | — | — | office.mail.contacts.resolve |
+| a10_amb_01 «Что у нас с оргтехникой?» | 3 (неоднозначный → обычный pipeline) | — | — | request_tool_group, mfu.devices.list |
+| a10_direct_01/02/03 | 2–5 | — | fallback | результат инструмента не ok для синтетического пользователя → корректный откат в LLM pipeline |
+
+Подтверждено вживую: одиночный READ = 1 LLM-вызов вместо 2; zero-LLM для whitelist-промптов; явные memory-команды сохраняют planner; ACT не проходит fast path; неоднозначные запросы остаются на полном pipeline.
 
 **Архитектурный прогон (scripted LLM):** unit-тесты `tests/test_ai_llm_rounds.py` (30) фиксируют гарды fast path, паттерны direct-read, ветвление planner-skip и scalar-рендеринг. NOT MEASURED для архитектурного числа вызовов на корпусе — заменяется реальным прогоном.
 

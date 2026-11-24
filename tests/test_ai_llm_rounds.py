@@ -93,12 +93,12 @@ class TestReadFastPath:
 
 
 class TestDirectRead:
-    SPECS = [{"tool_id": t} for t in (
-        "me.account.status", "me.equipment", "ad.user.password_status", "office.tasks.search",
-    )]
+    SPECS = {"me.account.status", "me.equipment", "ad.user.password_status", "office.tasks.search"}
 
     def _call(self, text, specs=None):
-        return svc._try_direct_read_tool(text, tool_specs=specs if specs is not None else self.SPECS)
+        return svc._try_direct_read_tool(
+            text, enabled_tool_ids=specs if specs is not None else self.SPECS,
+        )
 
     def test_my_phone_maps_to_account_status(self, direct_on):
         assert self._call("Какой мой рабочий телефон?") == "me.account.status"
@@ -117,7 +117,7 @@ class TestDirectRead:
         assert self._call("Какой мой рабочий телефон?") is None
 
     def test_disabled_tool_returns_none(self, direct_on):
-        assert self._call("Какой мой рабочий телефон?", specs=[{"tool_id": "me.equipment"}]) is None
+        assert self._call("Какой мой рабочий телефон?", specs={"me.equipment"}) is None
 
     def test_long_or_complex_prompts_never_match(self, direct_on):
         assert self._call("Какой мой рабочий телефон и переведи мне монитор из кабинета 204") is None

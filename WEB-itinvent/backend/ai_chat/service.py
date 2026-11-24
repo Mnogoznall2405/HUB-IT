@@ -3270,16 +3270,13 @@ _DIRECT_READ_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
 )
 
 
-def _try_direct_read_tool(request_text: str, *, tool_specs: list[dict[str, Any]]) -> str | None:
+def _try_direct_read_tool(request_text: str, *, enabled_tool_ids) -> str | None:
     if not AI_DIRECT_READ_ENABLED:
         return None
     text = _normalize_text(request_text)
     if not text or len(text) > 100:
         return None
-    enabled_ids = {
-        _normalize_text((spec or {}).get("id") or (spec or {}).get("tool_id"))
-        for spec in (tool_specs or [])
-    }
+    enabled_ids = {_normalize_text(t) for t in (enabled_tool_ids or set())}
     for pattern, tool_id in _DIRECT_READ_PATTERNS:
         if pattern.match(text):
             return tool_id if tool_id in enabled_ids and tool_id in _FAST_PATH_READ_TOOLS else None
@@ -8751,7 +8748,10 @@ class AiChatService:
         # prompts runs one READ tool and renders the answer without ANY main
         # LLM call. Uncertainty, a disabled tool or a failed result fall back
         # to the normal pipeline below.
-        direct_read_tool_id = _try_direct_read_tool(trigger_text_for_routing, tool_specs=tool_specs)
+        direct_read_tool_id = _try_direct_read_tool(
+            trigger_text_for_routing,
+            enabled_tool_ids=getattr(tool_context, "enabled_tools", None),
+        )
         if direct_read_tool_id is not None:
             if callable(report_stage):
                 report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
