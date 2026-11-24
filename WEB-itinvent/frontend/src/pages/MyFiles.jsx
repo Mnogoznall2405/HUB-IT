@@ -329,6 +329,10 @@ export default function MyFiles() {
   const listingsCacheRef = useRef(new Map());
   const LISTINGS_CACHE_TTL_MS = 20_000;
   const LISTINGS_CACHE_MAX = 30;
+  // Cache entries are bound to the signed-in identity: a switch of the auth
+  // context (re-login without unmount, impersonation-style flows) must never
+  // answer a listing from the previous user's payload.
+  const authUserKey = String(authUser?.id || authUser?.username || 'anon');
   const invalidateListingsCache = useCallback(() => {
     listingsCacheRef.current.clear();
   }, []);
@@ -361,19 +365,23 @@ export default function MyFiles() {
     loadAbortRef.current = controller;
     const { signal } = controller;
     activeLoadsRef.current += 1;
-    const cacheKey = `${isTrashView ? 'trash' : listView}|${libraryId || ''}|${currentFolderId || ''}|${debouncedSearchQuery}`;
-    const cached = listingsCacheRef.current.get(cacheKey);
-    const cacheFresh = !silent && cached && (Date.now() - cached.t) < LISTINGS_CACHE_TTL_MS;
-    if (cacheFresh) {
-      applyListingsPayload(cached.payload);
-      // Let the cached paint commit before the revalidation fetch + second
-      // apply — keeps the perceived navigation instant.
-      await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
-      if (!isCurrent()) return;
-    }
-    if (!silent && !cacheFresh) setLoading(true);
-    setRefreshing(true);
+    const cacheKey = `${authUserKey}|${isTrashView ? 'trash' : listView}|${libraryId || ''}|${currentFolderId || ''}|${debouncedSearchQuery}`;
     try {
+      const cached = listingsCacheRef.current.get(cacheKey);
+      // Optimistic paint is limited to the user's own space. Shared scopes (a
+      // library, the "shared with me" view) revalidate first: access can be
+      // revoked server-side and a cached payload would flash forbidden rows.
+      const sharedScope = Boolean(libraryId) || isSharedView;
+      const cacheFresh = !silent && !sharedScope && cached && (Date.now() - cached.t) < LISTINGS_CACHE_TTL_MS;
+      if (cacheFresh) {
+        applyListingsPayload(cached.payload);
+        // Let the cached paint commit before the revalidation fetch + second
+        // apply — keeps the perceived navigation instant.
+        await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+        if (!isCurrent()) return;
+      }
+      if (!silent && !cacheFresh) setLoading(true);
+      setRefreshing(true);
       // A library has its own limit: its usage comes with the library list instead of the personal quota.
       // Сам список библиотек грузится один раз через loadLibraries (mount + refreshQuota):
       // здесь он дублировал GET /my-files/libraries на каждый переход по папкам.
@@ -395,6 +403,17 @@ export default function MyFiles() {
       }
     } catch (error) {
       if (!isCurrent()) return;
+      const status = Number(error?.response?.status || error?.status || 0);
+      if (status === 401 || status === 403 || status === 404) {
+        // Access revoked or object gone: evict the cached payload and clear
+        // what is on screen so forbidden rows can't linger or resurface later.
+        listingsCacheRef.current.delete(cacheKey);
+        applyListingsPayload({
+          filesPayload: { items: [], folders: [], breadcrumbs: [] },
+          quotaPayload: null,
+          foldersPayload: { items: [] },
+        });
+      }
       notifyApiError(error, 'Не удалось загрузить список файлов.', { dedupeMode: 'recent' });
     } finally {
       activeLoadsRef.current -= 1;
@@ -403,7 +422,7 @@ export default function MyFiles() {
         setRefreshing(false);
       }
     }
-  }, [applyListingsPayload, beginLoad, currentFolderId, debouncedSearchQuery, isTrashView, libraryId, listView, notifyApiError]);
+  }, [applyListingsPayload, authUserKey, beginLoad, currentFolderId, debouncedSearchQuery, isSharedView, isTrashView, libraryId, listView, notifyApiError]);
 
   const postMutationLoadData = useCallback(
     (opts) => { listingsCacheRef.current.clear(); return loadData(opts); },
@@ -568,6 +587,7 @@ export default function MyFiles() {
 
   const handleFileShareChanged = useCallback((fileId, isShared) => {
     const id = String(fileId || '');
+    listingsCacheRef.current.clear();
     setItems((prev) => prev.map((entryItem) => (
       String(entryItem.id) === id ? { ...entryItem, is_shared: Boolean(isShared) } : entryItem
     )));
@@ -575,6 +595,7 @@ export default function MyFiles() {
 
   const handleFolderShareChanged = useCallback((folderId, isShared) => {
     const id = String(folderId || '');
+    listingsCacheRef.current.clear();
     const patch = (prev) => prev.map((entryItem) => (
       String(entryItem.id) === id ? { ...entryItem, is_shared: Boolean(isShared) } : entryItem
     ));
@@ -681,6 +702,27 @@ export default function MyFiles() {
     void loadData();
   }, [loadData]);
 
+  // Auth identity changed without an unmount (re-login, account switch):
+  // everything on screen belongs to the previous user — drop it, wipe the
+  // cache and reload under the new identity.
+  const loadDataRef = useRef(loadData);
+  loadDataRef.current = loadData;
+  const authUserKeyRef = useRef(authUserKey);
+  useEffect(() => {
+    if (authUserKeyRef.current === authUserKey) return;
+    authUserKeyRef.current = authUserKey;
+    listingsCacheRef.current.clear();
+    setItems([]);
+    setFolders([]);
+    setAllFolders([]);
+    setBreadcrumbs([]);
+    setLibraryInfo(null);
+    setLibraries([]);
+    setQuota(null);
+    void loadLibraries();
+    void loadDataRef.current();
+  }, [authUserKey, loadLibraries]);
+
   // Leaving the page must release the in-flight listing fetch — its results
   // can no longer be applied anyway, and a held socket slows the next screen.
   useEffect(() => () => loadAbortRef.current?.abort(), []);
@@ -741,6 +783,7 @@ export default function MyFiles() {
       } else {
         await myFilesAPI.updateFile(id, { isFavorite: next });
       }
+      listingsCacheRef.current.clear();
     } catch (error) {
       await loadData({ silent: true });
       notifyApiError(error, 'Не удалось обновить избранное.', { dedupeMode: 'none' });
@@ -1044,6 +1087,7 @@ export default function MyFiles() {
   const handleMoveFileToFolder = useCallback(async (fileId, folderId) => {
     try {
       await myFilesAPI.updateFile(fileId, { folderId });
+      listingsCacheRef.current.clear();
       const id = String(fileId);
       const staysVisible = isSpecialView || String(folderId || '') === String(currentFolderId || '');
       setItems((prev) => staysVisible
@@ -1058,6 +1102,7 @@ export default function MyFiles() {
   const handleMoveFolderToFolder = useCallback(async (folderId, targetFolderId) => {
     try {
       await myFilesAPI.updateFolder(folderId, { parentId: targetFolderId });
+      listingsCacheRef.current.clear();
       const id = String(folderId);
       setAllFolders((prev) => prev.map((entryItem) => (
         String(entryItem.id) === id ? { ...entryItem, parent_id: targetFolderId } : entryItem
@@ -2745,6 +2790,8 @@ export default function MyFiles() {
             onCopied={(_copy, target) => {
               setCopyDialogFile(null);
               notifySuccess('Копия создана.', { source: 'my-files-copy', dedupeMode: 'none' });
+              // The copy may land in a different folder — any cached listing can be stale.
+              listingsCacheRef.current.clear();
               const sameSpace = String(target.libraryId || '') === String(libraryId || '');
               const sameFolder = String(target.folderId || '') === String(currentFolderId || '');
               if (sameSpace && sameFolder) void postMutationLoadData({ silent: true });
@@ -2784,7 +2831,10 @@ export default function MyFiles() {
             onShareLink={(file) => { void handleShare(file); }}
             onClose={(saved) => {
               setCollaboratorsFile(null);
-              if (saved) notifySuccess('Совместный доступ обновлён.', { source: 'my-files-collaborators', dedupeMode: 'none' });
+              if (saved) {
+                notifySuccess('Совместный доступ обновлён.', { source: 'my-files-collaborators', dedupeMode: 'none' });
+                void postMutationLoadData({ silent: true });
+              }
             }}
           />
           <MyFilesCollaboratorsDialog

@@ -38,7 +38,9 @@ const {
   mockCopyFile,
   mockOfficeStatus,
   mockCreateBlank,
+  mockAuthUser,
 } = vi.hoisted(() => ({
+  mockAuthUser: { current: { id: 7, username: 'files-test' } },
   mockListFiles: vi.fn(),
   mockListFolders: vi.fn(),
   mockCreateFolder: vi.fn(),
@@ -161,7 +163,7 @@ vi.mock('../components/documentPreview/DocumentPreviewDialog', () => ({
 
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
-    user: { id: 7, username: 'files-test' },
+    user: mockAuthUser.current,
     hasPermission: () => true,
   }),
 }));
@@ -232,6 +234,7 @@ describe('MyFiles page', () => {
   beforeEach(() => {
     localStorage.clear();
     localStorage.setItem('user', JSON.stringify({ id: 7, username: 'files-test' }));
+    mockAuthUser.current = { id: 7, username: 'files-test' };
     mockListFiles.mockReset();
     mockGetQuota.mockReset();
     mockUploadFile.mockReset();
@@ -338,6 +341,47 @@ describe('MyFiles page', () => {
     await screen.findByRole('heading', { name: 'Общая папка' });
     await waitFor(() => expect(mockListFiles).toHaveBeenCalledWith(expect.objectContaining({ libraryId: 'lib-1' })));
     expect(mockListLibraries).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the previous user\'s listing and reloads when the auth identity changes without unmount', async () => {
+    mockListFiles.mockResolvedValue({ items: [readyFile] });
+    const { rerender } = renderPage();
+    await screen.findByText('report.txt');
+
+    mockAuthUser.current = { id: 9, username: 'other-user' };
+    mockListFiles.mockResolvedValue({ items: [{ ...readyFile, id: 'file-9', original_file_name: 'other.txt' }] });
+    rerender(
+      <MemoryRouter initialEntries={['/']}>
+        <ThemeProvider theme={theme}>
+          <MyFiles />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.queryByText('report.txt')).not.toBeInTheDocument());
+    await screen.findByText('other.txt');
+    expect(mockListFiles.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('clears the listing when access is revoked mid-session (403 on silent revalidation)', async () => {
+    const timeoutSpy = vi.spyOn(window, 'setTimeout');
+    try {
+      mockListFiles.mockResolvedValue({ items: [{ ...readyFile, status: 'processing' }] });
+      renderPage();
+      await screen.findByText('report.txt');
+      await waitFor(() => expect(timeoutSpy.mock.calls.some((call) => call[1] === 4000)).toBe(true));
+      const poll = timeoutSpy.mock.calls.find((call) => call[1] === 4000)[0];
+      const denied = new Error('forbidden');
+      denied.response = { status: 403 };
+      mockListFiles.mockRejectedValueOnce(denied);
+      await act(async () => { poll(); });
+      await waitFor(() => expect(screen.queryByText('report.txt')).not.toBeInTheDocument());
+      // The revoked entry was evicted: the next load must hit the API, not the cache.
+      mockListFiles.mockResolvedValue({ items: [] });
+      await act(async () => { poll(); });
+      await waitFor(() => expect(mockListFiles).toHaveBeenCalledTimes(2));
+    } finally {
+      timeoutSpy.mockRestore();
+    }
   });
 
   it('treats a dropped folder as a real folder upload', async () => {

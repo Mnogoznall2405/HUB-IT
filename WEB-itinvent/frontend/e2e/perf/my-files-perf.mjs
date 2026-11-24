@@ -294,7 +294,13 @@ async function measure(page, name, act, readyLocator, { settleMs = 120 } = {}) {
 async function loginPage(context, base) {
   const page = await context.newPage();
   await page.goto(`${base}/login`);
+  // The login page may default to the SSO method card when the backend
+  // advertises windows_sso_enabled — pick the password method first.
   const form = page.getByTestId('password-auth-form');
+  if (!(await form.isVisible().catch(() => false))) {
+    await page.getByRole('button', { name: /логином и паролем|password/i }).first().click();
+  }
+  await form.waitFor({ state: 'visible', timeout: 15_000 });
   await form.locator('input[name="username"]').fill(USERNAME);
   await form.locator('input[name="password"]').fill(PASSWORD);
   await form.getByRole('button', { name: 'Войти', exact: true }).click();
@@ -462,6 +468,10 @@ async function run(base, label, seedFile, runs) {
     await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
     await page.goto(`${base}/login`);
     const form = page.getByTestId('password-auth-form');
+    if (!(await form.isVisible().catch(() => false))) {
+      await page.getByRole('button', { name: /логином и паролем|password/i }).first().click();
+    }
+    await form.waitFor({ state: 'visible', timeout: 15_000 });
     await form.locator('input[name="username"]').fill(USERNAME);
     await form.locator('input[name="password"]').fill(PASSWORD);
     await form.getByRole('button', { name: 'Войти', exact: true }).click();

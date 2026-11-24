@@ -11,7 +11,7 @@ const QUANT = 16;
 // instead we render only the visible slice between two spacer boxes whose
 // heights preserve the overall document scroll height. Requires a constant
 // row height — enforced by the row components themselves.
-export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8, trackWidth = true }) {
+export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8, trackWidth = true, itemStride = 1 }) {
   const containerNodeRef = useRef(null);
   const frameRef = useRef(0);
   const resizeObserverRef = useRef(null);
@@ -23,8 +23,8 @@ export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8, track
   // Parameters via ref: keeps update() identity stable, so itemCount changes do
   // not re-fire layout effects / reattach the container ref mid-commit — the
   // recompute is deferred to rAF instead.
-  const paramsRef = useRef({ itemCount, rowHeight, overscan, trackWidth });
-  paramsRef.current = { itemCount, rowHeight, overscan, trackWidth };
+  const paramsRef = useRef({ itemCount, rowHeight, overscan, trackWidth, itemStride });
+  paramsRef.current = { itemCount, rowHeight, overscan, trackWidth, itemStride };
   // Mirrors of committed vs. last-requested state. A bailout inside setState
   // still costs a full render pass, and ResizeObserver on the document fires
   // on every page layout shift — comparing BEFORE scheduling makes a no-op
@@ -33,9 +33,43 @@ export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8, track
   // alone could strand a stale window forever.
   const committedRef = useRef({ start: range.start, end: range.end, width: containerWidth });
   const pendingRef = useRef(committedRef.current);
+  // Focus survival across window moves: when the slice shifts, the row that
+  // held focus unmounts and focus silently falls back to <body>. Record the
+  // focused row's virtual item index on focusin; after a commit, if that
+  // element is detached and focus was orphaned, hand it to the same (or the
+  // nearest mounted) row. itemStride maps window rows to items (grid: cols).
+  const focusRef = useRef(null);
   useLayoutEffect(() => {
     committedRef.current = { start: range.start, end: range.end, width: containerWidth };
+    const focus = focusRef.current;
+    if (!focus) return;
+    if (focus.el.isConnected) {
+      focus.wasConnected = true;
+      return;
+    }
+    // Restore only when focus is orphaned: on <body> or still pointing at a
+    // detached node. A focused element elsewhere (menu, dialog, another row)
+    // must not be hijacked.
+    const orphan = document.activeElement === document.body || !document.activeElement?.isConnected;
+    if (!focus.wasConnected || !orphan) return;
+    const el = containerNodeRef.current;
+    if (!el) return;
+    const stride = paramsRef.current.itemStride || 1;
+    const rows = el.querySelectorAll('[tabindex="0"]');
+    if (!rows.length) return;
+    const pos = Math.max(0, Math.min(focus.itemIndex - range.start * stride, rows.length - 1));
+    rows[pos]?.focus({ preventScroll: true });
+    focusRef.current = null;
   }, [range, containerWidth]);
+  const focusInHandler = useCallback((event) => {
+    const el = containerNodeRef.current;
+    const rowEl = event.target?.closest?.('[tabindex="0"]');
+    if (!el || !rowEl) return;
+    const pos = [...el.querySelectorAll('[tabindex="0"]')].indexOf(rowEl);
+    if (pos >= 0) {
+      focusRef.current = { el: rowEl, itemIndex: committedRef.current.start * (paramsRef.current.itemStride || 1) + pos, wasConnected: true };
+    }
+  }, []);
   const applyRange = useCallback((transition, nextStart, nextEnd, nextWidth) => {
     const committed = committedRef.current;
     const pending = pendingRef.current;
@@ -63,7 +97,7 @@ export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8, track
     const { itemCount: count, rowHeight: rh, overscan: oc } = paramsRef.current;
     const el = containerNodeRef.current;
     if (!el || count <= 0) {
-      applyRange(transition, 0, Math.min(count, INITIAL_ROWS), el ? el.getBoundingClientRect().width : widthRef.current);
+      applyRange(transition, 0, Math.min(count, INITIAL_ROWS), el ? el.getBoundingClientRect().width : committedRef.current.width);
       return;
     }
     const rect = el.getBoundingClientRect();
@@ -74,8 +108,11 @@ export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8, track
       firstVisible,
       Math.ceil((window.scrollY + window.innerHeight - docTop) / rh),
     );
-    const start = Math.max(0, Math.floor(firstVisible / QUANT) * QUANT - oc);
-    const end = Math.min(count, Math.ceil((lastVisible + 1) / QUANT) * QUANT + oc);
+    // Invariant: 0 <= start <= end <= itemCount. A scroll offset beyond the
+    // list bottom (shrink, folder switch while scrolled) must not produce an
+    // inverted window or a start past itemCount.
+    const end = Math.max(0, Math.min(count, Math.ceil((lastVisible + 1) / QUANT) * QUANT + oc));
+    const start = Math.max(0, Math.min(Math.floor(firstVisible / QUANT) * QUANT - oc, end));
     applyRange(transition, start, end, w);
   }, [applyRange]);
 
@@ -98,13 +135,17 @@ export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8, track
   // a freshly attached node — measure immediately on attach instead.
   const containerRef = useCallback((node) => {
     const prev = containerNodeRef.current;
-    if (prev && prev !== node) resizeObserverRef.current?.unobserve(prev);
+    if (prev && prev !== node) {
+      resizeObserverRef.current?.unobserve(prev);
+      prev.removeEventListener('focusin', focusInHandler);
+    }
     containerNodeRef.current = node;
     if (node) {
       resizeObserverRef.current?.observe(node);
+      node.addEventListener('focusin', focusInHandler);
       updateRef.current();
     }
-  }, []);
+  }, [focusInHandler]);
 
   // First paint: compute synchronously so the initial slice is correct without
   // a blank frame. itemCount/rowHeight changes also recompute synchronously —
@@ -135,13 +176,17 @@ export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8, track
     };
   }, [scheduleUpdate]);
 
+  // Same invariant for consumers even before the correcting update() lands:
+  // top + mounted rows + bottom always sums to itemCount * rowHeight.
+  const clampedEnd = Math.max(0, Math.min(range.end, itemCount));
+  const clampedStart = Math.max(0, Math.min(range.start, clampedEnd));
   return {
     containerRef,
     containerWidth,
-    start: range.start,
-    end: Math.min(range.end, itemCount),
-    topSpacerHeight: range.start * rowHeight,
-    bottomSpacerHeight: Math.max(0, itemCount - range.end) * rowHeight,
+    start: clampedStart,
+    end: clampedEnd,
+    topSpacerHeight: clampedStart * rowHeight,
+    bottomSpacerHeight: Math.max(0, itemCount - clampedEnd) * rowHeight,
   };
 }
 

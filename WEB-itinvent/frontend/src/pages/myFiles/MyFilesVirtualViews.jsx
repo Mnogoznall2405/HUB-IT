@@ -47,6 +47,7 @@ function VirtualGridSection({ items, width, minCardWidth, gapPx, cardHeight, ren
     itemCount: Math.ceil(items.length / cols),
     rowHeight: cardHeight + gapPx,
     overscan: 4,
+    itemStride: cols,
   });
   return (
     <Box ref={v.containerRef} sx={sx}>
