@@ -745,58 +745,15 @@ function Networks() {
     const { data } = await getOrFetchSWR(
       buildCacheKey('networks', 'branches', 'tmn'),
       async () => (await networksAPI.getBranches('tmn')).branches || [],
-      { staleTimeMs: SWR_STALE_MS }
+      {
+        staleTimeMs: SWR_STALE_MS,
+        onRevalidated: (fresh) => setBranches(Array.isArray(fresh) ? fresh : []),
+      }
     );
     setBranches(Array.isArray(data) ? data : []);
   }, []);
 
-  const loadBranchContext = useCallback(async (id, force = false) => {
-    if (!id) return;
-    const requestSeq = ++branchContextRequestSeq.current;
-    const { data } = await getOrFetchSWR(
-      buildCacheKey('networks', 'branch-context', id),
-      async () => {
-        const results = await Promise.allSettled([
-          networksAPI.getBranchOverview(id),
-          networksAPI.getDevices(id),
-          networksAPI.getMaps(id),
-          networksAPI.getMapPoints(id),
-          networksAPI.getAudit({ branch_id: id, limit: 100 }),
-          networksAPI.getBranchSockets(id, { limit: 10000 }),
-        ]);
-
-        const [ovResult, dvResult, mpResult, ptResult, auResult, skResult] = results;
-
-        // Log errors for debugging
-        if (ovResult.status === 'rejected') console.error('Failed to load branch overview:', ovResult.reason);
-        if (dvResult.status === 'rejected') console.error('Failed to load devices:', dvResult.reason);
-        if (mpResult.status === 'rejected') console.error('Failed to load maps:', mpResult.reason);
-        if (ptResult.status === 'rejected') console.error('Failed to load map points:', ptResult.reason);
-        if (auResult.status === 'rejected') console.error('Failed to load audit:', auResult.reason);
-        if (skResult.status === 'rejected') console.error('Failed to load sockets:', skResult.reason);
-
-        return {
-          overview: ovResult.status === 'fulfilled' ? (ovResult.value || null) : null,
-          devices: Array.isArray(dvResult.value?.devices) ? dvResult.value.devices : [],
-          maps: Array.isArray(mpResult.value?.maps) ? mpResult.value.maps : [],
-          points: Array.isArray(ptResult.value?.points) ? ptResult.value.points : [],
-          audit: Array.isArray(auResult.value?.items) ? auResult.value.items : [],
-          sockets: Array.isArray(skResult.value?.sockets) ? skResult.value.sockets : [],
-          errors: {
-            overview: ovResult.status === 'rejected' ? String(ovResult.reason?.response?.data?.detail || ovResult.reason?.message || 'Unknown error') : null,
-            devices: dvResult.status === 'rejected' ? String(dvResult.reason?.response?.data?.detail || dvResult.reason?.message || 'Unknown error') : null,
-            maps: mpResult.status === 'rejected' ? String(mpResult.reason?.response?.data?.detail || mpResult.reason?.message || 'Unknown error') : null,
-            points: ptResult.status === 'rejected' ? String(ptResult.reason?.response?.data?.detail || ptResult.reason?.message || 'Unknown error') : null,
-            audit: auResult.status === 'rejected' ? String(auResult.reason?.response?.data?.detail || auResult.reason?.message || 'Unknown error') : null,
-            sockets: skResult.status === 'rejected' ? String(skResult.reason?.response?.data?.detail || skResult.reason?.message || 'Unknown error') : null,
-          },
-        };
-      },
-      { staleTimeMs: SWR_STALE_MS, force }
-    );
-    if (requestSeq !== branchContextRequestSeq.current) {
-      return;
-    }
+  const applyBranchContext = useCallback((data) => {
     setOverview(data?.overview || null);
     setDevices(data?.devices || []);
     setMaps(data?.maps || []);
@@ -843,6 +800,63 @@ function Networks() {
     }
   }, [notifyError]);
 
+  const loadBranchContext = useCallback(async (id, force = false) => {
+    if (!id) return;
+    const requestSeq = ++branchContextRequestSeq.current;
+    const { data } = await getOrFetchSWR(
+      buildCacheKey('networks', 'branch-context', id),
+      async () => {
+        const results = await Promise.allSettled([
+          networksAPI.getBranchOverview(id),
+          networksAPI.getDevices(id),
+          networksAPI.getMaps(id),
+          networksAPI.getMapPoints(id),
+          networksAPI.getAudit({ branch_id: id, limit: 100 }),
+          networksAPI.getBranchSockets(id, { limit: 10000 }),
+        ]);
+
+        const [ovResult, dvResult, mpResult, ptResult, auResult, skResult] = results;
+
+        // Log errors for debugging
+        if (ovResult.status === 'rejected') console.error('Failed to load branch overview:', ovResult.reason);
+        if (dvResult.status === 'rejected') console.error('Failed to load devices:', dvResult.reason);
+        if (mpResult.status === 'rejected') console.error('Failed to load maps:', mpResult.reason);
+        if (ptResult.status === 'rejected') console.error('Failed to load map points:', ptResult.reason);
+        if (auResult.status === 'rejected') console.error('Failed to load audit:', auResult.reason);
+        if (skResult.status === 'rejected') console.error('Failed to load sockets:', skResult.reason);
+
+        return {
+          overview: ovResult.status === 'fulfilled' ? (ovResult.value || null) : null,
+          devices: Array.isArray(dvResult.value?.devices) ? dvResult.value.devices : [],
+          maps: Array.isArray(mpResult.value?.maps) ? mpResult.value.maps : [],
+          points: Array.isArray(ptResult.value?.points) ? ptResult.value.points : [],
+          audit: Array.isArray(auResult.value?.items) ? auResult.value.items : [],
+          sockets: Array.isArray(skResult.value?.sockets) ? skResult.value.sockets : [],
+          errors: {
+            overview: ovResult.status === 'rejected' ? String(ovResult.reason?.response?.data?.detail || ovResult.reason?.message || 'Unknown error') : null,
+            devices: dvResult.status === 'rejected' ? String(dvResult.reason?.response?.data?.detail || dvResult.reason?.message || 'Unknown error') : null,
+            maps: mpResult.status === 'rejected' ? String(mpResult.reason?.response?.data?.detail || mpResult.reason?.message || 'Unknown error') : null,
+            points: ptResult.status === 'rejected' ? String(ptResult.reason?.response?.data?.detail || ptResult.reason?.message || 'Unknown error') : null,
+            audit: auResult.status === 'rejected' ? String(auResult.reason?.response?.data?.detail || auResult.reason?.message || 'Unknown error') : null,
+            sockets: skResult.status === 'rejected' ? String(skResult.reason?.response?.data?.detail || skResult.reason?.message || 'Unknown error') : null,
+          },
+        };
+      },
+      {
+        staleTimeMs: SWR_STALE_MS,
+        force,
+        // Stale-while-revalidate: apply the background refetch when it lands (FE-0150).
+        onRevalidated: (fresh) => {
+          if (requestSeq === branchContextRequestSeq.current) applyBranchContext(fresh);
+        },
+      }
+    );
+    if (requestSeq !== branchContextRequestSeq.current) {
+      return;
+    }
+    applyBranchContext(data);
+  }, [applyBranchContext]);
+
   const beginPorts = useRequestGuard(JSON.stringify([branchIdNum, selectedDeviceId]));
 
   const loadPorts = useCallback(async (deviceId, force = false) => {
@@ -854,7 +868,13 @@ function Networks() {
     const { data } = await getOrFetchSWR(
       buildCacheKey('networks', 'ports', deviceId),
       async () => (await networksAPI.getPorts(deviceId)).ports || [],
-      { staleTimeMs: SWR_STALE_MS, force }
+      {
+        staleTimeMs: SWR_STALE_MS,
+        force,
+        onRevalidated: (fresh) => {
+          if (isCurrent()) setPorts(Array.isArray(fresh) ? fresh : []);
+        },
+      }
     );
     if (!isCurrent()) return;
     setPorts(Array.isArray(data) ? data : []);
@@ -869,7 +889,15 @@ function Networks() {
     const { data } = await getOrFetchSWR(
       buildCacheKey('networks', 'branch-ports-all', id),
       async () => (await networksAPI.getBranchPorts(id, { limit: 10000 })).ports || [],
-      { staleTimeMs: SWR_STALE_MS, force }
+      {
+        staleTimeMs: SWR_STALE_MS,
+        force,
+        onRevalidated: (fresh) => {
+          if (requestSeq === branchPortsRequestSeq.current) {
+            setAllBranchPorts(Array.isArray(fresh) ? fresh : []);
+          }
+        },
+      }
     );
     if (requestSeq !== branchPortsRequestSeq.current) {
       return;
