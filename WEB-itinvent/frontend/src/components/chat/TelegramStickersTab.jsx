@@ -306,16 +306,22 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     [packs, recentStickers, favoriteStickers],
   );
 
-  // Поиск по уже загруженным секциям: deferred-запрос не блокирует ввод,
-  // индекс пересчитывается только при смене секций — как в Telegram Desktop.
+  // Поиск по уже загруженным секциям: deferred-запрос не блокирует ввод.
+  // Индекс строится лениво — только при непустом запросе: на монтировании
+  // скрытой вкладки (прогрев дока) он раньше пересчитывался до четырёх раз
+  // подряд (packs/favorites/recents приходят по отдельности) и каждый проход
+  // гонял ~113 стикеров по словарю ключевых слов внутри render'а.
   const [searchQuery, setSearchQuery] = useState(() => persistedStickerSearchQuery);
   const deferredSearchQuery = useDeferredValue(searchQuery);
-  const stickerSearchIndex = useMemo(() => buildStickerSearchIndex(stickerSections), [stickerSections]);
+  const isSearching = Boolean(normalizeStickerSearchQuery(deferredSearchQuery));
+  const stickerSearchIndex = useMemo(
+    () => (isSearching ? buildStickerSearchIndex(stickerSections) : null),
+    [isSearching, stickerSections],
+  );
   const searchResults = useMemo(
     () => searchStickerIndex(stickerSearchIndex, deferredSearchQuery),
     [stickerSearchIndex, deferredSearchQuery],
   );
-  const isSearching = Boolean(normalizeStickerSearchQuery(deferredSearchQuery));
 
   const handleSearchQueryChange = useCallback((event) => {
     const nextQuery = event.target.value;
@@ -418,19 +424,30 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     }
   }, [activeSectionId]);
 
+  // offsetTop секции отсчитывается до ближайшего позиционированного предка
+  // (chat-thread-pane-wrap), а не до scroll-корня — без поправки цель
+  // скролла сдвинута на высоту шапки дока и маленькая секция (Избранные,
+  // Недавние) улетает вверх из видимости. Позицию внутри контента считаем
+  // через rect-дельту — она не зависит от offsetParent.
+  const sectionContentTop = useCallback((scrollRoot, sectionNode) => (
+    scrollRoot.scrollTop
+    + sectionNode.getBoundingClientRect().top
+    - scrollRoot.getBoundingClientRect().top
+  ), []);
+
   const scrollToSection = useCallback((sectionId) => {
     const normalizedId = String(sectionId || '');
     const scrollRoot = scrollContainerRef.current;
     const sectionNode = sectionRefsRef.current.get(normalizedId);
     setActiveSectionId(normalizedId);
     if (!scrollRoot || !sectionNode) return;
-    const nextTop = Math.max(0, sectionNode.offsetTop - 4);
+    const nextTop = Math.max(0, sectionContentTop(scrollRoot, sectionNode) - 4);
     if (typeof scrollRoot.scrollTo === 'function') {
       scrollRoot.scrollTo({ top: nextTop, behavior: 'smooth' });
     } else {
       scrollRoot.scrollTop = nextTop;
     }
-  }, []);
+  }, [sectionContentTop]);
 
   useEffect(() => {
     const pendingSectionId = pendingScrollSectionRef.current;
@@ -449,7 +466,11 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
       let nextSectionId = 'recent';
       stickerSections.forEach((section) => {
         const sectionNode = sectionRefsRef.current.get(String(section.id));
-        if (sectionNode && sectionNode.offsetTop <= marker) nextSectionId = String(section.id);
+        // Та же поправка системы координат, что и в scrollToSection:
+        // позиция секции внутри контента, а не до offsetParent.
+        if (sectionNode && sectionContentTop(scrollRoot, sectionNode) <= marker) {
+          nextSectionId = String(section.id);
+        }
       });
       setActiveSectionId((current) => (current === nextSectionId ? current : nextSectionId));
     };
@@ -464,7 +485,7 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
       if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
       scrollFrameRef.current = null;
     };
-  }, [stickerSections]);
+  }, [stickerSections, sectionContentTop]);
 
   // Восстановление позиции прокрутки при повторном открытии панели —
   // только если нет отложенного перехода к конкретному набору.
