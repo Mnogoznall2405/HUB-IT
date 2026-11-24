@@ -61,3 +61,8 @@ P0.2 FE-0059/0083 — после них (самый рискованный, cros
 
 - EWS стенд (FE-0215) — нет; ONLYOFFICE (FE-0110) — нет; iOS Safari (FE-0115) — нет; WebView2 harness (FE-0230) — нет; >limit датасеты (FE-0161/0300/0324) — нужны фикстуры.
 - FE-0064 ждёт merge PR #10 (чужой PR, не merge'им сами).
+
+## Checkpoint 2026-11-24
+- Database batch COMPLETE: PR #42 (misc+lifecycle) -> main; PR #43 (races+a11y/overflow/export) stacked on fix/database-misc — merge after #42.
+- Open PRs order: #38 -> #39 (stacked), #40, #41, #42 -> #43 (stacked), plus earlier #23..#36.
+- Next batch: voice (9), chat (6), tasks (6), mail (5). Deferred: FE-0030 Networks.jsx decomposition.
