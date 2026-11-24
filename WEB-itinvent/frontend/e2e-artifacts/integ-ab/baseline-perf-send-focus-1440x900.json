@@ -1,0 +1,411 @@
+{
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "measuredAt": "2026-11-24T12:41:48.107Z",
+  "dock": "off",
+  "emojiText": false,
+  "scenarios": {
+    "typing_echo_ms": {
+      "n": 25,
+      "p50": 25.9,
+      "p95": 39.6,
+      "min": 17.8,
+      "max": 45.7
+    },
+    "send_echo_ms": {
+      "n": 40,
+      "p50": 82,
+      "p95": 112.6,
+      "min": 40.4,
+      "max": 150.4,
+      "commits": {
+        "n": 40,
+        "p50": 6,
+        "p95": 9,
+        "min": 4,
+        "max": 9
+      },
+      "rendered": {
+        "n": 40,
+        "p50": 15965,
+        "p95": 26393,
+        "min": 8115,
+        "max": 29046
+      },
+      "threadRendered": {
+        "n": 40,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "timeouts": 0,
+      "requestsTotal": 8,
+      "stickerRequests": 0
+    },
+    "send_echo_samples": [
+      {
+        "ms": 150.4,
+        "commits": 9,
+        "rendered": 11612,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/d965559a-8664-4681-8af9-ca3073f01be9/thread-bootstrap?limit=24&lightweight=1",
+            "dur": 49.1
+          },
+          {
+            "m": "GET /api/v1/chat/conversations/d965559a-8664-4681-8af9-ca3073f01be9/messages/hydrate?message_ids=358cfc30-c9aa-4de5-931e-da899034bfc2",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 93.8,
+        "commits": 6,
+        "rendered": 8115,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 74.6,
+        "commits": 7,
+        "rendered": 9916,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/d965559a-8664-4681-8af9-ca3073f01be9/messages?limit=50&after_message_id=5c480df4-c044-4739-ae1e-cb7937a71c50",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 78.3,
+        "commits": 8,
+        "rendered": 12009,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 40.4,
+        "commits": 6,
+        "rendered": 9318,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 51.3,
+        "commits": 7,
+        "rendered": 11481,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 79.1,
+        "commits": 9,
+        "rendered": 15444,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 81.5,
+        "commits": 9,
+        "rendered": 16083,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 41.8,
+        "commits": 5,
+        "rendered": 9218,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 89.7,
+        "commits": 8,
+        "rendered": 15417,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 110.2,
+        "commits": 7,
+        "rendered": 14052,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 52.2,
+        "commits": 5,
+        "rendered": 10285,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 82.3,
+        "commits": 8,
+        "rendered": 17121,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 82.2,
+        "commits": 7,
+        "rendered": 15457,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 42.5,
+        "commits": 4,
+        "rendered": 9046,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/d965559a-8664-4681-8af9-ca3073f01be9/messages?limit=50&after_message_id=30457598-118d-490e-b5d8-cf4225c5aacb",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 58,
+        "commits": 5,
+        "rendered": 11789,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 46.5,
+        "commits": 4,
+        "rendered": 9614,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 90.4,
+        "commits": 8,
+        "rendered": 19962,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 91.8,
+        "commits": 8,
+        "rendered": 20527,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 90.6,
+        "commits": 6,
+        "rendered": 15869,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 57.8,
+        "commits": 5,
+        "rendered": 13480,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/d965559a-8664-4681-8af9-ca3073f01be9/messages?limit=50&after_message_id=20ab4f47-9d8f-4d77-94c3-faeaefcc0164",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 86.9,
+        "commits": 7,
+        "rendered": 19433,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 82,
+        "commits": 6,
+        "rendered": 17144,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 47.8,
+        "commits": 4,
+        "rendered": 11689,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 69.6,
+        "commits": 7,
+        "rendered": 20924,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/d965559a-8664-4681-8af9-ca3073f01be9/messages?limit=50&after_message_id=597ce671-86e3-4f83-89f4-f89c7051e713",
+            "dur": 37.5
+          }
+        ]
+      },
+      {
+        "ms": 98.2,
+        "commits": 7,
+        "rendered": 21423,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 57.4,
+        "commits": 4,
+        "rendered": 12454,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/d965559a-8664-4681-8af9-ca3073f01be9/messages?limit=50&after_message_id=ed6e2aad-08d6-454b-bece-9af74dda7cad",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 64.6,
+        "commits": 5,
+        "rendered": 15965,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/d965559a-8664-4681-8af9-ca3073f01be9/messages?limit=50&after_message_id=fbb25041-7f4b-4145-a410-14d99bb6e8eb",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 103.8,
+        "commits": 7,
+        "rendered": 22914,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 77.5,
+        "commits": 5,
+        "rendered": 16761,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 113.9,
+        "commits": 8,
+        "rendered": 27346,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 63.8,
+        "commits": 5,
+        "rendered": 17385,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 112.6,
+        "commits": 7,
+        "rendered": 24900,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 110.2,
+        "commits": 8,
+        "rendered": 29046,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 103.9,
+        "commits": 6,
+        "rendered": 22259,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 107.6,
+        "commits": 7,
+        "rendered": 26393,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 70.6,
+        "commits": 6,
+        "rendered": 23025,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 106.2,
+        "commits": 6,
+        "rendered": 23535,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 103.3,
+        "commits": 6,
+        "rendered": 23963,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 101.6,
+        "commits": 6,
+        "rendered": 24303,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      }
+    ]
+  }
+}
