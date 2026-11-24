@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem, Stack, TextField } from '@mui/material';
 import { itObjectsAPI } from '../../api/itObjects';
-import { getItObjectsErrorMessage } from './itObjectsShared';
+import { getItObjectsErrorMessage, isItObjectsRequestCancelled } from './itObjectsShared';
 
 const NO_BRANCH = '';
 
@@ -10,6 +10,7 @@ export default function ObjectCreateDialog({ open, onClose, onCreated }) {
   const [name, setName] = useState('');
   const [linkedRef, setLinkedRef] = useState(NO_BRANCH);
   const [branches, setBranches] = useState([]);
+  const [branchesError, setBranchesError] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -18,10 +19,16 @@ export default function ObjectCreateDialog({ open, onClose, onCreated }) {
     setName('');
     setLinkedRef(NO_BRANCH);
     setError('');
+    setBranchesError('');
     const controller = new AbortController();
     itObjectsAPI.list({ signal: controller.signal })
       .then((payload) => setBranches((Array.isArray(payload?.items) ? payload.items : []).filter((item) => !item.custom)))
-      .catch(() => setBranches([]));
+      .catch((requestError) => {
+        if (isItObjectsRequestCancelled(requestError)) return;
+        // Без списка филиалов привязка не выбирается — предупреждаем вместо тихого провала.
+        setBranches([]);
+        setBranchesError(getItObjectsErrorMessage(requestError, 'Не удалось загрузить список филиалов'));
+      });
     return () => controller.abort();
   }, [open]);
 
@@ -64,6 +71,7 @@ export default function ObjectCreateDialog({ open, onClose, onCreated }) {
             <MenuItem value={NO_BRANCH}>Без привязки</MenuItem>
             {branches.map((branch) => <MenuItem key={branch.object_ref} value={branch.object_ref}>{branch.name}</MenuItem>)}
           </TextField>
+          {branchesError ? <Alert severity="warning">{branchesError} Объект можно создать без привязки и привязать позже.</Alert> : null}
           {error ? <Alert severity="warning">{error}</Alert> : null}
         </Stack>
       </DialogContent>

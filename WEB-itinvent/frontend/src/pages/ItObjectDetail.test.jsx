@@ -202,6 +202,7 @@ describe('ItObjectDetail', () => {
   });
 
   it('gives a new person a whole preset at once and can take all access away in one click', async () => {
+    window.confirm = vi.fn(() => true);
     api.get.mockResolvedValue({
       ...adminView,
       grants: [{ user_id: 7, user_name: 'Анна Волкова', section: 'passwords', level: 'view' }],
