@@ -661,6 +661,22 @@ class ChatStickerSendRequest(BaseModel):
         return text or None
 
 
+class ChatStickerListItemResponse(ChatStickerResponse):
+    pack_short_name: str
+
+
+class ChatStickerListResponse(BaseModel):
+    items: list[ChatStickerListItemResponse] = Field(default_factory=list)
+
+
+class ChatStickerRecentUpdateRequest(BaseModel):
+    sticker_ids: list[str] = Field(default_factory=list)
+
+
+class ChatStickerPackOrderRequest(BaseModel):
+    pack_ids: list[str] = Field(default_factory=list)
+
+
 class ChatUnreadSummaryResponse(BaseModel):
     messages_unread_total: int = 0
     conversations_unread: int = 0

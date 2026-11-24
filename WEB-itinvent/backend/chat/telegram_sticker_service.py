@@ -18,11 +18,19 @@ from uuid import uuid4
 
 import httpx
 from PIL import Image
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.chat.db import chat_read_session, chat_write_session
-from backend.chat.models import ChatSticker, ChatStickerPack, ChatUserStickerPack
+from backend.chat.models import (
+    ChatMember,
+    ChatMessageAttachment,
+    ChatSticker,
+    ChatStickerPack,
+    ChatUserFavoriteSticker,
+    ChatUserRecentSticker,
+    ChatUserStickerPack,
+)
 from backend.services.hub_service import hub_service
 
 
@@ -45,6 +53,7 @@ _MAX_STICKERS_PER_PACK = 200
 _MAX_STICKER_BYTES = 5 * 1024 * 1024
 _MAX_STICKER_PREVIEW_BYTES = 512 * 1024
 _MAX_PACK_BYTES = 100 * 1024 * 1024
+_RECENT_STICKERS_LIMIT = 50
 _PREVIEW_MAX_DIMENSION = 128
 _PREVIEW_CACHE_MARKER = ".previews-v2"
 _TELEGRAM_API_HOST = "api.telegram.org"
@@ -242,7 +251,7 @@ class TelegramStickerService:
                     select(ChatStickerPack)
                     .join(ChatUserStickerPack, ChatUserStickerPack.pack_id == ChatStickerPack.id)
                     .where(ChatUserStickerPack.user_id == int(current_user_id))
-                    .order_by(ChatUserStickerPack.added_at.asc(), ChatStickerPack.title.asc())
+                    .order_by(ChatUserStickerPack.position.asc(), ChatUserStickerPack.added_at.asc())
                 ).scalars()
             )
             pack_ids = [item.id for item in packs]
@@ -751,6 +760,232 @@ class TelegramStickerService:
             session.delete(installed)
         return {"ok": True}
 
+    def _serialize_sticker(self, sticker: ChatSticker, pack: ChatStickerPack) -> dict[str, Any]:
+        """Sticker dict for flat lists (favorites/recents); same shape as pack stickers
+        plus ``pack_short_name`` so clients can label the source pack."""
+        return {
+            "id": sticker.id,
+            "emoji": sticker.emoji or "",
+            "format": sticker.format,
+            "mime_type": sticker.mime_type,
+            "file_size": int(sticker.file_size or 0),
+            "width": int(sticker.width) if sticker.width is not None else None,
+            "height": int(sticker.height) if sticker.height is not None else None,
+            "pack_short_name": pack.short_name,
+            "file_url": self._pack_file_url(sticker.id),
+            "preview_url": (
+                self._pack_preview_url(sticker.id)
+                if self._preview_path(pack_id=sticker.pack_id, sticker_id=sticker.id).is_file()
+                else None
+            ),
+        }
+
+    def _serialize_sticker_list(self, rows) -> dict[str, Any]:
+        return {
+            "items": [self._serialize_sticker(sticker, pack) for sticker, pack in rows]
+        }
+
+    def list_favorite_stickers(self, *, current_user_id: int) -> dict[str, Any]:
+        """Favorites reference the sticker, not pack membership: they survive
+        ``remove_pack`` and still resolve because shared pack files are kept."""
+        with chat_read_session() as session:
+            rows = session.execute(
+                select(ChatSticker, ChatStickerPack)
+                .join(
+                    ChatUserFavoriteSticker,
+                    ChatUserFavoriteSticker.sticker_id == ChatSticker.id,
+                )
+                .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
+                .where(ChatUserFavoriteSticker.user_id == int(current_user_id))
+                .order_by(
+                    ChatUserFavoriteSticker.added_at.desc(),
+                    ChatUserFavoriteSticker.id.desc(),
+                )
+            ).all()
+            return self._serialize_sticker_list(rows)
+
+    def _user_can_favorite_sticker(
+        self,
+        session,
+        *,
+        user_id: int,
+        sticker: ChatSticker,
+        pack: ChatStickerPack,
+    ) -> bool:
+        """Favorite gate: the pack is installed for the user, or the user received
+        this sticker in a conversation (``send_sticker`` stores a message copy named
+        ``sticker-{id}--{pack_short_name}``). Sticker content is shared anyway via
+        the pack preview endpoints, so this only limits picker noise, not bytes."""
+        installed_id = session.execute(
+            select(ChatUserStickerPack.id).where(
+                ChatUserStickerPack.user_id == int(user_id),
+                ChatUserStickerPack.pack_id == pack.id,
+            )
+        ).scalar_one_or_none()
+        if installed_id is not None:
+            return True
+        referenced_id = session.execute(
+            select(ChatMessageAttachment.id)
+            .join(
+                ChatMember,
+                and_(
+                    ChatMember.conversation_id == ChatMessageAttachment.conversation_id,
+                    ChatMember.user_id == int(user_id),
+                    ChatMember.left_at.is_(None),
+                ),
+            )
+            .where(
+                ChatMessageAttachment.file_name.like(f"sticker-{sticker.id}--%")
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        return referenced_id is not None
+
+    def add_favorite_sticker(self, *, current_user_id: int, sticker_id: str) -> dict[str, Any]:
+        normalized_sticker_id = str(sticker_id or "").strip()
+        try:
+            with chat_write_session() as session:
+                row = session.execute(
+                    select(ChatSticker, ChatStickerPack)
+                    .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
+                    .where(ChatSticker.id == normalized_sticker_id)
+                ).first()
+                if row is None or not self._user_can_favorite_sticker(
+                    session,
+                    user_id=int(current_user_id),
+                    sticker=row[0],
+                    pack=row[1],
+                ):
+                    raise LookupError("Стикер не найден")
+                sticker, _pack = row
+                existing = session.execute(
+                    select(ChatUserFavoriteSticker).where(
+                        ChatUserFavoriteSticker.user_id == int(current_user_id),
+                        ChatUserFavoriteSticker.sticker_id == sticker.id,
+                    )
+                ).scalar_one_or_none()
+                if existing is None:
+                    session.add(
+                        ChatUserFavoriteSticker(
+                            user_id=int(current_user_id),
+                            sticker_id=sticker.id,
+                            added_at=utcnow(),
+                        )
+                    )
+        except IntegrityError:
+            # A parallel request won the race; the unique constraint kept one row.
+            pass
+        return self.list_favorite_stickers(current_user_id=int(current_user_id))
+
+    def remove_favorite_sticker(self, *, current_user_id: int, sticker_id: str) -> dict[str, Any]:
+        normalized_sticker_id = str(sticker_id or "").strip()
+        with chat_write_session() as session:
+            existing = session.execute(
+                select(ChatUserFavoriteSticker).where(
+                    ChatUserFavoriteSticker.user_id == int(current_user_id),
+                    ChatUserFavoriteSticker.sticker_id == normalized_sticker_id,
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                session.delete(existing)
+        return self.list_favorite_stickers(current_user_id=int(current_user_id))
+
+    def list_recent_stickers(self, *, current_user_id: int) -> dict[str, Any]:
+        with chat_read_session() as session:
+            rows = session.execute(
+                select(ChatSticker, ChatStickerPack)
+                .join(
+                    ChatUserRecentSticker,
+                    ChatUserRecentSticker.sticker_id == ChatSticker.id,
+                )
+                .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
+                .where(ChatUserRecentSticker.user_id == int(current_user_id))
+                .order_by(
+                    ChatUserRecentSticker.position.asc(),
+                    ChatUserRecentSticker.id.asc(),
+                )
+            ).all()
+            return self._serialize_sticker_list(rows)
+
+    def replace_recent_stickers(
+        self,
+        *,
+        current_user_id: int,
+        sticker_ids,
+    ) -> dict[str, Any]:
+        """Full replace of the recents rail: dedupe keeping order, cap at
+        ``_RECENT_STICKERS_LIMIT``, silently drop unknown sticker ids."""
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for raw in list(sticker_ids or []):
+            value = str(raw or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+            if len(deduped) >= _RECENT_STICKERS_LIMIT:
+                break
+        with chat_write_session() as session:
+            known_ids: set[str] = set()
+            if deduped:
+                known_ids = set(
+                    session.execute(
+                        select(ChatSticker.id).where(ChatSticker.id.in_(deduped))
+                    ).scalars()
+                )
+            kept = [value for value in deduped if value in known_ids]
+            # Bulk delete now: the chat session defers ORM deletes to flush time,
+            # so session.delete() would insert the new rows before removing the old
+            # ones and trip the (user_id, sticker_id) unique constraint.
+            session.execute(
+                delete(ChatUserRecentSticker).where(
+                    ChatUserRecentSticker.user_id == int(current_user_id)
+                )
+            )
+            now = utcnow()
+            for position, sticker_id in enumerate(kept):
+                session.add(
+                    ChatUserRecentSticker(
+                        user_id=int(current_user_id),
+                        sticker_id=sticker_id,
+                        position=position,
+                        updated_at=now,
+                    )
+                )
+        return self.list_recent_stickers(current_user_id=int(current_user_id))
+
+    def reorder_sticker_packs(self, *, current_user_id: int, pack_ids) -> dict[str, Any]:
+        """Set picker order: listed packs first in the given order, the rest keep
+        their relative order after. Unknown (not installed) pack ids are rejected."""
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for raw in list(pack_ids or []):
+            value = str(raw or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        with chat_write_session() as session:
+            installed = list(
+                session.execute(
+                    select(ChatUserStickerPack)
+                    .where(ChatUserStickerPack.user_id == int(current_user_id))
+                    .order_by(
+                        ChatUserStickerPack.position.asc(),
+                        ChatUserStickerPack.added_at.asc(),
+                    )
+                ).scalars()
+            )
+            installed_by_pack_id = {row.pack_id: row for row in installed}
+            unknown = [pack_id for pack_id in deduped if pack_id not in installed_by_pack_id]
+            if unknown:
+                raise ValueError("Набор стикеров не найден")
+            ordered = [installed_by_pack_id[pack_id] for pack_id in deduped]
+            ordered.extend(row for row in installed if row.pack_id not in seen)
+            for position, row in enumerate(ordered):
+                row.position = position
+        return self._serialize_packs(current_user_id=int(current_user_id))
+
     def _resolve_sticker_file_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         root = self._storage_root.resolve()
         path = (
@@ -766,18 +1001,42 @@ class TelegramStickerService:
             raise LookupError("Файл стикера не найден")
         return {**payload, "path": str(path)}
 
+    def _accessible_sticker(self, session, *, user_id: int, sticker_id: str):
+        """(sticker, pack) when the pack is installed for the user OR the sticker is
+        in the user's favorites; ``None`` otherwise."""
+        return session.execute(
+            select(ChatSticker, ChatStickerPack)
+            .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
+            .outerjoin(
+                ChatUserStickerPack,
+                and_(
+                    ChatUserStickerPack.pack_id == ChatStickerPack.id,
+                    ChatUserStickerPack.user_id == int(user_id),
+                ),
+            )
+            .outerjoin(
+                ChatUserFavoriteSticker,
+                and_(
+                    ChatUserFavoriteSticker.sticker_id == ChatSticker.id,
+                    ChatUserFavoriteSticker.user_id == int(user_id),
+                ),
+            )
+            .where(
+                ChatSticker.id == str(sticker_id or "").strip(),
+                or_(
+                    ChatUserStickerPack.id.is_not(None),
+                    ChatUserFavoriteSticker.id.is_not(None),
+                ),
+            )
+        ).first()
+
     def get_sticker_file(self, *, current_user_id: int, sticker_id: str) -> dict[str, Any]:
-        normalized_sticker_id = str(sticker_id or "").strip()
         with chat_read_session() as session:
-            row = session.execute(
-                select(ChatSticker, ChatStickerPack)
-                .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
-                .join(ChatUserStickerPack, ChatUserStickerPack.pack_id == ChatStickerPack.id)
-                .where(
-                    ChatSticker.id == normalized_sticker_id,
-                    ChatUserStickerPack.user_id == int(current_user_id),
-                )
-            ).first()
+            row = self._accessible_sticker(
+                session,
+                user_id=int(current_user_id),
+                sticker_id=sticker_id,
+            )
             if row is None:
                 raise LookupError("Стикер не найден")
             sticker, pack = row
@@ -921,15 +1180,11 @@ class TelegramStickerService:
             from backend.chat.chat_group_settings import enforce_group_posting_policy
 
             enforce_group_posting_policy(session, conversation, int(current_user_id))
-            row = session.execute(
-                select(ChatSticker, ChatStickerPack)
-                .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
-                .join(ChatUserStickerPack, ChatUserStickerPack.pack_id == ChatStickerPack.id)
-                .where(
-                    ChatSticker.id == str(sticker_id or "").strip(),
-                    ChatUserStickerPack.user_id == int(current_user_id),
-                )
-            ).first()
+            row = self._accessible_sticker(
+                session,
+                user_id=int(current_user_id),
+                sticker_id=sticker_id,
+            )
             if row is None:
                 raise LookupError("Стикер не найден в ваших наборах")
             sticker, pack = row
