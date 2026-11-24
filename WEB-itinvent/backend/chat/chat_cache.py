@@ -15,6 +15,23 @@ if TYPE_CHECKING:
 class ChatCache:
     def __init__(self, service: "ChatService") -> None:
         self._service = service
+        # Monotonic per-conversation epoch. Every conversation-scoped
+        # invalidation bumps it; readers capture it BEFORE their DB fill and
+        # only store when it is unchanged — a fill that raced an invalidation
+        # cannot re-seed a stale page.
+        self._conv_view_epoch: dict[str, int] = {}
+
+    def _conversation_cache_epoch(self, conversation_id: str) -> int:
+        normalized = _normalize_text(conversation_id)
+        if not normalized:
+            return 0
+        with self._service._cache_lock:
+            return int(self._conv_view_epoch.get(normalized, 0))
+
+    def _bump_conversation_cache_epoch(self, conversation_id: str) -> None:
+        normalized = _normalize_text(conversation_id)
+        if normalized:
+            self._conv_view_epoch[normalized] = int(self._conv_view_epoch.get(normalized, 0)) + 1
 
     def _cache_key(self, *, user_id: int, bucket: str, extra: str = "") -> str:
         return f"{int(user_id)}::{_normalize_text(bucket)}::{_normalize_text(extra)}"
@@ -35,11 +52,26 @@ class ChatCache:
                 return None
             return value
 
-    def _cache_set(self, *, user_id: int, bucket: str, value: Any, extra: str = "", ttl_sec: int | None = None) -> Any:
+    def _cache_set(
+        self,
+        *,
+        user_id: int,
+        bucket: str,
+        value: Any,
+        extra: str = "",
+        ttl_sec: int | None = None,
+        epoch_check: tuple[str, int] | None = None,
+    ) -> Any:
         ttl = max(1, int(ttl_sec or self._service.chat_cache_ttl_sec))
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
         key = self._service._cache_key(user_id=int(user_id), bucket=bucket, extra=extra)
         with self._service._cache_lock:
+            if epoch_check is not None:
+                epoch_conv, captured = epoch_check
+                if int(self._conv_view_epoch.get(_normalize_text(epoch_conv), 0)) != int(captured):
+                    # The conversation was invalidated while this value was
+                    # being read — storing it would re-seed the stale page.
+                    return value
             self._service._runtime_cache[key] = (expires_at, value)
         if chat_read_cache_redis.supports_bucket(bucket):
             chat_read_cache_redis.set(key, value, ttl)
@@ -104,6 +136,7 @@ class ChatCache:
         soft_ttl = timedelta(seconds=2.5)
         now = datetime.now(timezone.utc)
         with self._service._cache_lock:
+            self._bump_conversation_cache_epoch(normalized_conversation_id)
             self._service._runtime_cache.pop(unread_key, None)
             self._service._runtime_cache.pop(detail_key, None)
             payload = self._service._runtime_cache.get(conversations_key)
@@ -152,6 +185,13 @@ class ChatCache:
                 for user_id in target_user_ids
             ]
         )
+        # thread_bootstrap is a shared bucket too: without these per-user
+        # prefix deletes the Redis copy of a thread page outlived its local
+        # invalidation and resurfaced until TTL.
+        for target_user_id in target_user_ids:
+            chat_read_cache_redis.invalidate_prefix(
+                f"{int(target_user_id)}::thread_bootstrap::{normalized_conversation_id}|"
+            )
 
         soft_buckets = {"conversations", "unread_summary"}
         if hard_drop_unread:
@@ -159,6 +199,7 @@ class ChatCache:
         soft_ttl = timedelta(seconds=2.5)
         now = datetime.now(timezone.utc)
         with self._service._cache_lock:
+            self._bump_conversation_cache_epoch(normalized_conversation_id)
             for key in list(self._service._runtime_cache.keys()):
                 parts = key.split("::", 2)
                 if len(parts) < 2:
@@ -199,6 +240,53 @@ class ChatCache:
                     self._service._runtime_cache.pop(key, None)
                     continue
                 # Keep unrelated buckets; presence is updated only for the sender on send.
+
+    def _invalidate_conversation_views(self, *, conversation_id: str) -> None:
+        """Conversation-scoped invalidation for every locally cached user.
+
+        Used when a cross-node event references a conversation but does not
+        enumerate affected members (conversation_room / global broadcasts).
+        Conv-scoped buckets are dropped outright; the user list buckets are
+        soft-demoted because the member set is unknown.
+        """
+        normalized_conversation_id = _normalize_text(conversation_id)
+        if not normalized_conversation_id:
+            return
+        chat_read_cache_redis.invalidate_conversation(
+            conversation_id=normalized_conversation_id
+        )
+        soft_buckets = {"conversations", "unread_summary"}
+        soft_ttl = timedelta(seconds=2.5)
+        now = datetime.now(timezone.utc)
+        with self._service._cache_lock:
+            self._bump_conversation_cache_epoch(normalized_conversation_id)
+            for key in list(self._service._runtime_cache.keys()):
+                parts = key.split("::", 2)
+                if len(parts) < 2:
+                    continue
+                key_bucket = parts[1]
+                key_extra = parts[2] if len(parts) > 2 else ""
+                if key_bucket in soft_buckets:
+                    payload = self._service._runtime_cache.get(key)
+                    if payload is None:
+                        continue
+                    old_expires, value = payload
+                    if old_expires <= now:
+                        self._service._runtime_cache.pop(key, None)
+                    elif (old_expires - now) > soft_ttl:
+                        self._service._runtime_cache[key] = (now + soft_ttl, value)
+                    continue
+                if key_bucket == "conversation_detail" and (
+                    key_extra == normalized_conversation_id
+                    or key_extra.startswith(normalized_conversation_id)
+                ):
+                    self._service._runtime_cache.pop(key, None)
+                    continue
+                if key_bucket in {"thread_latest", "thread_bootstrap"} and key_extra.startswith(
+                    f"{normalized_conversation_id}|"
+                ):
+                    self._service._runtime_cache.pop(key, None)
+                    continue
 
     def invalidate_presence_cache(self, *, user_id: int) -> None:
         self._service.invalidate_presence_cache(user_id=user_id)

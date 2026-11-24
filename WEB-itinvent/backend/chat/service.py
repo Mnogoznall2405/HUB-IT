@@ -623,8 +623,10 @@ class ChatService:
         return self._cache._cache_key(user_id=user_id, bucket=bucket, extra=extra)
     def _cache_get(self, *, user_id: int, bucket: str, extra: str = "") -> Any:
         return self._cache._cache_get(user_id=user_id, bucket=bucket, extra=extra)
-    def _cache_set(self, *, user_id: int, bucket: str, value: Any, extra: str = "", ttl_sec: int | None = None) -> Any:
-        return self._cache._cache_set(user_id=user_id, bucket=bucket, value=value, extra=extra, ttl_sec=ttl_sec)
+    def _cache_set(self, *, user_id: int, bucket: str, value: Any, extra: str = "", ttl_sec: int | None = None, epoch_check: tuple[str, int] | None = None) -> Any:
+        return self._cache._cache_set(user_id=user_id, bucket=bucket, value=value, extra=extra, ttl_sec=ttl_sec, epoch_check=epoch_check)
+    def _conversation_cache_epoch(self, conversation_id: str) -> int:
+        return self._cache._conversation_cache_epoch(conversation_id)
     def _invalidate_user_cache(self, *, user_id: int, bucket: str | None = None, extra_prefix: str = "", hard: bool = False) -> None:
         return self._cache._invalidate_user_cache(user_id=user_id, bucket=bucket, extra_prefix=extra_prefix, hard=hard)
     def invalidate_bucket_for_all_users(self, *, bucket: str) -> None:
@@ -661,6 +663,8 @@ class ChatService:
             hard_drop_unread=hard_drop_unread,
             hard=hard,
         )
+    def _invalidate_conversation_views(self, *, conversation_id: str) -> None:
+        return self._cache._invalidate_conversation_views(conversation_id=conversation_id)
     def _set_request_meta(self, **payload: Any) -> None:
         _chat_request_meta_var.set(dict(payload))
 

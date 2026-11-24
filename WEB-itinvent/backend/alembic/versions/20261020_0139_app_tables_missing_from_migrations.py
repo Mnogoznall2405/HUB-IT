@@ -98,6 +98,9 @@ TABLES = (
             sa.Column("rolling_summary", sa.Text(), nullable=False),
             sa.Column("summary_until_seq", sa.BigInteger(), nullable=False),
             sa.Column("context_reset_seq", sa.BigInteger(), nullable=False),
+            sa.Column("rolling_summary_llm", sa.Text(), nullable=False),
+            sa.Column("summary_llm_until_seq", sa.BigInteger(), nullable=False),
+            sa.Column("last_run_seq", sa.BigInteger(), nullable=False),
             sa.Column("use_personal_memory", sa.Boolean(), nullable=False),
             sa.Column("title_source", sa.String(length=24), nullable=False),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
@@ -128,6 +131,7 @@ TABLES = (
             sa.Column("usage_json", sa.Text(), nullable=False),
             sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
             sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("queue_seq", sa.BigInteger(), nullable=True),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
             sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         ),
@@ -138,6 +142,16 @@ TABLES = (
             ("ix_app_ai_bot_runs_conversation_id", ['conversation_id']),
             ("ix_app_ai_bot_runs_status", ['status']),
             ("ix_app_ai_bot_runs_status_created_at", ['status', 'created_at']),
+            ("ix_app_ai_bot_runs_conversation_status_queue_seq", ['conversation_id', 'status', 'queue_seq']),
+            (
+                "uq_app_ai_bot_runs_running_conversation",
+                ['conversation_id'],
+                {
+                    "unique": True,
+                    "postgresql_where": sa.text("status = 'running'"),
+                    "sqlite_where": sa.text("status = 'running'"),
+                },
+            ),
             ("ix_app_ai_bot_runs_trigger_message_id", ['trigger_message_id']),
             ("ix_app_ai_bot_runs_user_id", ['user_id']),
         ),
@@ -267,9 +281,22 @@ def upgrade() -> None:
             constraints = [sa.UniqueConstraint(*columns, name=unique_name) for unique_name, columns in spec["uniques"]]
             op.create_table(name, *spec["columns"](), *constraints, schema=schema)
         existing = _index_names(name, schema)
-        for index_name, columns in spec["indexes"]:
-            if index_name not in existing:
-                op.create_index(index_name, name, list(columns), unique=False, schema=schema)
+        existing_columns = {
+            str(item.get("name") or "")
+            for item in sa.inspect(op.get_bind()).get_columns(name, schema=schema)
+        }
+        for index_spec in spec["indexes"]:
+            index_name, columns = index_spec[0], index_spec[1]
+            options = dict(index_spec[2]) if len(index_spec) > 2 else {}
+            unique = bool(options.pop("unique", False))
+            if index_name in existing:
+                continue
+            if not set(columns).issubset(existing_columns):
+                # A pre-existing table may predate later column migrations
+                # (e.g. queue_seq) — those columns/indexes arrive via their
+                # own revisions; creating the index here would fail.
+                continue
+            op.create_index(index_name, name, list(columns), unique=unique, schema=schema, **options)
     if op.get_bind().dialect.name == "postgresql":
         # Full-text index of the KB retrieval (revision 20260427_0023 skipped it when the table did not exist yet).
         # concat_ws() is only STABLE, so PostgreSQL rejects it inside an index expression ("functions in index

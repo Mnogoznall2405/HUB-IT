@@ -263,6 +263,16 @@ AI_TOOL_GROUP_EXPANSION_LIMIT = max(0, min(5, int(os.environ.get("AI_TOOL_GROUP_
 AI_TOOL_SPECS_WARN_LIMIT = max(5, int(os.environ.get("AI_TOOL_SPECS_WARN_LIMIT", "20") or 20))
 AI_MODEL_CONTEXT_WINDOW = max(4096, min(32000, int(os.environ.get("AI_MODEL_CONTEXT_WINDOW", "32000"))))
 AI_TOKEN_BUDGET_SAFETY_MARGIN = int(os.environ.get("AI_TOKEN_BUDGET_SAFETY_MARGIN", "2000"))
+# A8 cycle 2: background LLM summary upgrade. Disabled -> runs summarize
+# synchronously again (pre-A8 critical path, safe rollback).
+AI_SUMMARY_BACKGROUND_ENABLED = str(os.environ.get("AI_SUMMARY_BACKGROUND_ENABLED", "1") or "1").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+AI_SUMMARY_UPGRADE_BATCH = max(20, min(500, int(os.environ.get("AI_SUMMARY_UPGRADE_BATCH", "150") or 150)))
+AI_SUMMARY_UPGRADE_MAX_MESSAGES = max(100, min(5000, int(os.environ.get("AI_SUMMARY_UPGRADE_MAX_MESSAGES", "1500") or 1500)))
+AI_SUMMARY_UPGRADE_MAX_ATTEMPTS = max(1, min(20, int(os.environ.get("AI_SUMMARY_UPGRADE_MAX_ATTEMPTS", "5") or 5)))
+AI_SUMMARY_UPGRADE_SCAN_LIMIT = max(5, min(500, int(os.environ.get("AI_SUMMARY_UPGRADE_SCAN_LIMIT", "50") or 50)))
+AI_SUMMARY_UPGRADE_LOOKBACK_DAYS = max(1, min(365, int(os.environ.get("AI_SUMMARY_UPGRADE_LOOKBACK_DAYS", "30") or 30)))
 # When the LLM invokes a tool with invalid args, allow up to N self-correction passes
 # (the model is shown the validation error and asked to retry the same logical step).
 AI_TOOL_VALIDATION_RETRY_LIMIT = int(os.environ.get("AI_TOOL_VALIDATION_RETRY_LIMIT", "1"))
@@ -1336,9 +1346,15 @@ _jev_routing_cache_lock = threading.Lock()
 # A8/P1: conversations whose summarized range was checkpointed with the
 # head/tail fallback and are queued for an async LLM-quality upgrade.
 # Keyed by (conversation_id, user_id): duplicate registrations coalesce.
-_pending_summary_upgrades: dict[tuple[str, int], int] = {}
+# Value = (reset_seq, not_before_monotonic): retries re-register with backoff.
+_pending_summary_upgrades: dict[tuple[str, int], tuple[int, float]] = {}
 _pending_summary_lock = threading.Lock()
 _PENDING_SUMMARY_MAX = max(16, min(1024, int(os.environ.get("AI_SUMMARY_PENDING_MAX", "256") or 256)))
+# Attempt counter and suppression map for jobs that keep failing (poison
+# rows, provider outage): bounded, the DB invariant
+# (summary_llm_until_seq < summary_until_seq) makes work re-discoverable.
+_summary_upgrade_attempts: dict[tuple[str, int], int] = {}
+_summary_suppressed_until: dict[tuple[str, int], float] = {}
 
 
 def _jev_routing_cache_key(
@@ -3713,6 +3729,8 @@ class AiChatService:
             mapping.context_reset_seq = reset_seq
             mapping.summary_until_seq = reset_seq
             mapping.rolling_summary = ""
+            mapping.rolling_summary_llm = ""
+            mapping.summary_llm_until_seq = 0
             mapping.updated_at = _utc_now()
             if AI_PERSONAL_MEMORY_ENABLED:
                 smart_memory.bump_revision(session, int(current_user_id), invalidate_old=True)
@@ -4775,35 +4793,105 @@ class AiChatService:
         conversation_id: str,
         user_id: int,
         reset_seq: int,
+        not_before_mono: float = 0.0,
     ) -> None:
         key = (_normalize_text(conversation_id), int(user_id))
         with _pending_summary_lock:
             if len(_pending_summary_upgrades) >= _PENDING_SUMMARY_MAX and key not in _pending_summary_upgrades:
                 return
-            _pending_summary_upgrades[key] = int(reset_seq)
+            _pending_summary_upgrades[key] = (int(reset_seq), float(not_before_mono or 0.0))
+
+    def claim_pending_summary_upgrade(self) -> tuple[tuple[str, int], int] | None:
+        """Pop the next due pending upgrade; entries with a future retry
+        deadline stay queued for a later claim."""
+        with _pending_summary_lock:
+            now = time.monotonic()
+            for key, (reset_seq, not_before) in list(_pending_summary_upgrades.items()):
+                if float(not_before or 0.0) <= now:
+                    del _pending_summary_upgrades[key]
+                    return key, int(reset_seq)
+        return None
+
+    def scan_pending_summary_upgrades(self, *, limit: int | None = None) -> int:
+        """Durable recovery: the DB invariant
+        ``summary_llm_until_seq < summary_until_seq`` *is* the pending queue —
+        a worker restart or a dropped in-memory registration re-discovers the
+        work here instead of losing it silently."""
+        scan_limit = max(1, int(limit or AI_SUMMARY_UPGRADE_SCAN_LIMIT))
+        cutoff = _utc_now() - timedelta(days=AI_SUMMARY_UPGRADE_LOOKBACK_DAYS)
+        with app_session() as app_db:
+            rows = list(
+                app_db.execute(
+                    select(
+                        AppAiBotConversation.conversation_id,
+                        AppAiBotConversation.user_id,
+                        AppAiBotConversation.context_reset_seq,
+                    )
+                    .where(
+                        AppAiBotConversation.summary_until_seq
+                        > AppAiBotConversation.summary_llm_until_seq,
+                        AppAiBotConversation.use_personal_memory.is_(True),
+                        AppAiBotConversation.updated_at >= cutoff,
+                    )
+                    .order_by(AppAiBotConversation.updated_at.asc())
+                    .limit(scan_limit)
+                ).all()
+            )
+        registered = 0
+        now = time.monotonic()
+        for conversation_id, user_id, reset_seq in rows:
+            key = (_normalize_text(conversation_id), int(user_id or 0))
+            if _summary_suppressed_until.get(key, 0.0) > now:
+                continue
+            self._register_pending_summary(
+                conversation_id=str(conversation_id),
+                user_id=int(user_id),
+                reset_seq=int(reset_seq or 0),
+            )
+            registered += 1
+        return registered
 
     def process_pending_summary_upgrade(self, *, limit: int = 1) -> int:
-        """Async quality upgrade for summaries checkpointed with the head/tail
-        fallback. Recomputes the whole summarized range with the LLM and
-        compare-and-set-swaps ``rolling_summary`` — history is never lost (the
-        fallback is already persisted synchronously), and a stale result can
-        never land after a context reset or a newer checkpoint."""
+        """Pop due upgrades and fold their ranges with the LLM. Failures
+        re-register with exponential backoff; after
+        ``AI_SUMMARY_UPGRADE_MAX_ATTEMPTS`` the key is suppressed (in-memory,
+        1h) — the DB scan can re-admit it later."""
         processed = 0
         for _ in range(max(1, int(limit or 1))):
-            with _pending_summary_lock:
-                try:
-                    key, reset_seq = _pending_summary_upgrades.popitem()
-                except KeyError:
-                    return processed
+            claimed = self.claim_pending_summary_upgrade()
+            if claimed is None:
+                return processed
+            key, reset_seq = claimed
             try:
                 self._upgrade_conversation_summary(
                     conversation_id=key[0], user_id=key[1], reset_seq=reset_seq,
                 )
             except Exception as exc:
-                logger.warning(
-                    "ai_summary_upgrade failed conversation_id=%s error_type=%s",
-                    key[0], type(exc).__name__,
-                )
+                attempts = int(_summary_upgrade_attempts.get(key, 0)) + 1
+                _summary_upgrade_attempts[key] = attempts
+                if len(_summary_upgrade_attempts) > _PENDING_SUMMARY_MAX * 4:
+                    for old_key in list(_summary_upgrade_attempts)[: _PENDING_SUMMARY_MAX]:
+                        _summary_upgrade_attempts.pop(old_key, None)
+                if attempts >= AI_SUMMARY_UPGRADE_MAX_ATTEMPTS:
+                    _summary_suppressed_until[key] = time.monotonic() + 3600.0
+                    _summary_upgrade_attempts.pop(key, None)
+                    logger.warning(
+                        "ai_summary_upgrade suppressed after %s attempts conversation_id=%s error_type=%s",
+                        attempts, key[0], type(exc).__name__,
+                    )
+                else:
+                    backoff = min(300.0, 15.0 * (2 ** (attempts - 1)))
+                    self._register_pending_summary(
+                        conversation_id=key[0], user_id=key[1],
+                        reset_seq=reset_seq,
+                        not_before_mono=time.monotonic() + backoff,
+                    )
+                    logger.warning(
+                        "ai_summary_upgrade failed conversation_id=%s attempt=%s error_type=%s; retry in %.0fs",
+                        key[0], attempts, type(exc).__name__, backoff,
+                    )
+            else:
+                _summary_upgrade_attempts.pop(key, None)
             processed += 1
         return processed
 
@@ -4814,6 +4902,18 @@ class AiChatService:
         user_id: int,
         reset_seq: int,
     ) -> None:
+        """Incremental LLM upgrade of the summarized range.
+
+        ``summary_until_seq`` marks how far the prompt-facing
+        ``rolling_summary`` covers (cheap fallback counts as covered).
+        ``summary_llm_until_seq`` marks the range folded into
+        ``rolling_summary_llm`` with LLM quality. Each pass resumes from the
+        LLM checkpoint, folds batches of messages on top of the previous
+        summary and CAS-swaps per batch; the prompt-facing text is promoted
+        only once the LLM covers the full checkpointed range. A checkpoint
+        therefore never claims data that did not reach a summary, and a >200
+        message range can no longer silently drop its tail.
+        """
         normalized_conversation_id = _normalize_text(conversation_id)
         with app_session() as app_db:
             mapping = app_db.execute(
@@ -4830,57 +4930,126 @@ class AiChatService:
             until_seq = int(getattr(mapping, "summary_until_seq", 0) or 0)
             if until_seq <= int(reset_seq):
                 return
+            llm_until = int(getattr(mapping, "summary_llm_until_seq", 0) or 0)
+            llm_text = _normalize_text(getattr(mapping, "rolling_summary_llm", None))
+            prompt_text = _normalize_text(getattr(mapping, "rolling_summary", None))
             bot = app_db.get(AppAiBot, mapping.bot_id)
+            # Re-verify access/memory settings — flags may have flipped
+            # between enqueue and processing.
+            memory_ok = bool(getattr(mapping, "use_personal_memory", True)) and bool(
+                self._personal_memory_enabled(session=app_db, user_id=int(user_id))
+            )
+            if bot is not None:
+                if _normalize_text(getattr(bot, "surface", None)) == "sandbox":
+                    memory_ok = False
+                if not bool(getattr(bot, "use_personal_memory", True)):
+                    memory_ok = False
+            if not memory_ok:
+                # Do not write a checkpoint claiming coverage that is not
+                # there; just defer this key so the scan does not spin on it.
+                _summary_suppressed_until[(normalized_conversation_id, int(user_id))] = (
+                    time.monotonic() + 3600.0
+                )
+                return
             bot_user_id = int(getattr(bot, "bot_user_id", 0) or 0) if bot is not None else 0
             bot_title = _normalize_text(getattr(bot, "title", None)) or "AI"
             memory_model = _normalize_text(getattr(bot, "model", None)) if bot is not None else ""
-        with chat_session() as session:
-            rows = list(
-                session.execute(
-                    select(ChatMessage)
-                    .where(
-                        ChatMessage.conversation_id == normalized_conversation_id,
-                        ChatMessage.conversation_seq > int(reset_seq),
-                        ChatMessage.conversation_seq <= until_seq,
-                        ChatMessage.is_deleted.is_(False),
+        if llm_until > until_seq or llm_until <= int(reset_seq) or not llm_text:
+            # Pre-reset / empty / over-claimed coverage: rebuild from scratch.
+            llm_until, llm_text = int(reset_seq), ""
+        if llm_until >= until_seq:
+            # LLM coverage complete — only heal the prompt-facing text if a
+            # later fallback overwrite downgraded it.
+            if llm_text and prompt_text != llm_text:
+                with app_session() as app_db:
+                    app_db.execute(
+                        update(AppAiBotConversation)
+                        .where(
+                            AppAiBotConversation.conversation_id == normalized_conversation_id,
+                            AppAiBotConversation.user_id == int(user_id),
+                            AppAiBotConversation.context_reset_seq == int(reset_seq),
+                            AppAiBotConversation.summary_until_seq == until_seq,
+                            AppAiBotConversation.summary_llm_until_seq == llm_until,
+                        )
+                        .values(rolling_summary=llm_text, updated_at=_utc_now())
                     )
-                    .order_by(ChatMessage.conversation_seq.asc())
-                    .limit(200)
-                ).scalars()
-            )
-        if not rows:
             return
-        summary_append_lines = [
-            f"{bot_title if int(item.sender_user_id or 0) == bot_user_id else 'Пользователь'}: "
-            f"{_truncate_tokens(_normalize_text(item.body), 300)}"
-            for item in rows
-            if _normalize_text(item.body)
-        ]
-        if not summary_append_lines:
-            return
-        rolling_summary, _usage = smart_memory.summarize(
-            "", summary_append_lines, model=memory_model,
-        )
-        if _MEMORY_SENSITIVE_RE.search(rolling_summary):
-            raise ValueError("Summary contains sensitive content")
-        rolling_summary = _truncate_tokens(rolling_summary, AI_ROLLING_SUMMARY_TOKENS)
-        with app_session() as app_db:
-            app_db.execute(
-                update(AppAiBotConversation)
-                .where(
-                    AppAiBotConversation.conversation_id == normalized_conversation_id,
-                    AppAiBotConversation.user_id == int(user_id),
-                    AppAiBotConversation.context_reset_seq == int(reset_seq),
-                    AppAiBotConversation.summary_until_seq == until_seq,
+        cur_until, cur_text = llm_until, llm_text
+        folded = 0
+        while cur_until < until_seq and folded < AI_SUMMARY_UPGRADE_MAX_MESSAGES:
+            with chat_session() as session:
+                rows = list(
+                    session.execute(
+                        select(ChatMessage)
+                        .where(
+                            ChatMessage.conversation_id == normalized_conversation_id,
+                            ChatMessage.conversation_seq > int(cur_until),
+                            ChatMessage.conversation_seq <= until_seq,
+                            ChatMessage.is_deleted.is_(False),
+                        )
+                        .order_by(ChatMessage.conversation_seq.asc())
+                        .limit(AI_SUMMARY_UPGRADE_BATCH)
+                    ).scalars()
                 )
-                .values(
-                    rolling_summary=rolling_summary,
-                    updated_at=_utc_now(),
-                )
-            )
+            if not rows:
+                # The remaining range is only deleted messages — the
+                # checkpoint may safely advance over it.
+                new_until = until_seq
+                new_text = cur_text
+            else:
+                lines = [
+                    f"{bot_title if int(item.sender_user_id or 0) == bot_user_id else 'Пользователь'}: "
+                    f"{_truncate_tokens(_normalize_text(item.body), 300)}"
+                    for item in rows
+                    if _normalize_text(item.body)
+                ]
+                new_until = int(rows[-1].conversation_seq)
+                if lines:
+                    new_text, _usage = smart_memory.summarize(
+                        cur_text, lines, model=memory_model,
+                    )
+                    if _MEMORY_SENSITIVE_RE.search(new_text):
+                        raise ValueError("Summary contains sensitive content")
+                    new_text = _truncate_tokens(new_text, AI_ROLLING_SUMMARY_TOKENS)
+                else:
+                    new_text = cur_text
+            with app_session() as app_db:
+                applied = app_db.execute(
+                    update(AppAiBotConversation)
+                    .where(
+                        AppAiBotConversation.conversation_id == normalized_conversation_id,
+                        AppAiBotConversation.user_id == int(user_id),
+                        AppAiBotConversation.context_reset_seq == int(reset_seq),
+                        AppAiBotConversation.summary_llm_until_seq == int(cur_until),
+                    )
+                    .values(
+                        rolling_summary_llm=new_text,
+                        summary_llm_until_seq=int(new_until),
+                        updated_at=_utc_now(),
+                    )
+                ).rowcount
+            if not applied:
+                # Reset / concurrent writer: stop — the next claim resumes
+                # from whatever checkpoint won.
+                return
+            cur_until, cur_text = int(new_until), new_text
+            folded += len(rows)
+        if cur_until >= until_seq:
+            with app_session() as app_db:
+                promoted = app_db.execute(
+                    update(AppAiBotConversation)
+                    .where(
+                        AppAiBotConversation.conversation_id == normalized_conversation_id,
+                        AppAiBotConversation.user_id == int(user_id),
+                        AppAiBotConversation.context_reset_seq == int(reset_seq),
+                        AppAiBotConversation.summary_until_seq == until_seq,
+                        AppAiBotConversation.summary_llm_until_seq == int(cur_until),
+                    )
+                    .values(rolling_summary=cur_text, updated_at=_utc_now())
+                ).rowcount
             logger.info(
-                "ai_summary_upgrade done conversation_id=%s until_seq=%s lines=%s",
-                normalized_conversation_id, until_seq, len(summary_append_lines),
+                "ai_summary_upgrade done conversation_id=%s until_seq=%s folded=%s promoted=%s",
+                normalized_conversation_id, until_seq, folded, int(bool(promoted)),
             )
 
     def reap_stale_runs(
@@ -7918,6 +8087,7 @@ class AiChatService:
             _log_ai_run_timing("memory", memory_started_at, run_id=lap_run_id)
         _lap("ctx_memory")
         if summary_append_lines:
+            llm_persisted = False
             fallback_summary = _compact_head_tail(
                 "\n".join(part for part in [rolling_summary, *summary_append_lines] if part),
                 AI_ROLLING_SUMMARY_TOKENS,
@@ -7931,18 +8101,44 @@ class AiChatService:
                 summary_ready = False
                 rolling_summary = fallback_summary
             elif memory_enabled:
-                # A8/P1: LLM-саммаризация уходит из критического пути ответа —
-                # в промпт уходит head/tail fallback, а LLM-качество догоняет
-                # фоновой upgrade (см. process_pending_summary_upgrade).
-                self._register_pending_summary(
-                    conversation_id=normalized_conversation_id,
-                    user_id=int(user_payload["id"]),
-                    reset_seq=reset_seq,
-                )
-                rolling_summary = fallback_summary
+                if AI_SUMMARY_BACKGROUND_ENABLED:
+                    # A8/P1: LLM-саммаризация уходит из критического пути ответа —
+                    # в промпт уходит head/tail fallback, а LLM-качество догоняет
+                    # фоновой upgrade (см. process_pending_summary_upgrade).
+                    self._register_pending_summary(
+                        conversation_id=normalized_conversation_id,
+                        user_id=int(user_payload["id"]),
+                        reset_seq=reset_seq,
+                    )
+                    rolling_summary = fallback_summary
+                else:
+                    # Rollback path (AI_SUMMARY_BACKGROUND_ENABLED=0):
+                    # synchronous LLM summarize on the critical path. The
+                    # persisted text is already LLM quality, so the LLM
+                    # checkpoint advances together with the prompt one.
+                    llm_persisted = True
+                    try:
+                        rolling_summary, _summary_usage = smart_memory.summarize(
+                            rolling_summary, summary_append_lines, model=memory_model,
+                        )
+                        if _MEMORY_SENSITIVE_RE.search(rolling_summary):
+                            raise ValueError("Summary contains sensitive content")
+                        rolling_summary = _truncate_tokens(rolling_summary, AI_ROLLING_SUMMARY_TOKENS)
+                    except Exception:
+                        llm_persisted = False
+                        logger.warning("ai_summary inline summarize failed; head/tail fallback", exc_info=True)
+                        rolling_summary = fallback_summary
             else:
                 rolling_summary = fallback_summary
             if summary_ready:
+                values: dict[str, Any] = {
+                    "rolling_summary": rolling_summary,
+                    "summary_until_seq": next_summary_until_seq,
+                    "updated_at": _utc_now(),
+                }
+                if llm_persisted:
+                    values["rolling_summary_llm"] = rolling_summary
+                    values["summary_llm_until_seq"] = next_summary_until_seq
                 with app_session() as app_db:
                     app_db.execute(
                         update(AppAiBotConversation)
@@ -7952,11 +8148,7 @@ class AiChatService:
                             AppAiBotConversation.summary_until_seq == summary_until_seq,
                             AppAiBotConversation.context_reset_seq == reset_seq,
                         )
-                        .values(
-                            rolling_summary=rolling_summary,
-                            summary_until_seq=next_summary_until_seq,
-                            updated_at=_utc_now(),
-                        )
+                        .values(**values)
                     )
         _lap("ctx_summary")
         with app_session() as app_db:

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
 
@@ -61,6 +62,61 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+async def run_summary_upgrade_supervisor(
+    service,
+    *,
+    executor: ThreadPoolExecutor,
+    workers: int = 1,
+    idle_sec: float = 0.5,
+    scan_sec: float = 30.0,
+) -> None:
+    """Independent background loop for pending summary upgrades.
+
+    Each job (claim + LLM fold + CAS) runs inside a dedicated bounded
+    executor — the claim loop never awaits a summary, user runs keep
+    priority, and the DB invariant (summary_llm_until_seq <
+    summary_until_seq) re-discovers work lost to a restart. Exported for
+    tests: the worker only wires env + lifecycle.
+    """
+    loop = asyncio.get_running_loop()
+    inflight: set[asyncio.Future] = set()
+    last_scan = 0.0
+    try:
+        while True:
+            now = time.monotonic()
+            if now - last_scan >= scan_sec:
+                last_scan = now
+                inflight.add(asyncio.ensure_future(
+                    loop.run_in_executor(executor, service.scan_pending_summary_upgrades)
+                ))
+            while len(inflight) < workers:
+                inflight.add(asyncio.ensure_future(
+                    loop.run_in_executor(executor, service.process_pending_summary_upgrade)
+                ))
+            done, inflight = await asyncio.wait(
+                inflight,
+                timeout=idle_sec,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            progressed = False
+            for fut in done:
+                if fut.cancelled():
+                    continue
+                exc = fut.exception()
+                if exc is not None:
+                    logger.error(
+                        "AI summary upgrade background task failed",
+                        exc_info=(type(exc), exc, exc.__traceback__),
+                    )
+                    continue
+                progressed = progressed or bool(fut.result())
+            if not inflight and not progressed:
+                await asyncio.sleep(idle_sec)
+    finally:
+        for fut in inflight:
+            fut.cancel()
+
+
 async def main() -> None:
     ai_chat_service.initialize_runtime()
     idle_delay_sec = _env_float("AI_CHAT_WORKER_IDLE_DELAY_SEC", 0.5, 0.05, 30.0)
@@ -87,6 +143,30 @@ async def main() -> None:
     # queued backlog is preserved instead of being falsely declared lost.
     heartbeat_interval_sec = _env_float("AI_WORKER_HEARTBEAT_SEC", 15.0, 5.0, 300.0)
     last_heartbeat_at = 0.0
+    # A8c2: summary upgrades run on a dedicated bounded executor in an
+    # independent supervisor task — a slow LLM summary can no longer stall
+    # the claim loop (AI_SUMMARY_BACKGROUND_ENABLED=0 rolls the feature off).
+    summary_bg_enabled = _env_flag("AI_SUMMARY_BACKGROUND_ENABLED", True)
+    summary_workers = _env_int("AI_SUMMARY_BG_WORKERS", 1, 1, 4)
+    summary_idle_sec = _env_float("AI_SUMMARY_BG_IDLE_SEC", 0.5, 0.1, 30.0)
+    summary_scan_sec = _env_float("AI_SUMMARY_BG_SCAN_SEC", 30.0, 5.0, 600.0)
+    summary_executor: ThreadPoolExecutor | None = None
+    summary_task: asyncio.Task | None = None
+    if summary_bg_enabled:
+        summary_executor = ThreadPoolExecutor(
+            max_workers=summary_workers,
+            thread_name_prefix="ai-summary-upgrade",
+        )
+        summary_task = asyncio.create_task(
+            run_summary_upgrade_supervisor(
+                ai_chat_service,
+                executor=summary_executor,
+                workers=summary_workers,
+                idle_sec=summary_idle_sec,
+                scan_sec=summary_scan_sec,
+            ),
+            name="ai-summary-upgrade-supervisor",
+        )
     logger.info("AI chat worker started: batch_size=%s concurrency=%s", batch_size, concurrency)
     while True:
         if time.monotonic() - last_heartbeat_at >= heartbeat_interval_sec:
@@ -147,8 +227,6 @@ async def main() -> None:
                 remaining -= wave_size
                 if wave_processed == 0:
                     break
-            # A8/P1: off-critical-path LLM summary upgrades queued by runs.
-            await asyncio.to_thread(ai_chat_service.process_pending_summary_upgrade)
         except Exception:
             logger.exception("AI chat worker cycle failed")
             await asyncio.sleep(3.0)

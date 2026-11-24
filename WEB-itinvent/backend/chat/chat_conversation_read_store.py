@@ -610,6 +610,7 @@ class ChatConversationReadStore:
         )
         if cached is not None:
             return cached
+        detail_epoch = self._service._conversation_cache_epoch(normalized_conversation_id)
         with chat_session() as session:
             conversation = self._service._require_membership(
                 session=session,
@@ -626,6 +627,7 @@ class ChatConversationReadStore:
             bucket="conversation_detail",
             extra=normalized_conversation_id,
             value=result,
+            epoch_check=(normalized_conversation_id, int(detail_epoch)),
         )
         return result
 

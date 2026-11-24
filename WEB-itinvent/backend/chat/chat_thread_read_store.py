@@ -289,6 +289,13 @@ class ChatThreadReadStore:
                 )
                 return cached
 
+        # Fill-after-invalidate guard: capture the epoch before the DB read;
+        # _cache_set drops the value if a cross-node invalidation landed mid-read.
+        latest_epoch = (
+            self._service._conversation_cache_epoch(normalized_conversation_id)
+            if normalized_conversation_id and not normalized_before and not normalized_after
+            else None
+        )
         with chat_session() as session:
             conversation = self._service._require_membership(
                 session=session,
@@ -423,6 +430,11 @@ class ChatThreadReadStore:
                     bucket="thread_latest",
                     extra=latest_cache_extra,
                     value=payload,
+                    epoch_check=(
+                        (normalized_conversation_id, int(latest_epoch))
+                        if latest_epoch is not None
+                        else None
+                    ),
                 )
             self._service._set_request_meta(
                 route="messages",
@@ -482,6 +494,8 @@ class ChatThreadReadStore:
             )
             return cached
 
+        # Fill-after-invalidate guard: see get_messages (latest path).
+        bootstrap_epoch = self._service._conversation_cache_epoch(normalized_conversation_id)
         with chat_session() as session:
             conversation = self._service._require_membership(
                 session=session,
@@ -618,6 +632,7 @@ class ChatThreadReadStore:
                 bucket="thread_bootstrap",
                 extra=bootstrap_cache_extra,
                 value=payload,
+                epoch_check=(normalized_conversation_id, int(bootstrap_epoch)),
             )
             self._service._set_request_meta(
                 route="thread_bootstrap",

@@ -102,6 +102,25 @@ class ChatReadCacheRedis:
             self._errors += 1
             logger.debug("chat.read_cache.redis invalidate_all failed", exc_info=True)
 
+    def invalidate_conversation(self, *, conversation_id: str) -> None:
+        """Drop shared entries tied to one conversation across all users.
+
+        Conv-scoped keys embed the conversation id as the first path segment
+        of ``extra`` (``{conv}|...``); list buckets cannot be matched and are
+        left to their TTL / per-user invalidations.
+        """
+        client = self._get_client()
+        normalized = str(conversation_id or "").strip()
+        if client is None or not normalized:
+            return
+        needle = f"::{normalized}|"
+        try:
+            for key in client.scan_iter(match=f"{_KEY_PREFIX}*{needle}*", count=256):
+                client.delete(key)
+        except Exception:
+            self._errors += 1
+            logger.debug("chat.read_cache.redis invalidate_conversation failed", exc_info=True)
+
     def invalidate_bucket(self, bucket: str) -> None:
         normalized_bucket = _normalize_bucket(bucket)
         if not normalized_bucket:
