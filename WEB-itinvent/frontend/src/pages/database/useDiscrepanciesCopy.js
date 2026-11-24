@@ -22,6 +22,7 @@ export default function useDiscrepanciesCopy({
   compareMaps,
 }) {
   const [copiedDiscrepancies, setCopiedDiscrepancies] = useState(false);
+  const [copyError, setCopyError] = useState(false);
   const copiedTimerRef = useRef(null);
 
   useEffect(() => () => {
@@ -54,7 +55,18 @@ export default function useDiscrepanciesCopy({
 
   const handleCopyDiscrepancies = useCallback(async () => {
     const text = discrepanciesText;
-    await copyTextToClipboard(text);
+    try {
+      const copied = await copyTextToClipboard(text);
+      if (!copied) throw new Error('empty');
+    } catch {
+      setCopyError(true);
+      if (copiedTimerRef.current != null) window.clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = window.setTimeout(() => {
+        copiedTimerRef.current = null;
+        setCopyError(false);
+      }, 2500);
+      return;
+    }
     setCopiedDiscrepancies(true);
     if (copiedTimerRef.current != null) window.clearTimeout(copiedTimerRef.current);
     copiedTimerRef.current = window.setTimeout(() => {
@@ -63,5 +75,5 @@ export default function useDiscrepanciesCopy({
     }, 2000);
   }, [discrepanciesText]);
 
-  return { copiedDiscrepancies, discrepanciesText, discrepanciesTaskText, handleCopyDiscrepancies };
+  return { copiedDiscrepancies, copyError, discrepanciesText, discrepanciesTaskText, handleCopyDiscrepancies };
 }

@@ -153,7 +153,7 @@ export function useDatabaseListController({
   // the import, so opening the dialogs later doesn't wait for the chunk.
   const didPrefetchDialogsRef = useRef(false);
   useEffect(() => {
-    if (didPrefetchDialogsRef.current || !allEquipment?.length) return;
+    if (didPrefetchDialogsRef.current || !allEquipment || !Object.keys(allEquipment).length) return;
     didPrefetchDialogsRef.current = true;
     const prefetch = () => {
       void import('./EquipmentDetailDialog');
