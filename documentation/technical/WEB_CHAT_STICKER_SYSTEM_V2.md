@@ -5,7 +5,7 @@
 Объект: `TelegramStickersTab` / `ChatStickerSuggestions` /
 `ChatStickerManageDialog` / `ChatStickerPackDialog` /
 `stickerSearchIndex` / `chatStickersAPI` / `telegram_sticker_service` /
-миграция `20261124_0177`.
+миграции `20261124_0178`/`20261124_0179`.
 
 Содержание: parity-матрица с Telegram Desktop, находки аудита,
 изменения API/БД, архитектурные решения, найденные и исправленные
@@ -85,8 +85,8 @@
 
 ## Изменения БД
 
-Миграция `20261124_0177_chat_sticker_favorites` (down_revision
-`20261118_0176`):
+Миграция `20261124_0178_chat_sticker_favorites` (down_revision
+`20261124_0177` — A8 LLM-checkpoint, merge-синхронизация с main `926dd9f5`):
 
 - `chat_user_favorite_stickers` — `id`, `user_id`, `sticker_id`
   (FK → `chat_stickers`, CASCADE), `added_at`;
@@ -99,8 +99,8 @@
   пользовательский порядок наборов в пикере; равенство позиций
   разрешается по `added_at`.
 
-Миграция `20261124_0178_chat_recent_sticker_sync_state` (down_revision
-`20261124_0177`):
+Миграция `20261124_0179_chat_recent_sticker_sync_state` (down_revision
+`20261124_0178`):
 
 - `chat_user_recent_sticker_state` — `user_id` (PK),
   `version Integer NOT NULL DEFAULT 0`, `updated_at`. Счётчик

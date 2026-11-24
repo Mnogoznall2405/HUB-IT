@@ -527,7 +527,7 @@ def test_0178_upgrade_preserves_recents_and_downgrade_works(tmp_path):
     engine = create_engine(url, future=True).execution_options(
         schema_translate_map={"chat": None, "app": None, "system": None}
     )
-    # Schema as of 0176: everything except the tables 0177/0178 create.
+    # Schema as of 0176: everything except the tables 0178/0179 create.
     post_0176_tables = {
         "chat_user_favorite_stickers",
         "chat_user_recent_stickers",
@@ -537,9 +537,9 @@ def test_0178_upgrade_preserves_recents_and_downgrade_works(tmp_path):
         engine,
         tables=[t for t in Base.metadata.sorted_tables if t.name not in post_0176_tables],
     )
-    cfg = build_alembic_config(url)
+    cfg = build_alembic_config(url, scope="chat")
     command.stamp(cfg, "20261118_0176")
-    command.upgrade(cfg, "20261124_0177")
+    command.upgrade(cfg, "20261124_0178")
 
     pack_id = _new_id()
     sticker_id = _new_id()
@@ -603,14 +603,14 @@ def test_0178_upgrade_preserves_recents_and_downgrade_works(tmp_path):
     assert recents == [sticker_id]
     assert favorites == [sticker_id]
 
-    # 0178 downgrade: only the state table goes away.
-    command.downgrade(cfg, "20261124_0177")
+    # 0179 downgrade: only the state table goes away.
+    command.downgrade(cfg, "20261124_0178")
     inspector = sa.inspect(engine)
     assert not inspector.has_table("chat_user_recent_sticker_state")
     assert inspector.has_table("chat_user_recent_stickers")
 
-    # 0177 downgrade still drops its own tables.
-    command.downgrade(cfg, "20261118_0176")
+    # 0178 downgrade still drops its own tables.
+    command.downgrade(cfg, "20261124_0177")
     inspector = sa.inspect(engine)
     assert not inspector.has_table("chat_user_recent_stickers")
     assert not inspector.has_table("chat_user_favorite_stickers")

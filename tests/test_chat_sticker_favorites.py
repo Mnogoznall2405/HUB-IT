@@ -559,9 +559,9 @@ def _alembic_config(url: str, scope: str = "chat"):
 
 
 def test_sticker_favorites_migration_upgrade_and_downgrade(tmp_path):
-    """20261124_0177 creates both tables and the position column, then rolls back."""
-    revision = "20261124_0177"
-    parent = "20261118_0176"
+    """20261124_0178 creates both tables and the position column, then rolls back."""
+    revision = "20261124_0178"
+    parent = "20261124_0177"
     engine = sa.create_engine(f"sqlite:///{(tmp_path / 'mig177.db').as_posix()}")
     cfg = _alembic_config(str(engine.url))
     with engine.begin() as connection:
@@ -602,9 +602,9 @@ def test_sticker_favorites_migration_upgrade_and_downgrade(tmp_path):
 
 
 def test_recents_sync_state_migration_upgrade_and_downgrade(tmp_path):
-    """20261124_0178 creates the per-user recents version table, then rolls back."""
-    revision = "20261124_0178"
-    parent = "20261124_0177"
+    """20261124_0179 creates the per-user recents version table, then rolls back."""
+    revision = "20261124_0179"
+    parent = "20261124_0178"
     engine = sa.create_engine(f"sqlite:///{(tmp_path / 'mig178.db').as_posix()}")
     cfg = _alembic_config(str(engine.url))
     with engine.begin() as connection:
@@ -648,4 +648,4 @@ def test_sticker_favorites_revision_is_the_single_head_descendant():
     cfg = _alembic_config("sqlite:///unused.db")
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
-    assert heads == ["20261124_0178"], heads
+    assert heads == ["20261124_0179"], heads
