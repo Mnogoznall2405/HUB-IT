@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -81,6 +81,8 @@ export default function MyFilesVersionHistory({
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState('');
   const [error, setError] = useState('');
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const load = useCallback(async (signal) => {
     if (!fileId) return;
@@ -88,13 +90,13 @@ export default function MyFilesVersionHistory({
     setError('');
     try {
       const data = await myFilesOfficeAPI.listVersions(fileId, { signal });
-      if (signal?.aborted) return;
+      if (signal?.aborted || !mountedRef.current) return;
       setItems(Array.isArray(data?.items) ? data.items : []);
       setCurrent(data?.current || null);
     } catch (err) {
-      if (!signal?.aborted) setError(errorMessage(err, 'Не удалось загрузить версии'));
+      if (!signal?.aborted && mountedRef.current) setError(errorMessage(err, 'Не удалось загрузить версии'));
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      if (!signal?.aborted && mountedRef.current) setLoading(false);
     }
   }, [fileId]);
 
@@ -114,9 +116,9 @@ export default function MyFilesVersionHistory({
         fileNameFromDisposition(response.headers?.['content-disposition'], `${fileName} (версия ${version.version_no})`),
       );
     } catch (err) {
-      setError(errorMessage(err, 'Не удалось скачать версию'));
+      if (mountedRef.current) setError(errorMessage(err, 'Не удалось скачать версию'));
     } finally {
-      setBusyId('');
+      if (mountedRef.current) setBusyId('');
     }
   };
 
@@ -128,9 +130,9 @@ export default function MyFilesVersionHistory({
       onRestored?.(version);
       await load();
     } catch (err) {
-      setError(errorMessage(err, 'Не удалось вернуть версию'));
+      if (mountedRef.current) setError(errorMessage(err, 'Не удалось вернуть версию'));
     } finally {
-      setBusyId('');
+      if (mountedRef.current) setBusyId('');
     }
   };
 
