@@ -98,7 +98,6 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     useCallback(() => peekStickerScopeRecord(stickerScope), [stickerScope]),
   );
   const scopeKey = stickerRecord.key;
-  const recentStorageKey = stickerRecord.storageKey;
   const packs = stickerRecord.packs.items;
   const packsStatus = stickerRecord.packs.status;
   // Избранное приходит с сервера полными объектами — у стикера может
@@ -199,11 +198,12 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     ensureChatStickerData(stickerScope);
   }, [visible, stickerScope]);
 
-  // Отмена без flush при размонтировании и смене аккаунта: в очереди список
-  // прежнего пользователя — слать его под чужой сессией нельзя, а локальная
-  // копия уже сохранена в его localStorage-ключ. Дебаунс общий для всех
-  // поверхностей отправки (api/chatStickers), scope — ключ хранилища.
-  useEffect(() => () => cancelRecentStickersSync(recentStorageKey), [recentStorageKey]);
+  // Отмена без flush при размонтировании и смене аккаунта: в очереди мог
+  // остаться отложенный flush прежнего scope — слать его под чужой сессией
+  // нельзя, а журнал операций хранится в scope-meta store и переживёт
+  // повторное открытие. Дебаунс общий для всех поверхностей отправки
+  // (api/chatStickers), маркер — scope-ключ `userId::dbId`.
+  useEffect(() => () => cancelRecentStickersSync(scopeKey), [scopeKey]);
 
   useEffect(() => {
     if (!importOpen) return;
@@ -411,10 +411,10 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   const forgetRecentSticker = useCallback((stickerId) => {
     const normalizedStickerId = String(stickerId || '').trim();
     if (!normalizedStickerId) return;
-    // Явное удаление — полная замена (clear:true) без дебаунса: merge-синк
-    // сохранил бы отсутствующий в payload стикер хвостом серверного списка.
-    // Очередь дебаунса store отменяет до PUT — иначе устаревший список
-    // вернул бы удалённый стикер обратно уже после замены.
+    // Явное удаление — delta-операция remove без дебаунса: сервер получает
+    // tombstone только на этот id, устаревший ПОЛНЫЙ список не уезжает.
+    // Отложенный дебаунс-flush store отменяет до PUT — иначе он повторил бы
+    // пакет с bump'ами уже после remove'а.
     void removeRecentSticker(scopeKey, normalizedStickerId).then((result) => {
       // Локальная копия уже актуальна — сервер догонит при следующей записи.
       if (result?.ok === false) setStatusText('Не удалось обновить список недавних стикеров.');
@@ -422,8 +422,8 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   }, [scopeKey]);
 
   const clearRecentStickersAction = useCallback(() => {
-    // clear:true — полная замена: без неё merge-семантика сервера оставила
-    // бы хвост из записей, которых нет в локальном (пустом) списке.
+    // clear-операция — немедленный flush: tombstone на очистку уходит
+    // сразу, дожидаться дебаунса bump-пакета нельзя.
     void clearRecentStickers(scopeKey).then((result) => {
       // Локальный список уже пуст — серверный догонит при следующей
       // успешной записи, пользователю показываем только статус.

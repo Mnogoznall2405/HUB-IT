@@ -48,49 +48,91 @@ export const invalidateStickerPacksCache = () => {
 };
 
 // Общая trailing-debounce очередь синка «недавних» для всех поверхностей
-// отправки (вкладка стикеров, подсказки над композером): серия записей
-// схлопывается в один PUT, а scope-маркер не даёт списку ушедшего
-// пользователя улететь под чужой сессией после смены аккаунта.
+// отправки (вкладка стикеров, подсказки над композером). Очередь хранит
+// только flush-коллбэк store — сами операции живут в журнале scope
+// (lib/chatStickerStore). Прямо перед срабатыванием scope и сессия
+// проверяются ПОВТОРНО: отложенный flush ушедшей сессии (смена аккаунта
+// или выбранной БД) не должен уйти под чужим контекстом.
 const RECENT_STICKERS_SYNC_DEBOUNCE_MS = 1500;
 let recentStickersSyncTimer = null;
-let pendingRecentStickerIds = null;
-let pendingRecentStickersScope = '';
+let pendingRecentStickersSync = null;
 
-export const scheduleRecentStickersSync = (stickerIds, scopeKey = '') => {
-  if (
-    pendingRecentStickerIds !== null
-    && pendingRecentStickersScope
-    && scopeKey
-    && pendingRecentStickersScope !== scopeKey
-  ) {
-    // Под чужим scope ждать нельзя — список прежнего пользователя сбрасываем.
-    pendingRecentStickerIds = null;
+// Чтение id текущего пользователя из сессионного кэша AuthContext —
+// без импорта контекста, чтобы не тянуть его в api-слой.
+const readSessionUserId = () => {
+  try {
+    const rawUser = window?.localStorage?.getItem('user');
+    const parsed = rawUser ? JSON.parse(rawUser) : null;
+    return parsed?.id ?? null;
+  } catch {
+    return null;
   }
-  pendingRecentStickerIds = (Array.isArray(stickerIds) ? stickerIds : [])
-    .map((stickerId) => String(stickerId || '').trim())
-    .filter(Boolean);
-  pendingRecentStickersScope = scopeKey;
+};
+
+// flush() вызывается один раз по таймеру; scope — маркер
+// `${userId}::${selectedDb}` (та же формула, что у resolveStickerScope).
+export const scheduleRecentStickersSync = ({ userId = null, scopeKey = '' } = {}, flush) => {
+  const normalizedScopeKey = String(scopeKey || '');
+  if (
+    pendingRecentStickersSync
+    && pendingRecentStickersSync.scopeKey
+    && normalizedScopeKey
+    && pendingRecentStickersSync.scopeKey !== normalizedScopeKey
+  ) {
+    // Под чужим scope ждать нельзя — очередь прежнего контекста сбрасываем.
+    pendingRecentStickersSync = null;
+  }
+  pendingRecentStickersSync = {
+    userId,
+    scopeKey: normalizedScopeKey,
+    flush: typeof flush === 'function' ? flush : null,
+  };
   if (recentStickersSyncTimer !== null) clearTimeout(recentStickersSyncTimer);
   recentStickersSyncTimer = setTimeout(() => {
     recentStickersSyncTimer = null;
-    const stickerIdsToPush = pendingRecentStickerIds || [];
-    pendingRecentStickerIds = null;
-    chatStickersAPI.pushRecentStickers(stickerIdsToPush).catch(() => {
-      // Синхронизация не критична: локальная копия в localStorage уже
-      // актуальна, следующая успешная запись довезёт список целиком.
-    });
+    const pending = pendingRecentStickersSync;
+    pendingRecentStickersSync = null;
+    if (!pending || typeof pending.flush !== 'function') return;
+    // Повторная проверка прямо перед запросом: за время дебаунса могли
+    // смениться выбранная БД (scope-ключ пересчитывается из localStorage)
+    // и сама сессия (запись 'user' удалена при logout/смене аккаунта).
+    if (
+      pending.scopeKey
+      && resolveStickerScope({ userId: pending.userId }) !== pending.scopeKey
+    ) {
+      return;
+    }
+    const pendingUserId = pending.userId;
+    const hasPendingUser = pendingUserId !== null
+      && pendingUserId !== undefined
+      && String(pendingUserId) !== '';
+    if (hasPendingUser && String(readSessionUserId() ?? '') !== String(pendingUserId)) {
+      return;
+    }
+    Promise.resolve()
+      .then(() => pending.flush())
+      .catch(() => {
+        // Синхронизация не критична: операции остаются в журнале store,
+        // их довезёт следующий flush или переход в онлайн.
+      });
   }, RECENT_STICKERS_SYNC_DEBOUNCE_MS);
 };
 
 export const cancelRecentStickersSync = (scopeKey = '') => {
+  const normalizedScopeKey = String(scopeKey || '');
   // Отменяем только свою очередь: чужой pending (другого scope) не трогаем.
-  if (scopeKey && pendingRecentStickersScope && scopeKey !== pendingRecentStickersScope) return;
+  if (
+    normalizedScopeKey
+    && pendingRecentStickersSync?.scopeKey
+    && pendingRecentStickersSync.scopeKey !== normalizedScopeKey
+  ) {
+    return;
+  }
   if (recentStickersSyncTimer !== null) {
     clearTimeout(recentStickersSyncTimer);
     recentStickersSyncTimer = null;
   }
-  pendingRecentStickerIds = null;
-  pendingRecentStickersScope = '';
+  pendingRecentStickersSync = null;
 };
 
 export const chatStickersAPI = {
@@ -198,19 +240,33 @@ export const chatStickersAPI = {
     return response.data;
   },
 
-  // Версионированный merge-синк: клиентский список встаёт в начало
-  // серверного, а записи других устройств сохраняются хвостом — поэтому
-  // пустой sticker_ids ничего не удаляет. Полная замена — только через
-  // clear:true (пустой список реально очищает rail). Ответ содержит
-  // монотонный version, который можно вернуть как baseVersion следующего PUT.
-  pushRecentStickers: async (stickerIds, options = {}) => {
-    const body = {
-      sticker_ids: (Array.isArray(stickerIds) ? stickerIds : [])
+  // Версионированный op-синк: клиент шлёт накопленные ДЕЛЬТА-операции
+  // ({op:'bump'|'remove'|'clear', sticker_id}) от последней подтверждённой
+  // версии, а не весь список — устаревший список другого устройства не может
+  // воскресить сознательно удалённые записи, потому что delta называет
+  // только реально затронутые id. ``stickerIds`` — legacy bump-head merge
+  // для миграции локальной копии при version===0; ``clear`` — полная замена
+  // (или ведущий clear перед ops). Ответ {items, version} — авторитетный
+  // merge-результат, применяемый store как новая база.
+  pushRecentStickers: async ({ ops = [], stickerIds = null, baseVersion = null, clear = false } = {}) => {
+    const body = {};
+    const normalizedOps = (Array.isArray(ops) ? ops : [])
+      .map((entry) => ({
+        op: String(entry?.op || '').trim(),
+        sticker_id: String(entry?.sticker_id || '').trim(),
+      }))
+      .filter((entry) => (
+        entry.op === 'clear' || (entry.sticker_id && (entry.op === 'bump' || entry.op === 'remove'))
+      ))
+      .map((entry) => (entry.op === 'clear' ? { op: 'clear' } : entry));
+    if (normalizedOps.length > 0) body.ops = normalizedOps;
+    if (Array.isArray(stickerIds)) {
+      body.sticker_ids = stickerIds
         .map((stickerId) => String(stickerId || '').trim())
-        .filter(Boolean),
-    };
-    if (options?.clear === true) body.clear = true;
-    if (Number.isFinite(options?.baseVersion)) body.base_version = options.baseVersion;
+        .filter(Boolean);
+    }
+    if (clear === true) body.clear = true;
+    if (Number.isFinite(baseVersion)) body.base_version = baseVersion;
     const response = await apiClient.put('/chat/stickers/recent', body);
     return response.data;
   },

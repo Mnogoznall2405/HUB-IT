@@ -331,6 +331,208 @@ def test_recents_two_sequential_puts_both_reflected(sticker_env):
 
 
 # ---------------------------------------------------------------------------
+# Recents: op-based delta sync
+# ---------------------------------------------------------------------------
+
+
+def test_recents_ops_bump_moves_to_front_in_order(sticker_env):
+    """Sequential bumps apply in order: the last bumped id ends up front-most,
+    exactly like the local chronological replay on the client."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1, s2, s3 = _new_id(), _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1, s2, s3])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    svc.replace_recent_stickers(current_user_id=USER_A, sticker_ids=[s1, s2, s3])
+    payload = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "bump", "sticker_id": s3}, {"op": "bump", "sticker_id": s1}],
+        base_version=1,
+    )
+    assert _recent_ids(payload) == [s1, s3, s2]
+    assert payload["version"] == 2
+
+
+def test_recents_ops_remove_and_clear(sticker_env):
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1, s2, s3 = _new_id(), _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1, s2, s3])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    svc.replace_recent_stickers(current_user_id=USER_A, sticker_ids=[s1, s2, s3])
+    removed = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "remove", "sticker_id": s1}],
+    )
+    assert _recent_ids(removed) == [s2, s3]
+
+    cleared = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "clear"}],
+    )
+    assert cleared["items"] == []
+    assert cleared["version"] == 3
+
+
+def test_recents_clear_then_stale_device_bump_does_not_resurrect(sticker_env):
+    """Device A clears (v2). Device B, synced at v1, later sends sticker s3 —
+    its stale-base op-PUT lands s3 but must NOT resurrect cleared s1/s2."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1, s2, s3 = _new_id(), _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1, s2, s3])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    first = svc.replace_recent_stickers(current_user_id=USER_A, sticker_ids=[s1, s2])
+    cleared = svc.replace_recent_stickers(current_user_id=USER_A, sticker_ids=[], clear=True)
+    assert cleared["version"] == 2
+
+    stale_device = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "bump", "sticker_id": s3}],
+        base_version=first["version"],  # stale — B missed the clear
+    )
+    assert _recent_ids(stale_device) == [s3]
+    assert stale_device["version"] == 3
+
+
+def test_recents_ops_stale_base_version_still_applies_deltas(sticker_env):
+    """A removes s1; B (base v1) bumps s3 — both deltas survive: s1 stays
+    gone, s2 survives, s3 lands in front."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1, s2, s3 = _new_id(), _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1, s2, s3])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    first = svc.replace_recent_stickers(current_user_id=USER_A, sticker_ids=[s1, s2])
+    svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "remove", "sticker_id": s1}],
+    )
+    other_device = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "bump", "sticker_id": s3}],
+        base_version=first["version"],
+    )
+    assert _recent_ids(other_device) == [s3, s2]
+
+    fetched = svc.list_recent_stickers(current_user_id=USER_A)
+    assert _recent_ids(fetched) == [s3, s2]
+    assert fetched["version"] == 3
+
+
+def test_recents_ops_two_devices_interleaved(sticker_env):
+    """Concurrent-device ops serialize on the state row: bump s1 (A), stale
+    bump s2 (B), stale remove s2 (A) — final order follows applied order."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1, s2 = _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1, s2])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    svc.replace_recent_stickers(current_user_id=USER_A, ops=[{"op": "bump", "sticker_id": s1}])
+    device_b = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "bump", "sticker_id": s2}],
+        base_version=0,
+    )
+    assert _recent_ids(device_b) == [s2, s1]
+    device_a = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "remove", "sticker_id": s2}],
+        base_version=1,
+    )
+    assert _recent_ids(device_a) == [s1]
+    assert device_a["version"] == 3
+
+
+def test_recents_ops_drop_unknown_and_inaccessible_ids(sticker_env):
+    """Bump ops of unknown/inaccessible ids are dropped silently; remove ops
+    of unknown ids are no-ops."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    _seed_pack(sticker_env, pack_id="pack-2", short_name="p2")
+    s1, s2 = _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1])
+    _seed_stickers(sticker_env, pack_id="pack-2", sticker_ids=[s2])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    payload = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[
+            {"op": "bump", "sticker_id": "definitely-not-a-sticker"},
+            {"op": "bump", "sticker_id": s2},  # pack-2 not installed
+            {"op": "bump", "sticker_id": s1},
+            {"op": "remove", "sticker_id": "another-unknown"},
+        ],
+    )
+    assert _recent_ids(payload) == [s1]
+
+
+def test_recents_ops_clear_with_ops_ordering(sticker_env):
+    """clear:true acts as an implicit leading clear op, then the explicit ops
+    replay in order; an in-array clear truncates whatever came before it."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1, s2, s3 = _new_id(), _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1, s2, s3])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    svc.replace_recent_stickers(current_user_id=USER_A, sticker_ids=[s1, s2, s3])
+    flag_clear = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        clear=True,
+        ops=[{"op": "bump", "sticker_id": s2}],
+    )
+    assert _recent_ids(flag_clear) == [s2]
+
+    in_array_clear = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[
+            {"op": "bump", "sticker_id": s1},
+            {"op": "clear"},
+            {"op": "bump", "sticker_id": s3},
+        ],
+    )
+    assert _recent_ids(in_array_clear) == [s3]
+
+
+def test_recents_empty_ops_list_is_tolerated(sticker_env):
+    """An empty ops list behaves like the empty legacy merge: no content
+    change, version still bumps (the request was a sync heartbeat)."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1 = _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    svc.replace_recent_stickers(current_user_id=USER_A, sticker_ids=[s1])
+    payload = svc.replace_recent_stickers(current_user_id=USER_A, ops=[])
+    assert _recent_ids(payload) == [s1]
+    assert payload["version"] == 2
+
+
+def test_recents_ops_replayed_bump_is_idempotent(sticker_env):
+    """Re-sending the same ops batch (client retry after a lost response)
+    converges to the same rail instead of reordering it."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1, s2 = _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1, s2])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    ops = [{"op": "bump", "sticker_id": s1}, {"op": "bump", "sticker_id": s2}]
+    first = svc.replace_recent_stickers(current_user_id=USER_A, ops=ops)
+    replayed = svc.replace_recent_stickers(
+        current_user_id=USER_A, ops=ops, base_version=first["version"],
+    )
+    assert _recent_ids(first) == _recent_ids(replayed) == [s2, s1]
+
+
+# ---------------------------------------------------------------------------
 # Uniform entitlement: recents PUT/GET filter
 # ---------------------------------------------------------------------------
 

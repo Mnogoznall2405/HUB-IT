@@ -229,6 +229,7 @@ async def replace_chat_recent_stickers(
             sticker_ids=payload.sticker_ids,
             base_version=payload.base_version,
             clear=payload.clear,
+            ops=[{"op": entry.op, "sticker_id": entry.sticker_id} for entry in payload.ops],
         )
     except Exception as exc:
         _raise_sticker_error(exc)

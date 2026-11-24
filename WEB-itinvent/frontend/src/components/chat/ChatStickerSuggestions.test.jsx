@@ -16,11 +16,13 @@ vi.mock('../../api/chatStickers', () => {
     pushRecentStickers: vi.fn(),
   };
   // Синк «недавних» мокаем без дебаунса: для поведения компонента важно,
-  // что список уходит на сервер целиком, а не скорость отправки.
+  // что flush журнала операций доезжает до сервера, а не скорость отправки.
   return {
     chatStickersAPI,
-    scheduleRecentStickersSync: vi.fn((stickerIds) => {
-      chatStickersAPI.pushRecentStickers(stickerIds).catch(() => {});
+    scheduleRecentStickersSync: vi.fn((scope, flush) => {
+      void Promise.resolve()
+        .then(() => (typeof flush === 'function' ? flush() : null))
+        .catch(() => {});
     }),
     cancelRecentStickersSync: vi.fn(),
     getStickerPacksEpoch: vi.fn(() => stickerEpochRef.value),
@@ -104,9 +106,15 @@ describe('ChatStickerSuggestions', () => {
 
   it('suggests stickers for the trailing emoji with recents ranked first', async () => {
     window.localStorage.setItem(
-      'hubit.chat.recent-stickers.v1:device',
+      'hubit.chat.recent-stickers.v2:device:default',
       JSON.stringify(['st-b1']),
     );
+    // Сервер — авторитет: merged-ответ заменяет базу, поэтому legacy-пуш
+    // локальной копии должен вернуть те же id, а не пустой список.
+    chatStickersAPI.pushRecentStickers.mockImplementation(({ stickerIds }) => Promise.resolve({
+      items: (Array.isArray(stickerIds) ? stickerIds : []).map((id) => ({ id })),
+      version: 1,
+    }));
     renderStrip();
 
     const strip = await screen.findByTestId('chat-sticker-suggestions');
@@ -126,6 +134,7 @@ describe('ChatStickerSuggestions', () => {
   it('sends the clicked suggestion, records recents and notifies the composer', async () => {
     const onSendSticker = vi.fn().mockResolvedValue(true);
     const onStickerSent = vi.fn();
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [{ id: 'st-a1' }], version: 1 });
     renderStrip({ onSendSticker, onStickerSent, currentUserId: 7 });
 
     const strip = await screen.findByTestId('chat-sticker-suggestions');
@@ -138,10 +147,16 @@ describe('ChatStickerSuggestions', () => {
     await waitFor(() => {
       expect(onSendSticker).toHaveBeenCalledWith(expect.objectContaining({ id: 'st-a1' }));
     });
+    // Отправка идёт delta-операцией bump, а не полным списком.
     await waitFor(() => {
-      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith(['st-a1']);
+      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith(
+        expect.objectContaining({ ops: [{ op: 'bump', sticker_id: 'st-a1' }] }),
+      );
     });
-    expect(JSON.parse(window.localStorage.getItem('hubit.chat.recent-stickers.v1:7'))).toEqual(['st-a1']);
+    await waitFor(() => {
+      expect(JSON.parse(window.localStorage.getItem('hubit.chat.recent-stickers.v2:7:default')))
+        .toEqual(['st-a1']);
+    });
     expect(onStickerSent).toHaveBeenCalledTimes(1);
     // После отправки полоса скрывается (токен сброшен композером).
   });

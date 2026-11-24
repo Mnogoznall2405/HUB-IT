@@ -13,9 +13,35 @@ export const RECENT_STICKERS_LIMIT = 20;
 // держат одинаковый список без повторного чтения.
 export const CHAT_STICKER_RECENTS_EVENT = 'chat-sticker-recents-changed';
 
-export const buildRecentStorageKey = (currentUserId) => (
+// Ключ «недавних» привязан к scope пользователя И выбранной БД — та же
+// пара, что в scope-ключе store (`userId::dbId` в api/chatStickers):
+// списки разных БД-контекстов одного пользователя не смешиваются. Формат
+// v2 появился с db-частью; v1 см. миграцию ниже.
+export const buildRecentStorageKey = (currentUserId, databaseId = '') => (
+  `hubit.chat.recent-stickers.v2:${String(currentUserId || 'device')}:${String(databaseId || '').trim() || 'default'}`
+);
+
+export const buildLegacyRecentStorageKey = (currentUserId) => (
   `hubit.chat.recent-stickers.v1:${String(currentUserId || 'device')}`
 );
+
+// Одноразовая миграция v1 → v2: legacy-ключ не нёс БД-контекста, поэтому
+// его содержимое нельзя достоверно отнести к конкретной БД. Принимаем его
+// в ПЕРВЫЙ текущий scope, который его прочитал, и сразу удаляем — иначе
+// тот же список мигрировал бы повторно в scope другой БД.
+export const migrateRecentStickerIds = (fromStorageKey, toStorageKey) => {
+  if (typeof window === 'undefined' || !fromStorageKey || fromStorageKey === toStorageKey) return;
+  try {
+    const legacyRaw = window.localStorage.getItem(fromStorageKey);
+    if (legacyRaw === null) return;
+    if (window.localStorage.getItem(toStorageKey) === null) {
+      window.localStorage.setItem(toStorageKey, legacyRaw);
+    }
+    window.localStorage.removeItem(fromStorageKey);
+  } catch {
+    // Без хранилища миграция не нужна.
+  }
+};
 
 export const readRecentStickerIds = (storageKey) => {
   if (typeof window === 'undefined') return [];

@@ -29,8 +29,10 @@ import {
   scheduleRecentStickersSync,
 } from '../api/chatStickers';
 import {
+  buildLegacyRecentStorageKey,
   buildRecentStorageKey,
   buildStickerSearchIndex,
+  migrateRecentStickerIds,
   notifyStickerRecentsChanged,
   readRecentStickerIds,
   RECENT_STICKERS_LIMIT,
@@ -74,6 +76,10 @@ const getScopeMeta = (scopeKey) => {
       queue: Promise.resolve(),
       seq: 0,
       opLog: [],
+      // Журнал неподтверждённых операций «недавних»: bump/remove/clear в
+      // хронологическом порядке, дедуп по sticker_id. Отправляется дельтой
+      // в PUT /chat/stickers/recent — см. секцию «Недавние».
+      recentOps: [],
       derived: null,
       packsStaleRetries: 0,
     };
@@ -85,7 +91,15 @@ const getScopeMeta = (scopeKey) => {
 const createScopeRecord = (scope) => {
   const userId = scope?.userId ?? null;
   const key = resolveStickerScope(scope);
-  const storageKey = buildRecentStorageKey(userId);
+  // db-часть берём из того же resolved scope-ключа (`userId::dbId`), что
+  // использует кэш наборов — хранилище и очередь синка scoped одинаково.
+  const separatorIndex = key.indexOf('::');
+  const databaseId = separatorIndex >= 0 ? key.slice(separatorIndex + 2) : 'default';
+  const storageKey = buildRecentStorageKey(userId, databaseId);
+  // v1-ключ не знал БД-контекста: его список принимается в первый текущий
+  // scope и удаляется (см. migrateRecentStickerIds).
+  migrateRecentStickerIds(buildLegacyRecentStorageKey(userId), storageKey);
+  const initialRecentIds = readRecentStickerIds(storageKey);
   // Тёплый API-кэш наборов (та же scope-формула) — повторное открытие
   // панели и hover→pinned переход не платят ни сетью, ни спиннером.
   const cachedPacks = peekStickerPacksCache(scope);
@@ -101,8 +115,16 @@ const createScopeRecord = (scope) => {
     },
     favorites: { items: [], serverItems: [], status: 'idle', error: null },
     // «Недавние» стартуют из локальной копии — rail рендерится мгновенно,
-    // серверный GET догоняет фоном (stale-while-revalidate).
-    recents: { ids: readRecentStickerIds(storageKey), version: 0, status: 'idle', error: null },
+    // серверный GET догоняет фоном (stale-while-revalidate). serverIds —
+    // последняя подтверждённая сервером база, ids — отображаемый список
+    // (serverIds + проигрыш журнала операций), как у избранного.
+    recents: {
+      ids: initialRecentIds,
+      serverIds: initialRecentIds,
+      version: 0,
+      status: 'idle',
+      error: null,
+    },
     dv: { packs: 0, favorites: 0, recents: 0 },
   };
 };
@@ -135,6 +157,9 @@ export const invalidateChatStickerStore = () => {
   scopeRecords.clear();
   scopeMetas.clear();
   activeScopeKey = '';
+  // Глобальный дебаунс-синк «недавних» гасим тоже: отложенный flush ушедшей
+  // сессии не должен сработать под новой (журналы уже стёрты с metas).
+  cancelRecentStickersSync();
   emitChange();
 };
 
@@ -400,36 +425,45 @@ const ensureRecentStickers = (scopeKey) => {
     .then(() => chatStickersAPI.listRecentStickers())
     .then((payload) => {
       applyScopeUpdate(scopeKey, epochAtStart, (rec) => {
-        // Семантика как в прежнем компонентном эффекте: серверный список
-        // выигрывает; version === 0 — старый backend, поднимаем локальную
-        // копию; пустой список при version > 0 — сознательная очистка на
-        // этом или другом устройстве (merge не воскрешает удалённое).
+        // Серверный список — база, поверх неё проигрывается журнал
+        // неподтверждённых операций (они могли накопиться, пока GET был
+        // в пути). version === 0 — старый backend/первый синк: поднимаем
+        // локальную копию legacy-merge'ем; пустой список при version > 0 —
+        // сознательная очистка на этом или другом устройстве.
         const serverIds = (Array.isArray(payload?.items) ? payload.items : [])
           .map((item) => String(item?.id || '').trim())
           .filter(Boolean)
           .slice(0, RECENT_STICKERS_LIMIT);
         const serverVersion = Number(payload?.version) || 0;
-        if (serverIds.length > 0) {
-          writeRecentStickerIds(rec.storageKey, serverIds);
-          notifyStickerRecentsChanged(rec.storageKey);
+        if (serverVersion < rec.recents.version) {
+          // Поздний GET старше уже подтверждённого синка — снапшот устарел
+          // (наш PUT или устройство соседа ушли вперёд), отбрасываем его.
           return withSlice(rec, SLICE_RECENTS, {
-            ids: serverIds, version: serverVersion, status: 'ready', error: null,
-          }, !sameIdList(serverIds, rec.recents.ids));
+            ...rec.recents, status: 'ready', error: null,
+          }, false);
         }
-        if (serverVersion === 0) {
+        if (serverVersion === 0 && serverIds.length === 0) {
           const localIds = readRecentStickerIds(rec.storageKey);
-          if (localIds.length > 0) scheduleRecentStickersSync(localIds, rec.storageKey);
+          if (localIds.length > 0) {
+            scheduleRecentStickersSync(
+              { userId: rec.userId, scopeKey },
+              () => pushLegacyLocalRecents(scopeKey),
+            );
+          }
           return withSlice(rec, SLICE_RECENTS, {
             ...rec.recents, version: serverVersion, status: 'ready', error: null,
           }, false);
         }
-        if (rec.recents.ids.length > 0 || readRecentStickerIds(rec.storageKey).length > 0) {
-          writeRecentStickerIds(rec.storageKey, []);
-          notifyStickerRecentsChanged(rec.storageKey);
-        }
+        const nextIds = replayRecentOps(meta.recentOps, serverIds);
+        writeRecentStickerIds(rec.storageKey, nextIds);
+        notifyStickerRecentsChanged(rec.storageKey);
         return withSlice(rec, SLICE_RECENTS, {
-          ids: [], version: serverVersion, status: 'ready', error: null,
-        }, rec.recents.ids.length > 0);
+          ids: nextIds,
+          serverIds,
+          version: serverVersion,
+          status: 'ready',
+          error: null,
+        }, !sameIdList(nextIds, rec.recents.ids));
       });
       return payload;
     })
@@ -560,78 +594,181 @@ export const toggleFavoriteSticker = (scopeKey, sticker) => {
   return enqueueFavoriteMutation(scopeKey, { type: isFavorite ? 'remove' : 'add', stickerId, sticker });
 };
 
-/* ─── «Недавние»: локальная копия + merge-синк на сервер ─── */
+/* ─── «Недавние»: op-журнал + версионированный delta-синк ─── */
+// Отображаемый список — «последняя подтверждённая сервером база
+// (serverIds) + эффекты журнала операций» (та же модель, что у
+// избранного). Журнал копит только реальные действия пользователя
+// (bump/remove/clear) и уезжает на сервер дельтой — устаревший ПОЛНЫЙ
+// список больше не шлётся, поэтому чужое устройство не может случайно
+// воскресить удалённые/очищенные записи (bump удалённого id — легитимен:
+// пользователь действительно отправил стикер заново).
+
+// Дедуп журнала: операции над одним id схлопываются к последней (порядок
+// хронологический — промежуточные состояния недостижимы), clear стирает
+// журнал целиком — прежние операции полностью перекрываются очисткой.
+const pushRecentJournalOp = (meta, op) => {
+  if (op.type === 'clear') {
+    meta.recentOps = [op];
+    return;
+  }
+  meta.recentOps = meta.recentOps.filter((item) => item.stickerId !== op.stickerId);
+  meta.recentOps.push(op);
+};
+
+// Проигрыш журнала поверх базы — тот же порядок, что на сервере:
+// bump в голову, remove вычёркивает, clear обнуляет.
+const replayRecentOps = (ops, baseIds) => {
+  let ids = [...baseIds];
+  (Array.isArray(ops) ? ops : []).forEach((op) => {
+    if (op?.type === 'clear') {
+      ids = [];
+      return;
+    }
+    if (op?.type === 'remove') {
+      ids = ids.filter((item) => item !== op.stickerId);
+      return;
+    }
+    if (op?.type === 'bump' && op.stickerId) {
+      ids = [op.stickerId, ...ids.filter((item) => item !== op.stickerId)]
+        .slice(0, RECENT_STICKERS_LIMIT);
+    }
+  });
+  return ids;
+};
+
+const persistRecentIds = (rec, nextIds) => {
+  writeRecentStickerIds(rec.storageKey, nextIds);
+  notifyStickerRecentsChanged(rec.storageKey);
+};
+
+// Пересчёт отображаемого списка от serverIds + журнала и запись в
+// localStorage — общий шаг всех локальных мутаций.
+const commitRecents = (scopeKey) => {
+  const meta = getScopeMeta(scopeKey);
+  applyScopeUpdate(scopeKey, stickerStoreEpoch, (rec) => {
+    const nextIds = replayRecentOps(meta.recentOps, rec.recents.serverIds);
+    persistRecentIds(rec, nextIds);
+    if (sameIdList(nextIds, rec.recents.ids)) return rec;
+    return withSlice(rec, SLICE_RECENTS, { ...rec.recents, ids: nextIds }, true);
+  });
+};
+
+// Ответ сервера — авторитетный merge-результат: становится новой базой,
+// если его version не старше уже подтверждённого (поздний ответ
+// параллельного flush только подтверждает свои операции). Операции
+// отправленного пакета вычёркиваются из журнала — остальные (накопленные
+// за время полёта) проигрываются поверх новой базы.
+const applyRecentsSyncPayload = (scopeKey, epochAtStart, payload, confirmedOps = []) => {
+  const meta = getScopeMeta(scopeKey);
+  applyScopeUpdate(scopeKey, epochAtStart, (rec) => {
+    if (confirmedOps.length > 0) {
+      const confirmed = new Set(confirmedOps);
+      meta.recentOps = meta.recentOps.filter((op) => !confirmed.has(op));
+    }
+    const payloadIds = (Array.isArray(payload?.items) ? payload.items : [])
+      .map((item) => String(item?.id || item || '').trim())
+      .filter(Boolean)
+      .slice(0, RECENT_STICKERS_LIMIT);
+    const payloadVersion = Number(payload?.version) || 0;
+    const staleBase = payloadVersion < rec.recents.version;
+    const baseIds = staleBase ? rec.recents.serverIds : payloadIds;
+    const baseVersion = staleBase ? rec.recents.version : payloadVersion;
+    const nextIds = replayRecentOps(meta.recentOps, baseIds);
+    persistRecentIds(rec, nextIds);
+    return withSlice(rec, SLICE_RECENTS, {
+      ids: nextIds,
+      serverIds: baseIds,
+      version: baseVersion,
+      status: 'ready',
+      error: null,
+    }, !sameIdList(nextIds, rec.recents.ids));
+  });
+};
+
+// Flush журнала операций: {base_version, ops} на сервер; пакет снимается
+// с журнала только при подтверждении — при ошибке операции остаются и
+// довозятся следующим flush'ем или переходом в онлайн.
+const flushRecentStickerOps = (scopeKey) => {
+  const record = scopeRecords.get(scopeKey);
+  const meta = scopeMetas.get(scopeKey);
+  if (!record || !meta || meta.recentOps.length === 0) {
+    return Promise.resolve({ ok: true });
+  }
+  const batch = [...meta.recentOps];
+  const baseVersion = Number(record.recents.version) || 0;
+  const epochAtStart = stickerStoreEpoch;
+  const ops = batch.map((op) => (
+    op.type === 'clear'
+      ? { op: 'clear' }
+      : { op: op.type, sticker_id: op.stickerId }
+  ));
+  return chatStickersAPI.pushRecentStickers({ baseVersion, ops })
+    .then((payload) => {
+      applyRecentsSyncPayload(scopeKey, epochAtStart, payload, batch);
+      return { ok: true };
+    })
+    .catch((error) => {
+      if (stickerStoreEpoch !== epochAtStart) {
+        return { ok: false, dropped: true, error };
+      }
+      return { ok: false, error };
+    });
+};
+
+// Первый синк (version === 0): поднимаем локальную копию legacy
+// bump-head merge'ем — tombstones не нужны, сервер ещё ничего не
+// очищал. Операций в журнале здесь нет — это целый список из localStorage.
+const pushLegacyLocalRecents = (scopeKey) => {
+  const record = scopeRecords.get(scopeKey);
+  if (!record) return Promise.resolve({ ok: false });
+  const localIds = readRecentStickerIds(record.storageKey);
+  if (localIds.length === 0) return Promise.resolve({ ok: true });
+  const epochAtStart = stickerStoreEpoch;
+  return chatStickersAPI.pushRecentStickers({ stickerIds: localIds })
+    .then((payload) => {
+      applyRecentsSyncPayload(scopeKey, epochAtStart, payload);
+      return { ok: true };
+    })
+    .catch((error) => ({ ok: false, error }));
+};
+
+const scheduleRecentSyncFlush = (scopeKey, record) => {
+  scheduleRecentStickersSync(
+    { userId: record.userId, scopeKey },
+    () => flushRecentStickerOps(scopeKey),
+  );
+};
 
 export const rememberRecentSticker = (scopeKey, stickerId) => {
   const record = scopeRecords.get(scopeKey);
   const normalizedStickerId = String(stickerId || '').trim();
   if (!record || !normalizedStickerId) return;
-  const next = [
-    normalizedStickerId,
-    ...record.recents.ids.filter((item) => item !== normalizedStickerId),
-  ].slice(0, RECENT_STICKERS_LIMIT);
-  applyScopeUpdate(scopeKey, stickerStoreEpoch, (rec) => (
-    sameIdList(next, rec.recents.ids)
-      ? rec
-      : withSlice(rec, SLICE_RECENTS, { ...rec.recents, ids: next }, true)
-  ));
-  writeRecentStickerIds(record.storageKey, next);
-  scheduleRecentStickersSync(next, record.storageKey);
-  notifyStickerRecentsChanged(record.storageKey);
+  pushRecentJournalOp(getScopeMeta(scopeKey), { type: 'bump', stickerId: normalizedStickerId });
+  commitRecents(scopeKey);
+  scheduleRecentSyncFlush(scopeKey, record);
 };
 
-// Явное удаление/очистка — полная замена (clear:true) без дебаунса:
-// merge-синк сохранил бы отсутствующие стикеры хвостом серверного
-// списка. Отложенный дебаунс отменяется ДО PUT — иначе устаревший список
-// вернул бы удалённое уже после замены.
+// Явное удаление/очистка — те же журнальные операции (remove/clear), но
+// без дебаунса: flush уходит сразу, чтобы серверное tombstone не ждало.
+// Отложенный таймер отменяется ДО PUT — иначе устаревший пакет вернул бы
+// удалённое уже после него.
 export const removeRecentSticker = (scopeKey, stickerId) => {
   const record = scopeRecords.get(scopeKey);
   const normalizedStickerId = String(stickerId || '').trim();
   if (!record || !normalizedStickerId) return Promise.resolve();
-  const next = record.recents.ids.filter((item) => item !== normalizedStickerId);
-  applyScopeUpdate(scopeKey, stickerStoreEpoch, (rec) => (
-    sameIdList(next, rec.recents.ids)
-      ? rec
-      : withSlice(rec, SLICE_RECENTS, { ...rec.recents, ids: next }, true)
-  ));
-  writeRecentStickerIds(record.storageKey, next);
-  notifyStickerRecentsChanged(record.storageKey);
-  cancelRecentStickersSync(record.storageKey);
-  const epochAtStart = stickerStoreEpoch;
-  return chatStickersAPI.pushRecentStickers(next, { clear: true })
-    .then((payload) => {
-      applyScopeUpdate(scopeKey, epochAtStart, (rec) => withSlice(
-        rec, SLICE_RECENTS,
-        { ...rec.recents, version: Number(payload?.version) || rec.recents.version },
-        false,
-      ));
-      return { ok: true };
-    })
-    .catch((error) => ({ ok: false, error }));
+  pushRecentJournalOp(getScopeMeta(scopeKey), { type: 'remove', stickerId: normalizedStickerId });
+  commitRecents(scopeKey);
+  cancelRecentStickersSync(scopeKey);
+  return flushRecentStickerOps(scopeKey);
 };
 
 export const clearRecentStickers = (scopeKey) => {
   const record = scopeRecords.get(scopeKey);
   if (!record) return Promise.resolve();
-  cancelRecentStickersSync(record.storageKey);
-  applyScopeUpdate(scopeKey, stickerStoreEpoch, (rec) => (
-    rec.recents.ids.length === 0
-      ? rec
-      : withSlice(rec, SLICE_RECENTS, { ...rec.recents, ids: [] }, true)
-  ));
-  writeRecentStickerIds(record.storageKey, []);
-  notifyStickerRecentsChanged(record.storageKey);
-  const epochAtStart = stickerStoreEpoch;
-  return chatStickersAPI.pushRecentStickers([], { clear: true })
-    .then((payload) => {
-      applyScopeUpdate(scopeKey, epochAtStart, (rec) => withSlice(
-        rec, SLICE_RECENTS,
-        { ...rec.recents, version: Number(payload?.version) || rec.recents.version },
-        false,
-      ));
-      return { ok: true };
-    })
-    .catch((error) => ({ ok: false, error }));
+  pushRecentJournalOp(getScopeMeta(scopeKey), { type: 'clear' });
+  commitRecents(scopeKey);
+  cancelRecentStickersSync(scopeKey);
+  return flushRecentStickerOps(scopeKey);
 };
 
 // Единственный слушатель «наборы изменились» на весь документ — заменяет
@@ -644,5 +781,15 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     const record = scopeRecords.get(activeScopeKey);
     if (!record || record.packs.status === 'idle') return;
     void loadStickerPacks(activeScopeKey, { force: true });
+  });
+  // Переход в онлайн: операции, накопленные офлайн (журнал переживает
+  // неудачные попытки — снимается только подтверждённый пакет),
+  // планируем на flush через общий дебаунс.
+  window.addEventListener('online', () => {
+    if (!activeScopeKey) return;
+    const record = scopeRecords.get(activeScopeKey);
+    const meta = scopeMetas.get(activeScopeKey);
+    if (!record || !meta || meta.recentOps.length === 0) return;
+    scheduleRecentSyncFlush(activeScopeKey, record);
   });
 }

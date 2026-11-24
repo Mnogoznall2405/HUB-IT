@@ -21,19 +21,21 @@ vi.mock('../../api/chatStickers', () => {
     setPackOrder: vi.fn(),
   };
   // Дебаунс-синк «недавних» воспроизводим честно, чтобы поведенческие
-  // тесты проходили по реальной цепочке schedule → timer → PUT.
+  // тесты проходили по реальной цепочке schedule → timer → flush → PUT.
+  // Очередь хранит только flush-коллбэк store — операции живут в журнале
+  // scope и уходят дельтой {base_version, ops}.
   let recentSyncTimer = null;
-  let pendingRecentIds = null;
+  let pendingRecentFlush = null;
   return {
     chatStickersAPI,
-    scheduleRecentStickersSync: vi.fn((stickerIds) => {
-      pendingRecentIds = Array.isArray(stickerIds) ? stickerIds : [];
+    scheduleRecentStickersSync: vi.fn((scope, flush) => {
+      pendingRecentFlush = typeof flush === 'function' ? flush : null;
       if (recentSyncTimer !== null) clearTimeout(recentSyncTimer);
       recentSyncTimer = setTimeout(() => {
         recentSyncTimer = null;
-        const idsToPush = pendingRecentIds || [];
-        pendingRecentIds = null;
-        chatStickersAPI.pushRecentStickers(idsToPush).catch(() => {});
+        const run = pendingRecentFlush;
+        pendingRecentFlush = null;
+        void Promise.resolve().then(() => (run ? run() : null)).catch(() => {});
       }, 1500);
     }),
     cancelRecentStickersSync: vi.fn(() => {
@@ -41,7 +43,7 @@ vi.mock('../../api/chatStickers', () => {
         clearTimeout(recentSyncTimer);
         recentSyncTimer = null;
       }
-      pendingRecentIds = null;
+      pendingRecentFlush = null;
     }),
     getStickerPacksEpoch: vi.fn(() => stickerEpochRef.value),
     peekStickerPacksCache: vi.fn(() => null),
@@ -517,24 +519,26 @@ describe('TelegramStickersTab', () => {
     fireEvent.contextMenu(recentButton, { clientX: 24, clientY: 24 });
     fireEvent.click(screen.getByRole('menuitem', { name: 'Убрать из недавних' }));
 
-    // Удаление одного стикера — явная замена: без clear:true merge-синк
-    // сервера оставил бы удалённый id хвостом списка.
+    // Удаление одного стикера — delta-операция remove: устаревший полный
+    // список не уезжает, сервер получает tombstone только на этот id.
     await waitFor(() => {
-      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith([], { clear: true });
+      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith(
+        expect.objectContaining({ ops: [{ op: 'remove', sticker_id: 'sticker-1' }] }),
+      );
     });
     await waitFor(() => {
       expect(screen.queryByRole('tabpanel', { name: 'Недавние' })).not.toBeInTheDocument();
     });
     expect(screen.getByText('Отправленные стикеры появятся здесь')).toBeInTheDocument();
     expect(
-      JSON.parse(window.localStorage.getItem('hubit.chat.recent-stickers.v1:device')),
+      JSON.parse(window.localStorage.getItem('hubit.chat.recent-stickers.v2:device:default')),
     ).toEqual([]);
   });
 
   it('uses the server recent list when the request succeeds', async () => {
     chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack, secondStickerPack] });
     window.localStorage.setItem(
-      'hubit.chat.recent-stickers.v1:device',
+      'hubit.chat.recent-stickers.v2:device:default',
       JSON.stringify(['sticker-1']),
     );
     chatStickersAPI.listRecentStickers.mockResolvedValue({
@@ -556,7 +560,7 @@ describe('TelegramStickersTab', () => {
   it('falls back to the localStorage recent list when the request fails', async () => {
     chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
     window.localStorage.setItem(
-      'hubit.chat.recent-stickers.v1:device',
+      'hubit.chat.recent-stickers.v2:device:default',
       JSON.stringify(['sticker-1']),
     );
     chatStickersAPI.listRecentStickers.mockRejectedValue(new Error('offline'));
@@ -572,7 +576,7 @@ describe('TelegramStickersTab', () => {
     chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
     chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [] });
     window.localStorage.setItem(
-      'hubit.chat.recent-stickers.v1:device',
+      'hubit.chat.recent-stickers.v2:device:default',
       JSON.stringify(['sticker-1']),
     );
     // Таймеры фейканы до рендера: sync-запрос планируется внутри .then
@@ -582,19 +586,22 @@ describe('TelegramStickersTab', () => {
       renderTab();
       await act(async () => {});
       await act(async () => { vi.advanceTimersByTime(2000); });
-      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith(['sticker-1']);
+      // Первый синк при version===0 — legacy bump-head merge целым списком.
+      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith(
+        expect.objectContaining({ stickerIds: ['sticker-1'] }),
+      );
     } finally {
       vi.useRealTimers();
     }
   });
 
   it('does not resurrect local recents when the server list was cleared elsewhere', async () => {
-    // version > 0 + пустой список — rail сознательно очищен (clear:true на
-    // этом или другом устройстве); merge-пуш локальной копии отменял бы очистку.
+    // version > 0 + пустой список — rail сознательно очищен (clear на этом
+    // или другом устройстве); merge-пуш локальной копии отменил бы очистку.
     chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
     chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [], version: 3 });
     window.localStorage.setItem(
-      'hubit.chat.recent-stickers.v1:device',
+      'hubit.chat.recent-stickers.v2:device:default',
       JSON.stringify(['sticker-1']),
     );
     vi.useFakeTimers();
@@ -604,7 +611,7 @@ describe('TelegramStickersTab', () => {
       await act(async () => { vi.advanceTimersByTime(2000); });
       expect(chatStickersAPI.pushRecentStickers).not.toHaveBeenCalled();
       expect(
-        JSON.parse(window.localStorage.getItem('hubit.chat.recent-stickers.v1:device')),
+        JSON.parse(window.localStorage.getItem('hubit.chat.recent-stickers.v2:device:default')),
       ).toEqual([]);
     } finally {
       vi.useRealTimers();
@@ -865,17 +872,19 @@ describe('TelegramStickersTab', () => {
     fireEvent.contextMenu(recentButton, { clientX: 24, clientY: 24 });
     fireEvent.click(screen.getByRole('menuitem', { name: 'Очистить недавние' }));
 
-    // Немедленный PUT с clear:true — дебаунс-путь здесь не используется,
-    // а без clear merge-семантика сервера не очистила бы rail.
+    // Немедленный PUT с clear-операцией — дебаунс-путь здесь не
+    // используется, tombstone на очистку уходит сразу.
     await waitFor(() => {
-      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith([], { clear: true });
+      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith(
+        expect.objectContaining({ ops: [{ op: 'clear' }] }),
+      );
     });
     await waitFor(() => {
       expect(screen.queryByRole('tabpanel', { name: 'Недавние' })).not.toBeInTheDocument();
     });
     expect(screen.getByText('Отправленные стикеры появятся здесь')).toBeInTheDocument();
     expect(
-      JSON.parse(window.localStorage.getItem('hubit.chat.recent-stickers.v1:device')),
+      JSON.parse(window.localStorage.getItem('hubit.chat.recent-stickers.v2:device:default')),
     ).toEqual([]);
   });
 });

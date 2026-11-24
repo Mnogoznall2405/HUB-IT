@@ -1012,27 +1012,37 @@ class TelegramStickerService:
         self,
         *,
         current_user_id: int,
-        sticker_ids,
+        sticker_ids=None,
         base_version=None,
         clear: bool = False,
+        ops=None,
     ) -> dict[str, Any]:
-        """Versioned merge-sync of the recents rail.
+        """Versioned op-based sync of the recents rail.
 
         Contract (see also ``ChatUserRecentStickerState``):
 
-        * ``clear=False`` (default) — the client's ordered ids become the
-          FRONT of the list; server entries absent from the payload are KEPT
-          appended in their current order, then the result is truncated to
-          ``_RECENT_STICKERS_LIMIT``. Two devices therefore merge instead of
-          losing each other's entries, and an empty payload is a no-op for
-          content (it only bumps ``version``).
-        * ``clear=True`` — the rail is replaced by exactly the client's ids
-          (empty ``sticker_ids`` empties it); other devices cannot resurrect
-          cleared entries on their next sync.
+        * ``ops`` — ordered delta ops ``{op, sticker_id}`` applied
+          sequentially over the CURRENT server rail: ``bump`` moves the id to
+          the front, ``remove`` deletes it, ``clear`` truncates the rail.
+          Ops are idempotent and commute under the per-user row lock, so a
+          stale ``base_version`` never rejects them — and because a delta
+          only names stickers the device actually acted on, a stale list can
+          no longer resurrect entries another device cleared or removed
+          (a ``bump`` of a cleared id is legitimate: the device genuinely
+          re-sent it).
+        * ``clear=True`` — with ``ops``: an implicit leading ``clear`` op;
+          without ``ops`` (legacy list push): the rail is replaced by exactly
+          ``sticker_ids`` (``[]`` empties it).
+        * ``sticker_ids`` (legacy "bump-head" merge, used by the version-0
+          local migration) — the client's ordered ids become the FRONT of the
+          list; server entries absent from the payload are KEPT appended in
+          their current order, then the result is truncated to
+          ``_RECENT_STICKERS_LIMIT``. Ignored when ``ops`` is non-empty;
+          an empty legacy payload without ``clear`` is a no-op for content.
         * ``base_version`` is advisory: a mismatch does not reject the write
-          (positions are ordering, not data) — the server merges anyway and
-          bumps ``version``. Clients may send the last seen ``version`` to
-          detect that another device synced in between and re-GET.
+          — the server still applies the ops/merge and bumps ``version``.
+          Clients may send the last seen ``version`` to detect that another
+          device synced in between and reconcile from the response.
         * Every successful PUT bumps ``version`` by exactly 1; the per-user
           state row is created lazily and locked ``FOR UPDATE`` for the
           duration of the write so concurrent PUTs serialize.
@@ -1049,6 +1059,15 @@ class TelegramStickerService:
             deduped.append(value)
             if len(deduped) >= _RECENT_STICKERS_LIMIT:
                 break
+        normalized_ops: list[tuple[str, str | None]] = []
+        for entry in list(ops or []):
+            kind = str((entry or {}).get("op") or "").strip()
+            sticker_id = str((entry or {}).get("sticker_id") or "").strip()
+            if kind == "clear":
+                normalized_ops.append(("clear", None))
+            elif kind in ("bump", "remove") and sticker_id:
+                normalized_ops.append((kind, sticker_id))
+        has_ops = bool(normalized_ops)
         now = utcnow()
         with chat_write_session() as session:
             # Lock the per-user state row for the whole read-merge-write cycle:
@@ -1087,15 +1106,13 @@ class TelegramStickerService:
                     base_version,
                     int(state.version or 0),
                 )
+            bump_ids = [sid for kind, sid in normalized_ops if kind == "bump"]
             accessible_ids = self._accessible_sticker_ids(
                 session,
                 user_id=int(current_user_id),
-                sticker_ids=deduped,
+                sticker_ids=deduped + bump_ids,
             )
-            client_front = [value for value in deduped if value in accessible_ids]
-            if clear:
-                merged_ids = client_front
-            else:
+            if has_ops:
                 existing_rows = list(
                     session.execute(
                         select(ChatUserRecentSticker)
@@ -1106,10 +1123,38 @@ class TelegramStickerService:
                         )
                     ).scalars()
                 )
-                front_set = set(client_front)
-                merged_ids = client_front + [
-                    row.sticker_id for row in existing_rows if row.sticker_id not in front_set
-                ]
+                rail = [row.sticker_id for row in existing_rows]
+                if clear:
+                    # The flag is an implicit leading clear op — the explicit
+                    # ops then replay in order on top of the emptied rail.
+                    rail = []
+                for kind, sticker_id in normalized_ops:
+                    if kind == "clear":
+                        rail = []
+                    elif kind == "remove":
+                        rail = [item for item in rail if item != sticker_id]
+                    elif sticker_id in accessible_ids:
+                        rail = [sticker_id] + [item for item in rail if item != sticker_id]
+                merged_ids = rail
+            else:
+                client_front = [value for value in deduped if value in accessible_ids]
+                if clear:
+                    merged_ids = client_front
+                else:
+                    existing_rows = list(
+                        session.execute(
+                            select(ChatUserRecentSticker)
+                            .where(ChatUserRecentSticker.user_id == int(current_user_id))
+                            .order_by(
+                                ChatUserRecentSticker.position.asc(),
+                                ChatUserRecentSticker.id.asc(),
+                            )
+                        ).scalars()
+                    )
+                    front_set = set(client_front)
+                    merged_ids = client_front + [
+                        row.sticker_id for row in existing_rows if row.sticker_id not in front_set
+                    ]
             merged_ids = merged_ids[:_RECENT_STICKERS_LIMIT]
             # Bulk delete now: the chat session defers ORM deletes to flush time,
             # so session.delete() would insert the new rows before removing the old

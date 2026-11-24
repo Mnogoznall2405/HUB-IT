@@ -7,6 +7,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  cancelRecentStickersSync,
   chatStickersAPI,
   peekStickerPacksCache,
   scheduleRecentStickersSync,
@@ -332,24 +333,196 @@ describe('chatStickerStore', () => {
 
     expect(record().recents.ids).toEqual(['sticker-x', 'sticker-y']);
     expect(JSON.parse(window.localStorage.getItem(storageKey))).toEqual(['sticker-x', 'sticker-y']);
-    expect(scheduleRecentStickersSync).toHaveBeenLastCalledWith(['sticker-x', 'sticker-y'], storageKey);
+    // Очередь синка — scope-маркер + flush-коллбэк; сам список больше не
+    // уезжает целиком, на сервер идут только дельта-операции.
+    expect(scheduleRecentStickersSync).toHaveBeenLastCalledWith(
+      { userId: 42, scopeKey: scopeKey() },
+      expect.any(Function),
+    );
   });
 
-  it('removes and clears recents with an immediate clear:true push', async () => {
+  it('scopes the recents storage key by the selected database', () => {
+    window.localStorage.setItem('selected_database', 'MSK-ITINVENT');
+    ensureChatStickerData(scope);
+
+    expect(record().storageKey).toBe('hubit.chat.recent-stickers.v2:42:MSK-ITINVENT');
+  });
+
+  it('migrates the legacy v1 recents list into the scoped v2 key once', () => {
+    window.localStorage.setItem(
+      'hubit.chat.recent-stickers.v1:42',
+      JSON.stringify(['sticker-x']),
+    );
+    ensureChatStickerData(scope);
+
+    // v1-ключ не нёс БД-контекста: список принимается первым текущим
+    // scope и удаляется — иначе мигрировал бы повторно в scope другой БД.
+    expect(record().recents.ids).toEqual(['sticker-x']);
+    expect(window.localStorage.getItem('hubit.chat.recent-stickers.v1:42')).toBeNull();
+    expect(
+      JSON.parse(window.localStorage.getItem('hubit.chat.recent-stickers.v2:42:default')),
+    ).toEqual(['sticker-x']);
+  });
+
+  it('flushes journaled bump ops with dedupe and base_version', async () => {
+    ensureChatStickerData(scope);
+    await flushPromises();
+
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    rememberRecentSticker(scopeKey(), 'sticker-y');
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+
+    // Дедуп журнала: bump sticker-x схлопнулся к последней позиции —
+    // хронология операций [y, x], x окажется головой и на сервере.
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    await flush();
+    expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith({
+      baseVersion: 0,
+      ops: [
+        { op: 'bump', sticker_id: 'sticker-y' },
+        { op: 'bump', sticker_id: 'sticker-x' },
+      ],
+    });
+  });
+
+  it('applies the server merge result and version to store and localStorage', async () => {
     ensureChatStickerData(scope);
     await flushPromises();
     rememberRecentSticker(scopeKey(), 'sticker-x');
     rememberRecentSticker(scopeKey(), 'sticker-y');
 
+    // Сервер — авторитет: его merged-список и version становятся новой
+    // базой (другой порядок головы — законный merge соседнего устройства).
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({
+      items: [stickerY, stickerX],
+      version: 4,
+    });
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    await flush();
+
+    expect(record().recents.ids).toEqual(['sticker-y', 'sticker-x']);
+    expect(record().recents.serverIds).toEqual(['sticker-y', 'sticker-x']);
+    expect(record().recents.version).toBe(4);
+    expect(JSON.parse(window.localStorage.getItem(record().storageKey)))
+      .toEqual(['sticker-y', 'sticker-x']);
+  });
+
+  it('replays ops accumulated during a flush on top of the sync response', async () => {
+    const first = deferred();
+    chatStickersAPI.pushRecentStickers.mockImplementationOnce(() => first.promise);
+    ensureChatStickerData(scope);
+    await flushPromises();
+
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    const pending = flush();
+    // Пока первый пакет в пути — новый bump копится в журнале.
+    rememberRecentSticker(scopeKey(), 'sticker-y');
+    first.resolve({ items: [stickerX], version: 2 });
+    await expect(pending).resolves.toEqual({ ok: true });
+
+    // Ответ покрывает только bump-x; bump-y проигрывается поверх новой
+    // базы и не пропадает до собственного flush'а.
+    expect(record().recents.ids).toEqual(['sticker-y', 'sticker-x']);
+    expect(record().recents.serverIds).toEqual(['sticker-x']);
+    expect(record().recents.version).toBe(2);
+
+    const nextFlush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    await nextFlush();
+    expect(chatStickersAPI.pushRecentStickers).toHaveBeenLastCalledWith({
+      baseVersion: 2,
+      ops: [{ op: 'bump', sticker_id: 'sticker-y' }],
+    });
+  });
+
+  it('sends remove and clear as journal ops with an immediate flush', async () => {
+    ensureChatStickerData(scope);
+    await flushPromises();
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    rememberRecentSticker(scopeKey(), 'sticker-y');
+
+    // Сервер применил дельту [bump x, remove y] → итоговый rail [x].
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [stickerX], version: 1 });
     await removeRecentSticker(scopeKey(), 'sticker-y');
     expect(record().recents.ids).toEqual(['sticker-x']);
-    // Без clear:true merge-синк сервера вернул бы удалённый id хвостом.
-    expect(chatStickersAPI.pushRecentStickers).toHaveBeenLastCalledWith(['sticker-x'], { clear: true });
+    // Журнал к моменту flush: [bump x, remove y] — bump-y схлопнулся
+    // remove'ом того же id. Всё идёт одним delta-запросом без дебаунса.
+    expect(chatStickersAPI.pushRecentStickers).toHaveBeenLastCalledWith({
+      baseVersion: 0,
+      ops: [
+        { op: 'bump', sticker_id: 'sticker-x' },
+        { op: 'remove', sticker_id: 'sticker-y' },
+      ],
+    });
 
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [], version: 2 });
     await clearRecentStickers(scopeKey());
     expect(record().recents.ids).toEqual([]);
-    expect(chatStickersAPI.pushRecentStickers).toHaveBeenLastCalledWith([], { clear: true });
+    // clear стирает журнал целиком — на сервер уходит только он.
+    expect(chatStickersAPI.pushRecentStickers).toHaveBeenLastCalledWith(
+      expect.objectContaining({ ops: [{ op: 'clear' }] }),
+    );
     expect(JSON.parse(window.localStorage.getItem(record().storageKey))).toEqual([]);
+  });
+
+  it('drops a late GET whose version is older than the synced version', async () => {
+    const getRecents = deferred();
+    chatStickersAPI.listRecentStickers.mockImplementation(() => getRecents.promise);
+    ensureChatStickerData(scope);
+
+    // PUT подтверждается версией 4 раньше, чем приходит ответ GET.
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [stickerX], version: 4 });
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    await flush();
+    expect(record().recents.version).toBe(4);
+
+    // Поздний GET со старой версией не откатывает rail и версию.
+    getRecents.resolve({ items: [], version: 2 });
+    await flushPromises();
+    expect(record().recents.ids).toEqual(['sticker-x']);
+    expect(record().recents.version).toBe(4);
+  });
+
+  it('re-flushes queued ops after a failed sync on reconnect', async () => {
+    ensureChatStickerData(scope);
+    await flushPromises();
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+
+    chatStickersAPI.pushRecentStickers.mockRejectedValueOnce(new Error('offline'));
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    await expect(flush()).resolves.toEqual({ ok: false, error: expect.any(Error) });
+
+    // Операция осталась в журнале — переход в онлайн перепланирует flush.
+    scheduleRecentStickersSync.mockClear();
+    window.dispatchEvent(new Event('online'));
+    expect(scheduleRecentStickersSync).toHaveBeenCalledWith(
+      { userId: 42, scopeKey: scopeKey() },
+      expect.any(Function),
+    );
+
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [stickerX], version: 1 });
+    const retryFlush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    await retryFlush();
+    expect(chatStickersAPI.pushRecentStickers).toHaveBeenLastCalledWith({
+      baseVersion: 0,
+      ops: [{ op: 'bump', sticker_id: 'sticker-x' }],
+    });
+  });
+
+  it('drops queued ops and the pending flush on store invalidation', async () => {
+    ensureChatStickerData(scope);
+    await flushPromises();
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+
+    invalidateChatStickerStore();
+    // Инвалидация гасит глобальный дебаунс-таймер очереди.
+    expect(cancelRecentStickersSync).toHaveBeenCalled();
+
+    // Flush умершего scope — мягкий no-op: сети и записей нет.
+    await expect(flush()).resolves.toEqual({ ok: true });
+    expect(chatStickersAPI.pushRecentStickers).not.toHaveBeenCalled();
   });
 
   it('derives shared sections and reuses them until data changes', async () => {
