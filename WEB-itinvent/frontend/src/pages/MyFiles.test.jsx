@@ -38,7 +38,9 @@ const {
   mockCopyFile,
   mockOfficeStatus,
   mockCreateBlank,
+  mockAuthUser,
 } = vi.hoisted(() => ({
+  mockAuthUser: { current: { id: 7, username: 'files-test' } },
   mockListFiles: vi.fn(),
   mockListFolders: vi.fn(),
   mockCreateFolder: vi.fn(),
@@ -161,7 +163,7 @@ vi.mock('../components/documentPreview/DocumentPreviewDialog', () => ({
 
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
-    user: { id: 7, username: 'files-test' },
+    user: mockAuthUser.current,
     hasPermission: () => true,
   }),
 }));
@@ -232,6 +234,7 @@ describe('MyFiles page', () => {
   beforeEach(() => {
     localStorage.clear();
     localStorage.setItem('user', JSON.stringify({ id: 7, username: 'files-test' }));
+    mockAuthUser.current = { id: 7, username: 'files-test' };
     mockListFiles.mockReset();
     mockGetQuota.mockReset();
     mockUploadFile.mockReset();
@@ -338,6 +341,73 @@ describe('MyFiles page', () => {
     await screen.findByRole('heading', { name: 'Общая папка' });
     await waitFor(() => expect(mockListFiles).toHaveBeenCalledWith(expect.objectContaining({ libraryId: 'lib-1' })));
     expect(mockListLibraries).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the previous user\'s listing and reloads when the auth identity changes without unmount', async () => {
+    mockListFiles.mockResolvedValue({ items: [readyFile] });
+    const { rerender } = renderPage();
+    await screen.findByText('report.txt');
+
+    mockAuthUser.current = { id: 9, username: 'other-user' };
+    mockListFiles.mockResolvedValue({ items: [{ ...readyFile, id: 'file-9', original_file_name: 'other.txt' }] });
+    rerender(
+      <MemoryRouter initialEntries={['/']}>
+        <ThemeProvider theme={theme}>
+          <MyFiles />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.queryByText('report.txt')).not.toBeInTheDocument());
+    await screen.findByText('other.txt');
+    expect(mockListFiles.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('clears the selection and details panel when the auth identity changes', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [readyFile, { ...readyFile, id: 'file-2', original_file_name: 'notes.txt' }],
+    });
+    const { rerender } = renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    await screen.findByTestId('my-files-selection-bar');
+    fireEvent.click(screen.getByTestId('my-files-details-toggle'));
+    await screen.findByTestId('my-files-details-panel');
+
+    mockAuthUser.current = { id: 9, username: 'other-user' };
+    mockListFiles.mockResolvedValue({ items: [] });
+    rerender(
+      <MemoryRouter initialEntries={['/']}>
+        <ThemeProvider theme={theme}>
+          <MyFiles />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.queryByTestId('my-files-selection-bar')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByTestId('my-files-details-panel')).not.toBeInTheDocument());
+  });
+
+  it('clears the listing when access is revoked mid-session (403 on silent revalidation)', async () => {
+    const timeoutSpy = vi.spyOn(window, 'setTimeout');
+    try {
+      mockListFiles.mockResolvedValue({ items: [{ ...readyFile, status: 'processing' }] });
+      renderPage();
+      await screen.findByText('report.txt');
+      await waitFor(() => expect(timeoutSpy.mock.calls.some((call) => call[1] === 4000)).toBe(true));
+      const poll = timeoutSpy.mock.calls.find((call) => call[1] === 4000)[0];
+      const denied = new Error('forbidden');
+      denied.response = { status: 403 };
+      mockListFiles.mockRejectedValueOnce(denied);
+      await act(async () => { poll(); });
+      await waitFor(() => expect(screen.queryByText('report.txt')).not.toBeInTheDocument());
+      // The revoked entry was evicted: the next load must hit the API, not the cache.
+      mockListFiles.mockResolvedValue({ items: [] });
+      await act(async () => { poll(); });
+      await waitFor(() => expect(mockListFiles).toHaveBeenCalledTimes(2));
+    } finally {
+      timeoutSpy.mockRestore();
+    }
   });
 
   it('treats a dropped folder as a real folder upload', async () => {
@@ -499,7 +569,7 @@ describe('MyFiles page', () => {
 
     await screen.findByText('balance.xlsx');
     expect(mockListFiles).toHaveBeenLastCalledWith(expect.objectContaining({ libraryId: 'lib-1' }));
-    expect(mockListFolders).toHaveBeenLastCalledWith({ libraryId: 'lib-1' });
+    expect(mockListFolders).toHaveBeenLastCalledWith(expect.objectContaining({ libraryId: 'lib-1' }));
     expect(screen.getByRole('heading', { name: 'Бухгалтерия' })).toBeInTheDocument();
     expect(screen.getByTestId('my-files-library-role')).toHaveTextContent('Правка');
     expect(screen.getByTestId('my-files-quota')).toHaveTextContent('Общая папка');
@@ -570,7 +640,7 @@ describe('MyFiles page', () => {
     fireEvent.click(await screen.findByTestId('my-files-library-trash'));
 
     await screen.findByText('old.xlsx');
-    expect(mockListTrash).toHaveBeenLastCalledWith({ libraryId: 'lib-1' });
+    expect(mockListTrash).toHaveBeenLastCalledWith(expect.objectContaining({ libraryId: 'lib-1' }));
     expect(screen.getByRole('heading', { name: 'Корзина — Бухгалтерия' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('my-files-empty-trash'));
@@ -619,8 +689,11 @@ describe('MyFiles page', () => {
 
     fireEvent.change(screen.getByTestId('my-files-search-input'), { target: { value: 'photo' } });
 
-    expect(screen.queryByText('report.txt')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('my-files-folder-folder-1')).not.toBeInTheDocument();
+    // Клиентская фильтрация идёт по дебаунсированному запросу — как и серверный поиск.
+    await waitFor(() => {
+      expect(screen.queryByText('report.txt')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('my-files-folder-folder-1')).not.toBeInTheDocument();
+    });
     expect(await screen.findByText('photo.png')).toBeInTheDocument();
   });
 
@@ -939,6 +1012,7 @@ describe('MyFiles page', () => {
     await screen.findByText('report.txt');
 
     fireEvent.contextMenu(screen.getByTestId('my-files-card-file-1'));
+    fireEvent.click(await screen.findByTestId('file-action-group-organize'));
     fireEvent.click(await screen.findByTestId('file-action-copy-to'));
     const dialog = await screen.findByRole('dialog');
     fireEvent.mouseDown(within(dialog).getAllByRole('combobox')[0]);

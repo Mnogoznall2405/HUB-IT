@@ -33,9 +33,14 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { isFileActionsKeyboardShortcut } from '../fileActions/FileActionsContextMenu';
 import { formatFileSize, isMyFilePreviewSupported } from '../../lib/myFilesPreview';
 import {
+  formatDateShort,
   formatDateTime,
   getFileVisualColors,
+  MY_FILES_FILE_CARD_HEIGHT,
+  MY_FILES_FOLDER_CARD_HEIGHT,
+  MY_FILES_ROW_HEIGHT,
   getFileVisualMeta,
+  QUICK_ACTIONS_OVERLAY_SX,
   READY_STATUSES,
   ROW_ACTIONS_SX,
   statusChip,
@@ -77,12 +82,6 @@ function CoEditChip({ item, overlay = false }) {
     </Tooltip>
   );
 }
-
-const formatDateShort = (value) => {
-  const parsed = new Date(String(value || ''));
-  if (Number.isNaN(parsed.getTime())) return '—';
-  return parsed.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
-};
 
 const getRemainingShort = (expiresAt) => {
   const target = new Date(String(expiresAt || '')).getTime();
@@ -189,11 +188,47 @@ function RowStatusIcons({ entry, kind }) {
   );
 }
 // One grid for the header and every row: checkbox, name, owner, modified, size, actions (the trash drops the owner).
+// Быстрые действия больше не занимают колонку — это плавающая пилюля при наведении;
+// в колонке остаётся только постоянно видимый ⋮ (48px; в корзине — восстановить/удалить, 80px).
+//
+// Ярусы откликаются на ширину САМОГО списка (обёртка списка — CSS container,
+// container-type: inline-size), а не на viewport: две боковые панели и панель
+// сведений сжимают таблицу задолго до media query. «Название» держит 1fr на
+// каждом ярусе; второстепенные колонки уходят в порядке ценности — сначала
+// «Владелец» (у большинства строк это «Я»), затем «Размер», затем «Изменён».
+export const ROW_COL_UPDATED_MIN = 620;
+export const ROW_COL_SIZE_MIN = 760;
+export const ROW_COL_OWNER_MIN = 960;
+export const ROW_COL_TRASH_RETENTION_MIN = 400;
+export const ROW_COL_TRASH_DATE_MIN = 560;
+
+export const secondaryColumnSx = (minWidth, display = 'block') => ({
+  display: 'none',
+  [`@container (min-width: ${minWidth}px)`]: { display },
+});
+
 export const rowGridColumns = (isTrashView) => (isTrashView
-  ? { xs: 'minmax(0,1fr) auto', md: 'minmax(0,1fr) 170px 110px 176px' }
-  // Колонка действий 226px: до 6 кнопок по 36px + зазоры (папка с коллаборацией),
-  // иначе первые иконки наезжают на колонку «Размер».
-  : { xs: '40px minmax(0,1fr) auto', md: '40px minmax(0,1fr) 140px 160px 96px 226px' });
+  ? {
+    gridTemplateColumns: 'minmax(0,1fr) 80px',
+    [`@container (min-width: ${ROW_COL_TRASH_RETENTION_MIN}px)`]: {
+      gridTemplateColumns: 'minmax(0,1fr) 110px 80px',
+    },
+    [`@container (min-width: ${ROW_COL_TRASH_DATE_MIN}px)`]: {
+      gridTemplateColumns: 'minmax(0,1fr) 170px 110px 80px',
+    },
+  }
+  : {
+    gridTemplateColumns: '40px minmax(0,1fr) 48px',
+    [`@container (min-width: ${ROW_COL_UPDATED_MIN}px)`]: {
+      gridTemplateColumns: '40px minmax(0,1fr) 160px 48px',
+    },
+    [`@container (min-width: ${ROW_COL_SIZE_MIN}px)`]: {
+      gridTemplateColumns: '40px minmax(0,1fr) 160px 96px 48px',
+    },
+    [`@container (min-width: ${ROW_COL_OWNER_MIN}px)`]: {
+      gridTemplateColumns: '40px minmax(0,1fr) 140px 160px 96px 48px',
+    },
+  });
 
 export const ownerLabel = (entry, currentUsername) => {
   if (entry?.library_name) return entry.library_name;
@@ -209,7 +244,7 @@ function OwnerCell({ entry, currentUsername }) {
       color="text.secondary"
       title={label}
       noWrap
-      sx={{ display: { xs: 'none', md: 'block' } }}
+      sx={secondaryColumnSx(ROW_COL_OWNER_MIN)}
     >
       {label}
     </Typography>
@@ -250,18 +285,26 @@ export const FolderRow = memo(function FolderRow({
       onContextMenu={(event) => { if (!isTrashView) openFolderActionsMenu(event, folder); }}
       onKeyDown={(event) => {
         if (isTrashView) return;
-        if (event.key === 'Enter') navigateToFolder(folder.id, folder.library_id);
+        // Enter belongs to the focused control: keydown bubbles from row
+        // buttons (⋮ menu, quick actions), so only the row itself navigates.
+        if (event.key === 'Enter' && event.target === event.currentTarget) {
+          navigateToFolder(folder.id, folder.library_id);
+        }
         if (isFileActionsKeyboardShortcut(event)) openFolderActionsMenu(event, folder);
       }}
       tabIndex={0}
       sx={{
         ...VIRTUALIZED_ROW_SX,
+        position: 'relative',
         display: 'grid',
-        gridTemplateColumns: rowGridColumns(isTrashView),
+        ...rowGridColumns(isTrashView),
         gap: 1,
         alignItems: 'center',
         px: 1,
         py: 0.5,
+        // Fixed height keeps the window virtualizer's spacer math exact.
+        height: MY_FILES_ROW_HEIGHT,
+        boxSizing: 'border-box',
         cursor: isTrashView ? 'default' : 'pointer',
         borderBottom: `1px solid ${theme.palette.divider}`,
         bgcolor: isDropTarget
@@ -271,7 +314,11 @@ export const FolderRow = memo(function FolderRow({
         outlineOffset: -2,
         transition: 'background-color 0.15s ease',
         '&:hover': { bgcolor: 'action.hover' },
-        '&:hover .row-actions': { opacity: 1 },
+        '&:hover .row-quick-actions, &:focus-within .row-quick-actions': {
+          opacity: 1,
+          visibility: 'visible',
+          pointerEvents: 'auto',
+        },
         '&:focus-visible': {
           outline: `2px solid ${theme.palette.primary.main}`,
           outlineOffset: -2,
@@ -315,10 +362,10 @@ export const FolderRow = memo(function FolderRow({
         </Stack>
       </Stack>
       {isTrashView ? null : <OwnerCell entry={folder} currentUsername={currentUsername} />}
-      <Typography variant="body2" color="text.secondary" sx={{ display: { xs: 'none', md: 'block' } }}>
+      <Typography variant="body2" color="text.secondary" sx={secondaryColumnSx(isTrashView ? ROW_COL_TRASH_DATE_MIN : ROW_COL_UPDATED_MIN)}>
         {formatDateTime(folder.updated_at)}
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ display: { xs: 'none', md: 'block' } }}>
+      <Typography variant="body2" color="text.secondary" sx={secondaryColumnSx(isTrashView ? ROW_COL_TRASH_RETENTION_MIN : ROW_COL_SIZE_MIN)}>
         {Number(folder.file_count || 0) > 0 ? `${folder.file_count} шт.` : '—'}
       </Typography>
       <Box className="row-actions" sx={ROW_ACTIONS_SX}>
@@ -349,115 +396,93 @@ export const FolderRow = memo(function FolderRow({
             </Tooltip>
           </>
         ) : (
-          <>
-            <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 0.25 }}>
-              {sharedWithMe ? (
-                <Tooltip title="Открыть">
-                  <IconButton
-                    size="small"
-                    aria-label={`Открыть папку ${folder.name}`}
-                    onClick={(event) => { event.stopPropagation(); navigateToFolder(folder.id, folder.library_id); }}
-                  >
-                    <FolderOutlinedIcon fontSize="small" />
-                  </IconButton>
-                </Tooltip>
-              ) : (
-                <>
-                  <Tooltip title="Открыть">
-                    <IconButton
-                      size="small"
-                      aria-label={`Открыть папку ${folder.name}`}
-                      onClick={(event) => { event.stopPropagation(); navigateToFolder(folder.id, folder.library_id); }}
-                    >
-                      <FolderOutlinedIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                  {onToggleFavorite ? (
-                    <Tooltip title={folder.is_favorite ? 'Убрать из избранного' : 'В избранное'}>
-                      <IconButton
-                        size="small"
-                        disabled={!canWrite}
-                        aria-label={folder.is_favorite ? `Убрать «${folder.name}» из избранного` : `Добавить «${folder.name}» в избранное`}
-                        data-testid={`my-files-favorite-folder-${folder.id}`}
-                        onClick={(event) => { event.stopPropagation(); void onToggleFavorite(folder, 'folder'); }}
-                      >
-                        {folder.is_favorite
-                          ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
-                          : <StarOutlineRoundedIcon fontSize="small" />}
-                      </IconButton>
-                    </Tooltip>
-                  ) : null}
-                  <Tooltip title="Поделиться папкой">
-                    <IconButton
-                      size="small"
-                      disabled={!canShare}
-                      aria-label={`Поделиться папкой ${folder.name}`}
-                      data-testid={`my-files-share-folder-${folder.id}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void handleFolderShare(folder);
-                      }}
-                    >
-                      <ShareOutlinedIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                  {onFolderCollaborators ? (
-                    <Tooltip title="Совместный доступ">
-                      <IconButton
-                        size="small"
-                        disabled={!canShare}
-                        aria-label={`Совместный доступ к папке ${folder.name}`}
-                        data-testid={`my-files-collab-folder-${folder.id}`}
-                        onClick={(event) => { event.stopPropagation(); onFolderCollaborators(folder); }}
-                      >
-                        <GroupOutlinedIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  ) : null}
-                  <Tooltip title="Переименовать">
-                    <IconButton
-                      size="small"
-                      disabled={!canWrite}
-                      aria-label={`Переименовать папку ${folder.name}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openRenameDialog('folder', folder.id, folder.name);
-                      }}
-                    >
-                      <DriveFileRenameOutlineRoundedIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                  <Tooltip title="Удалить">
-                    <IconButton
-                      size="small"
-                      color="error"
-                      disabled={!canWrite}
-                      aria-label={`Удалить папку ${folder.name}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void handleDeleteFolder(folder);
-                      }}
-                    >
-                      <DeleteOutlineIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                </>
-              )}
-            </Box>
-            <IconButton
-              size="small"
-              aria-label={`Действия с папкой ${folder.name}`}
-              sx={{ display: { xs: 'inline-flex', md: 'none' }, minWidth: 44, minHeight: 44 }}
-              onClick={(event) => {
-                event.stopPropagation();
-                openFolderActionsMenu(event, folder);
-              }}
-            >
-              <MoreVertRoundedIcon fontSize="small" />
-            </IconButton>
-          </>
+          <IconButton
+            size="small"
+            aria-label={`Действия с папкой ${folder.name}`}
+            data-testid={`my-files-menu-folder-${folder.id}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              openFolderActionsMenu(event, folder);
+            }}
+            sx={{ minWidth: 44, minHeight: 44 }}
+          >
+            <MoreVertRoundedIcon fontSize="small" />
+          </IconButton>
         )}
       </Box>
+      {!isTrashView && !sharedWithMe ? (
+        <Box className="row-quick-actions" sx={QUICK_ACTIONS_OVERLAY_SX}>
+          {onToggleFavorite ? (
+            <Tooltip title={folder.is_favorite ? 'Убрать из избранного' : 'В избранное'}>
+              <IconButton
+                size="small"
+                disabled={!canWrite}
+                aria-label={folder.is_favorite ? `Убрать «${folder.name}» из избранного` : `Добавить «${folder.name}» в избранное`}
+                data-testid={`my-files-favorite-folder-${folder.id}`}
+                onClick={(event) => { event.stopPropagation(); void onToggleFavorite(folder, 'folder'); }}
+              >
+                {folder.is_favorite
+                  ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
+                  : <StarOutlineRoundedIcon fontSize="small" />}
+              </IconButton>
+            </Tooltip>
+          ) : null}
+          <Tooltip title="Поделиться папкой">
+            <IconButton
+              size="small"
+              disabled={!canShare}
+              aria-label={`Поделиться папкой ${folder.name}`}
+              data-testid={`my-files-share-folder-${folder.id}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                void handleFolderShare(folder);
+              }}
+            >
+              <ShareOutlinedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          {onFolderCollaborators ? (
+            <Tooltip title="Совместный доступ">
+              <IconButton
+                size="small"
+                disabled={!canShare}
+                aria-label={`Совместный доступ к папке ${folder.name}`}
+                data-testid={`my-files-collab-folder-${folder.id}`}
+                onClick={(event) => { event.stopPropagation(); onFolderCollaborators(folder); }}
+              >
+                <GroupOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          ) : null}
+          <Tooltip title="Переименовать">
+            <IconButton
+              size="small"
+              disabled={!canWrite}
+              aria-label={`Переименовать папку ${folder.name}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                openRenameDialog('folder', folder.id, folder.name);
+              }}
+            >
+              <DriveFileRenameOutlineRoundedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Удалить">
+            <IconButton
+              size="small"
+              color="error"
+              disabled={!canWrite}
+              aria-label={`Удалить папку ${folder.name}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                void handleDeleteFolder(folder);
+              }}
+            >
+              <DeleteOutlineIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      ) : null}
     </Box>
   );
 });
@@ -508,7 +533,9 @@ export const FileRow = memo(function FileRow({
       onContextMenu={(event) => { if (!isTrashView) openFileActionsMenu(event, item); }}
       onKeyDown={(event) => {
         if (isTrashView) return;
-        if (event.key === 'Enter') {
+        // Enter belongs to the focused control: keydown bubbles from row
+        // buttons (⋮ menu, quick actions), so only the row itself previews.
+        if (event.key === 'Enter' && event.target === event.currentTarget) {
           if (editorOpen) { if (ready) onOpenSharedFile?.(item); }
           else if (previewSupported) void openDocumentPreview(item);
           else openFileActionsMenu(event, item);
@@ -518,18 +545,26 @@ export const FileRow = memo(function FileRow({
       tabIndex={0}
       sx={{
         ...VIRTUALIZED_ROW_SX,
+        position: 'relative',
         display: 'grid',
-        gridTemplateColumns: rowGridColumns(isTrashView),
+        ...rowGridColumns(isTrashView),
         gap: 1,
         alignItems: 'center',
         px: 1,
         py: 0.5,
+        // Fixed height keeps the window virtualizer's spacer math exact.
+        height: MY_FILES_ROW_HEIGHT,
+        boxSizing: 'border-box',
         cursor: !isTrashView && (previewSupported || sharedWithMe) ? 'pointer' : 'default',
         borderBottom: `1px solid ${theme.palette.divider}`,
         bgcolor: isSelected ? 'action.selected' : 'transparent',
         transition: 'background-color 0.15s ease',
         '&:hover': { bgcolor: 'action.hover' },
-        '&:hover .row-actions': { opacity: 1 },
+        '&:hover .row-quick-actions, &:focus-within .row-quick-actions': {
+          opacity: 1,
+          visibility: 'visible',
+          pointerEvents: 'auto',
+        },
         '&:focus-visible': {
           outline: `2px solid ${theme.palette.primary.main}`,
           outlineOffset: -2,
@@ -576,10 +611,10 @@ export const FileRow = memo(function FileRow({
         </Box>
       </Stack>
       {isTrashView ? null : <OwnerCell entry={item} currentUsername={currentUsername} />}
-      <Typography variant="body2" color="text.secondary" sx={{ display: { xs: 'none', md: 'block' } }}>
+      <Typography variant="body2" color="text.secondary" sx={secondaryColumnSx(isTrashView ? ROW_COL_TRASH_DATE_MIN : ROW_COL_UPDATED_MIN)}>
         {formatDateTime(item.updated_at || item.created_at)}
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ display: { xs: 'none', md: 'block' } }}>
+      <Typography variant="body2" color="text.secondary" sx={secondaryColumnSx(isTrashView ? ROW_COL_TRASH_RETENTION_MIN : ROW_COL_SIZE_MIN)}>
         {formatFileSize(item.original_size_bytes)}
       </Typography>
       <Box className="row-actions" sx={ROW_ACTIONS_SX}>
@@ -610,142 +645,143 @@ export const FileRow = memo(function FileRow({
             </Tooltip>
           </>
         ) : (
-          <>
-            <Box sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 0.25 }}>
-              {sharedWithMe ? (
-                <>
-                  {officeEditable !== false ? (
-                    <Tooltip title={sharedOpenLabel(item)}>
-                      <span>
-                        <IconButton
-                          size="small"
-                          aria-label={`${sharedOpenLabel(item)} ${fileName}`}
-                          data-testid={`my-files-shared-edit-${item.id}`}
-                          disabled={!ready}
-                          onClick={(event) => { event.stopPropagation(); onOpenSharedFile?.(item); }}
-                        >
-                          <EditOutlinedIcon fontSize="small" />
-                        </IconButton>
-                      </span>
-                    </Tooltip>
-                  ) : null}
-                  <Tooltip title="Скачать">
-                    <span>
-                      <IconButton
-                        size="small"
-                        aria-label={`Скачать ${fileName}`}
-                        data-testid={`my-files-shared-download-${item.id}`}
-                        disabled={!ready || downloading}
-                        onClick={(event) => { event.stopPropagation(); void handleDownload?.(item); }}
-                      >
-                        {downloading ? <CircularProgress size={18} /> : <DownloadOutlinedIcon fontSize="small" />}
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                  {officeEditable !== false ? (
-                    <Tooltip title="Предыдущие версии">
-                      <span>
-                        <IconButton
-                          size="small"
-                          aria-label={`Версии ${fileName}`}
-                          disabled={!ready}
-                          onClick={(event) => { event.stopPropagation(); onOpenVersions?.(item); }}
-                        >
-                          <HistoryOutlinedIcon fontSize="small" />
-                        </IconButton>
-                      </span>
-                    </Tooltip>
-                  ) : null}
-                </>
-              ) : (
-                <>
-                  {onToggleFavorite ? (
-                    <Tooltip title={item.is_favorite ? 'Убрать из избранного' : 'В избранное'}>
-                      <span>
-                        <IconButton
-                          size="small"
-                          disabled={!canWrite}
-                          aria-label={item.is_favorite ? `Убрать «${fileName}» из избранного` : `Добавить «${fileName}» в избранное`}
-                          data-testid={`my-files-favorite-${item.id}`}
-                          onClick={(event) => { event.stopPropagation(); void onToggleFavorite(item, 'file'); }}
-                        >
-                          {item.is_favorite
-                            ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
-                            : <StarOutlineRoundedIcon fontSize="small" />}
-                        </IconButton>
-                      </span>
-                    </Tooltip>
-                  ) : null}
-                  <Tooltip title={previewSupported ? 'Просмотреть' : 'Предпросмотр недоступен'}>
-                    <span>
-                      <IconButton
-                        size="small"
-                        data-testid={`my-files-preview-${item.id}`}
-                        aria-label={`Просмотреть ${fileName}`}
-                        disabled={!previewSupported}
-                        onClick={(event) => { event.stopPropagation(); openDocumentPreview(item); }}
-                      >
-                        <VisibilityOutlinedIcon fontSize="small" />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                  <Tooltip title="Скачать">
-                    <span>
-                      <IconButton
-                        size="small"
-                        data-testid={`my-files-download-${item.id}`}
-                        aria-label={`Скачать ${fileName}`}
-                        disabled={!ready || downloading}
-                        onClick={(event) => { event.stopPropagation(); void handleDownload(item); }}
-                      >
-                        {downloading ? <CircularProgress size={18} /> : <DownloadOutlinedIcon fontSize="small" />}
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                  <Tooltip title={item.is_shared ? 'Поделиться ссылкой' : 'Создать публичную ссылку'}>
-                    <span>
-                      <IconButton
-                        size="small"
-                        data-testid={`my-files-share-${item.id}`}
-                        aria-label={`Поделиться ${fileName}`}
-                        disabled={!ready || !canShare}
-                        onClick={(event) => { event.stopPropagation(); void handleShare(item); }}
-                      >
-                        <ShareOutlinedIcon fontSize="small" />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                  <Tooltip title="Удалить">
-                    <span>
-                      <IconButton
-                        size="small"
-                        data-testid={`my-files-delete-${item.id}`}
-                        aria-label={`Удалить ${fileName}`}
-                        color="error"
-                        disabled={!canWrite}
-                        onClick={(event) => { event.stopPropagation(); void handleDelete(item); }}
-                      >
-                        <DeleteOutlineIcon fontSize="small" />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                </>
-              )}
-            </Box>
-            <IconButton
-              size="small"
-              aria-label={`Действия с файлом ${fileName}`}
-              sx={{ display: { xs: 'inline-flex', md: 'none' }, minWidth: 44, minHeight: 44 }}
-              onClick={(event) => {
-                event.stopPropagation();
-                openFileActionsMenu(event, item);
-              }}
-            >
-              <MoreVertRoundedIcon fontSize="small" />
-            </IconButton>
-          </>
+          <IconButton
+            size="small"
+            aria-label={`Действия с файлом ${fileName}`}
+            data-testid={`my-files-menu-file-${item.id}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              openFileActionsMenu(event, item);
+            }}
+            sx={{ minWidth: 44, minHeight: 44 }}
+          >
+            <MoreVertRoundedIcon fontSize="small" />
+          </IconButton>
         )}
       </Box>
+      {!isTrashView ? (
+        <Box className="row-quick-actions" sx={QUICK_ACTIONS_OVERLAY_SX}>
+          {sharedWithMe ? (
+            <>
+              {officeEditable !== false ? (
+                <Tooltip title={sharedOpenLabel(item)}>
+                  <span>
+                    <IconButton
+                      size="small"
+                      aria-label={`${sharedOpenLabel(item)} ${fileName}`}
+                      data-testid={`my-files-shared-edit-${item.id}`}
+                      disabled={!ready}
+                      onClick={(event) => { event.stopPropagation(); onOpenSharedFile?.(item); }}
+                    >
+                      <EditOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              ) : null}
+              <Tooltip title="Скачать">
+                <span>
+                  <IconButton
+                    size="small"
+                    aria-label={`Скачать ${fileName}`}
+                    data-testid={`my-files-shared-download-${item.id}`}
+                    disabled={!ready || downloading}
+                    onClick={(event) => { event.stopPropagation(); void handleDownload?.(item); }}
+                  >
+                    {downloading ? <CircularProgress size={18} /> : <DownloadOutlinedIcon fontSize="small" />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+              {officeEditable !== false ? (
+                <Tooltip title="Предыдущие версии">
+                  <span>
+                    <IconButton
+                      size="small"
+                      aria-label={`Версии ${fileName}`}
+                      disabled={!ready}
+                      onClick={(event) => { event.stopPropagation(); onOpenVersions?.(item); }}
+                    >
+                      <HistoryOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              ) : null}
+            </>
+          ) : (
+            <>
+              {onToggleFavorite ? (
+                <Tooltip title={item.is_favorite ? 'Убрать из избранного' : 'В избранное'}>
+                  <span>
+                    <IconButton
+                      size="small"
+                      disabled={!canWrite}
+                      aria-label={item.is_favorite ? `Убрать «${fileName}» из избранного` : `Добавить «${fileName}» в избранное`}
+                      data-testid={`my-files-favorite-${item.id}`}
+                      onClick={(event) => { event.stopPropagation(); void onToggleFavorite(item, 'file'); }}
+                    >
+                      {item.is_favorite
+                        ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
+                        : <StarOutlineRoundedIcon fontSize="small" />}
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              ) : null}
+              <Tooltip title={previewSupported ? 'Просмотреть' : 'Предпросмотр недоступен'}>
+                <span>
+                  <IconButton
+                    size="small"
+                    data-testid={`my-files-preview-${item.id}`}
+                    aria-label={`Просмотреть ${fileName}`}
+                    disabled={!previewSupported}
+                    onClick={(event) => { event.stopPropagation(); openDocumentPreview(item); }}
+                  >
+                    <VisibilityOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title="Скачать">
+                <span>
+                  <IconButton
+                    size="small"
+                    data-testid={`my-files-download-${item.id}`}
+                    aria-label={`Скачать ${fileName}`}
+                    disabled={!ready || downloading}
+                    onClick={(event) => { event.stopPropagation(); void handleDownload(item); }}
+                  >
+                    {downloading ? <CircularProgress size={18} /> : <DownloadOutlinedIcon fontSize="small" />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title={item.is_shared ? 'Поделиться ссылкой' : 'Создать публичную ссылку'}>
+                <span>
+                  <IconButton
+                    size="small"
+                    data-testid={`my-files-share-${item.id}`}
+                    aria-label={`Поделиться ${fileName}`}
+                    disabled={!ready || !canShare}
+                    onClick={(event) => { event.stopPropagation(); void handleShare(item); }}
+                  >
+                    <ShareOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title="Удалить">
+                <span>
+                  <IconButton
+                    size="small"
+                    data-testid={`my-files-delete-${item.id}`}
+                    aria-label={`Удалить ${fileName}`}
+                    color="error"
+                    disabled={!canWrite}
+                    onClick={(event) => { event.stopPropagation(); void handleDelete(item); }}
+                  >
+                    <DeleteOutlineIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </>
+          )}
+        </Box>
+      ) : null}
     </Box>
   );
 });
@@ -778,7 +814,10 @@ export const FolderCard = memo(function FolderCard({
       onContextMenu={(event) => { if (!isTrashView) openFolderActionsMenu(event, folder); }}
       onKeyDown={(event) => {
         if (isTrashView) return;
-        if (event.key === 'Enter') navigateToFolder(folder.id, folder.library_id);
+        // Enter belongs to the focused control (see the list row above).
+        if (event.key === 'Enter' && event.target === event.currentTarget) {
+          navigateToFolder(folder.id, folder.library_id);
+        }
         if (isFileActionsKeyboardShortcut(event)) openFolderActionsMenu(event, folder);
       }}
       tabIndex={0}
@@ -790,6 +829,9 @@ export const FolderCard = memo(function FolderCard({
         gap: 1,
         px: 1.25,
         py: 1,
+        // Fixed height keeps the window virtualizer's spacer math exact.
+        height: MY_FILES_FOLDER_CARD_HEIGHT,
+        boxSizing: 'border-box',
         cursor: isTrashView ? 'default' : 'pointer',
         borderColor: isDropTarget ? 'primary.main' : undefined,
         borderStyle: isDropTarget ? 'dashed' : 'solid',
@@ -945,7 +987,9 @@ export const FileCard = memo(function FileCard({
       onContextMenu={(event) => { if (!isTrashView) openFileActionsMenu(event, item); }}
       onKeyDown={(event) => {
         if (isTrashView) return;
-        if (event.key === 'Enter') {
+        // Enter belongs to the focused control: keydown bubbles from row
+        // buttons (⋮ menu, quick actions), so only the row itself previews.
+        if (event.key === 'Enter' && event.target === event.currentTarget) {
           if (editorOpen) { if (ready) onOpenSharedFile?.(item); }
           else if (previewSupported) void openDocumentPreview(item);
           else openFileActionsMenu(event, item);
@@ -958,6 +1002,10 @@ export const FileCard = memo(function FileCard({
         position: 'relative',
         p: 1,
         pb: 1.25,
+        // Fixed height keeps the window virtualizer's spacer math exact.
+        height: MY_FILES_FILE_CARD_HEIGHT,
+        boxSizing: 'border-box',
+        overflow: 'hidden',
         textAlign: 'center',
         cursor: !isTrashView && (previewSupported || sharedWithMe) ? 'pointer' : 'default',
         bgcolor: isSelected ? 'action.selected' : undefined,

@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
-import { FileRow, FolderRow } from './MyFilesListItems';
+import { FileRow, FolderRow, rowGridColumns } from './MyFilesListItems';
 
 const theme = createTheme();
 const renderWithTheme = (ui) => render(<ThemeProvider theme={theme}>{ui}</ThemeProvider>);
@@ -103,24 +103,21 @@ const hasRule = (blocks, query, declaration) =>
   blocks.some((block) => block.includes(query) && block.includes(declaration));
 
 describe('MyFiles mobile list rows', () => {
-  it('hides file action icons below md and shows a single overflow button', () => {
+  it('hides quick action icons below md while the overflow button stays on all breakpoints', () => {
     const { container } = renderWithTheme(<FileRow {...fileRowProps()} />);
     const overflow = screen.getByRole('button', { name: 'Действия с файлом Отчёт за квартал с длинным названием.xlsx' });
     expect(overflow).toBeInTheDocument();
 
-    const desktopActions = container.querySelector('.row-actions > div');
-    expect(desktopActions).toBeTruthy();
+    // Быстрые действия — плавающая пилюля: видна только на md+ при наведении/фокусе.
+    const quickActions = container.querySelector('.row-quick-actions');
+    expect(quickActions).toBeTruthy();
     for (const testid of ['my-files-preview-file-1', 'my-files-download-file-1', 'my-files-share-file-1', 'my-files-delete-file-1']) {
-      expect(desktopActions.querySelector(`[data-testid="${testid}"]`)).toBeTruthy();
+      expect(quickActions.querySelector(`[data-testid="${testid}"]`)).toBeTruthy();
     }
 
-    const wrapperRules = rulesForElement(desktopActions);
-    expect(hasRule(wrapperRules.media, '@media (min-width:0px)', 'display:none')).toBe(true);
-    expect(hasRule(wrapperRules.media, '@media (min-width:900px)', 'display:flex')).toBe(true);
-
-    const overflowRules = rulesForElement(overflow);
-    expect(hasRule(overflowRules.media, '@media (min-width:0px)', 'inline-flex')).toBe(true);
-    expect(hasRule(overflowRules.media, '@media (min-width:900px)', 'display:none')).toBe(true);
+    const overlayRules = rulesForElement(quickActions);
+    expect(hasRule(overlayRules.media, '@media (min-width:0px)', 'display:none')).toBe(true);
+    expect(hasRule(overlayRules.media, '@media (min-width:900px)', 'display:flex')).toBe(true);
   });
 
   it('file overflow button opens the actions menu without opening the file', () => {
@@ -132,6 +129,31 @@ describe('MyFiles mobile list rows', () => {
     expect(props.openFileActionsMenu.mock.calls[0][1]).toBe(props.item);
     expect(props.openDocumentPreview).not.toHaveBeenCalled();
     expect(props.onOpenSharedFile).not.toHaveBeenCalled();
+  });
+
+  it('Enter on a row button bubbles up but does not trigger the row preview/navigation', () => {
+    const fileProps = fileRowProps();
+    const { container } = renderWithTheme(<FileRow {...fileProps} />);
+    const overflow = screen.getByRole('button', { name: `Действия с файлом ${fileProps.item.original_file_name}` });
+    // keydown bubbles from the button to the row — Enter must stay with the
+    // button (opens the menu via click), not also open the file preview.
+    fireEvent.keyDown(overflow, { key: 'Enter' });
+    expect(fileProps.openDocumentPreview).not.toHaveBeenCalled();
+
+    const fileRow = overflow.closest('[data-testid^="my-files-card-"]');
+    fireEvent.keyDown(fileRow, { key: 'Enter' });
+    expect(fileProps.openDocumentPreview).toHaveBeenCalledTimes(1);
+
+    const folderProps = folderRowProps();
+    renderWithTheme(<FolderRow {...folderProps} />);
+    const folderOverflow = screen.getByRole('button', { name: `Действия с папкой ${folderProps.folder.name}` });
+    fireEvent.keyDown(folderOverflow, { key: 'Enter' });
+    expect(folderProps.navigateToFolder).not.toHaveBeenCalled();
+
+    const folderRowEl = folderOverflow.closest('[data-testid^="my-files-folder-"]');
+    fireEvent.keyDown(folderRowEl, { key: 'Enter' });
+    expect(folderProps.navigateToFolder).toHaveBeenCalledTimes(1);
+    expect(container).toBeTruthy();
   });
 
   it('folder row uses an xs-only overflow button that does not navigate', () => {
@@ -150,10 +172,10 @@ describe('MyFiles mobile list rows', () => {
       officeEditable: true,
     });
     const { container } = renderWithTheme(<FileRow {...props} />);
-    const desktopActions = container.querySelector('.row-actions > div');
-    expect(desktopActions).toBeTruthy();
-    expect(desktopActions.querySelector('[data-testid="my-files-shared-edit-shared-1"]')).toBeTruthy();
-    expect(desktopActions.querySelector('[data-testid="my-files-shared-download-shared-1"]')).toBeTruthy();
+    const quickActions = container.querySelector('.row-quick-actions');
+    expect(quickActions).toBeTruthy();
+    expect(quickActions.querySelector('[data-testid="my-files-shared-edit-shared-1"]')).toBeTruthy();
+    expect(quickActions.querySelector('[data-testid="my-files-shared-download-shared-1"]')).toBeTruthy();
 
     const overflow = screen.getByRole('button', { name: 'Действия с файлом Отчёт за квартал с длинным названием.xlsx' });
     fireEvent.click(overflow);
@@ -162,12 +184,48 @@ describe('MyFiles mobile list rows', () => {
     expect(props.onOpenSharedFile).not.toHaveBeenCalled();
   });
 
+  it('grid tiers keep the name flexible and hide secondary columns by container width', () => {
+    const normal = rowGridColumns(false);
+    // Base tier (narrow list): checkbox + name + overflow button only.
+    expect(normal.gridTemplateColumns).toBe('40px minmax(0,1fr) 48px');
+    // Each wider tier adds exactly one secondary column; the name stays 1fr.
+    expect(normal['@container (min-width: 620px)'].gridTemplateColumns)
+      .toBe('40px minmax(0,1fr) 160px 48px');
+    expect(normal['@container (min-width: 760px)'].gridTemplateColumns)
+      .toBe('40px minmax(0,1fr) 160px 96px 48px');
+    expect(normal['@container (min-width: 960px)'].gridTemplateColumns)
+      .toBe('40px minmax(0,1fr) 140px 160px 96px 48px');
+    // The name column never gets a fixed minimum that could overflow the row.
+    const allTemplates = [normal, ...Object.values(normal).filter((v) => typeof v === 'object')];
+    allTemplates.forEach((tier) => {
+      expect(tier.gridTemplateColumns).toContain('minmax(0,1fr)');
+      expect(tier.gridTemplateColumns).not.toMatch(/minmax\((?!0,)/); // name has no px floor
+    });
+
+    const trash = rowGridColumns(true);
+    expect(trash.gridTemplateColumns).toBe('minmax(0,1fr) 80px');
+    expect(trash['@container (min-width: 400px)'].gridTemplateColumns).toBe('minmax(0,1fr) 110px 80px');
+    expect(trash['@container (min-width: 560px)'].gridTemplateColumns).toBe('minmax(0,1fr) 170px 110px 80px');
+  });
+
+  it('row emits real @container CSS for secondary cells (emotion serializes it)', () => {
+    renderWithTheme(<FileRow {...fileRowProps()} />);
+    const css = Array.from(document.querySelectorAll('style'))
+      .map((node) => node.textContent || '')
+      .join('\n');
+    // If emotion dropped @container the cells would never appear at any width —
+    // this guards the mechanism the whole adaptive layout relies on.
+    expect(css).toContain('@container (min-width: 620px)');
+    expect(css).toContain('@container (min-width: 960px)');
+    expect(css).toContain('grid-template-columns:40px minmax(0,1fr) 160px 48px');
+  });
+
   it('trash rows keep restore and purge actions visible without an overflow button', () => {
     const props = fileRowProps({ isTrashView: true });
     const { container } = renderWithTheme(<FileRow {...props} />);
     expect(container.querySelector('.row-actions [data-testid="my-files-restore-file-1"]')).toBeTruthy();
     expect(container.querySelector('.row-actions [data-testid="my-files-purge-file-1"]')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Действия с файлом/ })).not.toBeInTheDocument();
-    expect(container.querySelector('.row-actions > div')).toBeNull();
+    expect(container.querySelector('.row-quick-actions')).toBeNull();
   });
 });

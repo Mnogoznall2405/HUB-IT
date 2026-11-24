@@ -78,7 +78,7 @@ function Harness() {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <Box sx={{ width: '100%', p: 1 }}>
+      <Box sx={{ width: '100%', p: 1, containerType: 'inline-size' }}>
         <FolderRow
           folder={folderA}
           isTrashView={false}

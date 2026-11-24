@@ -81,9 +81,12 @@ const QUOTA_GB_ERROR_TEXT = {
   too_large: 'Лимит больше поддерживаемого',
 };
 
+// Сравнение идёт в байтах, а не в тексте ГБ: «10» и «10.0000000001» после
+// округления дают один и тот же quota_bytes — это повтор того же лимита,
+// а не изменение (иначе — ложное «Несохранённые изменения» + лишний PATCH).
 const normalizeQuotaGbText = (raw) => {
   const parsed = parseQuotaGbInput(raw);
-  return parsed.ok ? String(parsed.gb) : `invalid:${String(raw ?? '')}`;
+  return parsed.ok ? `bytes:${parsed.bytes}` : `invalid:${String(raw ?? '')}`;
 };
 
 export const LIBRARY_ROLE_OPTIONS = [

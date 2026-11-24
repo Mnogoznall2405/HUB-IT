@@ -1,0 +1,5247 @@
+{
+ "summary": {
+  "n": 72,
+  "send_ms": {
+   "n": 72,
+   "mean": 36.1,
+   "p50": 30.3,
+   "p95": 76.8,
+   "max": 231.0
+  },
+  "reply_ms": {
+   "n": 57,
+   "mean": 22808.4,
+   "p50": 16316.0,
+   "p95": 47098.7,
+   "max": 47157.0
+  },
+  "server_total_ms": {
+   "n": 58,
+   "mean": 15069.7,
+   "p50": 13734.7,
+   "p95": 31873.1,
+   "max": 43974.8
+  },
+  "queue_wait_ms": {
+   "n": 58,
+   "mean": 257.8,
+   "p50": 212.3,
+   "p95": 490.8,
+   "max": 515.1
+  },
+  "llm_first_ms": {
+   "n": 58,
+   "mean": 4505.9,
+   "p50": 4299.7,
+   "p95": 7834.5,
+   "max": 8811.6
+  },
+  "llm_followup_ms": {
+   "n": 26,
+   "mean": 6995.9,
+   "p50": 6434.2,
+   "p95": 12829.3,
+   "max": 13336.8
+  },
+  "tools_ms": {
+   "n": 24,
+   "mean": 188.5,
+   "p50": 51.0,
+   "p95": 847.4,
+   "max": 2005.4
+  },
+  "context_ms": {
+   "n": 58,
+   "mean": 5979.7,
+   "p50": 7744.7,
+   "p95": 11311.3,
+   "max": 15156.0
+  },
+  "jev_ms": {
+   "n": 50,
+   "mean": 1023.1,
+   "p50": 958,
+   "p95": 1457,
+   "max": 2183
+  },
+  "total_tokens": {
+   "n": 58,
+   "mean": 19840.6,
+   "p50": 14533.0,
+   "p95": 43127.0,
+   "max": 71996.0
+  },
+  "intents": {
+   "?": 14,
+   "chat": 18,
+   "act": 15,
+   "read": 17,
+   "-": 8
+  },
+  "by_expected": {
+   "chat": {
+    "?": 6,
+    "chat": 16,
+    "act": 3,
+    "-": 1
+   },
+   "read": {
+    "read": 15,
+    "-": 5,
+    "?": 1
+   },
+   "act": {
+    "act": 10,
+    "?": 1
+   },
+   "edge": {
+    "chat": 2,
+    "act": 2,
+    "?": 6,
+    "-": 2,
+    "read": 2
+   }
+  }
+ },
+ "runs": [
+  {
+   "text": "Привет, как дела?",
+   "send_status": 200,
+   "send_ms": 231.025000102818,
+   "reply_ms": null,
+   "msg_id": "75164c02-e387-4811-8c1f-87560e225878",
+   "reply_body": null,
+   "expected": "chat",
+   "idx": 0
+  },
+  {
+   "text": "Что такое React?",
+   "send_status": 200,
+   "send_ms": 42.5,
+   "msg_id": "54cfebbc-62d7-416d-99cb-43c044ea3d0b",
+   "reply_ms": 16246.7,
+   "reply_body": "React — это JavaScript-библиотека от Meta для создания пользовательских интерфейсов. Она строит интерфейс из компонентов, а при изменении данных автоматически обновляет только нужные части страницы.\n\nОсновные идеи React:\n\n- **Компоненты** — повторно используемые блоки интерфейса (функции, возвращающие разметку).\n- **Декларативный подход** — вы описываете, как интерфейс должен выглядеть при данном состоянии, а React сам приводит DOM в соответствие.\n- **Состояние и свойства** — данные внутри компонента (state) и данные, которые передаются от родителя (props).\n- **Виртуальный DOM** — React сравни",
+   "run_id": "f3deee99-f381-4b86-8236-20a493b3a0d6",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:03:50.617805+05:00",
+   "run_started_at": "2026-11-23 23:03:50.715745+05:00",
+   "run_completed_at": "2026-11-23 23:03:57.186406+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 2,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "97.9",
+    "processing_ms": "6476.2",
+    "server_total_ms": "6574.1",
+    "elapsed_ms": "6476.2",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "4987",
+    "completion_tokens": "526",
+    "total_tokens": "5513"
+   },
+   "stages": {
+    "queue_wait": [
+     97.9
+    ],
+    "routing_inputs": [
+     3.7
+    ],
+    "tool_routing": [
+     1299.4
+    ],
+    "ctx_initial_message": [
+     2.2
+    ],
+    "ctx_mapping_state": [
+     5.8
+    ],
+    "ctx_messages": [
+     1.8
+    ],
+    "ctx_files": [
+     1.0
+    ],
+    "ctx_kb": [
+     0.4
+    ],
+    "memory": [
+     9.7
+    ],
+    "ctx_memory": [
+     9.7
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1340.8
+    ],
+    "llm_first": [
+     4554.4
+    ],
+    "execute": [
+     5923.5
+    ],
+    "send_answer": [
+     491.6
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "[]",
+    "intent": "chat",
+    "jev_ms": 1297
+   }
+  },
+  {
+   "text": "Помоги составить план рабочего дня на завтра.",
+   "send_status": 200,
+   "send_ms": 50.9,
+   "msg_id": "eb965491-a4a9-4a3a-87ea-4411dfade119",
+   "reply_ms": 31684.5,
+   "reply_body": "Задач и непрочитанной почты на завтра в портале нет, поэтому план можно составить только из ваших задач.\n\n## Что найдено в портале\n\n| Показатель | Значение |\n|---|---|\n| Непрочитанные письма | 0 |\n| Просроченные задачи | 0 |\n| Задачи на сегодня | 0 |\n| Ближайшие задачи | 0 |\n\nДанные актуальны на 23.11.2026, 18:04.\n\n## Черновой план на завтра\n\n1. **09:00–09:30.** Просмотр почты и уведомлений.\n2. **09:30–12:00.** Главная задача дня (укажите её).\n3. **12:00–13:00.** Текущие вопросы и согласования.\n4. **13:00–14:00.** Перерыв.\n5. **14:00–17:00.** Вторая по важности задача.\n6. **17:00–18:00.** Итог",
+   "run_id": "76e36578-cee5-44a7-90de-dd586ff560aa",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:04:07.406463+05:00",
+   "run_started_at": "2026-11-23 23:04:07.758788+05:00",
+   "run_completed_at": "2026-11-23 23:04:24.493032+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 3,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "352.3",
+    "processing_ms": "16741.1",
+    "server_total_ms": "17093.5",
+    "elapsed_ms": "16741.1",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "['office.workday.summary']",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "14920",
+    "completion_tokens": "2147",
+    "total_tokens": "17067"
+   },
+   "stages": {
+    "queue_wait": [
+     352.3
+    ],
+    "routing_inputs": [
+     4.2
+    ],
+    "tool_routing": [
+     1436.7
+    ],
+    "ctx_initial_message": [
+     2.6
+    ],
+    "ctx_mapping_state": [
+     4.9
+    ],
+    "ctx_messages": [
+     1.9
+    ],
+    "ctx_files": [
+     0.9
+    ],
+    "ctx_kb": [
+     558.1
+    ],
+    "memory": [
+     9.1
+    ],
+    "ctx_memory": [
+     9.2
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     2035.6
+    ],
+    "llm_first": [
+     5467.9
+    ],
+    "tools": [
+     117.2
+    ],
+    "llm_followup": [
+     8883.8
+    ],
+    "execute": [
+     16542.6
+    ],
+    "send_answer": [
+     141.2
+    ]
+   },
+   "jev": {
+    "routed": "['office']",
+    "sticky": "[]",
+    "intent": "act",
+    "jev_ms": 1434
+   }
+  },
+  {
+   "text": "Напиши короткое стихотворение про осень.",
+   "send_status": 200,
+   "send_ms": 67.0,
+   "msg_id": "f3d412d1-f07b-4f7c-bd26-62cfbd0ad5e1",
+   "reply_ms": 16303.6,
+   "reply_body": "Короткое стихотворение про осень:\n\nЛистья тихо кружат над землёй,\nВетер шепчет песни за окном,\nНебо серое окутано тишиной,\nА в саду горит багрянец золотом.\n\nИсточник: KB / данные не найдены (общий ответ без базы знаний)",
+   "run_id": "a1bb9b3c-9bb4-49bd-8fdd-c64564bd1e69",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:04:39.612983+05:00",
+   "run_started_at": "2026-11-23 23:04:39.623986+05:00",
+   "run_completed_at": "2026-11-23 23:04:43.182363+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 4,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "11.0",
+    "processing_ms": "3564.4",
+    "server_total_ms": "3575.4",
+    "elapsed_ms": "3564.4",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "6057",
+    "completion_tokens": "246",
+    "total_tokens": "6303"
+   },
+   "stages": {
+    "queue_wait": [
+     11.0
+    ],
+    "routing_inputs": [
+     4.2
+    ],
+    "tool_routing": [
+     922.5
+    ],
+    "ctx_initial_message": [
+     2.5
+    ],
+    "ctx_mapping_state": [
+     5.4
+    ],
+    "ctx_messages": [
+     2.3
+    ],
+    "ctx_files": [
+     1.1
+    ],
+    "ctx_kb": [
+     0.4
+    ],
+    "memory": [
+     10.7
+    ],
+    "ctx_memory": [
+     10.8
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     968.5
+    ],
+    "llm_first": [
+     2413.0
+    ],
+    "execute": [
+     3408.6
+    ],
+    "send_answer": [
+     109.5
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "['office']",
+    "intent": "chat",
+    "jev_ms": 920
+   }
+  },
+  {
+   "text": "Расскажи о принципах информационной безопасности кратко.",
+   "send_status": 200,
+   "send_ms": 76.8,
+   "msg_id": "bd559989-0258-4f69-a36f-a9f9b8da5c9c",
+   "reply_ms": 16316.0,
+   "reply_body": "Информационная безопасность опирается на три базовых принципа: конфиденциальность, целостность и доступность (модель CIA).\n\n## Основные принципы\n\n- **Конфиденциальность** — доступ к данным только у тех, кому они нужны для работы.\n- **Целостность** — данные не изменяются без разрешения и остаются достоверными.\n- **Доступность** — информация и сервисы доступны авторизованным пользователям тогда, когда они нужны.\n\n## Дополнительные принципы\n\n- **Минимальные привилегии** — каждому выдаются только необходимые права.\n- **Многоуровневая защита** — несколько независимых мер контроля, чтобы сбой одной ",
+   "run_id": "feb6efa2-dee0-4bf6-8ffb-779a92982d7e",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:04:56.473568+05:00",
+   "run_started_at": "2026-11-23 23:04:56.905745+05:00",
+   "run_completed_at": "2026-11-23 23:05:03.028263+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 5,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "432.2",
+    "processing_ms": "6128.9",
+    "server_total_ms": "6561.1",
+    "elapsed_ms": "6128.9",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "6323",
+    "completion_tokens": "672",
+    "total_tokens": "6995"
+   },
+   "stages": {
+    "queue_wait": [
+     432.2
+    ],
+    "routing_inputs": [
+     5.4
+    ],
+    "tool_routing": [
+     1174.6
+    ],
+    "ctx_initial_message": [
+     2.2
+    ],
+    "ctx_mapping_state": [
+     4.8
+    ],
+    "ctx_messages": [
+     2.2
+    ],
+    "ctx_files": [
+     1.5
+    ],
+    "ctx_kb": [
+     0.4
+    ],
+    "memory": [
+     8.2
+    ],
+    "ctx_memory": [
+     8.3
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1217.6
+    ],
+    "llm_first": [
+     4689.4
+    ],
+    "execute": [
+     5937.2
+    ],
+    "send_answer": [
+     131.4
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "['office']",
+    "intent": "chat",
+    "jev_ms": 1172
+   }
+  },
+  {
+   "text": "Чем отличается TCP от UDP?",
+   "send_status": 200,
+   "send_ms": 40.0,
+   "msg_id": "c16959cc-8deb-4515-a607-0c7986bbbbcf",
+   "reply_ms": 16258.3,
+   "reply_body": "TCP и UDP — это два транспортных протокола: TCP гарантирует доставку и порядок данных, UDP передаёт данные без установления соединения и без гарантий.\n\n## Основные различия\n\n| Критерий | TCP | UDP |\n|---|---|---|\n| Соединение | Требует установления (трёхстороннее рукопожатие) | Не требуется |\n| Надёжность | Подтверждения, повторная передача потерянных пакетов | Доставка не гарантируется |\n| Порядок данных | Сохраняется | Не гарантируется |\n| Накладные расходы | Выше (заголовок, управление соединением) | Ниже |\n| Скорость | Ниже из-за контроля потока и перегрузки | Выше, меньше задержек |\n| Тип",
+   "run_id": "26e4133c-6420-49ee-85e8-90b7929eb38e",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:05:13.278126+05:00",
+   "run_started_at": "2026-11-23 23:05:13.635718+05:00",
+   "run_completed_at": "2026-11-23 23:05:19.425813+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 6,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "357.6",
+    "processing_ms": "5797.4",
+    "server_total_ms": "6155.0",
+    "elapsed_ms": "5797.4",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "6890",
+    "completion_tokens": "605",
+    "total_tokens": "7495"
+   },
+   "stages": {
+    "queue_wait": [
+     357.6
+    ],
+    "routing_inputs": [
+     5.1
+    ],
+    "tool_routing": [
+     1076.2
+    ],
+    "ctx_initial_message": [
+     2.3
+    ],
+    "ctx_mapping_state": [
+     4.3
+    ],
+    "ctx_messages": [
+     2.0
+    ],
+    "ctx_files": [
+     1.1
+    ],
+    "ctx_kb": [
+     0.3
+    ],
+    "memory": [
+     7.3
+    ],
+    "ctx_memory": [
+     7.4
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1116.3
+    ],
+    "llm_first": [
+     4390.0
+    ],
+    "execute": [
+     5531.1
+    ],
+    "send_answer": [
+     207.7
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "['office']",
+    "intent": "chat",
+    "jev_ms": 1074
+   }
+  },
+  {
+   "text": "Переведи на английский: 'У меня встреча в три часа'.",
+   "send_status": 200,
+   "send_ms": 56.7,
+   "msg_id": "5e816c11-743b-4c83-b897-a3d6c11d69bc",
+   "reply_ms": 16296.4,
+   "reply_body": "Перевод: **I have a meeting at three o'clock.**\n\nЕсли встреча в 15:00 и нужен более разговорный вариант: «I have a meeting at 3 p.m.»\n\nВопрос общеязыковой, данные из систем компании не использовались.\n\nИсточник: KB / данные не найдены (общий ответ без базы знаний)",
+   "run_id": "c957d23a-d4ad-4e4c-9240-fb06106c85cd",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:05:38.927864+05:00",
+   "run_started_at": "2026-11-23 23:05:39.385395+05:00",
+   "run_completed_at": "2026-11-23 23:05:45.801813+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 7,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "457.5",
+    "processing_ms": "6422.6",
+    "server_total_ms": "6880.1",
+    "elapsed_ms": "6422.6",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "9822",
+    "completion_tokens": "318",
+    "total_tokens": "10140"
+   },
+   "stages": {
+    "queue_wait": [
+     457.5
+    ],
+    "routing_inputs": [
+     4.5
+    ],
+    "tool_routing": [
+     655.7
+    ],
+    "ctx_initial_message": [
+     2.2
+    ],
+    "ctx_mapping_state": [
+     4.3
+    ],
+    "ctx_messages": [
+     2.1
+    ],
+    "ctx_files": [
+     1.1
+    ],
+    "ctx_kb": [
+     0.4
+    ],
+    "memory": [
+     2356.8
+    ],
+    "ctx_memory": [
+     2356.9
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     3048.2
+    ],
+    "llm_first": [
+     3172.0
+    ],
+    "execute": [
+     6248.1
+    ],
+    "send_answer": [
+     125.3
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "[]",
+    "intent": "chat",
+    "jev_ms": 653
+   }
+  },
+  {
+   "text": "Какие бывают виды тестирования ПО?",
+   "send_status": 200,
+   "send_ms": 154.2,
+   "msg_id": "da0239f1-d355-4bc1-9085-1d27d2614476",
+   "reply_ms": 16396.3,
+   "reply_body": "Виды тестирования ПО делятся по уровню, цели и способу проверки. Ниже основные группы.\n\n## По уровню\n\n- **Модульное (unit)** — проверка отдельных функций и классов изолированно.\n- **Интеграционное** — проверка взаимодействия модулей и сервисов между собой.\n- **Системное** — проверка всей системы целиком на соответствие требованиям.\n- **Приёмочное (UAT)** — проверка заказчиком или пользователями, готов ли продукт к эксплуатации.\n\n## По цели\n\n- **Функциональное** — соответствие функциональным требованиям.\n- **Нефункциональное** — производительность, нагрузка, безопасность, удобство использования",
+   "run_id": "c649924c-3ff8-4ec8-80f3-a17be559e0a2",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:05:55.859310+05:00",
+   "run_started_at": "2026-11-23 23:05:56.324270+05:00",
+   "run_completed_at": "2026-11-23 23:06:02.224876+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 8,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "465.0",
+    "processing_ms": "5905.4",
+    "server_total_ms": "6370.4",
+    "elapsed_ms": "5905.4",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "7540",
+    "completion_tokens": "768",
+    "total_tokens": "8308"
+   },
+   "stages": {
+    "queue_wait": [
+     465.0
+    ],
+    "routing_inputs": [
+     4.4
+    ],
+    "tool_routing": [
+     933.1
+    ],
+    "ctx_initial_message": [
+     2.5
+    ],
+    "ctx_mapping_state": [
+     4.9
+    ],
+    "ctx_messages": [
+     2.1
+    ],
+    "ctx_files": [
+     1.1
+    ],
+    "ctx_kb": [
+     0.3
+    ],
+    "memory": [
+     7.8
+    ],
+    "ctx_memory": [
+     7.8
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     973.9
+    ],
+    "llm_first": [
+     4774.8
+    ],
+    "execute": [
+     5775.9
+    ],
+    "send_answer": [
+     78.3
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "[]",
+    "intent": "chat",
+    "jev_ms": 931
+   }
+  },
+  {
+   "text": "Посчитай в уме: 347 + 856.",
+   "send_status": 200,
+   "send_ms": 62.4,
+   "msg_id": "1327dc2e-dba3-4fbc-803b-e1c57b29a011",
+   "reply_ms": 16286.4,
+   "reply_body": "347 + 856 = **1203**.\n\nВопрос арифметический, данные из систем компании не использовались.\n\nИсточник: KB / данные не найдены (общий ответ без базы знаний)",
+   "run_id": "e3c64655-c6a3-4d18-9abf-ece2ffc88db6",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:06:12.682107+05:00",
+   "run_started_at": "2026-11-23 23:06:12.781110+05:00",
+   "run_completed_at": "2026-11-23 23:06:16.491036+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 9,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "99.0",
+    "processing_ms": "3714.8",
+    "server_total_ms": "3813.8",
+    "elapsed_ms": "3714.8",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "8135",
+    "completion_tokens": "124",
+    "total_tokens": "8259"
+   },
+   "stages": {
+    "queue_wait": [
+     99.0
+    ],
+    "routing_inputs": [
+     4.1
+    ],
+    "tool_routing": [
+     1459.7
+    ],
+    "ctx_initial_message": [
+     2.1
+    ],
+    "ctx_mapping_state": [
+     4.7
+    ],
+    "ctx_messages": [
+     2.0
+    ],
+    "ctx_files": [
+     1.6
+    ],
+    "ctx_kb": [
+     0.4
+    ],
+    "memory": [
+     8.2
+    ],
+    "ctx_memory": [
+     8.3
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1502.7
+    ],
+    "llm_first": [
+     2077.0
+    ],
+    "execute": [
+     3598.1
+    ],
+    "send_answer": [
+     69.7
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "[]",
+    "intent": "chat",
+    "jev_ms": 1457
+   }
+  },
+  {
+   "text": "Что такое индекс в базе данных?",
+   "send_status": 200,
+   "send_ms": 65.7,
+   "msg_id": "44c2e73a-d223-4a2c-981d-c44581f0a59b",
+   "reply_ms": 16298.9,
+   "reply_body": "Индекс в базе данных — это отдельная структура, которая ускоряет поиск и выборку строк по значениям столбцов, как предметный указатель в книге.\n\n## Как это работает\n\n- Индекс хранит отсортированные значения выбранных столбцов со ссылками на строки таблицы.\n- Запрос с условием по индексированному столбцу (`WHERE`, `JOIN`, `ORDER BY`) может найти нужные строки без полного перебора таблицы.\n\n## Плюсы и минусы\n\n| Аспект | Что даёт индекс |\n|---|---|\n| Скорость чтения | Выше, особенно на больших таблицах |\n| Скорость записи | Ниже: при `INSERT`, `UPDATE`, `DELETE` индекс тоже нужно обновлять |\n| Ме",
+   "run_id": "14429e90-62dc-4b91-aca3-8180bcf90aa8",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:06:29.507288+05:00",
+   "run_started_at": "2026-11-23 23:06:29.646930+05:00",
+   "run_completed_at": "2026-11-23 23:06:36.321334+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 10,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "139.6",
+    "processing_ms": "6680.2",
+    "server_total_ms": "6819.8",
+    "elapsed_ms": "6680.2",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "8200",
+    "completion_tokens": "779",
+    "total_tokens": "8979"
+   },
+   "stages": {
+    "queue_wait": [
+     139.6
+    ],
+    "routing_inputs": [
+     3.9
+    ],
+    "tool_routing": [
+     1326.9
+    ],
+    "ctx_initial_message": [
+     2.1
+    ],
+    "ctx_mapping_state": [
+     4.1
+    ],
+    "ctx_messages": [
+     4.1
+    ],
+    "ctx_files": [
+     1.6
+    ],
+    "ctx_kb": [
+     0.3
+    ],
+    "memory": [
+     8.0
+    ],
+    "ctx_memory": [
+     8.1
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1367.9
+    ],
+    "llm_first": [
+     5130.5
+    ],
+    "execute": [
+     6523.4
+    ],
+    "send_answer": [
+     104.5
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "[]",
+    "intent": "chat",
+    "jev_ms": 1324
+   }
+  },
+  {
+   "text": "Объясни разницу между процессом и потоком.",
+   "send_status": 200,
+   "send_ms": 63.7,
+   "msg_id": "eed28416-ee34-4cd9-808f-32a7144ca954",
+   "reply_ms": 16559.5,
+   "reply_body": "Процесс — это изолированная программа в работе со своей памятью и ресурсами, поток — единица выполнения внутри процесса, который использует общую с ним память.\n\n## Основные различия\n\n| Критерий | Процесс | Поток |\n|---|---|---|\n| Память | Собственное адресное пространство, изолировано от других процессов | Общее адресное пространство с другими потоками того же процесса |\n| Создание и переключение | Дорогое по ресурсам и времени | Дешёвое |\n| Взаимодействие | Через межпроцессное взаимодействие (каналы, сокеты, разделяемая память) | Напрямую через общие переменные, нужна синхронизация |\n| Отказо",
+   "run_id": "427cce09-72fc-4c82-a994-8f9187dff408",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:06:46.323272+05:00",
+   "run_started_at": "2026-11-23 23:06:46.361794+05:00",
+   "run_completed_at": "2026-11-23 23:06:52.305803+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 11,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "38.5",
+    "processing_ms": "5950.2",
+    "server_total_ms": "5988.8",
+    "elapsed_ms": "5950.2",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "8818",
+    "completion_tokens": "688",
+    "total_tokens": "9506"
+   },
+   "stages": {
+    "queue_wait": [
+     38.5
+    ],
+    "routing_inputs": [
+     4.1
+    ],
+    "tool_routing": [
+     1055.0
+    ],
+    "ctx_initial_message": [
+     2.5
+    ],
+    "ctx_mapping_state": [
+     4.7
+    ],
+    "ctx_messages": [
+     3.2
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     0.4
+    ],
+    "memory": [
+     7.3
+    ],
+    "ctx_memory": [
+     7.4
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1095.7
+    ],
+    "llm_first": [
+     4689.5
+    ],
+    "execute": [
+     5809.9
+    ],
+    "send_answer": [
+     85.9
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "[]",
+    "intent": "chat",
+    "jev_ms": 1053
+   }
+  },
+  {
+   "text": "Придумай название для корпоративной рассылки про безопасность.",
+   "send_status": 200,
+   "send_ms": 35.3,
+   "msg_id": "1d833740-785d-4808-a7e2-06855b3640ed",
+   "reply_ms": 16272.5,
+   "reply_body": "Могу предложить несколько вариантов названия для рассылки о безопасности.\n\n## Варианты названия\n\n1. **«Безопасность на каждый день»**\n2. **«Защити себя и компанию»**\n3. **«Внимание: безопасность»**\n4. **«Надёжный щит: информационная безопасность»**\n5. **«Кибербдительность: советы от IT»**\n\nЕсли укажете тон (официальный или дружелюбный) и аудиторию, подберу более точный вариант. Черновик рассылки могу подготовить отдельно, но отправлять ничего не буду без вашего подтверждения.\n\nИсточник: KB / данные не найдены (общий ответ без базы знаний)",
+   "run_id": "18bcfa1a-8098-4655-b594-f4c107a277cf",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:07:03.400431+05:00",
+   "run_started_at": "2026-11-23 23:07:03.897337+05:00",
+   "run_completed_at": "2026-11-23 23:07:10.816815+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 12,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "496.9",
+    "processing_ms": "6923.9",
+    "server_total_ms": "7420.8",
+    "elapsed_ms": "6923.9",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "9073",
+    "completion_tokens": "445",
+    "total_tokens": "9518"
+   },
+   "stages": {
+    "queue_wait": [
+     496.9
+    ],
+    "routing_inputs": [
+     4.3
+    ],
+    "tool_routing": [
+     2185.5
+    ],
+    "ctx_initial_message": [
+     2.2
+    ],
+    "ctx_mapping_state": [
+     4.3
+    ],
+    "ctx_messages": [
+     3.1
+    ],
+    "ctx_files": [
+     1.2
+    ],
+    "ctx_kb": [
+     182.0
+    ],
+    "memory": [
+     9.7
+    ],
+    "ctx_memory": [
+     9.8
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     2409.5
+    ],
+    "llm_first": [
+     4371.7
+    ],
+    "execute": [
+     6807.3
+    ],
+    "send_answer": [
+     68.7
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "[]",
+    "intent": "act",
+    "jev_ms": 2183
+   }
+  },
+  {
+   "text": "Что такое Docker за минуту?",
+   "send_status": 200,
+   "send_ms": 38.6,
+   "msg_id": "dcc144a2-392a-49ba-916f-fe6ca22adf43",
+   "reply_ms": 16290.3,
+   "reply_body": "Docker — это платформа для запуска приложений в изолированных контейнерах, которые содержат весь нужный код, библиотеки и настройки.\n\n## Коротко\n\n- **Контейнер** — изолированная среда, которая запускается быстро и одинаково на любом компьютере или сервере.\n- **Образ (image)** — шаблон, из которого создаётся контейнер.\n- **Dockerfile** — текстовый файл с инструкциями, как собрать образ.\n\n## Зачем нужен\n\n- Приложение работает одинаково на ноутбуке разработчика, в тестовой среде и на сервере.\n- Упрощается развёртывание и обновление сервисов.\n- Разные версии библиотек и программ не конфликтуют меж",
+   "run_id": "052f7a03-b41d-4903-a3b4-e482a6e2723b",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:07:20.209229+05:00",
+   "run_started_at": "2026-11-23 23:07:20.254944+05:00",
+   "run_completed_at": "2026-11-23 23:07:25.894998+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 13,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "45.7",
+    "processing_ms": "5646.6",
+    "server_total_ms": "5692.4",
+    "elapsed_ms": "5646.6",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "9575",
+    "completion_tokens": "539",
+    "total_tokens": "10114"
+   },
+   "stages": {
+    "queue_wait": [
+     45.7
+    ],
+    "routing_inputs": [
+     4.0
+    ],
+    "tool_routing": [
+     1025.3
+    ],
+    "ctx_initial_message": [
+     2.6
+    ],
+    "ctx_mapping_state": [
+     4.5
+    ],
+    "ctx_messages": [
+     3.1
+    ],
+    "ctx_files": [
+     1.2
+    ],
+    "ctx_kb": [
+     0.3
+    ],
+    "memory": [
+     7.4
+    ],
+    "ctx_memory": [
+     7.5
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1068.0
+    ],
+    "llm_first": [
+     4379.1
+    ],
+    "execute": [
+     5471.7
+    ],
+    "send_answer": [
+     124.0
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "[]",
+    "intent": "chat",
+    "jev_ms": 1023
+   }
+  },
+  {
+   "text": "Напиши поздравление коллеге с юбилеем работы.",
+   "send_status": 200,
+   "send_ms": 35.3,
+   "msg_id": "d72aecb4-706b-4fde-ab8d-6656546c7725",
+   "reply_ms": 16288.5,
+   "reply_body": "Могу написать тёплое поздравление коллеге с юбилеем работы — это не требует данных из систем компании.\n\n## Вариант поздравления\n\nДорогой(ая) [имя коллеги]!\n\nПоздравляю вас с юбилеем работы в нашей компании! За годы работы вы накопили огромный опыт, заслужили уважение коллег и внесли весомый вклад в общее дело. Спасибо за профессионализм, поддержку и готовность помочь в любой ситуации.\n\nПусть в вашей работе будет больше интересных задач, новых успехов и поводов для гордости. Здоровья, энергии и благополучия вам и вашим близким!\n\nС уважением, [ваше имя]\n\n---\n\nЧтобы сделать поздравление личнее, у",
+   "run_id": "4384161d-7380-432e-9b47-c653b9dffa10",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:07:37.023775+05:00",
+   "run_started_at": "2026-11-23 23:07:37.501683+05:00",
+   "run_completed_at": "2026-11-23 23:07:47.579479+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 14,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "477.9",
+    "processing_ms": "10084.9",
+    "server_total_ms": "10562.8",
+    "elapsed_ms": "10084.9",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "13174",
+    "completion_tokens": "1172",
+    "total_tokens": "14346"
+   },
+   "stages": {
+    "queue_wait": [
+     477.9
+    ],
+    "routing_inputs": [
+     5.4
+    ],
+    "tool_routing": [
+     913.4
+    ],
+    "ctx_initial_message": [
+     2.4
+    ],
+    "ctx_mapping_state": [
+     5.7
+    ],
+    "ctx_messages": [
+     4.7
+    ],
+    "ctx_files": [
+     1.4
+    ],
+    "ctx_kb": [
+     170.4
+    ],
+    "memory": [
+     8.7
+    ],
+    "ctx_memory": [
+     8.8
+    ],
+    "ctx_summary": [
+     4522.4
+    ],
+    "context": [
+     5656.4
+    ],
+    "llm_first": [
+     4225.7
+    ],
+    "execute": [
+     9913.0
+    ],
+    "send_answer": [
+     110.1
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "[]",
+    "intent": "act",
+    "jev_ms": 910
+   }
+  },
+  {
+   "text": "Найди сотрудника с фамилией Тестов в адресной книге.",
+   "send_status": 200,
+   "send_ms": 34.8,
+   "msg_id": "21328ce4-3baa-4c89-985f-f4e6b5159d6d",
+   "reply_ms": 16295.3,
+   "reply_body": "Сотрудника с фамилией «Тестов» в адресной книге 1С ЗУП не найдено.\n\nВозможно, фамилия написана иначе или сотрудник в адресной книге не значится. Уточните имя, отдел или проверьте написание фамилии, и я повторю поиск.\n\nИсточник: 1С ЗУП / адресная книга",
+   "run_id": "3395587a-8a15-4d23-91b4-62d59ac7bf49",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:07:53.846422+05:00",
+   "run_started_at": "2026-11-23 23:07:53.977415+05:00",
+   "run_completed_at": "2026-11-23 23:08:05.930190+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 15,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "131.0",
+    "processing_ms": "11957.6",
+    "server_total_ms": "12088.6",
+    "elapsed_ms": "11957.6",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "['directory.people.search']",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "20963",
+    "completion_tokens": "1334",
+    "total_tokens": "22297"
+   },
+   "stages": {
+    "queue_wait": [
+     131.0
+    ],
+    "routing_inputs": [
+     5.1
+    ],
+    "tool_routing": [
+     813.5
+    ],
+    "ctx_initial_message": [
+     2.2
+    ],
+    "ctx_mapping_state": [
+     4.4
+    ],
+    "ctx_messages": [
+     3.2
+    ],
+    "ctx_files": [
+     1.2
+    ],
+    "ctx_kb": [
+     141.6
+    ],
+    "memory": [
+     8.1
+    ],
+    "ctx_memory": [
+     8.2
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     997.5
+    ],
+    "llm_first": [
+     2468.9
+    ],
+    "tools": [
+     2005.4
+    ],
+    "llm_followup": [
+     6331.5
+    ],
+    "execute": [
+     11842.8
+    ],
+    "send_answer": [
+     59.8
+    ]
+   },
+   "jev": {
+    "routed": "['chat', 'directory']",
+    "sticky": "['office']",
+    "intent": "read",
+    "jev_ms": 811
+   }
+  },
+  {
+   "text": "Покажи мой список задач на сегодня.",
+   "send_status": 200,
+   "send_ms": 41.0,
+   "msg_id": "9c3b8bdc-bb73-4b1f-9f6f-eeacbaf89c03",
+   "reply_ms": 16300.4,
+   "reply_body": "На сегодня задач у вас нет: в задачах HUB со сроком на сегодня ничего не найдено.\n\n## Итог\n\n| Показатель | Значение |\n|---|---|\n| Задачи со сроком на сегодня | 0 |\n\nЕсли нужно, могу проверить просроченные задачи или предложить черновик новой задачи. Создам её только после вашего подтверждения.\n\nИсточник: Задачи HUB / office.tasks.search (срок: сегодня)",
+   "run_id": "6255b6ae-f859-4891-870e-b5413c333488",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:08:10.689339+05:00",
+   "run_started_at": "2026-11-23 23:08:10.764846+05:00",
+   "run_completed_at": "2026-11-23 23:08:22.779764+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 16,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "75.5",
+    "processing_ms": "12021.1",
+    "server_total_ms": "12096.6",
+    "elapsed_ms": "12021.1",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "['office.tasks.search']",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "24754",
+    "completion_tokens": "1302",
+    "total_tokens": "26056"
+   },
+   "stages": {
+    "queue_wait": [
+     75.5
+    ],
+    "routing_inputs": [
+     5.1
+    ],
+    "tool_routing": [
+     926.5
+    ],
+    "ctx_initial_message": [
+     3.3
+    ],
+    "ctx_mapping_state": [
+     4.7
+    ],
+    "ctx_messages": [
+     4.0
+    ],
+    "ctx_files": [
+     1.5
+    ],
+    "ctx_kb": [
+     224.9
+    ],
+    "memory": [
+     1884.2
+    ],
+    "ctx_memory": [
+     1884.3
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     3071.8
+    ],
+    "llm_first": [
+     3242.7
+    ],
+    "tools": [
+     103.2
+    ],
+    "llm_followup": [
+     5429.9
+    ],
+    "execute": [
+     11897.2
+    ],
+    "send_answer": [
+     70.6
+    ]
+   },
+   "jev": {
+    "routed": "['office']",
+    "sticky": "['chat', 'directory']",
+    "intent": "read",
+    "jev_ms": 924
+   }
+  },
+  {
+   "text": "Какое оборудование закреплено за мной?",
+   "send_status": 200,
+   "send_ms": 24.5,
+   "msg_id": "d9522614-8f86-4b2c-8ac0-f648b756e29c",
+   "reply_ms": 16297.1,
+   "reply_body": "Не удалось получить список оборудования: ваша учётная запись не сопоставлена с сотрудником в ITinvent (нет совпадения по e-mail или ФИО).\n\n## Что можно сделать\n\n- Обратитесь в IT-отдел, чтобы вашу учётную запись привязали к карточке сотрудника в ITinvent.\n- После привязки повторите запрос: я покажу закреплённые за вами устройства.\n\nИсточник: ITinvent / me.equipment (данные не получены)",
+   "run_id": "ffeb3e35-2596-4cf4-bac8-59b027d78f81",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:08:27.494424+05:00",
+   "run_started_at": "2026-11-23 23:08:27.639904+05:00",
+   "run_completed_at": "2026-11-23 23:08:35.563751+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 17,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "145.5",
+    "processing_ms": "7928.3",
+    "server_total_ms": "8073.8",
+    "elapsed_ms": "7928.3",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "['me.equipment']",
+    "meta_calls": "0",
+    "prompt_tokens": "22637",
+    "completion_tokens": "820",
+    "total_tokens": "23457"
+   },
+   "stages": {
+    "queue_wait": [
+     145.5
+    ],
+    "routing_inputs": [
+     4.1
+    ],
+    "tool_routing": [
+     874.6
+    ],
+    "ctx_initial_message": [
+     2.3
+    ],
+    "ctx_mapping_state": [
+     5.6
+    ],
+    "ctx_messages": [
+     3.7
+    ],
+    "ctx_files": [
+     1.4
+    ],
+    "ctx_kb": [
+     142.1
+    ],
+    "memory": [
+     8.4
+    ],
+    "ctx_memory": [
+     8.6
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1062.7
+    ],
+    "llm_first": [
+     2768.3
+    ],
+    "tools": [
+     18.3
+    ],
+    "llm_followup": [
+     3895.6
+    ],
+    "execute": [
+     7776.5
+    ],
+    "send_answer": [
+     102.9
+    ]
+   },
+   "jev": {
+    "routed": "['self']",
+    "sticky": "['office']",
+    "intent": "read",
+    "jev_ms": 872
+   }
+  },
+  {
+   "text": "Найди компьютер с инвентарным номером INV-000001.",
+   "send_status": 200,
+   "send_ms": 77.2,
+   "msg_id": "8ae9c16d-8f50-42fb-8d43-79ec434e95c8",
+   "reply_ms": 16363.9,
+   "reply_body": "Сейчас я не могу найти компьютер INV-000001: поиск по ITinvent в этом чате недоступен, поэтому данных об устройстве у меня нет.\n\n## Что можно сделать\n\n- Обратиться в IT-отдел и указать номер INV-000001. Там быстро найдут карточку устройства.\n- Найти номер вручную в самом ITinvent через поиск по инвентарному номеру.\n- Если поможет, подготовлю черновик задачи для IT. Отправлю её только после вашего подтверждения.\n\nИсточник: ITinvent / данные не получены",
+   "run_id": "8d336ebf-6e5d-4731-a28f-594eb4096f5a",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:08:44.371541+05:00",
+   "run_started_at": "2026-11-23 23:08:44.562901+05:00",
+   "run_completed_at": "2026-11-23 23:08:56.860671+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 18,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "191.4",
+    "processing_ms": "12304.8",
+    "server_total_ms": "12496.1",
+    "elapsed_ms": "12304.8",
+    "intent": "-",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "11838",
+    "completion_tokens": "1934",
+    "total_tokens": "13772"
+   },
+   "stages": {
+    "queue_wait": [
+     191.4
+    ],
+    "routing_inputs": [
+     4.6
+    ],
+    "tool_routing": [
+     770.3
+    ],
+    "ctx_initial_message": [
+     2.7
+    ],
+    "ctx_mapping_state": [
+     6.2
+    ],
+    "ctx_messages": [
+     4.1
+    ],
+    "ctx_files": [
+     1.6
+    ],
+    "ctx_kb": [
+     176.8
+    ],
+    "memory": [
+     9.7
+    ],
+    "ctx_memory": [
+     9.8
+    ],
+    "ctx_summary": [
+     4661.6
+    ],
+    "context": [
+     5659.2
+    ],
+    "llm_first": [
+     6437.7
+    ],
+    "execute": [
+     12123.9
+    ],
+    "send_answer": [
+     103.6
+    ]
+   },
+   "jev": {
+    "cache": "miss"
+   }
+  },
+  {
+   "text": "Покажи мои последние уведомления.",
+   "send_status": 200,
+   "send_ms": 32.1,
+   "msg_id": "3413cfd7-b537-4960-87fd-bcbb8f37dddf",
+   "reply_ms": 16332.8,
+   "reply_body": "Новых уведомлений, которые требовали бы внимания, нет: непрочитанных писем и задач по сроку не найдено.\n\n## Итог\n\n| Раздел | Значение |\n|---|---|\n| Непрочитанные письма | 0 |\n| Просроченные задачи | 0 |\n| Задачи на сегодня | 0 |\n| Ближайшие задачи | 0 |\n\nСводка сформирована на 23.11.2026, 18:09. Отдельного списка системных уведомлений инструмент не возвращает, поэтому показать их по времени я не могу. Если нужны конкретные уведомления или письма, уточните, какой раздел вас интересует.\n\nИсточник: Задачи HUB / office.workday.summary",
+   "run_id": "3b391134-e568-46bc-83ad-ab505025fb26",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:09:01.226072+05:00",
+   "run_started_at": "2026-11-23 23:09:01.741137+05:00",
+   "run_completed_at": "2026-11-23 23:09:13.175371+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 19,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "515.1",
+    "processing_ms": "11439.2",
+    "server_total_ms": "11954.3",
+    "elapsed_ms": "11439.2",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "['office.workday.summary']",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "23644",
+    "completion_tokens": "1279",
+    "total_tokens": "24923"
+   },
+   "stages": {
+    "queue_wait": [
+     515.1
+    ],
+    "routing_inputs": [
+     4.5
+    ],
+    "tool_routing": [
+     1124.5
+    ],
+    "ctx_initial_message": [
+     3.5
+    ],
+    "ctx_mapping_state": [
+     5.9
+    ],
+    "ctx_messages": [
+     4.8
+    ],
+    "ctx_files": [
+     1.6
+    ],
+    "ctx_kb": [
+     150.7
+    ],
+    "memory": [
+     2003.8
+    ],
+    "ctx_memory": [
+     2003.9
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     3317.6
+    ],
+    "llm_first": [
+     3002.2
+    ],
+    "tools": [
+     43.0
+    ],
+    "llm_followup": [
+     4862.1
+    ],
+    "execute": [
+     11264.7
+    ],
+    "send_answer": [
+     115.4
+    ]
+   },
+   "jev": {
+    "routed": "['office']",
+    "sticky": "['self']",
+    "intent": "read",
+    "jev_ms": 1122
+   }
+  },
+  {
+   "text": "Есть ли статья про VPN в базе знаний?",
+   "send_status": 200,
+   "send_ms": 50.4,
+   "msg_id": "d4e670bd-275f-40aa-9284-8bfd726e7e47",
+   "reply_ms": 16353.0,
+   "reply_body": "В базе знаний статьи про VPN не найдено.\n\nПоиск по запросу «VPN» вернул 0 результатов. Возможно, статья называется иначе или описана другими словами. Можно поискать по «удалённый доступ», «подключение к сети из дома» или по названию VPN-клиента, который вы используете.\n\nИсточник: KB / поиск по запросу «VPN», результатов: 0",
+   "run_id": "9d8ceee9-07cf-48ec-9026-994975231061",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:09:18.129490+05:00",
+   "run_started_at": "2026-11-23 23:09:18.587721+05:00",
+   "run_completed_at": "2026-11-23 23:09:28.481409+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 20,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "458.2",
+    "processing_ms": "9898.6",
+    "server_total_ms": "10356.8",
+    "elapsed_ms": "9898.6",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "['kb.articles.search']",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "20564",
+    "completion_tokens": "868",
+    "total_tokens": "21432"
+   },
+   "stages": {
+    "queue_wait": [
+     458.2
+    ],
+    "routing_inputs": [
+     5.6
+    ],
+    "tool_routing": [
+     854.2
+    ],
+    "ctx_initial_message": [
+     3.1
+    ],
+    "ctx_mapping_state": [
+     6.8
+    ],
+    "ctx_messages": [
+     4.2
+    ],
+    "ctx_files": [
+     2.0
+    ],
+    "ctx_kb": [
+     183.0
+    ],
+    "memory": [
+     12.0
+    ],
+    "ctx_memory": [
+     12.1
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1090.3
+    ],
+    "llm_first": [
+     2415.8
+    ],
+    "tools": [
+     133.5
+    ],
+    "llm_followup": [
+     5751.6
+    ],
+    "execute": [
+     9434.2
+    ],
+    "send_answer": [
+     409.8
+    ]
+   },
+   "jev": {
+    "routed": "['kb']",
+    "sticky": "['office']",
+    "intent": "read",
+    "jev_ms": 851
+   }
+  },
+  {
+   "text": "Сколько у меня непрочитанных писем?",
+   "send_status": 200,
+   "send_ms": 30.3,
+   "msg_id": "36a978c4-b49f-4a5c-9463-d21cb28c3390",
+   "reply_ms": 16288.9,
+   "reply_body": "Точное количество непрочитанных писем получить не удалось: в почтовом инструменте не настроен адрес вашего ящика.\n\n## Что известно\n\n| Показатель | Значение |\n|---|---|\n| Поиск непрочитанных писем | Ошибка: «Mailbox email is not configured» |\n| Последняя сводка (23.11.2026, 18:09) | Непрочитанные письма: 0 |\n\nСводка из предыдущего запроса — это снимок на момент 18:09, а не актуальное значение. Для точного числа нужна рабочая почта.\n\n## Что можно сделать\n\n- Обратитесь в IT-отдел, чтобы ваш e-mail привязали к учётной записи в системе.\n- Проверьте входящие непосредственно в почтовом клиенте.\n- Пос",
+   "run_id": "528ec612-d697-4ce4-a5c5-83015250eb38",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:09:34.982882+05:00",
+   "run_started_at": "2026-11-23 23:09:35.405251+05:00",
+   "run_completed_at": "2026-11-23 23:09:48.741954+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 21,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "422.4",
+    "processing_ms": "13343.3",
+    "server_total_ms": "13765.7",
+    "elapsed_ms": "13343.3",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "['office.mail.search']",
+    "meta_calls": "0",
+    "prompt_tokens": "24415",
+    "completion_tokens": "1700",
+    "total_tokens": "26115"
+   },
+   "stages": {
+    "queue_wait": [
+     422.4
+    ],
+    "routing_inputs": [
+     4.6
+    ],
+    "tool_routing": [
+     918.9
+    ],
+    "ctx_initial_message": [
+     2.9
+    ],
+    "ctx_mapping_state": [
+     6.1
+    ],
+    "ctx_messages": [
+     4.5
+    ],
+    "ctx_files": [
+     1.9
+    ],
+    "ctx_kb": [
+     149.9
+    ],
+    "memory": [
+     2039.2
+    ],
+    "ctx_memory": [
+     2039.4
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     3148.8
+    ],
+    "llm_first": [
+     3169.9
+    ],
+    "tools": [
+     17.2
+    ],
+    "llm_followup": [
+     6825.2
+    ],
+    "execute": [
+     13202.5
+    ],
+    "send_answer": [
+     77.8
+    ]
+   },
+   "jev": {
+    "routed": "['office']",
+    "sticky": "['kb']",
+    "intent": "read",
+    "jev_ms": 916
+   }
+  },
+  {
+   "text": "Покажи список открытых заявок в техподдержку.",
+   "send_status": 200,
+   "send_ms": 45.1,
+   "msg_id": "45dfb14c-d3a8-4eea-8dc5-25c0d0699dd6",
+   "reply_ms": 16299.9,
+   "reply_body": "Список открытых заявок в техподдержку я показать не могу: у меня нет инструмента для получения заявок техподдержки.\n\n## Что можно сделать\n\n- Посмотреть заявки, которые вы подавали на закупку техники, через раздел IT-заявок в 1С. Я могу запросить их.\n- Описать текущую проблему, и я подготовлю черновик заявки в IT. Она уйдёт только после вашего подтверждения.\n- Открыть статус заявки в самой системе техподдержки или уточнить его у IT-отдела.\n\nИсточник: данные не получены (инструмент списка заявок техподдержки недоступен)",
+   "run_id": "edc57ed0-b753-4233-a467-55f65b351fdd",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:09:51.824167+05:00",
+   "run_started_at": "2026-11-23 23:09:51.994778+05:00",
+   "run_completed_at": "2026-11-23 23:10:06.749770+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 22,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "170.6",
+    "processing_ms": "14760.1",
+    "server_total_ms": "14930.7",
+    "elapsed_ms": "14760.1",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "14545",
+    "completion_tokens": "1870",
+    "total_tokens": "16415"
+   },
+   "stages": {
+    "queue_wait": [
+     170.6
+    ],
+    "routing_inputs": [
+     4.6
+    ],
+    "tool_routing": [
+     993.8
+    ],
+    "ctx_initial_message": [
+     2.1
+    ],
+    "ctx_mapping_state": [
+     4.1
+    ],
+    "ctx_messages": [
+     2.9
+    ],
+    "ctx_files": [
+     1.2
+    ],
+    "ctx_kb": [
+     162.3
+    ],
+    "memory": [
+     7.8
+    ],
+    "ctx_memory": [
+     7.8
+    ],
+    "ctx_summary": [
+     8029.3
+    ],
+    "context": [
+     9227.3
+    ],
+    "llm_first": [
+     5392.1
+    ],
+    "execute": [
+     14647.0
+    ],
+    "send_answer": [
+     54.5
+    ]
+   },
+   "jev": {
+    "routed": "['office', 'self']",
+    "sticky": "['office']",
+    "intent": "read",
+    "jev_ms": 991
+   }
+  },
+  {
+   "text": "Найди контакт Иванова в адресной книге.",
+   "send_status": 200,
+   "send_ms": 26.7,
+   "msg_id": "bbc3ecae-f026-41ad-8637-5be0d517377a",
+   "reply_ms": 16301.9,
+   "reply_body": "Найдено 10 из 92 совпадений по запросу «Иванов» в адресной книге 1С ЗУП. Показаны не все результаты, поэтому уточните имя или отдел, чтобы сузить поиск.\n\n## Найденные сотрудники\n\n| ФИО | Должность | Подразделение | Локация | Кабинет | Статус |\n|---|---|---|---|---|---|\n| Иванов Андрей Владимирович | Энергетик | Группа по электроснабжению и автоматизированным системам управления | г. Тюмень | 105 | — |\n| Иванов Андрей Евгеньевич | Водитель автомобиля (грузоподъемность свыше 20 до 40 тн) | Служба эксплуатации | арх. Земля Франца-Иосифа | — | — |\n| Иванов Артем Александрович | Монтажник по монтаж",
+   "run_id": "f387cc35-bb0c-4029-b6a0-df6e8bd4e310",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:10:08.636811+05:00",
+   "run_started_at": "2026-11-23 23:10:08.963647+05:00",
+   "run_completed_at": "2026-11-23 23:10:23.820560+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 23,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "326.8",
+    "processing_ms": "14872.5",
+    "server_total_ms": "15199.3",
+    "elapsed_ms": "14872.5",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "['directory.people.search']",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "20185",
+    "completion_tokens": "2405",
+    "total_tokens": "22590"
+   },
+   "stages": {
+    "queue_wait": [
+     326.8
+    ],
+    "routing_inputs": [
+     4.4
+    ],
+    "tool_routing": [
+     1154.0
+    ],
+    "ctx_initial_message": [
+     2.1
+    ],
+    "ctx_mapping_state": [
+     4.7
+    ],
+    "ctx_messages": [
+     3.0
+    ],
+    "ctx_files": [
+     1.5
+    ],
+    "ctx_kb": [
+     147.7
+    ],
+    "memory": [
+     8.6
+    ],
+    "ctx_memory": [
+     8.7
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1343.6
+    ],
+    "llm_first": [
+     2323.7
+    ],
+    "tools": [
+     45.9
+    ],
+    "llm_followup": [
+     10961.2
+    ],
+    "execute": [
+     14711.4
+    ],
+    "send_answer": [
+     95.6
+    ]
+   },
+   "jev": {
+    "routed": "['directory']",
+    "sticky": "['office', 'self']",
+    "intent": "read",
+    "jev_ms": 1151
+   }
+  },
+  {
+   "text": "Какие собрания у меня запланированы на сегодня?",
+   "send_status": 200,
+   "send_ms": 32.5,
+   "msg_id": "dc913ab8-ed1d-47a5-9f99-d9db6519dddd",
+   "reply_ms": 16292.4,
+   "reply_body": "Данных о собраниях на сегодня у меня нет: в портале HUB нет инструмента для календаря, поэтому я не могу получить ваши встречи.\n\n## Что можно сделать\n\n- Откройте календарь в почтовом клиенте и посмотрите встречи на сегодня.\n- Я могу найти в почте письма с приглашениями на встречи, если вы укажете период или тему.\n- Задачи со сроком на сегодня я уже проверял: их 0.\n\nИсточник: данные не получены (инструмент календаря недоступен)",
+   "run_id": "75d72fba-cc1e-41b9-b616-2f2b504e9a81",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:10:25.477982+05:00",
+   "run_started_at": "2026-11-23 23:10:25.510981+05:00",
+   "run_completed_at": "2026-11-23 23:10:34.634114+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 24,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "33.0",
+    "processing_ms": "9128.2",
+    "server_total_ms": "9161.2",
+    "elapsed_ms": "9128.2",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "13995",
+    "completion_tokens": "964",
+    "total_tokens": "14959"
+   },
+   "stages": {
+    "queue_wait": [
+     33.0
+    ],
+    "routing_inputs": [
+     4.0
+    ],
+    "tool_routing": [
+     782.5
+    ],
+    "ctx_initial_message": [
+     2.5
+    ],
+    "ctx_mapping_state": [
+     4.3
+    ],
+    "ctx_messages": [
+     2.8
+    ],
+    "ctx_files": [
+     1.2
+    ],
+    "ctx_kb": [
+     162.7
+    ],
+    "memory": [
+     1839.7
+    ],
+    "ctx_memory": [
+     1839.8
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     2817.0
+    ],
+    "llm_first": [
+     6123.5
+    ],
+    "execute": [
+     8965.9
+    ],
+    "send_answer": [
+     104.7
+    ]
+   },
+   "jev": {
+    "routed": "['office']",
+    "sticky": "['directory']",
+    "intent": "read",
+    "jev_ms": 780
+   }
+  },
+  {
+   "text": "Покажи информацию о принтере на втором этаже.",
+   "send_status": 200,
+   "send_ms": 29.4,
+   "msg_id": "d5e98176-671c-467f-b323-25b81f240f82",
+   "reply_ms": 16304.1,
+   "reply_body": "Данных о принтере на втором этаже у меня нет: инструмент ITinvent для этого чата отключён, поэтому поиск устройств недоступен.\n\n## Что можно сделать\n\n- Уточнить у IT-отдела модель, инвентарный номер или точное расположение принтера.\n- Поискать принтер в самом ITinvent по локации «2 этаж» или по инвентарному номеру.\n- Поискать в базе знаний инструкцию по подключению принтера или по заявке на обслуживание печати.\n\nЕсли укажете номер кабинета, название отдела или инвентарный номер, я смогу искать по базе знаний и подготовлю черновик заявки в IT. Отправлю её только после вашего подтверждения.\n\nИст",
+   "run_id": "5477b969-0772-4e55-a8c1-a5dae3ea5089",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:10:42.289490+05:00",
+   "run_started_at": "2026-11-23 23:10:42.600333+05:00",
+   "run_completed_at": "2026-11-23 23:10:49.575962+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 25,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "310.8",
+    "processing_ms": "6982.2",
+    "server_total_ms": "7293.1",
+    "elapsed_ms": "6982.2",
+    "intent": "-",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "10045",
+    "completion_tokens": "1010",
+    "total_tokens": "11055"
+   },
+   "stages": {
+    "queue_wait": [
+     310.8
+    ],
+    "routing_inputs": [
+     4.4
+    ],
+    "tool_routing": [
+     756.9
+    ],
+    "ctx_initial_message": [
+     2.3
+    ],
+    "ctx_mapping_state": [
+     4.6
+    ],
+    "ctx_messages": [
+     5.6
+    ],
+    "ctx_files": [
+     1.4
+    ],
+    "ctx_kb": [
+     146.1
+    ],
+    "memory": [
+     11.0
+    ],
+    "ctx_memory": [
+     11.1
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     950.8
+    ],
+    "llm_first": [
+     5877.5
+    ],
+    "execute": [
+     6854.7
+    ],
+    "send_answer": [
+     77.6
+    ]
+   },
+   "jev": {
+    "cache": "miss"
+   }
+  },
+  {
+   "text": "Есть ли у меня файлы в разделе Мои файлы?",
+   "send_status": 200,
+   "send_ms": 29.5,
+   "msg_id": "2ac635af-287e-4688-a37f-224b1ce40bde",
+   "reply_ms": 31702.7,
+   "reply_body": "Список файлов в разделе «Мои файлы» я проверить не могу: подключённые инструменты умеют только создавать, конвертировать и формировать отчёты, а получить список ваших файлов не могут.\n\n## Что можно сделать\n\n- Откройте раздел «Мои файлы» в HUB-IT и посмотрите список там.\n- Если нужен список файлов в виде таблицы, укажите формат (xlsx, csv, docx или pdf). Я подготовлю файл, но только с данными, которые уже есть в диалоге.\n- Если раздел не открывается или файлы не отображаются, обратитесь в IT-отдел.\n\nИсточник: данные не получены (инструмент списка файлов недоступен)",
+   "run_id": "a766e2b5-9e24-431d-8cd9-6548f7a6e905",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:10:59.129192+05:00",
+   "run_started_at": "2026-11-23 23:10:59.626101+05:00",
+   "run_completed_at": "2026-11-23 23:11:19.376525+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 26,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "496.9",
+    "processing_ms": "19756.9",
+    "server_total_ms": "20253.8",
+    "elapsed_ms": "19756.9",
+    "intent": "-",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "1",
+    "prompt_tokens": "25882",
+    "completion_tokens": "1198",
+    "total_tokens": "27080"
+   },
+   "stages": {
+    "queue_wait": [
+     496.9
+    ],
+    "routing_inputs": [
+     3.6
+    ],
+    "tool_routing": [
+     1054.7
+    ],
+    "ctx_initial_message": [
+     2.3
+    ],
+    "ctx_mapping_state": [
+     5.3
+    ],
+    "ctx_messages": [
+     4.2
+    ],
+    "ctx_files": [
+     1.7
+    ],
+    "ctx_kb": [
+     170.2
+    ],
+    "memory": [
+     1979.6
+    ],
+    "ctx_memory": [
+     1979.7
+    ],
+    "ctx_summary": [
+     8069.3
+    ],
+    "context": [
+     11311.3
+    ],
+    "llm_first": [
+     3119.7
+    ],
+    "tools": [
+     0.0
+    ],
+    "llm_followup": [
+     5158.3
+    ],
+    "execute": [
+     19632.5
+    ],
+    "send_answer": [
+     70.2
+    ]
+   },
+   "jev": {
+    "cache": "miss"
+   }
+  },
+  {
+   "text": "Найди сотрудников отдела ИТ.",
+   "send_status": 200,
+   "send_ms": 26.9,
+   "msg_id": "542c4c78-07ca-4663-bfc7-978db83b0ddb",
+   "reply_ms": 31997.7,
+   "reply_body": "Сотрудников отдела ИТ в адресной книге 1С ЗУП не найдено.\n\nПоиск по отделу «ИТ» вернул 0 результатов. Среди подразделений, которые вернул поиск структуры компании, отдела с названием «ИТ» нет. Возможно, он называется иначе.\n\n## Что уточнить\n\n- Точное название отдела, например «Отдел информационных технологий».\n- Или фамилию, должность либо часть названия подразделения.\n\nИсточник: 1С ЗУП / адресная книга",
+   "run_id": "90636a14-74d1-4618-949c-36e4453c6765",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:11:31.354084+05:00",
+   "run_started_at": "2026-11-23 23:11:31.531705+05:00",
+   "run_completed_at": "2026-11-23 23:12:00.885677+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 27,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "177.6",
+    "processing_ms": "29360.9",
+    "server_total_ms": "29538.6",
+    "elapsed_ms": "29360.9",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "['directory.department.get',",
+    "error_tools": "['directory.people.search']",
+    "meta_calls": "0",
+    "prompt_tokens": "49793",
+    "completion_tokens": "2989",
+    "total_tokens": "52782"
+   },
+   "stages": {
+    "queue_wait": [
+     177.6
+    ],
+    "routing_inputs": [
+     3.7
+    ],
+    "tool_routing": [
+     1459.3
+    ],
+    "ctx_initial_message": [
+     2.8
+    ],
+    "ctx_mapping_state": [
+     5.2
+    ],
+    "ctx_messages": [
+     3.3
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     165.3
+    ],
+    "memory": [
+     10.2
+    ],
+    "ctx_memory": [
+     10.3
+    ],
+    "ctx_summary": [
+     6985.4
+    ],
+    "context": [
+     8655.3
+    ],
+    "llm_first": [
+     3538.6
+    ],
+    "tools": [
+     221.3,
+     15.6,
+     18.7
+    ],
+    "llm_followup": [
+     5029.6,
+     4697.4,
+     6990.1
+    ],
+    "execute": [
+     29227.7
+    ],
+    "send_answer": [
+     75.0
+    ]
+   },
+   "jev": {
+    "routed": "['chat', 'directory']",
+    "sticky": "['files']",
+    "intent": "read",
+    "jev_ms": 1457
+   }
+  },
+  {
+   "text": "Покажи статус моей последней заявки.",
+   "send_status": 200,
+   "send_ms": 29.4,
+   "msg_id": "54054044-bf66-4772-8343-7ca2602189dd",
+   "reply_ms": 31723.3,
+   "reply_body": "Статус последней заявки я определить не могу: в вашей учётной записи портала не указано ФИО, и по нему не получается найти ваши заявки в 1С.\n\n## Что можно сделать\n\n- Обратиться в IT-отдел, чтобы в профиле портала заполнили ФИО. После этого повторите запрос.\n- Если знаете номер заявки или название техники, напишите его. Я подскажу, как уточнить статус в 1С или у IT-отдела.\n- Если заявка не была подана, могу подготовить черновик новой заявки в IT. Она уйдёт только после вашего подтверждения.\n\nИсточник: 1С / me.it_requests (данные не получены: в учётной записи портала не указано ФИО)",
+   "run_id": "5d525142-127a-46c6-bfbf-d0a8593b1217",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:12:03.894260+05:00",
+   "run_started_at": "2026-11-23 23:12:04.151837+05:00",
+   "run_completed_at": "2026-11-23 23:12:21.013824+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 28,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "257.6",
+    "processing_ms": "16866.9",
+    "server_total_ms": "17124.5",
+    "elapsed_ms": "16866.9",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "['me.it_requests']",
+    "meta_calls": "0",
+    "prompt_tokens": "25615",
+    "completion_tokens": "2525",
+    "total_tokens": "28140"
+   },
+   "stages": {
+    "queue_wait": [
+     257.6
+    ],
+    "routing_inputs": [
+     3.9
+    ],
+    "tool_routing": [
+     1026.9
+    ],
+    "ctx_initial_message": [
+     2.8
+    ],
+    "ctx_mapping_state": [
+     4.9
+    ],
+    "ctx_messages": [
+     3.6
+    ],
+    "ctx_files": [
+     1.4
+    ],
+    "ctx_kb": [
+     165.8
+    ],
+    "memory": [
+     9.0
+    ],
+    "ctx_memory": [
+     9.1
+    ],
+    "ctx_summary": [
+     7105.7
+    ],
+    "context": [
+     8386.1
+    ],
+    "llm_first": [
+     2518.0
+    ],
+    "tools": [
+     14.9
+    ],
+    "llm_followup": [
+     5792.4
+    ],
+    "execute": [
+     16749.8
+    ],
+    "send_answer": [
+     66.6
+    ]
+   },
+   "jev": {
+    "routed": "['self']",
+    "sticky": "['chat', 'directory']",
+    "intent": "read",
+    "jev_ms": 1024
+   }
+  },
+  {
+   "text": "Что лежит в корзине моих файлов?",
+   "send_status": 200,
+   "send_ms": 34.1,
+   "msg_id": "18f43c7d-ffe2-4c13-a10b-e4f3ff2a9841",
+   "reply_ms": 16312.5,
+   "reply_body": "Список файлов в корзине «Мои файлы» я получить не могу: подключённые инструменты умеют создавать, конвертировать и формировать файлы, но читать содержимое корзины не могут.\n\n## Что можно сделать\n\n- Открыть корзину в разделе «Мои файлы» в HUB-IT и посмотреть её содержимое там.\n- Если нужно восстановить файл, а раздел недоступен или файл не виден, обратиться в IT-отдел.\n- Если понадобится список файлов в таблице, я подготовлю файл в формате xlsx, csv, docx или pdf, но только по данным, которые уже есть в диалоге.\n\nИсточник: данные не получены (инструмент списка файлов и корзины недоступен)",
+   "run_id": "0d1648f1-14a0-4020-9062-421dc5ea2c14",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:12:36.145676+05:00",
+   "run_started_at": "2026-11-23 23:12:36.344121+05:00",
+   "run_completed_at": "2026-11-23 23:12:47.253262+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 29,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "198.4",
+    "processing_ms": "10914.0",
+    "server_total_ms": "11112.5",
+    "elapsed_ms": "10914.0",
+    "intent": "-",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "1",
+    "prompt_tokens": "23060",
+    "completion_tokens": "1494",
+    "total_tokens": "24554"
+   },
+   "stages": {
+    "queue_wait": [
+     198.4
+    ],
+    "routing_inputs": [
+     4.3
+    ],
+    "tool_routing": [
+     885.2
+    ],
+    "ctx_initial_message": [
+     2.7
+    ],
+    "ctx_mapping_state": [
+     5.3
+    ],
+    "ctx_messages": [
+     3.6
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     171.3
+    ],
+    "memory": [
+     8.4
+    ],
+    "ctx_memory": [
+     8.5
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1099.6
+    ],
+    "llm_first": [
+     2887.3
+    ],
+    "tools": [
+     0.0
+    ],
+    "llm_followup": [
+     6741.2
+    ],
+    "execute": [
+     10769.8
+    ],
+    "send_answer": [
+     82.6
+    ]
+   },
+   "jev": {
+    "cache": "miss"
+   }
+  },
+  {
+   "text": "Подготовь черновик письма тестовому получателю test@example.com с темой 'Тест' и текстом 'Это тестовое письмо'.",
+   "send_status": 200,
+   "send_ms": 79.0,
+   "msg_id": "1ffd268b-2cd4-416a-8d2c-c0af5daeb76a",
+   "reply_ms": 16364.2,
+   "reply_body": "Подготовил черновик письма. Проверьте получателя и текст в карточке и подтвердите отправку.",
+   "run_id": "45124817-71bd-4853-86b6-1867af9bbdab",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:12:53.047808+05:00",
+   "run_started_at": "2026-11-23 23:12:53.148368+05:00",
+   "run_completed_at": "2026-11-23 23:13:01.457762+05:00",
+   "run_error": null,
+   "expected": "act",
+   "idx": 30,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "100.6",
+    "processing_ms": "8315.3",
+    "server_total_ms": "8415.9",
+    "elapsed_ms": "8315.3",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "['office.action.mail_send_draft']",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "25440",
+    "completion_tokens": "966",
+    "total_tokens": "26406"
+   },
+   "stages": {
+    "queue_wait": [
+     100.6
+    ],
+    "routing_inputs": [
+     4.4
+    ],
+    "tool_routing": [
+     849.9
+    ],
+    "ctx_initial_message": [
+     2.8
+    ],
+    "ctx_mapping_state": [
+     5.2
+    ],
+    "ctx_messages": [
+     3.1
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     144.6
+    ],
+    "memory": [
+     9.6
+    ],
+    "ctx_memory": [
+     9.7
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1039.8
+    ],
+    "llm_first": [
+     3078.5
+    ],
+    "tools": [
+     32.3
+    ],
+    "llm_followup": [
+     3989.7
+    ],
+    "execute": [
+     8178.4
+    ],
+    "send_answer": [
+     74.0
+    ]
+   },
+   "jev": {
+    "routed": "['office']",
+    "sticky": "['files']",
+    "intent": "act",
+    "jev_ms": 847
+   }
+  },
+  {
+   "text": "Создай черновик задачи 'Проверить отчёт' на завтра.",
+   "send_status": 200,
+   "send_ms": 36.4,
+   "msg_id": "0cce4e18-60b1-4619-b554-c577c4b77afb",
+   "reply_ms": 16322.7,
+   "reply_body": "Черновик задачи «Проверить отчёт» пока не создан: нужно указать исполнителя.\n\n## Что нужно уточнить\n\n| Поле | Значение |\n|---|---|\n| Название | Проверить отчёт |\n| Срок | 24.11.2026 (завтра) |\n| Исполнитель | не указан |\n\nУкажите исполнителя: себя или сотрудника с точным ФИО. Черновик появится в карточке подтверждения, и задача будет создана только после вашего подтверждения.\n\nИсточник: Задачи HUB / office.action.task_create_draft (ошибка: не указан исполнитель)",
+   "run_id": "71145048-3cae-4ddc-80a3-60bdb2ceeeda",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:13:09.899685+05:00",
+   "run_started_at": "2026-11-23 23:13:10.046781+05:00",
+   "run_completed_at": "2026-11-23 23:13:21.753254+05:00",
+   "run_error": null,
+   "expected": "act",
+   "idx": 31,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "147.1",
+    "processing_ms": "11713.3",
+    "server_total_ms": "11860.4",
+    "elapsed_ms": "11713.3",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "['office.action.task_create_draft']",
+    "meta_calls": "0",
+    "prompt_tokens": "27459",
+    "completion_tokens": "1749",
+    "total_tokens": "29208"
+   },
+   "stages": {
+    "queue_wait": [
+     147.1
+    ],
+    "routing_inputs": [
+     3.7
+    ],
+    "tool_routing": [
+     861.4
+    ],
+    "ctx_initial_message": [
+     2.3
+    ],
+    "ctx_mapping_state": [
+     5.0
+    ],
+    "ctx_messages": [
+     2.7
+    ],
+    "ctx_files": [
+     1.1
+    ],
+    "ctx_kb": [
+     164.2
+    ],
+    "memory": [
+     11.0
+    ],
+    "ctx_memory": [
+     11.1
+    ],
+    "ctx_summary": [
+     0.0
+    ],
+    "context": [
+     1072.0
+    ],
+    "llm_first": [
+     4005.9
+    ],
+    "tools": [
+     16.0
+    ],
+    "llm_followup": [
+     6434.2
+    ],
+    "execute": [
+     11587.5
+    ],
+    "send_answer": [
+     66.0
+    ]
+   },
+   "jev": {
+    "routed": "['office']",
+    "sticky": "['office']",
+    "intent": "act",
+    "jev_ms": 859
+   }
+  },
+  {
+   "text": "Составь Excel-отчёт со списком моего оборудования.",
+   "send_status": 200,
+   "send_ms": 46.7,
+   "msg_id": "87c8418f-94ff-4767-96bb-64f7d4f79e1f",
+   "reply_ms": 31774.9,
+   "reply_body": "Excel-отчёт по вашему оборудованию создать не могу: ваша учётная запись не сопоставлена с сотрудником в ITinvent, поэтому список техники получить не удалось.\n\n## Причина\n\n| Показатель | Значение |\n|---|---|\n| Инструмент | me.equipment |\n| Результат | Ошибка сопоставления |\n| Пояснение | Нет совпадения учётной записи по e-mail или ФИО |\n\n## Что можно сделать\n\n- Обратиться в IT-отдел, чтобы привязали вашу учётную запись к карточке сотрудника в ITinvent. После этого повторите запрос, и я сформирую отчёт в xlsx.\n- Подготовить черновик обращения в IT. Он уйдёт только после вашего подтверждения.\n\nИс",
+   "run_id": "c4879e1d-00ef-4b91-9478-9cea000baed1",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:13:26.773378+05:00",
+   "run_started_at": "2026-11-23 23:13:27.122350+05:00",
+   "run_completed_at": "2026-11-23 23:13:44.120417+05:00",
+   "run_error": null,
+   "expected": "act",
+   "idx": 32,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "349.0",
+    "processing_ms": "17003.9",
+    "server_total_ms": "17352.9",
+    "elapsed_ms": "17003.9",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "['me.equipment']",
+    "meta_calls": "0",
+    "prompt_tokens": "26757",
+    "completion_tokens": "1128",
+    "total_tokens": "27885"
+   },
+   "stages": {
+    "queue_wait": [
+     349.0
+    ],
+    "routing_inputs": [
+     3.9
+    ],
+    "tool_routing": [
+     1119.2
+    ],
+    "ctx_initial_message": [
+     2.6
+    ],
+    "ctx_mapping_state": [
+     5.1
+    ],
+    "ctx_messages": [
+     4.2
+    ],
+    "ctx_files": [
+     1.5
+    ],
+    "ctx_kb": [
+     146.3
+    ],
+    "memory": [
+     9.9
+    ],
+    "ctx_memory": [
+     10.0
+    ],
+    "ctx_summary": [
+     7149.7
+    ],
+    "context": [
+     8465.6
+    ],
+    "llm_first": [
+     2996.0
+    ],
+    "tools": [
+     16.9
+    ],
+    "llm_followup": [
+     5351.0
+    ],
+    "execute": [
+     16870.5
+    ],
+    "send_answer": [
+     74.2
+    ]
+   },
+   "jev": {
+    "routed": "['files', 'self']",
+    "sticky": "['files', 'office']",
+    "intent": "act",
+    "jev_ms": 1117
+   }
+  },
+  {
+   "text": "Подготовь CSV со списком сотрудников отдела ИТ.",
+   "send_status": 200,
+   "send_ms": 43.1,
+   "msg_id": "20e4c5ad-92e6-4c02-a0eb-807ac0a5651e",
+   "reply_ms": 31800.3,
+   "reply_body": "Отдел ИТ в адресной книге и оргструктуре 1С ЗУП не найден, поэтому CSV-файл со списком сотрудников я пока не формирую.\n\n## Что найдено\n\n| Поиск | Результат |\n|---|---|\n| Сотрудники отдела «ИТ» (адресная книга) | 0 совпадений |\n| Подразделение «ИТ» (оргструктура) | не найдено |\n\nПоиск по оргструктуре вернул другие подразделения, например «Архитектурный отдел» и «Главный инженер». Среди них отдела ИТ нет.\n\n## Что уточнить\n\n- Точное название отдела в 1С ЗУП, например «Отдел информационных технологий».\n- Или фамилии сотрудников, которые нужно включить в список.\n\nПосле уточнения сформирую CSV. Файл",
+   "run_id": "430add14-0760-413a-8052-a4cbd0b0f69d",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:13:59.070694+05:00",
+   "run_started_at": "2026-11-23 23:13:59.522843+05:00",
+   "run_completed_at": "2026-11-23 23:14:19.857752+05:00",
+   "run_error": null,
+   "expected": "act",
+   "idx": 33,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "452.1",
+    "processing_ms": "20339.6",
+    "server_total_ms": "20791.7",
+    "elapsed_ms": "20339.6",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "['directory.department.get']",
+    "error_tools": "['directory.department.get']",
+    "meta_calls": "0",
+    "prompt_tokens": "26087",
+    "completion_tokens": "1967",
+    "total_tokens": "28054"
+   },
+   "stages": {
+    "queue_wait": [
+     452.1
+    ],
+    "routing_inputs": [
+     4.0
+    ],
+    "tool_routing": [
+     1259.1
+    ],
+    "ctx_initial_message": [
+     2.8
+    ],
+    "ctx_mapping_state": [
+     5.4
+    ],
+    "ctx_messages": [
+     5.3
+    ],
+    "ctx_files": [
+     1.7
+    ],
+    "ctx_kb": [
+     166.8
+    ],
+    "memory": [
+     9.2
+    ],
+    "ctx_memory": [
+     9.3
+    ],
+    "ctx_summary": [
+     6268.8
+    ],
+    "context": [
+     7744.7
+    ],
+    "llm_first": [
+     4479.8
+    ],
+    "tools": [
+     847.4
+    ],
+    "llm_followup": [
+     7081.7
+    ],
+    "execute": [
+     20193.3
+    ],
+    "send_answer": [
+     84.3
+    ]
+   },
+   "jev": {
+    "routed": "['directory', 'files']",
+    "sticky": "['files', 'self']",
+    "intent": "act",
+    "jev_ms": 1257
+   }
+  },
+  {
+   "text": "Создай документ Word с заголовком 'План работ'.",
+   "send_status": 200,
+   "send_ms": 42.1,
+   "msg_id": "d4866084-c5a4-42d7-890b-5db84081d6ac",
+   "reply_ms": 31697.7,
+   "reply_body": "Документ Word «План работ» создан и прикреплён к чату.\n\n## Файл\n\n| Параметр | Значение |\n|---|---|\n| Имя файла | План работ.docx |\n| Формат | docx |\n| Размер | около 36 КБ |\n| Вложение в чат | да |\n\nВ документе указан только заголовок «План работ», разделы и содержимое не добавлялись. Если нужна структура, укажите цели, этапы, сроки и ответственных, и я пересоберу документ.\n\nИсточник: файл создан по вашему запросу (ai.files.report)",
+   "run_id": "a9bed3a1-1c33-4aed-a3c2-28a42a1096a7",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:14:31.383860+05:00",
+   "run_started_at": "2026-11-23 23:14:31.555828+05:00",
+   "run_completed_at": "2026-11-23 23:14:48.849606+05:00",
+   "run_error": null,
+   "expected": "act",
+   "idx": 34,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "172.0",
+    "processing_ms": "17297.8",
+    "server_total_ms": "17469.8",
+    "elapsed_ms": "17297.8",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "['ai.files.report']",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "22966",
+    "completion_tokens": "1280",
+    "total_tokens": "24246"
+   },
+   "stages": {
+    "queue_wait": [
+     172.0
+    ],
+    "routing_inputs": [
+     4.2
+    ],
+    "tool_routing": [
+     1076.2
+    ],
+    "ctx_initial_message": [
+     2.3
+    ],
+    "ctx_mapping_state": [
+     5.0
+    ],
+    "ctx_messages": [
+     3.0
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     162.7
+    ],
+    "memory": [
+     9.0
+    ],
+    "ctx_memory": [
+     9.1
+    ],
+    "ctx_summary": [
+     6275.1
+    ],
+    "context": [
+     7557.2
+    ],
+    "llm_first": [
+     4122.4
+    ],
+    "tools": [
+     51.0
+    ],
+    "llm_followup": [
+     4961.9
+    ],
+    "execute": [
+     16730.7
+    ],
+    "send_answer": [
+     301.2
+    ]
+   },
+   "jev": {
+    "routed": "['files']",
+    "sticky": "['directory', 'files']",
+    "intent": "act",
+    "jev_ms": 1074
+   }
+  },
+  {
+   "text": "Подготовь отчёт по моим задачам за неделю в формате xlsx.",
+   "send_status": 200,
+   "send_ms": 27.4,
+   "msg_id": "471e3978-4d86-4a9a-819f-160c77b5ece5",
+   "reply_ms": 47106.0,
+   "reply_body": "",
+   "run_id": "37080691-bcca-4c30-9407-91dfaa7d4e60",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:15:03.606756+05:00",
+   "run_started_at": "2026-11-23 23:15:04.084526+05:00",
+   "run_completed_at": "2026-11-23 23:15:41.162489+05:00",
+   "run_error": null,
+   "expected": "act",
+   "idx": 35,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "477.8",
+    "processing_ms": "37083.3",
+    "server_total_ms": "37561.1",
+    "elapsed_ms": "37083.3",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "['office.tasks.search',",
+    "error_tools": "['office.tasks.search']",
+    "meta_calls": "0",
+    "prompt_tokens": "56207",
+    "completion_tokens": "4504",
+    "total_tokens": "60711"
+   },
+   "stages": {
+    "queue_wait": [
+     477.8
+    ],
+    "routing_inputs": [
+     3.4
+    ],
+    "tool_routing": [
+     1150.7
+    ],
+    "ctx_initial_message": [
+     2.2
+    ],
+    "ctx_mapping_state": [
+     4.7
+    ],
+    "ctx_messages": [
+     3.2
+    ],
+    "ctx_files": [
+     1.2
+    ],
+    "ctx_kb": [
+     163.8
+    ],
+    "memory": [
+     2051.5
+    ],
+    "ctx_memory": [
+     2051.6
+    ],
+    "ctx_summary": [
+     6567.7
+    ],
+    "context": [
+     9969.7
+    ],
+    "llm_first": [
+     3985.3
+    ],
+    "tools": [
+     11.6,
+     91.7,
+     26.7
+    ],
+    "llm_followup": [
+     5072.1,
+     9269.1,
+     8381.0
+    ],
+    "execute": [
+     36867.4
+    ],
+    "send_answer": [
+     59.6
+    ]
+   },
+   "jev": {
+    "routed": "['files', 'office']",
+    "sticky": "['files']",
+    "intent": "act",
+    "jev_ms": 1149
+   }
+  },
+  {
+   "text": "Сформируй черновик заявки в техподдержку: не работает принтер.",
+   "send_status": 200,
+   "send_ms": 24.6,
+   "msg_id": "3b5a39cf-51e5-4d78-9c99-a9615ec0bede",
+   "reply_ms": 31719.4,
+   "reply_body": "Черновик заявки в IT готов и ждёт вашего подтверждения, в IT он ещё не отправлен.\n\n## Черновик заявки\n\n| Поле | Значение |\n|---|---|\n| Получатель | it@zsgp.ru |\n| Тема | Заявка в IT: Не работает принтер |\n| Категория | Принтер / МФУ |\n| Срочность | обычная |\n\n## Текст заявки\n\nНе работает принтер. Подробности (модель, расположение, код ошибки) не указаны.\n\n## Что дальше\n\n- Проверьте карточку подтверждения и нажмите «Подтвердить», чтобы отправить заявку.\n- Если добавить модель принтера, кабинет или текст ошибки, заявка будет понятнее для IT. Напишите эти данные, и я обновлю черновик.\n\nИсточник: ",
+   "run_id": "ad10f363-fac3-43bc-82e3-d65632dfa64e",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:15:51.242872+05:00",
+   "run_started_at": "2026-11-23 23:15:51.727991+05:00",
+   "run_completed_at": "2026-11-23 23:16:10.034770+05:00",
+   "run_error": null,
+   "expected": "act",
+   "idx": 36,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "485.1",
+    "processing_ms": "18312.0",
+    "server_total_ms": "18797.1",
+    "elapsed_ms": "18312.0",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "['helpdesk.request_draft']",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "26784",
+    "completion_tokens": "1294",
+    "total_tokens": "28078"
+   },
+   "stages": {
+    "queue_wait": [
+     485.1
+    ],
+    "routing_inputs": [
+     3.6
+    ],
+    "tool_routing": [
+     864.9
+    ],
+    "ctx_initial_message": [
+     2.3
+    ],
+    "ctx_mapping_state": [
+     4.1
+    ],
+    "ctx_messages": [
+     2.9
+    ],
+    "ctx_files": [
+     1.2
+    ],
+    "ctx_kb": [
+     165.9
+    ],
+    "memory": [
+     7.8
+    ],
+    "ctx_memory": [
+     7.9
+    ],
+    "ctx_summary": [
+     6654.2
+    ],
+    "context": [
+     7724.8
+    ],
+    "llm_first": [
+     3904.0
+    ],
+    "tools": [
+     24.0
+    ],
+    "llm_followup": [
+     6524.1
+    ],
+    "execute": [
+     18212.4
+    ],
+    "send_answer": [
+     55.9
+    ]
+   },
+   "jev": {
+    "routed": "['self']",
+    "sticky": "['files', 'office']",
+    "intent": "act",
+    "jev_ms": 863
+   }
+  },
+  {
+   "text": "Создай файл с перечнем тестовых компьютеров.",
+   "send_status": 200,
+   "send_ms": 34.2,
+   "msg_id": "c4df1e33-4b2b-4bb1-be5d-7d4617367129",
+   "reply_ms": 31769.3,
+   "reply_body": "Список тестовых компьютеров из ITinvent сейчас получить не могу: инструмент ITinvent для этого ассистента отключён, поэтому файл с данными о технике я пока не формирую.\n\n## Что можно сделать\n\n- Перечислить тестовые компьютеры прямо в чате (имя, инвентарный номер, сотрудник, локация). Я сформирую из них файл.\n- Обратиться в IT-отдел за выгрузкой списка тестовых компьютеров из ITinvent.\n\nКакой формат файла нужен: xlsx, csv, docx или pdf?\n\nИсточник: ITinvent / данные не получены (инструмент отключён)",
+   "run_id": "97da7266-8356-4281-824d-3cf2651b3bc7",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:16:23.510736+05:00",
+   "run_started_at": "2026-11-23 23:16:23.723071+05:00",
+   "run_completed_at": "2026-11-23 23:16:40.584583+05:00",
+   "run_error": null,
+   "expected": "act",
+   "idx": 37,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "212.3",
+    "processing_ms": "16867.8",
+    "server_total_ms": "17080.1",
+    "elapsed_ms": "16867.8",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "11342",
+    "completion_tokens": "1186",
+    "total_tokens": "12528"
+   },
+   "stages": {
+    "queue_wait": [
+     212.3
+    ],
+    "routing_inputs": [
+     4.2
+    ],
+    "tool_routing": [
+     960.6
+    ],
+    "ctx_initial_message": [
+     2.2
+    ],
+    "ctx_mapping_state": [
+     4.4
+    ],
+    "ctx_messages": [
+     2.9
+    ],
+    "ctx_files": [
+     1.2
+    ],
+    "ctx_kb": [
+     161.2
+    ],
+    "memory": [
+     8.2
+    ],
+    "ctx_memory": [
+     8.3
+    ],
+    "ctx_summary": [
+     7772.7
+    ],
+    "context": [
+     8939.2
+    ],
+    "llm_first": [
+     7786.4
+    ],
+    "execute": [
+     16757.6
+    ],
+    "send_answer": [
+     59.5
+    ]
+   },
+   "jev": {
+    "routed": "['files']",
+    "sticky": "['files', 'self']",
+    "intent": "act",
+    "jev_ms": 958
+   }
+  },
+  {
+   "text": "Спасибо за предыдущий ответ! А теперь расскажи подробнее про второй пункт.",
+   "send_status": 200,
+   "send_ms": 30.6,
+   "msg_id": "bd705f2c-6ade-45d2-a00e-558ca516af93",
+   "reply_ms": 32235.4,
+   "reply_body": "Второй пункт: обратиться в IT-отдел, чтобы там выгрузили список тестовых компьютеров из ITinvent. Сам список я получить не могу, так как инструмент ITinvent для этого ассистента отключён.\n\n## Что указать в обращении\n\n- Что нужно: выгрузка тестовых компьютеров из ITinvent.\n- Какие поля нужны: имя, инвентарный номер, сотрудник, локация, при необходимости серийный номер и статус.\n- В каком формате нужен файл: xlsx, csv, docx или pdf.\n\n## Что я могу сделать\n\n- Подготовить черновик заявки в IT с этими данными. Она не будет отправлена, пока вы не подтвердите её в карточке.\n- Если сначала перечислите",
+   "run_id": "c7bab1c1-e0a5-4267-b605-550935ff5058",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:16:55.813557+05:00",
+   "run_started_at": "2026-11-23 23:16:55.959038+05:00",
+   "run_completed_at": "2026-11-23 23:17:13.214673+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 38,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "145.5",
+    "processing_ms": "17262.2",
+    "server_total_ms": "17407.7",
+    "elapsed_ms": "17262.2",
+    "intent": "-",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "12270",
+    "completion_tokens": "1651",
+    "total_tokens": "13921"
+   },
+   "stages": {
+    "queue_wait": [
+     145.5
+    ],
+    "routing_inputs": [
+     4.9
+    ],
+    "tool_routing": [
+     1480.0
+    ],
+    "ctx_initial_message": [
+     2.5
+    ],
+    "ctx_mapping_state": [
+     5.4
+    ],
+    "ctx_messages": [
+     4.2
+    ],
+    "ctx_files": [
+     1.8
+    ],
+    "ctx_kb": [
+     181.0
+    ],
+    "memory": [
+     9.9
+    ],
+    "ctx_memory": [
+     10.0
+    ],
+    "ctx_summary": [
+     7221.1
+    ],
+    "context": [
+     8934.2
+    ],
+    "llm_first": [
+     8144.7
+    ],
+    "execute": [
+     17128.0
+    ],
+    "send_answer": [
+     67.9
+    ]
+   },
+   "jev": {
+    "cache": "miss"
+   }
+  },
+  {
+   "text": "А что насчёт моих задач — что там на сегодня?",
+   "send_status": 200,
+   "send_ms": 38.6,
+   "msg_id": "c37bd6f6-e274-403c-bb4c-03a2b9099caa",
+   "reply_ms": 31783.8,
+   "reply_body": "Задач на сегодня, назначенных вам или поставленных вами, в HUB нет. Поиск учитывал только задачи в статусе «новые».\n\n## Результат поиска\n\n| Показатель | Значение |\n|---|---|\n| Задач на сегодня | 0 |\n| Статус | новые |\n| Роль | исполнитель или постановщик |\n| Срок | сегодня |\n\nЗадачи в работе, на проверке и с другим статусом в этот поиск не попали. Если нужно проверить и их, напишите, и я повторю поиск.\n\nИсточник: Задачи HUB / office.tasks.search",
+   "run_id": "412ef393-9b1d-4216-aa31-53b79d855192",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:17:28.588594+05:00",
+   "run_started_at": "2026-11-23 23:17:28.587595+05:00",
+   "run_completed_at": "2026-11-23 23:17:46.953552+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 39,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "0.0",
+    "processing_ms": "18371.9",
+    "server_total_ms": "18371.9",
+    "elapsed_ms": "18371.9",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "['office.tasks.search']",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "24021",
+    "completion_tokens": "1649",
+    "total_tokens": "25670"
+   },
+   "stages": {
+    "queue_wait": [
+     0.0
+    ],
+    "routing_inputs": [
+     8.3
+    ],
+    "tool_routing": [
+     873.3
+    ],
+    "ctx_initial_message": [
+     3.6
+    ],
+    "ctx_mapping_state": [
+     8.6
+    ],
+    "ctx_messages": [
+     4.0
+    ],
+    "ctx_files": [
+     1.4
+    ],
+    "ctx_kb": [
+     192.4
+    ],
+    "memory": [
+     10.7
+    ],
+    "ctx_memory": [
+     10.8
+    ],
+    "ctx_summary": [
+     6996.8
+    ],
+    "context": [
+     8121.1
+    ],
+    "llm_first": [
+     2961.5
+    ],
+    "tools": [
+     105.0
+    ],
+    "llm_followup": [
+     7020.5
+    ],
+    "execute": [
+     18252.5
+    ],
+    "send_answer": [
+     62.8
+    ]
+   },
+   "jev": {
+    "routed": "['office']",
+    "sticky": "['office']",
+    "intent": "read",
+    "jev_ms": 869
+   }
+  },
+  {
+   "text": "Теперь подготовь письмо по этой теме.",
+   "send_status": 200,
+   "send_ms": 44.3,
+   "msg_id": "54c8bc82-dab3-4bb3-a282-5949e7724a55",
+   "reply_ms": 16340.8,
+   "reply_body": "Чтобы подготовить письмо, уточните тему: в диалоге есть несколько вариантов.\n\nИсточник: данные не получены (уточнение темы)",
+   "run_id": "506f98fe-1563-4aea-8866-906f791a93d5",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:18:00.913977+05:00",
+   "run_started_at": "2026-11-23 23:18:01.291762+05:00",
+   "run_completed_at": "2026-11-23 23:18:16.450290+05:00",
+   "run_error": null,
+   "expected": "act",
+   "idx": 40,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "377.8",
+    "processing_ms": "15167.3",
+    "server_total_ms": "15545.1",
+    "elapsed_ms": "15167.3",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "12421",
+    "completion_tokens": "859",
+    "total_tokens": "13280"
+   },
+   "stages": {
+    "queue_wait": [
+     377.8
+    ],
+    "routing_inputs": [
+     4.3
+    ],
+    "tool_routing": [
+     1051.0
+    ],
+    "ctx_initial_message": [
+     2.7
+    ],
+    "ctx_mapping_state": [
+     6.6
+    ],
+    "ctx_messages": [
+     4.5
+    ],
+    "ctx_files": [
+     1.7
+    ],
+    "ctx_kb": [
+     178.9
+    ],
+    "memory": [
+     13.0
+    ],
+    "ctx_memory": [
+     13.1
+    ],
+    "ctx_summary": [
+     7148.2
+    ],
+    "context": [
+     8431.5
+    ],
+    "llm_first": [
+     6560.6
+    ],
+    "execute": [
+     15026.5
+    ],
+    "send_answer": [
+     75.6
+    ]
+   },
+   "jev": {
+    "routed": "['office']",
+    "sticky": "['office']",
+    "intent": "act",
+    "jev_ms": 1049
+   }
+  },
+  {
+   "text": "Вернёмся к обычному разговору: расскажи шутку про программистов.",
+   "send_status": 200,
+   "send_ms": 27.1,
+   "msg_id": "99090dcf-ea87-4e86-8b88-b790dba4efb2",
+   "reply_ms": 16287.1,
+   "reply_body": "Конечно, вот шутка про программистов:\n\nПочему программисты путают Хэллоуин и Рождество? Потому что 31 OCT = 25 DEC.\n\nЕсли хотите, могу рассказать ещё одну или вернуться к вашим вопросам по работе.",
+   "run_id": "00bec105-2809-4ee7-a3ed-533d41e02c57",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:18:17.767256+05:00",
+   "run_started_at": "2026-11-23 23:18:18.145527+05:00",
+   "run_completed_at": "2026-11-23 23:18:30.648202+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 41,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "378.3",
+    "processing_ms": "12509.8",
+    "server_total_ms": "12888.0",
+    "elapsed_ms": "12509.8",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "10586",
+    "completion_tokens": "239",
+    "total_tokens": "10825"
+   },
+   "stages": {
+    "queue_wait": [
+     378.3
+    ],
+    "routing_inputs": [
+     7.1
+    ],
+    "tool_routing": [
+     722.9
+    ],
+    "ctx_initial_message": [
+     3.0
+    ],
+    "ctx_mapping_state": [
+     6.6
+    ],
+    "ctx_messages": [
+     3.7
+    ],
+    "ctx_files": [
+     1.5
+    ],
+    "ctx_kb": [
+     0.4
+    ],
+    "memory": [
+     7.8
+    ],
+    "ctx_memory": [
+     7.9
+    ],
+    "ctx_summary": [
+     7870.8
+    ],
+    "context": [
+     8644.6
+    ],
+    "llm_first": [
+     3724.9
+    ],
+    "execute": [
+     12398.5
+    ],
+    "send_answer": [
+     59.0
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "['office']",
+    "intent": "chat",
+    "jev_ms": 720
+   }
+  },
+  {
+   "text": "Найди то же самое, но для отдела продаж.",
+   "send_status": 200,
+   "send_ms": 33.9,
+   "msg_id": "f38cf743-c9a6-4660-b576-633680ad07f1",
+   "reply_ms": 47157.0,
+   "reply_body": "Сотрудников отдела продаж в адресной книге 1С ЗУП не найдено: поиск вернул 0 результатов, а подразделение в оргструктуре не нашлось.\n\n## Что проверено\n\n| Поиск | Результат |\n|---|---|\n| Сотрудники отдела продаж (адресная книга) | 0 совпадений |\n| Подразделение в оргструктуре | не найдено |\n\n## Что уточнить\n\n- Точное название отдела, например «Отдел продаж» или «Департамент продаж».\n- Фамилию, должность или часть названия подразделения.\n\nИсточник: 1С ЗУП / адресная книга",
+   "run_id": "37a31151-fdd2-4f37-9392-ff63f4f7759e",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:18:34.594780+05:00",
+   "run_started_at": "2026-11-23 23:18:34.965277+05:00",
+   "run_completed_at": "2026-11-23 23:19:18.560402+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 42,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "370.5",
+    "processing_ms": "43604.3",
+    "server_total_ms": "43974.8",
+    "elapsed_ms": "43604.3",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "['directory.people.search',",
+    "error_tools": "['directory.department.get',",
+    "meta_calls": "0",
+    "prompt_tokens": "67398",
+    "completion_tokens": "4598",
+    "total_tokens": "71996"
+   },
+   "stages": {
+    "queue_wait": [
+     370.5
+    ],
+    "routing_inputs": [
+     4.1
+    ],
+    "tool_routing": [
+     772.2
+    ],
+    "ctx_initial_message": [
+     2.4
+    ],
+    "ctx_mapping_state": [
+     4.2
+    ],
+    "ctx_messages": [
+     3.1
+    ],
+    "ctx_files": [
+     1.2
+    ],
+    "ctx_kb": [
+     161.5
+    ],
+    "memory": [
+     8.0
+    ],
+    "ctx_memory": [
+     8.1
+    ],
+    "ctx_summary": [
+     7505.7
+    ],
+    "context": [
+     8481.2
+    ],
+    "llm_first": [
+     6606.7
+    ],
+    "tools": [
+     102.4,
+     13.8,
+     17.3,
+     86.6,
+     98.8
+    ],
+    "llm_followup": [
+     5600.2,
+     3727.9,
+     5861.3,
+     4886.6,
+     7930.3
+    ],
+    "execute": [
+     43503.1
+    ],
+    "send_answer": [
+     51.9
+    ]
+   },
+   "jev": {
+    "routed": "['directory']",
+    "sticky": "['office']",
+    "intent": "read",
+    "jev_ms": 770
+   }
+  },
+  {
+   "text": "Покажи компьютер с номером XXXX-9999-НЕСУЩЕСТВУЮЩИЙ.",
+   "send_status": 200,
+   "send_ms": 25.7,
+   "msg_id": "ab06d2b8-c3ef-4e29-89fa-6b4bdd5851db",
+   "reply_ms": 16278.5,
+   "reply_body": "Данные о компьютере по инвентарному номеру **XXXX-9999-НЕСУЩЕСТВУЮЩИЙ** я получить не могу: инструмент ITinvent для этого ассистента отключён.\n\n## Что можно сделать\n\n- Обратиться в IT-отдел и указать этот номер. Там проверят карточку в ITinvent.\n- Если номер записан неверно, уточните его по наклейке на корпусе или в документах на технику и напишите мне.\n- Могу подготовить черновик заявки в IT с номером. Она не будет отправлена, пока вы не подтвердите её в карточке.\n\nИсточник: ITinvent / данные не получены (инструмент отключён)",
+   "run_id": "85c939e9-9d3b-42a2-a2a2-c74fbb5961a3",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:19:22.264305+05:00",
+   "run_started_at": "2026-11-23 23:19:22.330129+05:00",
+   "run_completed_at": "2026-11-23 23:19:37.502516+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 43,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "65.8",
+    "processing_ms": "15178.4",
+    "server_total_ms": "15244.2",
+    "elapsed_ms": "15178.4",
+    "intent": "-",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "10084",
+    "completion_tokens": "822",
+    "total_tokens": "10906"
+   },
+   "stages": {
+    "queue_wait": [
+     65.8
+    ],
+    "routing_inputs": [
+     3.1
+    ],
+    "tool_routing": [
+     1168.2
+    ],
+    "ctx_initial_message": [
+     2.1
+    ],
+    "ctx_mapping_state": [
+     4.5
+    ],
+    "ctx_messages": [
+     3.2
+    ],
+    "ctx_files": [
+     1.2
+    ],
+    "ctx_kb": [
+     159.5
+    ],
+    "memory": [
+     7.2
+    ],
+    "ctx_memory": [
+     7.3
+    ],
+    "ctx_summary": [
+     7136.0
+    ],
+    "context": [
+     8502.4
+    ],
+    "llm_first": [
+     6547.9
+    ],
+    "execute": [
+     15076.0
+    ],
+    "send_answer": [
+     53.0
+    ]
+   },
+   "jev": {
+    "cache": "miss"
+   }
+  },
+  {
+   "text": "Найди сотрудника Ывфывафывафыва в справочнике.",
+   "send_status": 200,
+   "send_ms": 25.4,
+   "msg_id": "5829c789-4d96-4dce-ac72-9092e9ae5e3b",
+   "reply_ms": 31699.3,
+   "reply_body": "Сотрудника с таким запросом в справочнике не найдено.\n\n## Результат поиска\n\n| Показатель | Значение |\n|---|---|\n| Запрос | Ывфывафывафыва |\n| Совпадений | 0 |\n\nПохоже, запрос введён с ошибкой или это не фамилия сотрудника. Уточните фамилию, имя, должность или отдел, и я повторю поиск.\n\nИсточник: 1С ЗУП / адресная книга",
+   "run_id": "1234373b-48e4-4d95-a8f8-e94c2cd2b400",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:19:39.083651+05:00",
+   "run_started_at": "2026-11-23 23:19:39.186904+05:00",
+   "run_completed_at": "2026-11-23 23:19:56.178473+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 44,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "103.3",
+    "processing_ms": "16998.3",
+    "server_total_ms": "17101.5",
+    "elapsed_ms": "16998.3",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "['directory.people.search']",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "21509",
+    "completion_tokens": "1069",
+    "total_tokens": "22578"
+   },
+   "stages": {
+    "queue_wait": [
+     103.3
+    ],
+    "routing_inputs": [
+     3.9
+    ],
+    "tool_routing": [
+     958.1
+    ],
+    "ctx_initial_message": [
+     2.3
+    ],
+    "ctx_mapping_state": [
+     4.6
+    ],
+    "ctx_messages": [
+     3.3
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     141.7
+    ],
+    "memory": [
+     8.4
+    ],
+    "ctx_memory": [
+     8.5
+    ],
+    "ctx_summary": [
+     7303.4
+    ],
+    "context": [
+     8448.1
+    ],
+    "llm_first": [
+     2768.3
+    ],
+    "tools": [
+     20.4
+    ],
+    "llm_followup": [
+     5343.6
+    ],
+    "execute": [
+     16614.0
+    ],
+    "send_answer": [
+     330.4
+    ]
+   },
+   "jev": {
+    "routed": "['directory']",
+    "sticky": "['directory']",
+    "intent": "read",
+    "jev_ms": 956
+   }
+  },
+  {
+   "text": "Сделай что-нибудь.",
+   "send_status": 200,
+   "send_ms": 28.4,
+   "msg_id": "f6516e68-db15-4f55-b55d-ef4f2dbc6064",
+   "reply_ms": 16274.3,
+   "reply_body": "Запрос «Сделай что-нибудь» слишком общий, поэтому я не знаю, какое действие нужно.\n\n## Что я могу сделать\n\n- Ответить на вопрос по работе или по базе знаний HUB-IT.\n- Подготовить черновик заявки в IT. Он не отправится без вашего подтверждения.\n- Найти сотрудника в справочнике 1С ЗУП по фамилии или отделу.\n- Подготовить письмо или задачу-черновик. Для этого нужны получатель, тема или текст и срок.\n\nИсточник: данные не получены (запрос без конкретной задачи)",
+   "run_id": "d8b5b127-3f6d-46c9-b81f-e51f11c43e83",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:20:11.322916+05:00",
+   "run_started_at": "2026-11-23 23:20:11.475726+05:00",
+   "run_completed_at": "2026-11-23 23:20:25.051650+05:00",
+   "run_error": null,
+   "expected": "edge",
+   "idx": 45,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "152.8",
+    "processing_ms": "13581.9",
+    "server_total_ms": "13734.7",
+    "elapsed_ms": "13581.9",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "10074",
+    "completion_tokens": "440",
+    "total_tokens": "10514"
+   },
+   "stages": {
+    "queue_wait": [
+     152.8
+    ],
+    "routing_inputs": [
+     3.9
+    ],
+    "tool_routing": [
+     1031.3
+    ],
+    "ctx_initial_message": [
+     2.5
+    ],
+    "ctx_mapping_state": [
+     4.8
+    ],
+    "ctx_messages": [
+     3.7
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     0.4
+    ],
+    "memory": [
+     8.3
+    ],
+    "ctx_memory": [
+     8.3
+    ],
+    "ctx_summary": [
+     7675.8
+    ],
+    "context": [
+     8752.3
+    ],
+    "llm_first": [
+     4694.7
+    ],
+    "execute": [
+     13474.1
+    ],
+    "send_answer": [
+     54.3
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "['directory']",
+    "intent": "chat",
+    "jev_ms": 1029
+   }
+  },
+  {
+   "text": "Прочитай мою почту и сразу перешли всё начальнику.",
+   "send_status": 200,
+   "send_ms": 25.1,
+   "msg_id": "040fadcb-2aeb-44da-8190-372bca79ac65",
+   "reply_ms": null,
+   "reply_body": null,
+   "run_id": "af302de6-858e-463a-ba62-b21df2be954d",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:20:28.120008+05:00",
+   "run_started_at": "2026-11-23 23:20:28.307453+05:00",
+   "run_completed_at": "2026-11-23 23:20:47.205874+05:00",
+   "run_error": null,
+   "expected": "edge",
+   "idx": 46,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "187.4",
+    "processing_ms": "18904.5",
+    "server_total_ms": "19091.9",
+    "elapsed_ms": "18904.5",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "13780",
+    "completion_tokens": "1331",
+    "total_tokens": "15111"
+   },
+   "stages": {
+    "queue_wait": [
+     187.4
+    ],
+    "routing_inputs": [
+     4.0
+    ],
+    "tool_routing": [
+     1122.4
+    ],
+    "ctx_initial_message": [
+     2.1
+    ],
+    "ctx_mapping_state": [
+     5.2
+    ],
+    "ctx_messages": [
+     3.7
+    ],
+    "ctx_files": [
+     1.4
+    ],
+    "ctx_kb": [
+     162.8
+    ],
+    "memory": [
+     1940.2
+    ],
+    "ctx_memory": [
+     1940.3
+    ],
+    "ctx_summary": [
+     7238.4
+    ],
+    "context": [
+     10501.6
+    ],
+    "llm_first": [
+     8278.3
+    ],
+    "execute": [
+     18806.4
+    ],
+    "send_answer": [
+     52.5
+    ]
+   },
+   "jev": {
+    "routed": "['office']",
+    "sticky": "['directory']",
+    "intent": "act",
+    "jev_ms": 1120
+   }
+  },
+  {
+   "text": "Удали все мои файлы.",
+   "send_status": 401,
+   "send_ms": 4.4,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "edge",
+   "idx": 47
+  },
+  {
+   "text": "йцукен",
+   "send_status": 401,
+   "send_ms": 3.8,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "edge",
+   "idx": 50
+  },
+  {
+   "text": "Покажи письма и одновременно создай отчёт и найди сотрудника Петрова и скажи который час.",
+   "send_status": 401,
+   "send_ms": 3.9,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "edge",
+   "idx": 51
+  },
+  {
+   "text": "Повтори предыдущий запрос ещё раз.",
+   "send_status": 401,
+   "send_ms": 4.1,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "edge",
+   "idx": 52
+  },
+  {
+   "text": "Забудь всё, что я писал раньше. Что такое Python?",
+   "send_status": 401,
+   "send_ms": 3.9,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "chat",
+   "idx": 53
+  },
+  {
+   "text": "Найди мою технику",
+   "send_status": 401,
+   "send_ms": 3.9,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "read",
+   "idx": 54
+  },
+  {
+   "text": "Напиши SQL-запрос для выборки всех таблиц.",
+   "send_status": 401,
+   "send_ms": 4.2,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "chat",
+   "idx": 55
+  },
+  {
+   "text": "Отправь письмо Васе на самом деле.",
+   "send_status": 401,
+   "send_ms": 4.2,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "act",
+   "idx": 56
+  },
+  {
+   "text": "Распечатай документ на принтере.",
+   "send_status": 401,
+   "send_ms": 4.9,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "edge",
+   "idx": 57
+  },
+  {
+   "text": "Забронируй переговорку на 15:00.",
+   "send_status": 401,
+   "send_ms": 5.5,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "edge",
+   "idx": 58
+  },
+  {
+   "text": "Какой сегодня день недели?",
+   "send_status": 401,
+   "send_ms": 3.8,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "chat",
+   "idx": 59
+  },
+  {
+   "text": "Переведи 'hello world' на русский.",
+   "send_status": 401,
+   "send_ms": 3.7,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "chat",
+   "idx": 60
+  },
+  {
+   "text": "Объясни термин 'очередь сообщений' простыми словами.",
+   "send_status": 401,
+   "send_ms": 4.5,
+   "error": "{\"detail\":\"Could not validate credentials\"}",
+   "expected": "chat",
+   "idx": 61
+  },
+  {
+   "text": "Удали все мои файлы.",
+   "send_status": 200,
+   "send_ms": 28.6,
+   "msg_id": "410a6ff7-4c4f-4a98-af72-88b945719251",
+   "reply_ms": 31657.4,
+   "reply_body": "Удалить файлы я не могу: у ассистента нет инструмента для удаления, а все файлы без конкретного списка удалять опасно и необратимо.\n\n## Что можно сделать\n\n- Удалить файлы самостоятельно в проводнике или на сетевом диске. Перед этим сохраните нужное в резервную копию.\n- Обратиться в IT-отдел. Если нужна очистка сетевых папок или файлов с общим доступом, её выполнят специалисты.\n- Подготовить черновик заявки в IT. Она не будет отправлена без вашего подтверждения в карточке.\n\n## Что уточнить\n\nЕсли вы напишете, какие папки или типы файлов нужно очистить, я помогу составить заявку с точным перечнем",
+   "run_id": "f05f24a1-6a7e-43bf-8ed9-adc157ed79eb",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:25:01.573191+05:00",
+   "run_started_at": "2026-11-23 23:25:01.896991+05:00",
+   "run_completed_at": "2026-11-23 23:25:19.846001+05:00",
+   "run_error": null,
+   "expected": "edge",
+   "idx": 47,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "323.8",
+    "processing_ms": "17954.5",
+    "server_total_ms": "18278.3",
+    "elapsed_ms": "17954.5",
+    "intent": "-",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "11771",
+    "completion_tokens": "930",
+    "total_tokens": "12701"
+   },
+   "stages": {
+    "queue_wait": [
+     323.8
+    ],
+    "routing_inputs": [
+     4.8
+    ],
+    "tool_routing": [
+     1123.0
+    ],
+    "ctx_initial_message": [
+     2.4
+    ],
+    "ctx_mapping_state": [
+     4.7
+    ],
+    "ctx_messages": [
+     3.7
+    ],
+    "ctx_files": [
+     1.2
+    ],
+    "ctx_kb": [
+     173.7
+    ],
+    "memory": [
+     2111.3
+    ],
+    "ctx_memory": [
+     2111.5
+    ],
+    "ctx_summary": [
+     8144.9
+    ],
+    "context": [
+     11588.2
+    ],
+    "llm_first": [
+     5976.8
+    ],
+    "execute": [
+     17592.3
+    ],
+    "send_answer": [
+     314.5
+    ]
+   },
+   "jev": {
+    "cache": "miss"
+   }
+  },
+  {
+   "text": "йцукен",
+   "send_status": 200,
+   "send_ms": 30.2,
+   "msg_id": "c04c48c3-b1ff-44e7-a148-071473a51988",
+   "reply_ms": 16273.5,
+   "reply_body": "Запрос «йцукен» не похож на осмысленную задачу, поэтому не могу понять, что нужно сделать.\n\n## Что я могу сделать\n\n- Ответить на вопрос по работе или по базе знаний HUB-IT.\n- Найти сотрудника в справочнике 1С ЗУП по фамилии или отделу.\n- Подготовить черновик заявки в IT. Она не будет отправлена без вашего подтверждения.\n- Подготовить письмо или задачу-черновик. Для этого нужны получатель, тема или текст и срок.\n\nНапишите, пожалуйста, что именно нужно сделать.\n\nИсточник: данные не получены (запрос не распознан)",
+   "run_id": "a8816186-5d77-43a9-b397-7723c74f1e23",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:25:33.760653+05:00",
+   "run_started_at": "2026-11-23 23:25:34.046824+05:00",
+   "run_completed_at": "2026-11-23 23:25:47.277507+05:00",
+   "run_error": null,
+   "expected": "edge",
+   "idx": 50,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "286.2",
+    "processing_ms": "13235.2",
+    "server_total_ms": "13521.3",
+    "elapsed_ms": "13235.2",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "10165",
+    "completion_tokens": "401",
+    "total_tokens": "10566"
+   },
+   "stages": {
+    "queue_wait": [
+     286.2
+    ],
+    "routing_inputs": [
+     3.4
+    ],
+    "tool_routing": [
+     972.5
+    ],
+    "ctx_initial_message": [
+     2.5
+    ],
+    "ctx_mapping_state": [
+     5.4
+    ],
+    "ctx_messages": [
+     4.0
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     0.4
+    ],
+    "memory": [
+     8.4
+    ],
+    "ctx_memory": [
+     8.5
+    ],
+    "ctx_summary": [
+     6954.4
+    ],
+    "context": [
+     7970.1
+    ],
+    "llm_first": [
+     5139.0
+    ],
+    "execute": [
+     13133.5
+    ],
+    "send_answer": [
+     50.2
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "['office']",
+    "intent": "chat",
+    "jev_ms": 970
+   }
+  },
+  {
+   "text": "Покажи письма и одновременно создай отчёт и найди сотрудника Петрова и скажи который час.",
+   "send_status": 200,
+   "send_ms": 25.2,
+   "msg_id": "ce329662-9725-41d8-94f9-6a5f7d739b47",
+   "reply_ms": 47108.0,
+   "reply_body": "## ITinvent report\n\nPrepared 10 rows in 1 table(s). Choose the file format.\nИсточник: ITinvent / ITINVENT\n\nВыберите формат файла в карточке ниже: XLSX, PDF, DOCX, CSV, TXT, Markdown или JSON.",
+   "run_id": "6f4cf53c-94e9-4763-be1a-7a6c249cbe46",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:25:50.557033+05:00",
+   "run_started_at": "2026-11-23 23:25:51.047871+05:00",
+   "run_completed_at": "2026-11-23 23:26:22.425033+05:00",
+   "run_error": null,
+   "expected": "edge",
+   "idx": 51,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "490.8",
+    "processing_ms": "31382.3",
+    "server_total_ms": "31873.1",
+    "elapsed_ms": "31382.3",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "['directory.people.search']",
+    "error_tools": "['office.mail.search',",
+    "meta_calls": "0",
+    "prompt_tokens": "28611",
+    "completion_tokens": "3951",
+    "total_tokens": "32562"
+   },
+   "stages": {
+    "queue_wait": [
+     490.8
+    ],
+    "routing_inputs": [
+     4.0
+    ],
+    "tool_routing": [
+     1040.4
+    ],
+    "ctx_initial_message": [
+     2.1
+    ],
+    "ctx_mapping_state": [
+     4.0
+    ],
+    "ctx_messages": [
+     3.4
+    ],
+    "ctx_files": [
+     1.1
+    ],
+    "ctx_kb": [
+     158.1
+    ],
+    "memory": [
+     7.8
+    ],
+    "ctx_memory": [
+     7.9
+    ],
+    "ctx_summary": [
+     7763.3
+    ],
+    "context": [
+     9002.3
+    ],
+    "llm_first": [
+     8811.6
+    ],
+    "tools": [
+     48.4
+    ],
+    "tools_autopagination": [
+     12.9
+    ],
+    "llm_followup": [
+     13336.8
+    ],
+    "execute": [
+     31282.8
+    ],
+    "send_answer": [
+     51.0
+    ]
+   },
+   "jev": {
+    "routed": "['directory', 'files', 'office']",
+    "sticky": "['office']",
+    "intent": "act",
+    "jev_ms": 1038
+   }
+  },
+  {
+   "text": "Повтори предыдущий запрос ещё раз.",
+   "send_status": 200,
+   "send_ms": 33.3,
+   "msg_id": "ace3a8f6-6b8a-411a-ae2f-e5dfc6bd7bfe",
+   "reply_ms": 47098.7,
+   "reply_body": "Повторно выполнил запрос по частям: по почте данных нет, по отчёту ITinvent тоже, поиск Петрова дал 10 из 70 совпадений, а текущее время я определить не могу.\n\n## Результат по пунктам\n\n| Пункт запроса | Результат |\n|---|---|\n| Показать письма | Не выполнено: для вашей учётной записи не настроен адрес почтового ящика |\n| Создать отчёт | Не выполнено: инструменты ITinvent для этого ассистента отключены. Карточка выбора формата из предыдущего ответа всё ещё открыта, но данные в ней не проверены |\n| Найти Петрова | Найдено 70 совпадений, показано 10 из 70 |\n| Который час | Нет инструмента, который",
+   "run_id": "09d807de-8941-4137-8670-d46f6e2fd4b5",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:26:38.203276+05:00",
+   "run_started_at": "2026-11-23 23:26:38.214280+05:00",
+   "run_completed_at": "2026-11-23 23:27:18.357999+05:00",
+   "run_error": null,
+   "expected": "edge",
+   "idx": 52,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "11.0",
+    "processing_ms": "40150.6",
+    "server_total_ms": "40161.6",
+    "elapsed_ms": "40150.6",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "['directory.people.search']",
+    "error_tools": "['office.mail.search']",
+    "meta_calls": "1",
+    "prompt_tokens": "37717",
+    "completion_tokens": "5410",
+    "total_tokens": "43127"
+   },
+   "stages": {
+    "queue_wait": [
+     11.0
+    ],
+    "routing_inputs": [
+     4.0
+    ],
+    "tool_routing": [
+     851.7
+    ],
+    "ctx_initial_message": [
+     2.1
+    ],
+    "ctx_mapping_state": [
+     4.3
+    ],
+    "ctx_messages": [
+     3.3
+    ],
+    "ctx_files": [
+     1.2
+    ],
+    "ctx_kb": [
+     717.0
+    ],
+    "memory": [
+     9.2
+    ],
+    "ctx_memory": [
+     9.3
+    ],
+    "ctx_summary": [
+     8197.4
+    ],
+    "context": [
+     9809.0
+    ],
+    "llm_first": [
+     7834.5
+    ],
+    "tools": [
+     15.4,
+     36.9
+    ],
+    "llm_followup": [
+     9442.1,
+     12829.3
+    ],
+    "execute": [
+     40015.1
+    ],
+    "send_answer": [
+     86.3
+    ]
+   },
+   "jev": {
+    "routed": "['files', 'office']",
+    "sticky": "['directory', 'files', 'office']",
+    "intent": "read",
+    "jev_ms": 849
+   }
+  },
+  {
+   "text": "Забудь всё, что я писал раньше. Что такое Python?",
+   "send_status": 200,
+   "send_ms": 28.5,
+   "msg_id": "9a06f425-c7b0-4bbc-92c1-cc9c2e315aa8",
+   "reply_ms": 16254.1,
+   "reply_body": "Память не изменена.",
+   "run_id": "9d0443c3-dc5b-4a44-88d1-857c317de1df",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:27:25.833978+05:00",
+   "run_started_at": "2026-11-23 23:27:26.299515+05:00",
+   "run_completed_at": "2026-11-23 23:27:40.973645+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 53,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "465.5",
+    "processing_ms": "14678.7",
+    "server_total_ms": "15144.2",
+    "elapsed_ms": "14678.7",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "14004",
+    "completion_tokens": "529",
+    "total_tokens": "14533"
+   },
+   "stages": {
+    "queue_wait": [
+     465.5
+    ],
+    "routing_inputs": [
+     4.0
+    ],
+    "tool_routing": [
+     938.3
+    ],
+    "ctx_initial_message": [
+     2.9
+    ],
+    "ctx_mapping_state": [
+     4.4
+    ],
+    "ctx_messages": [
+     3.6
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     0.4
+    ],
+    "memory": [
+     1857.9
+    ],
+    "ctx_memory": [
+     1858.0
+    ],
+    "ctx_summary": [
+     7478.5
+    ],
+    "context": [
+     10312.2
+    ],
+    "llm_first": [
+     4231.8
+    ],
+    "execute": [
+     14568.6
+    ],
+    "send_answer": [
+     54.8
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "['directory', 'files', 'office']",
+    "intent": "chat",
+    "jev_ms": 936
+   }
+  },
+  {
+   "text": "Найди мою технику",
+   "send_status": 200,
+   "send_ms": 24.3,
+   "msg_id": "c3641347-b120-4fb6-8c3f-75200ce1b7d2",
+   "reply_ms": 31682.0,
+   "reply_body": "Техника за вами не найдена: учётная запись не сопоставлена с сотрудником в ITinvent.\n\n## Причина\n\nСистема не нашла совпадения вашей учётной записи по e-mail или ФИО, поэтому закреплённое за вами оборудование не отображается. Данные по технике не получены.\n\n## Что можно сделать\n\n- Обратиться в IT-отдел, чтобы там проверили привязку вашей учётной записи к карточке сотрудника в ITinvent.\n- Подготовить черновик заявки в IT. Она не будет отправлена, пока вы не подтвердите её в карточке.\n\nИсточник: ITinvent / me.equipment (данные не получены)",
+   "run_id": "03183cd5-bd0c-41f4-9df5-1b0c0a4e461c",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:27:42.597765+05:00",
+   "run_started_at": "2026-11-23 23:27:42.663307+05:00",
+   "run_completed_at": "2026-11-23 23:28:03.118842+05:00",
+   "run_error": null,
+   "expected": "read",
+   "idx": 54,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "65.5",
+    "processing_ms": "20460.4",
+    "server_total_ms": "20526.0",
+    "elapsed_ms": "20460.4",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "['me.equipment']",
+    "meta_calls": "0",
+    "prompt_tokens": "27098",
+    "completion_tokens": "988",
+    "total_tokens": "28086"
+   },
+   "stages": {
+    "queue_wait": [
+     65.5
+    ],
+    "routing_inputs": [
+     4.4
+    ],
+    "tool_routing": [
+     823.8
+    ],
+    "ctx_initial_message": [
+     2.0
+    ],
+    "ctx_mapping_state": [
+     4.3
+    ],
+    "ctx_messages": [
+     4.4
+    ],
+    "ctx_files": [
+     1.7
+    ],
+    "ctx_kb": [
+     161.7
+    ],
+    "memory": [
+     2193.6
+    ],
+    "ctx_memory": [
+     2193.7
+    ],
+    "ctx_summary": [
+     8626.3
+    ],
+    "context": [
+     11842.1
+    ],
+    "llm_first": [
+     3107.1
+    ],
+    "tools": [
+     15.3
+    ],
+    "llm_followup": [
+     5351.1
+    ],
+    "execute": [
+     20352.7
+    ],
+    "send_answer": [
+     57.5
+    ]
+   },
+   "jev": {
+    "routed": "['self']",
+    "sticky": "['directory', 'files', 'office']",
+    "intent": "read",
+    "jev_ms": 822
+   }
+  },
+  {
+   "text": "Напиши SQL-запрос для выборки всех таблиц.",
+   "send_status": 200,
+   "send_ms": 28.2,
+   "msg_id": "5a586f47-3c36-482f-9509-cbb8fc074e37",
+   "reply_ms": 16263.1,
+   "reply_body": "Написать SQL-запрос, который выбирает «все таблицы», без уточнения СУБД и цели нельзя: синтаксис и системные каталоги зависят от конкретной базы.\n\n## Что уточнить\n\n- Какая СУБД используется: PostgreSQL, MySQL, MS SQL Server, Oracle или SQLite.\n- Что нужно получить: только список имён таблиц или также их столбцы, количество строк, размер.\n- В какой схеме или базе искать, если их несколько.\n\nЕсли нужен только список таблиц, для PostgreSQL обычно используют системный каталог `information_schema.tables`, для MySQL — `information_schema.tables` с фильтром по имени базы. Точный вариант зависит от от",
+   "run_id": "c6b4a50d-eead-4140-9f3a-94cb067163cd",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:28:14.808378+05:00",
+   "run_started_at": "2026-11-23 23:28:15.233010+05:00",
+   "run_completed_at": "2026-11-23 23:28:29.116595+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 55,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "424.6",
+    "processing_ms": "13888.7",
+    "server_total_ms": "14313.4",
+    "elapsed_ms": "13888.7",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "11096",
+    "completion_tokens": "549",
+    "total_tokens": "11645"
+   },
+   "stages": {
+    "queue_wait": [
+     424.6
+    ],
+    "routing_inputs": [
+     4.6
+    ],
+    "tool_routing": [
+     1336.8
+    ],
+    "ctx_initial_message": [
+     2.6
+    ],
+    "ctx_mapping_state": [
+     5.2
+    ],
+    "ctx_messages": [
+     5.3
+    ],
+    "ctx_files": [
+     1.8
+    ],
+    "ctx_kb": [
+     0.5
+    ],
+    "memory": [
+     8.1
+    ],
+    "ctx_memory": [
+     8.2
+    ],
+    "ctx_summary": [
+     8077.5
+    ],
+    "context": [
+     9463.0
+    ],
+    "llm_first": [
+     4299.7
+    ],
+    "execute": [
+     13787.3
+    ],
+    "send_answer": [
+     57.0
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "['self']",
+    "intent": "chat",
+    "jev_ms": 1334
+   }
+  },
+  {
+   "text": "Отправь письмо Васе на самом деле.",
+   "send_status": 200,
+   "send_ms": 27.3,
+   "msg_id": "67110b44-d925-4c24-b119-0a7478728f48",
+   "reply_ms": 31683.7,
+   "reply_body": "Письмо Васе не отправлено и черновик не создан: в адресной книге нет получателя с именем «Вася» (0 совпадений).\n\n## Что нужно, чтобы подготовить письмо\n\n| Поле | Статус |\n|---|---|\n| Получатель | не найден, нужны ФИО или e-mail |\n| Тема | не указана |\n| Текст | не указан |\n\nКому именно отправить письмо: укажите полное ФИО Васи или его e-mail. Тогда я проверю адрес в адресной книге и подготовлю черновик, который уйдёт только после вашего подтверждения.\n\nИсточник: данные не получены (поиск получателя «Вася»: 0 совпадений)",
+   "run_id": "26bbaaeb-eee9-4bbb-982e-54bc74400eba",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:28:31.602904+05:00",
+   "run_started_at": "2026-11-23 23:28:31.840123+05:00",
+   "run_completed_at": "2026-11-23 23:28:55.531060+05:00",
+   "run_error": null,
+   "expected": "act",
+   "idx": 56,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "237.2",
+    "processing_ms": "23698.5",
+    "server_total_ms": "23935.7",
+    "elapsed_ms": "23698.5",
+    "intent": "act",
+    "mode_denied": "0",
+    "used_tools": "['office.mail.contacts.resolve']",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "26114",
+    "completion_tokens": "2144",
+    "total_tokens": "28258"
+   },
+   "stages": {
+    "queue_wait": [
+     237.2
+    ],
+    "routing_inputs": [
+     3.7
+    ],
+    "tool_routing": [
+     854.9
+    ],
+    "ctx_initial_message": [
+     2.4
+    ],
+    "ctx_mapping_state": [
+     4.0
+    ],
+    "ctx_messages": [
+     3.6
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     164.8
+    ],
+    "memory": [
+     7.7
+    ],
+    "ctx_memory": [
+     7.8
+    ],
+    "ctx_summary": [
+     8593.6
+    ],
+    "context": [
+     9657.4
+    ],
+    "llm_first": [
+     4932.9
+    ],
+    "tools": [
+     92.9
+    ],
+    "llm_followup": [
+     8846.5
+    ],
+    "execute": [
+     23568.6
+    ],
+    "send_answer": [
+     72.1
+    ]
+   },
+   "jev": {
+    "routed": "['office']",
+    "sticky": "['self']",
+    "intent": "act",
+    "jev_ms": 853
+   }
+  },
+  {
+   "text": "Распечатай документ на принтере.",
+   "send_status": 200,
+   "send_ms": 30.7,
+   "msg_id": "a5b66079-eea8-453c-8d67-647deb96bf4c",
+   "reply_ms": 31721.3,
+   "reply_body": "Отправить документ на принтер я не могу: у ассистента нет доступа к печати на МФУ. Документ не отправлен.\n\n## Что можно сделать\n\n- Распечатать документ самостоятельно с вашего компьютера на нужном принтере.\n- Подготовить черновик заявки в IT, если печать не работает или принтер недоступен. Заявка не уйдёт без вашего подтверждения в карточке.\n\n## Что уточнить\n\nЕсли нужна помощь с печатью, напишите, какой принтер или МФУ нужен и что происходит: ошибка, отсутствие принтера в списке или очередь печати. Тогда я помогу составить заявку с этими данными.\n\nИсточник: данные не получены (инструмент печат",
+   "run_id": "6bc29029-d0f4-46a8-863e-9441ee6ae313",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:29:03.821344+05:00",
+   "run_started_at": "2026-11-23 23:29:04.018594+05:00",
+   "run_completed_at": "2026-11-23 23:29:25.359586+05:00",
+   "run_error": null,
+   "expected": "edge",
+   "idx": 57,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "197.2",
+    "processing_ms": "21346.4",
+    "server_total_ms": "21543.6",
+    "elapsed_ms": "21346.4",
+    "intent": "-",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "10951",
+    "completion_tokens": "848",
+    "total_tokens": "11799"
+   },
+   "stages": {
+    "queue_wait": [
+     197.2
+    ],
+    "routing_inputs": [
+     3.6
+    ],
+    "tool_routing": [
+     1177.0
+    ],
+    "ctx_initial_message": [
+     2.5
+    ],
+    "ctx_mapping_state": [
+     4.3
+    ],
+    "ctx_messages": [
+     3.7
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     161.8
+    ],
+    "memory": [
+     7.4
+    ],
+    "ctx_memory": [
+     7.5
+    ],
+    "ctx_summary": [
+     13772.7
+    ],
+    "context": [
+     15156.0
+    ],
+    "llm_first": [
+     6049.9
+    ],
+    "execute": [
+     21234.1
+    ],
+    "send_answer": [
+     59.8
+    ]
+   },
+   "jev": {
+    "cache": "miss"
+   }
+  },
+  {
+   "text": "Забронируй переговорку на 15:00.",
+   "send_status": 200,
+   "send_ms": 32.1,
+   "msg_id": "a2d365f1-ee18-4154-8656-4333fc266105",
+   "reply_ms": 16271.1,
+   "reply_body": "Забронировать переговорку я не могу: у ассистента нет инструмента для работы с календарём и переговорными.\n\n## Что можно сделать\n\n- Забронировать переговорку самостоятельно в корпоративном календаре или в системе бронирования.\n- Подготовить черновик задачи в HUB для ответственного за офис или администратора. Задача не будет создана, пока вы не подтвердите её.\n\nЧтобы подготовить задачу, укажите переговорную или этаж, дату, длительность встречи и участников.\n\nИсточник: данные не получены (инструмент бронирования переговорных недоступен)",
+   "run_id": "bb43d0d7-0751-4606-b6a9-872cd0d11501",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:29:36.072057+05:00",
+   "run_started_at": "2026-11-23 23:29:36.453929+05:00",
+   "run_completed_at": "2026-11-23 23:29:50.795991+05:00",
+   "run_error": null,
+   "expected": "edge",
+   "idx": 58,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "381.9",
+    "processing_ms": "14346.4",
+    "server_total_ms": "14728.3",
+    "elapsed_ms": "14346.4",
+    "intent": "read",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "12465",
+    "completion_tokens": "715",
+    "total_tokens": "13180"
+   },
+   "stages": {
+    "queue_wait": [
+     381.9
+    ],
+    "routing_inputs": [
+     4.2
+    ],
+    "tool_routing": [
+     779.9
+    ],
+    "ctx_initial_message": [
+     2.8
+    ],
+    "ctx_mapping_state": [
+     4.7
+    ],
+    "ctx_messages": [
+     3.9
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     162.9
+    ],
+    "memory": [
+     7.9
+    ],
+    "ctx_memory": [
+     8.0
+    ],
+    "ctx_summary": [
+     7719.9
+    ],
+    "context": [
+     8705.5
+    ],
+    "llm_first": [
+     5512.6
+    ],
+    "execute": [
+     14242.9
+    ],
+    "send_answer": [
+     52.0
+    ]
+   },
+   "jev": {
+    "routed": "['office']",
+    "sticky": "['office']",
+    "intent": "read",
+    "jev_ms": 777
+   }
+  },
+  {
+   "text": "Какой сегодня день недели?",
+   "send_status": 200,
+   "send_ms": 26.6,
+   "msg_id": "d82d70eb-86f5-42ce-ae25-72ff326ad1a5",
+   "reply_ms": 16269.1,
+   "reply_body": "Точный день недели по живым данным я определить не могу: у ассистента нет инструмента, который возвращает текущую дату и время.\n\nПосмотрите дату на экране компьютера, в панели задач или на телефоне.\n\nИсточник: данные не получены (инструмент текущей даты недоступен)",
+   "run_id": "1dcaf51f-37d1-4611-9126-66cd6a0af0e9",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:29:52.867227+05:00",
+   "run_started_at": "2026-11-23 23:29:52.991881+05:00",
+   "run_completed_at": "2026-11-23 23:30:05.390913+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 59,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "124.7",
+    "processing_ms": "12403.8",
+    "server_total_ms": "12528.5",
+    "elapsed_ms": "12403.8",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "11256",
+    "completion_tokens": "279",
+    "total_tokens": "11535"
+   },
+   "stages": {
+    "queue_wait": [
+     124.7
+    ],
+    "routing_inputs": [
+     3.8
+    ],
+    "tool_routing": [
+     1063.6
+    ],
+    "ctx_initial_message": [
+     2.2
+    ],
+    "ctx_mapping_state": [
+     4.5
+    ],
+    "ctx_messages": [
+     4.1
+    ],
+    "ctx_files": [
+     1.6
+    ],
+    "ctx_kb": [
+     0.6
+    ],
+    "memory": [
+     8.5
+    ],
+    "ctx_memory": [
+     8.6
+    ],
+    "ctx_summary": [
+     8089.1
+    ],
+    "context": [
+     9196.0
+    ],
+    "llm_first": [
+     3074.0
+    ],
+    "execute": [
+     12295.3
+    ],
+    "send_answer": [
+     55.9
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "['office']",
+    "intent": "chat",
+    "jev_ms": 1061
+   }
+  },
+  {
+   "text": "Переведи 'hello world' на русский.",
+   "send_status": 200,
+   "send_ms": 25.7,
+   "msg_id": "0cc1fd9c-77f7-420b-a147-ec855755890a",
+   "reply_ms": 16252.5,
+   "reply_body": "Перевод: «hello world» — «привет, мир».\n\nЭто устоявшаяся фраза, которую часто используют как первую программу на новом языке.\n\nИсточник: данные не получены (общий языковой запрос, инструменты не требуются)",
+   "run_id": "fc384941-36b2-452d-ae27-cfa707be00a3",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:30:09.652916+05:00",
+   "run_started_at": "2026-11-23 23:30:09.688920+05:00",
+   "run_completed_at": "2026-11-23 23:30:22.059829+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 60,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "36.0",
+    "processing_ms": "12375.7",
+    "server_total_ms": "12411.7",
+    "elapsed_ms": "12375.7",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "11056",
+    "completion_tokens": "211",
+    "total_tokens": "11267"
+   },
+   "stages": {
+    "queue_wait": [
+     36.0
+    ],
+    "routing_inputs": [
+     4.0
+    ],
+    "tool_routing": [
+     806.5
+    ],
+    "ctx_initial_message": [
+     2.0
+    ],
+    "ctx_mapping_state": [
+     4.2
+    ],
+    "ctx_messages": [
+     4.3
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     0.3
+    ],
+    "memory": [
+     6.8
+    ],
+    "ctx_memory": [
+     6.9
+    ],
+    "ctx_summary": [
+     8080.9
+    ],
+    "context": [
+     8928.1
+    ],
+    "llm_first": [
+     3060.8
+    ],
+    "execute": [
+     12013.1
+    ],
+    "send_answer": [
+     316.0
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "['office']",
+    "intent": "chat",
+    "jev_ms": 804
+   }
+  },
+  {
+   "text": "Объясни термин 'очередь сообщений' простыми словами.",
+   "send_status": 200,
+   "send_ms": 28.6,
+   "msg_id": "ac8c2dbe-d7f6-43ac-a3ac-43f846cf1ea0",
+   "reply_ms": 16270.5,
+   "reply_body": "Очередь сообщений — это способ передавать данные между программами через промежуточное хранилище, не заставляя их работать одновременно.\n\n## Как это работает\n\n- **Отправитель** кладёт сообщение в очередь и сразу продолжает работу.\n- **Очередь** хранит сообщения в порядке поступления, пока их не заберут.\n- **Получатель** читает сообщения из очереди, когда готов их обработать.\n\n## Зачем это нужно\n\n- Сервисы не ждут друг друга: если получатель временно недоступен, сообщения не теряются.\n- Нагрузка сглаживается: пики запросов складываются в очередь и обрабатываются постепенно.\n- Проще масштабирова",
+   "run_id": "bfa6c227-d9ba-4b68-840d-31989a7ab293",
+   "run_status": "completed",
+   "run_created_at": "2026-11-23 23:30:26.432803+05:00",
+   "run_started_at": "2026-11-23 23:30:26.784241+05:00",
+   "run_completed_at": "2026-11-23 23:30:39.864869+05:00",
+   "run_error": null,
+   "expected": "chat",
+   "idx": 61,
+   "profile": {
+    "outcome": "completed",
+    "queue_wait_ms": "351.4",
+    "processing_ms": "13085.2",
+    "server_total_ms": "13436.6",
+    "elapsed_ms": "13085.2",
+    "intent": "chat",
+    "mode_denied": "0",
+    "used_tools": "[]",
+    "error_tools": "[]",
+    "meta_calls": "0",
+    "prompt_tokens": "10890",
+    "completion_tokens": "516",
+    "total_tokens": "11406"
+   },
+   "stages": {
+    "queue_wait": [
+     351.4
+    ],
+    "routing_inputs": [
+     3.3
+    ],
+    "tool_routing": [
+     744.6
+    ],
+    "ctx_initial_message": [
+     2.3
+    ],
+    "ctx_mapping_state": [
+     4.1
+    ],
+    "ctx_messages": [
+     3.6
+    ],
+    "ctx_files": [
+     1.3
+    ],
+    "ctx_kb": [
+     0.4
+    ],
+    "memory": [
+     6.4
+    ],
+    "ctx_memory": [
+     6.5
+    ],
+    "ctx_summary": [
+     7137.6
+    ],
+    "context": [
+     7921.0
+    ],
+    "llm_first": [
+     5044.9
+    ],
+    "execute": [
+     12989.8
+    ],
+    "send_answer": [
+     49.9
+    ]
+   },
+   "jev": {
+    "routed": "[]",
+    "sticky": "['office']",
+    "intent": "chat",
+    "jev_ms": 743
+   }
+  }
+ ]
+}

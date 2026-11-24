@@ -610,6 +610,25 @@ class ChatEventOutboxService:
                 seen_at=seen_at,
                 mentioned_user_ids=mentioned_user_ids,
             )
+        try:
+            member_ids = {
+                int(uid)
+                for uid in (payload.get("member_user_ids") or [])
+                if int(uid) > 0
+            }
+            if member_ids:
+                from backend.chat.service import chat_service
+
+                chat_service._invalidate_conversation_views_for_users(
+                    conversation_id=str(job.conversation_id),
+                    user_ids=member_ids,
+                )
+        except Exception:
+            logger.debug(
+                "chat.event_outbox.local read-cache invalidation failed conversation_id=%s",
+                job.conversation_id,
+                exc_info=True,
+            )
 
     async def process_job(self, job: ChatEventOutboxJob) -> str:
         started_at = time.perf_counter()

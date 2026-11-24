@@ -263,6 +263,27 @@ AI_TOOL_GROUP_EXPANSION_LIMIT = max(0, min(5, int(os.environ.get("AI_TOOL_GROUP_
 AI_TOOL_SPECS_WARN_LIMIT = max(5, int(os.environ.get("AI_TOOL_SPECS_WARN_LIMIT", "20") or 20))
 AI_MODEL_CONTEXT_WINDOW = max(4096, min(32000, int(os.environ.get("AI_MODEL_CONTEXT_WINDOW", "32000"))))
 AI_TOKEN_BUDGET_SAFETY_MARGIN = int(os.environ.get("AI_TOKEN_BUDGET_SAFETY_MARGIN", "2000"))
+# A8 cycle 2/3: background LLM summary upgrade. Default OFF until the
+# production gate passes — runs then summarize synchronously again
+# (pre-A8 critical path, safe rollback). Must match the worker flag.
+AI_SUMMARY_BACKGROUND_ENABLED = str(os.environ.get("AI_SUMMARY_BACKGROUND_ENABLED", "0") or "0").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+AI_SUMMARY_UPGRADE_BATCH = max(20, min(500, int(os.environ.get("AI_SUMMARY_UPGRADE_BATCH", "150") or 150)))
+AI_SUMMARY_UPGRADE_BATCH_TOKENS = max(1000, min(20000, int(os.environ.get("AI_SUMMARY_UPGRADE_BATCH_TOKENS", "6000") or 6000)))
+AI_SUMMARY_UPGRADE_MAX_MESSAGES = max(100, min(5000, int(os.environ.get("AI_SUMMARY_UPGRADE_MAX_MESSAGES", "1500") or 1500)))
+AI_SUMMARY_UPGRADE_MAX_ATTEMPTS = max(1, min(20, int(os.environ.get("AI_SUMMARY_UPGRADE_MAX_ATTEMPTS", "5") or 5)))
+AI_SUMMARY_UPGRADE_SUPPRESS_SEC = max(60, min(86400, int(os.environ.get("AI_SUMMARY_UPGRADE_SUPPRESS_SEC", "3600") or 3600)))
+AI_SUMMARY_UPGRADE_SCAN_LIMIT = max(5, min(500, int(os.environ.get("AI_SUMMARY_UPGRADE_SCAN_LIMIT", "50") or 50)))
+AI_SUMMARY_UPGRADE_LOOKBACK_DAYS = max(1, min(365, int(os.environ.get("AI_SUMMARY_UPGRADE_LOOKBACK_DAYS", "30") or 30)))
+AI_SUMMARY_UPGRADE_JOBS_PER_MIN = max(1, min(120, int(os.environ.get("AI_SUMMARY_UPGRADE_JOBS_PER_MIN", "6") or 6)))
+# Provider-level caps (cost control): jobs/min alone is not enough — one
+# job can fold many batches, each batch many chunks.
+AI_SUMMARY_UPGRADE_LLM_PER_MIN = max(1, min(600, int(os.environ.get("AI_SUMMARY_UPGRADE_LLM_PER_MIN", "30") or 30)))
+AI_SUMMARY_UPGRADE_JOB_TOKEN_CAP = max(10000, min(2000000, int(os.environ.get("AI_SUMMARY_UPGRADE_JOB_TOKEN_CAP", "200000") or 200000)))
+# Cross-process lease via updated_at CAS: prevents duplicate paid LLM
+# calls when more than one AI worker runs.
+AI_SUMMARY_UPGRADE_LEASE_SEC = max(15, min(600, int(os.environ.get("AI_SUMMARY_UPGRADE_LEASE_SEC", "45") or 45)))
 # When the LLM invokes a tool with invalid args, allow up to N self-correction passes
 # (the model is shown the validation error and asked to retry the same logical step).
 AI_TOOL_VALIDATION_RETRY_LIMIT = int(os.environ.get("AI_TOOL_VALIDATION_RETRY_LIMIT", "1"))
@@ -1332,6 +1353,44 @@ _JEV_ROUTING_CACHE_TTL_SEC = float(os.environ.get("AI_JEV_ROUTING_CACHE_TTL_SEC"
 _JEV_ROUTING_CACHE_MAX = max(50, min(5000, int(os.environ.get("AI_JEV_ROUTING_CACHE_MAX", "500") or 500)))
 _jev_routing_cache: dict[str, tuple[float, tuple[frozenset[str], str | None]]] = {}
 _jev_routing_cache_lock = threading.Lock()
+
+# A8/P1: conversations whose summarized range was checkpointed with the
+# head/tail fallback and are queued for an async LLM-quality upgrade.
+# Keyed by (conversation_id, user_id): duplicate registrations coalesce.
+# Value = (reset_seq, not_before_monotonic, registered_monotonic).
+_pending_summary_upgrades: dict[tuple[str, int], tuple[int, float, float]] = {}
+_pending_summary_lock = threading.Lock()
+_PENDING_SUMMARY_MAX = max(16, min(1024, int(os.environ.get("AI_SUMMARY_PENDING_MAX", "256") or 256)))
+# Attempt counter / inflight / suppression for jobs that keep failing
+# (poison rows, provider outage): bounded; the DB invariant
+# (summary_llm_until_seq < summary_until_seq) makes work re-discoverable.
+# Suppression stores (deadline, reset_seq) — a NEW context reset must not
+# inherit the previous task's failure state.
+_summary_upgrade_attempts: dict[tuple[str, int], int] = {}
+_summary_inflight: dict[tuple[str, int], int] = {}
+_summary_suppressed_until: dict[tuple[str, int], tuple[float, int]] = {}
+_summary_rate_window: list[float] = []
+_summary_llm_window: list[float] = []
+_summary_metrics: dict[str, int] = {
+    "registrations": 0,
+    "discarded_registrations": 0,
+    "claims": 0,
+    "completed": 0,
+    "failed": 0,
+    "retries": 0,
+    "suppressed_total": 0,
+    "cas_conflicts": 0,
+    "lease_busy": 0,
+    "llm_calls": 0,
+    "llm_rate_limited": 0,
+    "budget_capped": 0,
+    "messages_folded": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "duration_ms_total": 0,
+    "rate_limited": 0,
+}
 
 
 def _jev_routing_cache_key(
@@ -3014,6 +3073,67 @@ def _conversation_title_from_prompt(value: object) -> str:
     return f"{shortened or text[:77]}…"
 
 
+def _summary_lease_heartbeat(
+    conversation_id: str,
+    user_id: int,
+    reset_seq: int,
+    stop: threading.Event,
+) -> None:
+    """Bump ``updated_at`` every LEASE/3 while one LLM call is in-flight.
+
+    A single ``smart_memory.summarize`` may outlive the lease window
+    (per-request socket timeout × transient-retry wall budget). Without a
+    heartbeat a second AI worker would claim the row mid-call and pay for a
+    duplicate LLM request. The update stays conditioned on our reset epoch.
+    """
+    interval = max(0.05, AI_SUMMARY_UPGRADE_LEASE_SEC / 3.0)
+    while not stop.wait(interval):
+        try:
+            with app_session() as hb_db:
+                hb_db.execute(
+                    update(AppAiBotConversation)
+                    .where(
+                        AppAiBotConversation.conversation_id == conversation_id,
+                        AppAiBotConversation.user_id == int(user_id),
+                        AppAiBotConversation.context_reset_seq == int(reset_seq),
+                    )
+                    .values(updated_at=_utc_now())
+                    .execution_options(synchronize_session=False)
+                )
+        except Exception:
+            continue
+
+
+def _summarize_with_lease_hold(
+    cur_text: str,
+    lines: list[str],
+    *,
+    conversation_id: str,
+    user_id: int,
+    reset_seq: int,
+    model: str,
+):
+    """Run one summarize() while a daemon thread holds the cross-process lease.
+
+    Covers the exact gap chunk-level renewal cannot: renewal between chunks
+    does not fire while a single call is still running. The heartbeat thread
+    is bounded to this call only (daemon + joined), never outlives the job.
+    """
+    stop = threading.Event()
+    heartbeat = threading.Thread(
+        target=_summary_lease_heartbeat,
+        args=(conversation_id, int(user_id), int(reset_seq), stop),
+        daemon=True,
+        name="ai-summary-lease-hb",
+    )
+    heartbeat.start()
+    try:
+        return smart_memory.summarize(cur_text, lines, model=model)
+    finally:
+        stop.set()
+        heartbeat.join(timeout=2.0)
+
+
 @dataclass(slots=True)
 class AiConversationRuntime:
     bot: AppAiBot
@@ -3706,6 +3826,8 @@ class AiChatService:
             mapping.context_reset_seq = reset_seq
             mapping.summary_until_seq = reset_seq
             mapping.rolling_summary = ""
+            mapping.rolling_summary_llm = ""
+            mapping.summary_llm_until_seq = 0
             mapping.updated_at = _utc_now()
             if AI_PERSONAL_MEMORY_ENABLED:
                 smart_memory.bump_revision(session, int(current_user_id), invalidate_old=True)
@@ -4761,6 +4883,656 @@ class AiChatService:
             except Exception as exc:
                 logger.error("AI result delivery repair failed: run_id=%s error_type=%s", snapshot["id"], type(exc).__name__)
         return repaired
+
+    def _register_pending_summary(
+        self,
+        *,
+        conversation_id: str,
+        user_id: int,
+        reset_seq: int,
+        not_before_mono: float = 0.0,
+    ) -> bool:
+        """Returns True when the key was (re)queued, False when discarded."""
+        key = (_normalize_text(conversation_id), int(user_id))
+        reset_seq = int(reset_seq)
+        deadline = float(not_before_mono or 0.0)
+        with _pending_summary_lock:
+            suppressed = _summary_suppressed_until.get(key)
+            if suppressed is not None:
+                sup_deadline, sup_reset = suppressed
+                if sup_reset == reset_seq:
+                    if float(sup_deadline) > time.monotonic():
+                        _summary_metrics["discarded_registrations"] += 1
+                        return False  # suppressed on every registration path
+                    _summary_suppressed_until.pop(key, None)
+                    _summary_upgrade_attempts.pop(key, None)
+                else:
+                    # A NEW context reset must not inherit the previous
+                    # task's failure state.
+                    _summary_suppressed_until.pop(key, None)
+                    _summary_upgrade_attempts.pop(key, None)
+            if int(_summary_inflight.get(key, -1)) == reset_seq:
+                # Already being processed for this checkpoint basis; the
+                # in-flight job covers this registration.
+                _summary_metrics["discarded_registrations"] += 1
+                return False
+            existing = _pending_summary_upgrades.get(key)
+            if existing is not None:
+                old_reset, old_not_before, registered_at = existing
+                if old_reset != reset_seq:
+                    _summary_upgrade_attempts.pop(key, None)
+                    _pending_summary_upgrades[key] = (reset_seq, deadline, time.monotonic())
+                else:
+                    # Preserve the active retry deadline: a scan or a new
+                    # run must not zero out the backoff.
+                    _pending_summary_upgrades[key] = (
+                        reset_seq, max(float(old_not_before or 0.0), deadline), registered_at,
+                    )
+                _summary_metrics["registrations"] += 1
+                return True
+            if len(_pending_summary_upgrades) >= _PENDING_SUMMARY_MAX:
+                _summary_metrics["discarded_registrations"] += 1
+                return False
+            _pending_summary_upgrades[key] = (reset_seq, deadline, time.monotonic())
+            _summary_metrics["registrations"] += 1
+            return True
+
+    def claim_pending_summary_upgrade(self) -> tuple[tuple[str, int], int] | None:
+        """Pop the next due pending upgrade; entries with a future retry
+        deadline or an in-flight twin stay queued. Rate-limited per
+        process to bound paid LLM calls."""
+        with _pending_summary_lock:
+            now = time.monotonic()
+            while _summary_rate_window and now - _summary_rate_window[0] > 60.0:
+                _summary_rate_window.pop(0)
+            if len(_summary_rate_window) >= AI_SUMMARY_UPGRADE_JOBS_PER_MIN:
+                _summary_metrics["rate_limited"] += 1
+                return None
+            for key, item in list(_pending_summary_upgrades.items()):
+                if len(item) == 3:
+                    reset_seq, not_before, _registered_at = item
+                else:  # legacy (reset, not_before) entries
+                    reset_seq, not_before = item
+                if key in _summary_inflight:
+                    continue
+                if float(not_before or 0.0) <= now:
+                    del _pending_summary_upgrades[key]
+                    _summary_inflight[key] = int(reset_seq)
+                    _summary_rate_window.append(now)
+                    _summary_metrics["claims"] += 1
+                    return key, int(reset_seq)
+        return None
+
+    def scan_pending_summary_upgrades(self, *, limit: int | None = None) -> int:
+        """Durable recovery: the DB invariant
+        ``summary_llm_until_seq < summary_until_seq`` *is* the pending queue —
+        a worker restart or a dropped in-memory registration re-discovers the
+        work here instead of losing it silently. The fetch window extends
+        past suppressed/in-flight rows so they cannot starve new work."""
+        scan_limit = max(1, int(limit or AI_SUMMARY_UPGRADE_SCAN_LIMIT))
+        cutoff = _utc_now() - timedelta(days=AI_SUMMARY_UPGRADE_LOOKBACK_DAYS)
+        fetch_limit = scan_limit + len(_summary_suppressed_until) + len(_summary_inflight) + len(_pending_summary_upgrades)
+        with app_session() as app_db:
+            rows = list(
+                app_db.execute(
+                    select(
+                        AppAiBotConversation.conversation_id,
+                        AppAiBotConversation.user_id,
+                        AppAiBotConversation.context_reset_seq,
+                    )
+                    .where(
+                        AppAiBotConversation.summary_until_seq
+                        > AppAiBotConversation.summary_llm_until_seq,
+                        AppAiBotConversation.use_personal_memory.is_(True),
+                        AppAiBotConversation.updated_at >= cutoff,
+                    )
+                    .order_by(AppAiBotConversation.updated_at.asc())
+                    .limit(fetch_limit)
+                ).all()
+            )
+        now = time.monotonic()
+        with _pending_summary_lock:
+            for stale_key in [
+                k for k, (deadline, _r) in _summary_suppressed_until.items()
+                if float(deadline) <= now
+            ]:
+                _summary_suppressed_until.pop(stale_key, None)
+        registered = 0
+        for conversation_id, user_id, reset_seq in rows:
+            if registered >= scan_limit:
+                break
+            if self._register_pending_summary(
+                conversation_id=str(conversation_id),
+                user_id=int(user_id),
+                reset_seq=int(reset_seq or 0),
+            ):
+                registered += 1
+        return registered
+
+    def get_summary_upgrade_metrics(self) -> dict[str, Any]:
+        with _pending_summary_lock:
+            now = time.monotonic()
+            oldest_registered = min(
+                (float(item[2]) for item in _pending_summary_upgrades.values() if len(item) == 3),
+                default=0.0,
+            )
+            return {
+                **_summary_metrics,
+                "pending": len(_pending_summary_upgrades),
+                "in_flight": len(_summary_inflight),
+                "suppressed": sum(
+                    1 for deadline, _r in _summary_suppressed_until.values()
+                    if float(deadline) > now
+                ),
+                "oldest_pending_age_sec": round(max(0.0, now - oldest_registered), 3) if oldest_registered else 0.0,
+            }
+
+    def process_pending_summary_upgrade(self, *, limit: int = 1) -> int:
+        """Pop due upgrades and fold their ranges with the LLM. Failures
+        re-register with exponential backoff; after
+        ``AI_SUMMARY_UPGRADE_MAX_ATTEMPTS`` the key is suppressed — the DB
+        scan re-admits it once the suppression lapses or the reset changes."""
+        processed = 0
+        for _ in range(max(1, int(limit or 1))):
+            claimed = self.claim_pending_summary_upgrade()
+            if claimed is None:
+                return processed
+            key, reset_seq = claimed
+            outcome: dict[str, Any] = {}
+            try:
+                outcome = self._upgrade_conversation_summary(
+                    conversation_id=key[0], user_id=key[1], reset_seq=reset_seq,
+                ) or {}
+            except Exception as exc:
+                attempts = int(_summary_upgrade_attempts.get(key, 0)) + 1
+                _summary_upgrade_attempts[key] = attempts
+                if len(_summary_upgrade_attempts) > _PENDING_SUMMARY_MAX * 4:
+                    for old_key in list(_summary_upgrade_attempts)[: _PENDING_SUMMARY_MAX]:
+                        _summary_upgrade_attempts.pop(old_key, None)
+                _summary_metrics["failed"] += 1
+                with _pending_summary_lock:
+                    # Release inflight before re-registering: the retry is a
+                    # NEW queue entry (with backoff), not a duplicate the
+                    # finished job would cover.
+                    _summary_inflight.pop(key, None)
+                if attempts >= AI_SUMMARY_UPGRADE_MAX_ATTEMPTS:
+                    _summary_suppressed_until[key] = (
+                        time.monotonic() + AI_SUMMARY_UPGRADE_SUPPRESS_SEC,
+                        int(reset_seq),
+                    )
+                    _summary_upgrade_attempts.pop(key, None)
+                    _summary_metrics["suppressed_total"] += 1
+                    logger.warning(
+                        "ai_summary_upgrade suppressed after %s attempts conversation_id=%s error_type=%s",
+                        attempts, key[0], type(exc).__name__,
+                    )
+                else:
+                    backoff = min(300.0, 15.0 * (2 ** (attempts - 1)))
+                    _summary_metrics["retries"] += 1
+                    self._register_pending_summary(
+                        conversation_id=key[0], user_id=key[1],
+                        reset_seq=reset_seq,
+                        not_before_mono=time.monotonic() + backoff,
+                    )
+                    logger.warning(
+                        "ai_summary_upgrade failed conversation_id=%s attempt=%s error_type=%s; retry in %.0fs",
+                        key[0], attempts, type(exc).__name__, backoff,
+                    )
+            else:
+                _summary_upgrade_attempts.pop(key, None)
+                result = str(outcome.get("outcome") or "done")
+                if result == "done":
+                    _summary_metrics["completed"] += 1
+                elif result == "cas_conflict":
+                    _summary_metrics["cas_conflicts"] += 1
+                elif result == "lease_busy":
+                    _summary_metrics["lease_busy"] += 1
+                elif result in {"rate_limited", "budget_capped"}:
+                    # Progress is checkpointed — resume after the window
+                    # cools down instead of dropping or hammering.
+                    with _pending_summary_lock:
+                        _summary_inflight.pop(key, None)
+                    self._register_pending_summary(
+                        conversation_id=key[0], user_id=key[1],
+                        reset_seq=reset_seq,
+                        not_before_mono=time.monotonic() + 60.0,
+                    )
+                _summary_metrics["llm_calls"] += int(outcome.get("llm_calls") or 0)
+                _summary_metrics["messages_folded"] += int(outcome.get("folded") or 0)
+                _summary_metrics["duration_ms_total"] += int(outcome.get("duration_ms") or 0)
+                usage = outcome.get("usage") or {}
+                _summary_metrics["prompt_tokens"] += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+                _summary_metrics["completion_tokens"] += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+                _summary_metrics["total_tokens"] += int(usage.get("total_tokens") or 0)
+            finally:
+                with _pending_summary_lock:
+                    _summary_inflight.pop(key, None)
+            processed += 1
+        return processed
+
+    def _upgrade_conversation_summary(
+        self,
+        *,
+        conversation_id: str,
+        user_id: int,
+        reset_seq: int,
+    ) -> None:
+        """Incremental LLM upgrade of the summarized range.
+
+        ``summary_until_seq`` marks how far the prompt-facing
+        ``rolling_summary`` covers (cheap fallback counts as covered).
+        ``summary_llm_until_seq`` marks the range folded into
+        ``rolling_summary_llm`` with LLM quality. Each pass resumes from the
+        LLM checkpoint, folds batches of messages on top of the previous
+        summary and CAS-swaps per batch; the prompt-facing text is promoted
+        only once the LLM covers the full checkpointed range. A checkpoint
+        therefore never claims data that did not reach a summary, and a >200
+        message range can no longer silently drop its tail.
+
+        A8c3: three values are kept distinct — ``db_llm_until`` is what the
+        DB actually holds (the CAS anchor), ``read_from`` is where history
+        reading starts (``max(reset_seq, db_llm_until)`` when prior coverage
+        is unusable), and ``expected_until`` is what each CAS asserts. A
+        post-reset row stores ``summary_llm_until_seq=0`` — comparing CAS
+        against ``reset_seq`` there would loop forever, so the anchor is
+        always the actual stored value.
+        """
+        started_at = time.monotonic()
+        normalized_conversation_id = _normalize_text(conversation_id)
+        outcome: dict[str, Any] = {"outcome": "skipped", "folded": 0, "llm_calls": 0, "usage": {}}
+        key = (normalized_conversation_id, int(user_id))
+        with app_session() as app_db:
+            mapping = app_db.execute(
+                select(AppAiBotConversation).where(
+                    AppAiBotConversation.conversation_id == normalized_conversation_id,
+                    AppAiBotConversation.user_id == int(user_id),
+                )
+            ).scalar_one_or_none()
+            if mapping is None:
+                outcome["outcome"] = "missing"
+                return outcome
+            current_reset_seq = int(getattr(mapping, "context_reset_seq", 0) or 0)
+            if current_reset_seq != int(reset_seq):
+                outcome["outcome"] = "reset_changed"
+                return outcome
+            until_seq = int(getattr(mapping, "summary_until_seq", 0) or 0)
+            if until_seq <= int(reset_seq):
+                outcome["outcome"] = "nothing_to_do"
+                return outcome
+            db_llm_until = int(getattr(mapping, "summary_llm_until_seq", 0) or 0)
+            llm_text = _normalize_text(getattr(mapping, "rolling_summary_llm", None))
+            prompt_text = _normalize_text(getattr(mapping, "rolling_summary", None))
+            bot = app_db.get(AppAiBot, mapping.bot_id)
+            if bot is None:
+                # Deleted bot: the mapping is orphaned — never pay for an
+                # LLM call on it.
+                _summary_suppressed_until[key] = (time.monotonic() + AI_SUMMARY_UPGRADE_SUPPRESS_SEC, int(reset_seq))
+                outcome["outcome"] = "bot_missing"
+                return outcome
+            # Re-verify access/memory settings — flags may have flipped
+            # between enqueue and processing.
+            memory_ok = bool(getattr(mapping, "use_personal_memory", True)) and bool(
+                self._personal_memory_enabled(session=app_db, user_id=int(user_id))
+            )
+            if _normalize_text(getattr(bot, "surface", None)) == "sandbox":
+                memory_ok = False
+            if not bool(getattr(bot, "use_personal_memory", True)):
+                memory_ok = False
+            if not memory_ok:
+                # Do not write a checkpoint claiming coverage that is not
+                # there; just defer this key so the scan does not spin on it.
+                _summary_suppressed_until[key] = (time.monotonic() + AI_SUMMARY_UPGRADE_SUPPRESS_SEC, int(reset_seq))
+                outcome["outcome"] = "suppressed"
+                return outcome
+            bot_user_id = int(getattr(bot, "bot_user_id", 0) or 0)
+            bot_title = _normalize_text(getattr(bot, "title", None)) or "AI"
+            memory_model = _normalize_text(getattr(bot, "model", None)) if bot is not None else ""
+            if db_llm_until >= until_seq:
+                # LLM coverage complete — only heal the prompt-facing text
+                # if a later fallback overwrite downgraded it. Must run
+                # before the lease CAS (which requires llm < until).
+                if llm_text and prompt_text != llm_text:
+                    app_db.execute(
+                        update(AppAiBotConversation)
+                        .where(
+                            AppAiBotConversation.conversation_id == normalized_conversation_id,
+                            AppAiBotConversation.user_id == int(user_id),
+                            AppAiBotConversation.context_reset_seq == int(reset_seq),
+                            AppAiBotConversation.summary_until_seq == until_seq,
+                            AppAiBotConversation.summary_llm_until_seq == db_llm_until,
+                        )
+                        .values(rolling_summary=llm_text, updated_at=_utc_now())
+                        .execution_options(synchronize_session=False)
+                    )
+                    outcome["outcome"] = "healed"
+                    return outcome
+                outcome["outcome"] = "covered"
+                return outcome
+            # Cross-process lease: at most one AI worker folds this mapping
+            # at a time. CAS on updated_at — a recent write means another
+            # worker holds it or a run just touched the row (interactive
+            # traffic wins the race). Lease expiry is self-healing.
+            lease_cutoff = _utc_now() - timedelta(seconds=AI_SUMMARY_UPGRADE_LEASE_SEC)
+            claimed = app_db.execute(
+                update(AppAiBotConversation)
+                .where(
+                    AppAiBotConversation.conversation_id == normalized_conversation_id,
+                    AppAiBotConversation.user_id == int(user_id),
+                    AppAiBotConversation.context_reset_seq == int(reset_seq),
+                    AppAiBotConversation.summary_llm_until_seq
+                    < AppAiBotConversation.summary_until_seq,
+                    AppAiBotConversation.updated_at <= lease_cutoff,
+                )
+                .values(updated_at=_utc_now())
+                .execution_options(synchronize_session=False)
+            ).rowcount
+            if not claimed:
+                outcome["outcome"] = "lease_busy"
+                return outcome
+        # The user must still be a member of the conversation.
+        with chat_session() as session:
+            is_member = session.execute(
+                select(ChatMember.user_id).where(
+                    ChatMember.conversation_id == normalized_conversation_id,
+                    ChatMember.user_id == int(user_id),
+                )
+            ).first() is not None
+        if not is_member:
+            _summary_suppressed_until[key] = (time.monotonic() + AI_SUMMARY_UPGRADE_SUPPRESS_SEC, int(reset_seq))
+            outcome["outcome"] = "not_a_member"
+            return outcome
+        if db_llm_until > until_seq or db_llm_until <= int(reset_seq) or not llm_text:
+            # Over-claimed / pre-reset / empty coverage: rebuild from the
+            # reset boundary, anchored on the ACTUAL stored checkpoint.
+            read_from, cur_text = int(reset_seq), ""
+        else:
+            read_from, cur_text = db_llm_until, llm_text
+        expected_until = db_llm_until  # CAS anchor — the actual stored value
+        cur_until = read_from          # read position
+        folded = 0
+        llm_calls = 0
+        last_lease_touch = time.monotonic()
+        total_usage: dict[str, int] = {}
+        while cur_until < until_seq and folded < AI_SUMMARY_UPGRADE_MAX_MESSAGES:
+            with chat_session() as session:
+                rows = list(
+                    session.execute(
+                        select(ChatMessage)
+                        .where(
+                            ChatMessage.conversation_id == normalized_conversation_id,
+                            ChatMessage.conversation_seq > int(cur_until),
+                            ChatMessage.conversation_seq <= until_seq,
+                            ChatMessage.is_deleted.is_(False),
+                        )
+                        .order_by(ChatMessage.conversation_seq.asc())
+                        .limit(AI_SUMMARY_UPGRADE_BATCH)
+                    ).scalars()
+                )
+            if not rows:
+                # The remaining range is only deleted messages — the
+                # checkpoint may safely advance over it.
+                chunks = [("", until_seq)]
+            else:
+                pairs = [
+                    (int(item.conversation_seq), f"{bot_title if int(item.sender_user_id or 0) == bot_user_id else 'Пользователь'}: {_truncate_tokens(_normalize_text(item.body), 300)}")
+                    for item in rows
+                    if _normalize_text(item.body)
+                ]
+                if not pairs:
+                    chunks = [("", int(rows[-1].conversation_seq))]
+                else:
+                    # Split the batch into fold chunks under the est-token
+                    # budget: summarize() sends the whole list — nothing is
+                    # dropped silently, but an oversized prompt would fail
+                    # hard at the provider.
+                    chunks = []
+                    chunk: list[tuple[int, str]] = []
+                    chunk_tokens = 0
+                    for seq, line in pairs:
+                        line_tokens = _estimated_tokens(line)
+                        if chunk and chunk_tokens + line_tokens > AI_SUMMARY_UPGRADE_BATCH_TOKENS:
+                            chunks.append((chunk, chunk[-1][0]))
+                            chunk = []
+                            chunk_tokens = 0
+                        chunk.append((seq, line))
+                        chunk_tokens += line_tokens
+                    if chunk:
+                        chunks.append((chunk, chunk[-1][0]))
+            for fold_input, chunk_until in chunks:
+                if isinstance(fold_input, list):
+                    lines = [line for _seq, line in fold_input]
+                elif fold_input:
+                    lines = [str(fold_input)]
+                else:
+                    lines = []
+                if lines:
+                    # Provider-level cap: one job folds many chunks — jobs/min
+                    # alone cannot bound paid calls.
+                    with _pending_summary_lock:
+                        now_mono = time.monotonic()
+                        while _summary_llm_window and now_mono - _summary_llm_window[0] > 60.0:
+                            _summary_llm_window.pop(0)
+                        if len(_summary_llm_window) >= AI_SUMMARY_UPGRADE_LLM_PER_MIN:
+                            _summary_metrics["llm_rate_limited"] += 1
+                            outcome.update(
+                                outcome="rate_limited", folded=folded, llm_calls=llm_calls,
+                                usage=total_usage, checkpoint_before=db_llm_until,
+                                checkpoint_after=cur_until,
+                                duration_ms=int((time.monotonic() - started_at) * 1000),
+                            )
+                            return outcome
+                        _summary_llm_window.append(now_mono)
+                    if int(total_usage.get("total_tokens") or 0) >= AI_SUMMARY_UPGRADE_JOB_TOKEN_CAP:
+                        _summary_metrics["budget_capped"] += 1
+                        outcome.update(
+                            outcome="budget_capped", folded=folded, llm_calls=llm_calls,
+                            usage=total_usage, checkpoint_before=db_llm_until,
+                            checkpoint_after=cur_until,
+                            duration_ms=int((time.monotonic() - started_at) * 1000),
+                        )
+                        return outcome
+                    # Lease renewal: ownership survives long fold runs — the
+                    # gap between updated_at writes is one chunk (LLM calls
+                    # are socket-capped ~10s), far below LEASE_SEC. A dead
+                    # worker's lease expires within LEASE_SEC, error/restart
+                    # the same; a reset flips context_reset_seq anyway.
+                    if time.monotonic() - last_lease_touch > AI_SUMMARY_UPGRADE_LEASE_SEC / 2:
+                        with app_session() as lease_db:
+                            lease_db.execute(
+                                update(AppAiBotConversation)
+                                .where(
+                                    AppAiBotConversation.conversation_id == normalized_conversation_id,
+                                    AppAiBotConversation.user_id == int(user_id),
+                                    AppAiBotConversation.context_reset_seq == int(reset_seq),
+                                )
+                                .values(updated_at=_utc_now())
+                                .execution_options(synchronize_session=False)
+                            )
+                        last_lease_touch = time.monotonic()
+                    try:
+                        new_text, usage = _summarize_with_lease_hold(
+                            cur_text, lines,
+                            conversation_id=normalized_conversation_id,
+                            user_id=int(user_id), reset_seq=int(reset_seq),
+                            model=memory_model,
+                        )
+                    except Exception:
+                        # Count the partial spend before propagating — a
+                        # failed chunk may still have cost tokens upstream.
+                        with _pending_summary_lock:
+                            _summary_metrics["llm_calls"] += llm_calls
+                            for uk in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                                _summary_metrics[uk] += int(total_usage.get(uk) or 0)
+                        raise
+                    llm_calls += 1
+                    for usage_key, usage_val in dict(usage or {}).items():
+                        if isinstance(usage_val, (int, float)):
+                            total_usage[usage_key] = int(total_usage.get(usage_key, 0) + usage_val)
+                    if _MEMORY_SENSITIVE_RE.search(new_text):
+                        raise ValueError("Summary contains sensitive content")
+                    new_text = _truncate_tokens(new_text, AI_ROLLING_SUMMARY_TOKENS)
+                else:
+                    new_text = cur_text
+                with app_session() as app_db:
+                    applied = app_db.execute(
+                        update(AppAiBotConversation)
+                        .where(
+                            AppAiBotConversation.conversation_id == normalized_conversation_id,
+                            AppAiBotConversation.user_id == int(user_id),
+                            AppAiBotConversation.context_reset_seq == int(reset_seq),
+                            AppAiBotConversation.summary_llm_until_seq == int(expected_until),
+                        )
+                        .values(
+                            rolling_summary_llm=new_text,
+                            summary_llm_until_seq=int(chunk_until),
+                            updated_at=_utc_now(),
+                        )
+                    ).rowcount
+                if not applied:
+                    # Reset / concurrent writer: stop — the next claim
+                    # resumes from whatever checkpoint won.
+                    outcome.update(
+                        outcome="cas_conflict", folded=folded, llm_calls=llm_calls,
+                        usage=total_usage,
+                        checkpoint_before=db_llm_until, checkpoint_after=cur_until,
+                        duration_ms=int((time.monotonic() - started_at) * 1000),
+                    )
+                    return outcome
+                cur_until = int(chunk_until)
+                cur_text = new_text
+                expected_until = cur_until
+            folded += len(rows)
+        outcome["checkpoint_before"] = db_llm_until
+        outcome["checkpoint_after"] = cur_until
+        outcome["folded"] = folded
+        outcome["llm_calls"] = llm_calls
+        outcome["usage"] = total_usage
+        if cur_until >= until_seq:
+            with app_session() as app_db:
+                promoted = app_db.execute(
+                    update(AppAiBotConversation)
+                    .where(
+                        AppAiBotConversation.conversation_id == normalized_conversation_id,
+                        AppAiBotConversation.user_id == int(user_id),
+                        AppAiBotConversation.context_reset_seq == int(reset_seq),
+                        AppAiBotConversation.summary_until_seq == until_seq,
+                        AppAiBotConversation.summary_llm_until_seq == int(cur_until),
+                    )
+                    .values(rolling_summary=cur_text, updated_at=_utc_now())
+                ).rowcount
+            outcome["outcome"] = "done" if promoted else "cas_conflict"
+            outcome["duration_ms"] = int((time.monotonic() - started_at) * 1000)
+            logger.info(
+                "ai_summary_upgrade done conversation_id=%s until_seq=%s folded=%s llm_calls=%s "
+                "prompt_tokens=%s total_tokens=%s duration_ms=%s checkpoint=%s->%s promoted=%s",
+                normalized_conversation_id, until_seq, folded, llm_calls,
+                total_usage.get("prompt_tokens") or total_usage.get("input_tokens") or 0,
+                total_usage.get("total_tokens") or 0,
+                outcome["duration_ms"], db_llm_until, cur_until, int(bool(promoted)),
+            )
+        else:
+            outcome["outcome"] = "partial"
+            outcome["duration_ms"] = int((time.monotonic() - started_at) * 1000)
+        return outcome
+
+    def _persist_run_summary(
+        self,
+        *,
+        conversation_id: str,
+        user_id: int,
+        reset_seq: int,
+        summary_until_seq: int,
+        next_summary_until_seq: int,
+        rolling_summary: str,
+        summary_append_lines: list[str],
+        memory_enabled: bool,
+        memory_usage: dict[str, Any],
+        memory_model: str,
+    ) -> tuple[str, dict[str, Any]]:
+        """Persist the summarized range for a run.
+
+        Background path (flag on): the prompt gets the head/tail fallback,
+        the LLM upgrade is queued. Rollback path (flag off): synchronous
+        LLM summarize on the critical path — on success both checkpoints
+        advance and the summary usage is merged into the run usage; on
+        failure the checkpoint does NOT move (baseline parity — the next
+        run retries the range) while the prompt still gets the fallback.
+        Returns (rolling_summary_for_prompt, memory_usage).
+        """
+        normalized_conversation_id = _normalize_text(conversation_id)
+        llm_persisted = False
+        fallback_summary = _compact_head_tail(
+            "\n".join(part for part in [rolling_summary, *summary_append_lines] if part),
+            AI_ROLLING_SUMMARY_TOKENS,
+            head_ratio=0.25,
+        )
+        summary_ready = True
+        if memory_enabled and len(summary_append_lines) < AI_SUMMARY_MIN_BATCH:
+            # Небольшой хвост не сжимаем LLM-вызовом (~6 с на каждое сообщение):
+            # он попадает в промпт как есть, контрольная точка не двигается,
+            # а накопившийся пакет будет сжат одним вызовом.
+            summary_ready = False
+            rolling_summary = fallback_summary
+        elif memory_enabled:
+            if AI_SUMMARY_BACKGROUND_ENABLED:
+                # A8/P1: LLM-саммаризация уходит из критического пути ответа —
+                # в промпт уходит head/tail fallback, а LLM-качество догоняет
+                # фоновой upgrade (см. process_pending_summary_upgrade).
+                self._register_pending_summary(
+                    conversation_id=normalized_conversation_id,
+                    user_id=int(user_id),
+                    reset_seq=reset_seq,
+                )
+                rolling_summary = fallback_summary
+            else:
+                # Rollback path (AI_SUMMARY_BACKGROUND_ENABLED=0):
+                # synchronous LLM summarize on the critical path. The
+                # persisted text is already LLM quality, so the LLM
+                # checkpoint advances together with the prompt one.
+                llm_persisted = True
+                try:
+                    rolling_summary, _summary_usage = smart_memory.summarize(
+                        rolling_summary, summary_append_lines, model=memory_model,
+                    )
+                    if _MEMORY_SENSITIVE_RE.search(rolling_summary):
+                        raise ValueError("Summary contains sensitive content")
+                    rolling_summary = _truncate_tokens(rolling_summary, AI_ROLLING_SUMMARY_TOKENS)
+                    # A8c4: inline summary tokens belong to the run's
+                    # usage — they were paid inside the critical path.
+                    memory_usage = _merge_usage(memory_usage or {}, _summary_usage)
+                except Exception:
+                    llm_persisted = False
+                    # Baseline parity: a failed summarize must NOT advance
+                    # summary_until_seq — otherwise the range is skipped
+                    # forever when the background path is off. The prompt
+                    # still gets the head/tail fallback; the next run
+                    # retries the same range.
+                    summary_ready = False
+                    logger.warning("ai_summary inline summarize failed; head/tail fallback", exc_info=True)
+                    rolling_summary = fallback_summary
+        else:
+            rolling_summary = fallback_summary
+        if summary_ready:
+            values: dict[str, Any] = {
+                "rolling_summary": rolling_summary,
+                "summary_until_seq": next_summary_until_seq,
+                "updated_at": _utc_now(),
+            }
+            if llm_persisted:
+                values["rolling_summary_llm"] = rolling_summary
+                values["summary_llm_until_seq"] = next_summary_until_seq
+            with app_session() as app_db:
+                app_db.execute(
+                    update(AppAiBotConversation)
+                    .where(
+                        AppAiBotConversation.conversation_id == normalized_conversation_id,
+                        AppAiBotConversation.user_id == int(user_id),
+                        AppAiBotConversation.summary_until_seq == summary_until_seq,
+                        AppAiBotConversation.context_reset_seq == reset_seq,
+                    )
+                    .values(**values)
+                )
+        return rolling_summary, memory_usage
 
     def reap_stale_runs(
         self,
@@ -7797,49 +8569,18 @@ class AiChatService:
             _log_ai_run_timing("memory", memory_started_at, run_id=lap_run_id)
         _lap("ctx_memory")
         if summary_append_lines:
-            fallback_summary = _compact_head_tail(
-                "\n".join(part for part in [rolling_summary, *summary_append_lines] if part),
-                AI_ROLLING_SUMMARY_TOKENS,
-                head_ratio=0.25,
+            rolling_summary, memory_usage = self._persist_run_summary(
+                conversation_id=normalized_conversation_id,
+                user_id=int(user_payload["id"]),
+                reset_seq=reset_seq,
+                summary_until_seq=summary_until_seq,
+                next_summary_until_seq=next_summary_until_seq,
+                rolling_summary=rolling_summary,
+                summary_append_lines=summary_append_lines,
+                memory_enabled=memory_enabled,
+                memory_usage=memory_usage,
+                memory_model=memory_model,
             )
-            summary_ready = True
-            if memory_enabled and len(summary_append_lines) < AI_SUMMARY_MIN_BATCH:
-                # Небольшой хвост не сжимаем LLM-вызовом (~6 с на каждое сообщение):
-                # он попадает в промпт как есть, контрольная точка не двигается,
-                # а накопившийся пакет будет сжат одним вызовом.
-                summary_ready = False
-                rolling_summary = fallback_summary
-            elif memory_enabled:
-                try:
-                    rolling_summary, summary_usage = smart_memory.summarize(rolling_summary,
-                        summary_append_lines, model=memory_model)
-                    if _MEMORY_SENSITIVE_RE.search(rolling_summary):
-                        raise ValueError("Summary contains sensitive content")
-                    memory_usage = _merge_usage(memory_usage, summary_usage)
-                    rolling_summary = _truncate_tokens(rolling_summary, AI_ROLLING_SUMMARY_TOKENS)
-                except Exception as exc:
-                    logger.warning("ai_memory_summary_failed conversation_id=%s error_type=%s",
-                                   normalized_conversation_id, type(exc).__name__)
-                    summary_ready = False
-                    rolling_summary = fallback_summary
-            else:
-                rolling_summary = fallback_summary
-            if summary_ready:
-                with app_session() as app_db:
-                    app_db.execute(
-                        update(AppAiBotConversation)
-                        .where(
-                            AppAiBotConversation.conversation_id == normalized_conversation_id,
-                            AppAiBotConversation.user_id == int(user_payload["id"]),
-                            AppAiBotConversation.summary_until_seq == summary_until_seq,
-                            AppAiBotConversation.context_reset_seq == reset_seq,
-                        )
-                        .values(
-                            rolling_summary=rolling_summary,
-                            summary_until_seq=next_summary_until_seq,
-                            updated_at=_utc_now(),
-                        )
-                    )
         _lap("ctx_summary")
         with app_session() as app_db:
             current_mapping = app_db.execute(select(AppAiBotConversation).where(

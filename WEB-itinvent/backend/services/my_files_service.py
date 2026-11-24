@@ -606,7 +606,14 @@ class MyFilesService:
             raise MyFilesValidationError("Retention days must be one of 0, 1, 3, 7, 10 or 30 (0 keeps files forever)")
         return days
 
-    def _preview_summary_locked(self, session, row: AppMyFile, *, preview: Any = _UNSET) -> dict[str, Any]:
+    def _preview_summary_locked(
+        self,
+        session,
+        row: AppMyFile,
+        *,
+        preview: Any = _UNSET,
+        preview_exists: bool | None = None,
+    ) -> dict[str, Any]:
         file_name = _normalize_text(row.download_file_name) or _normalize_text(row.original_file_name) or "file.bin"
         mime_type = _normalize_text(row.download_mime_type) or _normalize_text(row.mime_type) or "application/octet-stream"
         preview_kind = self._classify_preview_kind(filename=file_name, mime_type=mime_type)
@@ -619,12 +626,12 @@ class MyFilesService:
                 preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
             if preview is not None:
                 preview_status = _normalize_text(preview.status) or preview_status
-                preview_path = Path(_normalize_text(preview.preview_path))
+                exists = preview_exists if preview_exists is not None else Path(_normalize_text(preview.preview_path)).is_file()
                 preview_available = bool(
                     preview.status == PREVIEW_STATUS_READY
                     and download_size > 0
                     and download_size <= preview_max_bytes
-                    and preview_path.is_file()
+                    and exists
                 )
             elif download_size <= 0 or download_size > preview_max_bytes:
                 preview_status = PREVIEW_STATUS_ERROR
@@ -641,6 +648,7 @@ class MyFilesService:
         session=None,
         *,
         preview: Any = _UNSET,
+        preview_exists: bool | None = None,
         folder_name: str = "",
         collaborators_count: int = 0,
         shared_with_me: bool = False,
@@ -650,7 +658,7 @@ class MyFilesService:
         original_size = int(row.original_size_bytes or 0)
         stored_size = int(row.stored_size_bytes or 0)
         preview_summary = (
-            self._preview_summary_locked(session, row, preview=preview)
+            self._preview_summary_locked(session, row, preview=preview, preview_exists=preview_exists)
             if session is not None
             else {
                 "preview_kind": "unsupported",
@@ -1569,6 +1577,34 @@ class MyFilesService:
     _PURGE_IO_EXECUTOR = ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="myfiles-purge-io"
     )
+    _PREVIEW_STAT_EXECUTOR = ThreadPoolExecutor(
+        max_workers=8, thread_name_prefix="myfiles-preview-stat"
+    )
+
+    def _preview_existence_map(self, preview_map: dict[str, Any]) -> dict[str, bool]:
+        """Verdicts for every READY preview path in one parallel stat batch.
+
+        Serializing a listing otherwise pays one filesystem stat per row; on
+        Windows/UNC storage with antivirus scanning that turns a 5000-row
+        listing into seconds of pure I/O. The outcome is identical, only the
+        checks run concurrently.
+        """
+        candidates = [
+            (blob_id, Path(raw_path))
+            for blob_id, preview in preview_map.items()
+            if preview is not None
+            and preview.status == PREVIEW_STATUS_READY
+            and (raw_path := _normalize_text(preview.preview_path))
+        ]
+        if not candidates:
+            return {}
+        if len(candidates) <= 8:
+            return {blob_id: path.is_file() for blob_id, path in candidates}
+        try:
+            verdicts = list(self._PREVIEW_STAT_EXECUTOR.map(lambda item: item[1].is_file(), candidates))
+        except Exception:
+            verdicts = [path.is_file() for _, path in candidates]
+        return {blob_id: verdict for (blob_id, _), verdict in zip(candidates, verdicts)}
 
     def _defer_io_cleanup(self, *, blob_paths: list[Path], spool_paths: list[Path]) -> None:
         """Run committed physical deletes off the request path."""
@@ -2521,12 +2557,14 @@ class MyFilesService:
                         select(AppMyFilePreview).where(AppMyFilePreview.blob_id.in_(set(blob_ids)))
                     ).all()
                 } if blob_ids else {}
+                preview_exists = self._preview_existence_map(preview_map)
                 return {
                     "items": [
                         self._response(
                             row,
                             session=session,
                             preview=preview_map.get(_normalize_text(row.blob_id)),
+                            preview_exists=preview_exists.get(_normalize_text(row.blob_id)),
                             viewer_user_id=viewer_user_id or user_id,
                             folder_name=(all_folders.get(row.folder_id).name if all_folders.get(row.folder_id) else ""),
                             collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
@@ -2571,12 +2609,14 @@ class MyFilesService:
                         select(AppMyFilePreview).where(AppMyFilePreview.blob_id.in_(set(blob_ids)))
                     ).all()
                 } if blob_ids else {}
+                preview_exists = self._preview_existence_map(preview_map)
                 return {
                     "items": [
                         self._response(
                             row,
                             session=session,
                             preview=preview_map.get(_normalize_text(row.blob_id)),
+                            preview_exists=preview_exists.get(_normalize_text(row.blob_id)),
                             viewer_user_id=viewer_user_id or user_id,
                             folder_name=(all_folders.get(row.folder_id).name if all_folders.get(row.folder_id) else ""),
                             collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
@@ -2670,12 +2710,14 @@ class MyFilesService:
             collab_counts = self._collab_counts_locked(
                 session, [row.id for row in rows], inherited_user_ids=inherited_users
             )
+            preview_exists = self._preview_existence_map(preview_map)
             return {
                 "items": [
                     self._response(
                         row,
                         session=session,
                         preview=preview_map.get(_normalize_text(row.blob_id)),
+                        preview_exists=preview_exists.get(_normalize_text(row.blob_id)),
                         viewer_user_id=viewer_user_id or user_id,
                         collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
                     )

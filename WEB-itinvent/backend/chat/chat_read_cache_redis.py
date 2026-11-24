@@ -57,6 +57,70 @@ class ChatReadCacheRedis:
             self._errors += 1
             logger.debug("chat.read_cache.redis set failed for %s", redis_key, exc_info=True)
 
+    # A8c3: distributed per-conversation generation. Local epochs only
+    # order fills within ONE process; a stale fill racing a cross-node
+    # invalidation must be rejected by the shared store itself.
+    def _conv_epoch_key(self, conversation_id: str) -> str:
+        return f"{_KEY_PREFIX}conv_epoch:{str(conversation_id or '').strip()}"
+
+    def bump_conversation_epoch(self, conversation_id: str) -> None:
+        client = self._get_client()
+        normalized = str(conversation_id or "").strip()
+        if client is None or not normalized:
+            return
+        try:
+            client.incr(self._conv_epoch_key(normalized))
+        except Exception:
+            self._errors += 1
+            logger.debug("chat.read_cache.redis bump epoch failed for %s", normalized, exc_info=True)
+
+    def get_conversation_epoch(self, conversation_id: str) -> int:
+        client = self._get_client()
+        normalized = str(conversation_id or "").strip()
+        if client is None or not normalized:
+            return 0
+        try:
+            raw = client.get(self._conv_epoch_key(normalized))
+            return int(raw or 0)
+        except Exception:
+            self._errors += 1
+            return 0
+
+    def set_if_epoch(
+        self,
+        internal_key: str,
+        value: Any,
+        ttl_sec: int,
+        *,
+        conversation_id: str,
+        epoch: int,
+    ) -> bool:
+        """Atomic conditional write: store only if the conversation
+        generation still equals the value captured before the DB read.
+        Fails safe (drops the write) on any error — a stale page is worse
+        than a cache miss."""
+        client = self._get_client()
+        if client is None:
+            return False
+        redis_key = _KEY_PREFIX + str(internal_key)
+        epoch_key = self._conv_epoch_key(conversation_id)
+        try:
+            payload = json.dumps(value, default=str, separators=(",", ":"))
+            return bool(
+                client.eval(
+                    "local e = redis.call('GET', KEYS[2]) "
+                    "if (not e and ARGV[3] == '0') or e == ARGV[3] then "
+                    "return redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2]) "
+                    "else return 0 end",
+                    2, redis_key, epoch_key,
+                    payload, str(max(1, int(ttl_sec))), str(int(epoch)),
+                )
+            )
+        except Exception:
+            self._errors += 1
+            logger.debug("chat.read_cache.redis set_if_epoch failed for %s", redis_key, exc_info=True)
+            return False
+
     def delete_keys(self, internal_keys: list[str]) -> None:
         """Delete known read-cache keys without SCAN (hot path for message send)."""
         client = self._get_client()
@@ -101,6 +165,26 @@ class ChatReadCacheRedis:
         except Exception:
             self._errors += 1
             logger.debug("chat.read_cache.redis invalidate_all failed", exc_info=True)
+
+    def invalidate_conversation(self, *, conversation_id: str) -> None:
+        """Drop shared entries tied to one conversation across all users.
+
+        Conv-scoped keys embed the conversation id as the first path segment
+        of ``extra`` (``{conv}|...``); list buckets cannot be matched and are
+        left to their TTL / per-user invalidations.
+        """
+        client = self._get_client()
+        normalized = str(conversation_id or "").strip()
+        if client is None or not normalized:
+            return
+        needle = f"::{normalized}|"
+        try:
+            client.incr(self._conv_epoch_key(normalized))
+            for key in client.scan_iter(match=f"{_KEY_PREFIX}*{needle}*", count=256):
+                client.delete(key)
+        except Exception:
+            self._errors += 1
+            logger.debug("chat.read_cache.redis invalidate_conversation failed", exc_info=True)
 
     def invalidate_bucket(self, bucket: str) -> None:
         normalized_bucket = _normalize_bucket(bucket)
