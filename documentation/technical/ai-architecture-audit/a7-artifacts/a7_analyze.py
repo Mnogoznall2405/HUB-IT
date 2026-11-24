@@ -12,7 +12,7 @@ jev = {}        # run_id -> {intent, latency_ms, routed, cache}
 rx_stage = re.compile(r"ai_chat\.run\.(\w+) duration_ms=([\d.]+)(?:.*?)run_id=([0-9a-f-]{36})")
 rx_final = re.compile(r"ai_run_profile_final run_id=([0-9a-f-]{36}) (.*)")
 rx_jev = re.compile(r"ai_jev_routing probs=\{[^}]*\} routed=(\[.*?\]) sticky=(\[.*?\]) intent=(\w+) probs_mode=\{[^}]*\} latency_ms=(\d+).*run_id=([0-9a-f-]{36})")
-rx_cache = re.compile(r"ai_jev_routing_cache (hit|miss) mode=\w+ run_id=([0-9a-f-]{36})")
+rx_cache = re.compile(r"ai_jev_routing_cache (hit|miss) mode=\w+(?:\s+routed=\[[^\]]*\])?(?:\s+selected=\d+)?\s+run_id=([0-9a-f-]{36})")
 kv = re.compile(r"(\w+)=([^\s]+(?:\[[^\]]*\])?)")
 
 def parse_final(rest):
@@ -32,8 +32,11 @@ with io.open(LOG, encoding="utf-8", errors="replace") as f:
             profiles[m.group(1)] = parse_final(m.group(2)); continue
         m = rx_jev.search(line)
         if m:
-            jev[m.group(5)] = {"routed": m.group(1), "sticky": m.group(2),
-                               "intent": m.group(3), "jev_ms": int(m.group(4))}
+            # Merge, not overwrite: the cache hit/miss line may precede the
+            # decision line for the same run_id.
+            entry = jev.setdefault(m.group(5), {})
+            entry.update({"routed": m.group(1), "sticky": m.group(2),
+                          "intent": m.group(3), "jev_ms": int(m.group(4))})
             continue
         m = rx_cache.search(line)
         if m:
@@ -69,7 +72,8 @@ summary = {
     "server_total_ms": stat([float((r.get("profile") or {}).get("server_total_ms", "nan") or "nan") if (r.get("profile") or {}).get("server_total_ms") else None for r in enriched]),
     "queue_wait_ms": stat([float((r.get("profile") or {}).get("queue_wait_ms", "nan") or "nan") if (r.get("profile") or {}).get("queue_wait_ms") else None for r in enriched]),
     "llm_first_ms": stat([(r.get("stages") or {}).get("llm_first", [None])[0] for r in enriched]),
-    "llm_followup_ms": stat([max((r.get("stages") or {}).get("llm_followup", [0]) or [0]) or None for r in enriched]),
+    # Sum of ALL sequential follow-up rounds, not just the longest one.
+    "llm_followup_ms": stat([sum((r.get("stages") or {}).get("llm_followup", []) or [0]) or None for r in enriched]),
     "tools_ms": stat([sum((r.get("stages") or {}).get("tools", []) or [0]) or None for r in enriched]),
     "context_ms": stat([(r.get("stages") or {}).get("context", [None])[0] for r in enriched]),
     "jev_ms": stat([(r.get("jev") or {}).get("jev_ms") for r in enriched]),
