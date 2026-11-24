@@ -32,7 +32,7 @@
                        "id":  "FE-0001",
                        "severity":  "Medium",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P2",
                        "batch":  "auth-misc",
                        "page":  "/login",
@@ -42,18 +42,19 @@
                        "related":  [
                                        "FE-0002"
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "localizeAuthErrorMessage maps backend auth detail strings to RU",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0002",
                        "severity":  "Medium",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P2",
                        "batch":  "auth-misc",
                        "page":  "/login",
@@ -63,18 +64,19 @@
                        "related":  [
                                        "FE-0001"
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "InfoBanner drops role=status inside toast shell (no double announce)",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0003",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "auth-misc",
                        "page":  "/login",
@@ -84,12 +86,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "eye button 36x36 + dynamic RU aria-label",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0004",
@@ -138,7 +141,7 @@
                        "id":  "FE-0006",
                        "severity":  "Medium",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "REJECTED",
                        "priority":  "P2",
                        "batch":  "auth-misc",
                        "page":  "global",
@@ -148,12 +151,12 @@
                        "related":  [
                                        "FE-0004"
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "whitelist is live: myFiles.js getPublicFile/Preview + myFilesOffice editor go through apiClient; early-reject avoids refresh storm; covered by client.test.js:208"
                    },
                    {
                        "id":  "FE-0007",
@@ -860,7 +863,7 @@
                        "id":  "FE-0040",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "auth-misc",
                        "page":  null,
@@ -870,12 +873,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "qrcode lazy dynamic import, Login chunk 56KB",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0041",
@@ -1009,7 +1013,7 @@
                        "id":  "FE-0047",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "auth-misc",
                        "page":  null,
@@ -1019,12 +1023,13 @@
                        "related":  [
                                        "FE-0083"
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "epoch reset on passkey-login + trusted-devices auth success",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0048",
@@ -1291,7 +1296,7 @@
                        "id":  "FE-0061",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "auth-misc",
                        "page":  "/login",
@@ -1301,12 +1306,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "role=main on login root",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0062",
@@ -1463,7 +1469,7 @@
                        "id":  "FE-0069",
                        "severity":  "Info",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "auth-misc",
                        "page":  null,
@@ -1473,12 +1479,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "documented UX-layer grants; server enforces require_permission (~80 routers)",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0070",
@@ -1829,7 +1836,7 @@
                        "id":  "FE-0086",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "auth-misc",
                        "page":  null,
@@ -1839,12 +1846,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "suppressed-401 no longer wipes localStorage.user (cross-tab race)",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0087",
@@ -2916,7 +2924,7 @@
                        "id":  "FE-0137",
                        "severity":  "Info",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "auth-misc",
                        "page":  null,
@@ -2926,12 +2934,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "documented cache-restore flash; applySessionUser swaps divergent user",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0138",
@@ -4308,7 +4317,7 @@
                        "id":  "FE-0200",
                        "severity":  "Medium",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P2",
                        "batch":  "auth-misc",
                        "page":  null,
@@ -4318,18 +4327,19 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "new safeStorage lib; all hot-path storage reads/writes guarded",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0201",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "auth-misc",
                        "page":  null,
@@ -4339,18 +4349,19 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "forced location.assign removed; LoginRoute owns post-auth SPA nav",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0202",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "auth-misc",
                        "page":  null,
@@ -4360,18 +4371,19 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "recovery listeners auto-detach after 15s",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0203",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "auth-misc",
                        "page":  null,
@@ -4381,12 +4393,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "50ms WebAuthn poll cleared at 500ms timeout",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0204",
@@ -4581,7 +4594,7 @@
                        "id":  "FE-0213",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "auth-misc",
                        "page":  null,
@@ -4591,12 +4604,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "backup auto-submit requires 8+ non-dash chars",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0214",
@@ -4862,7 +4876,7 @@
                        "id":  "FE-0226",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "auth-misc",
                        "page":  null,
@@ -4872,12 +4886,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  48,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "getCachedGet accepts + forwards AbortSignal",
+                       "commit":  "8c20ce0c"
                    },
                    {
                        "id":  "FE-0227",
