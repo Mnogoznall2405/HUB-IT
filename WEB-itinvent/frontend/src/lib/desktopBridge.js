@@ -537,9 +537,20 @@ const isValidMailComposeRoute = (route) => {
   }
 };
 
-const isValidWorkspaceEditorRoute = (route) => (
-  isValidRoute(route) && /^\/my-files\/edit\/[A-Za-z0-9_-]{1,64}$/u.test(route)
-);
+const isValidWorkspaceEditorRoute = (route) => {
+  if (!isValidRoute(route)) return false;
+  try {
+    const url = new URL(route, 'https://hub.invalid');
+    if (url.origin !== 'https://hub.invalid') return false;
+    if (!/^\/my-files\/edit\/[A-Za-z0-9_-]{1,64}$/u.test(url.pathname)) return false;
+    // Единственный допустимый параметр — сравнение версий документа.
+    return [...url.searchParams.entries()].every(([key, value]) => (
+      key === 'compare' && value.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(value)
+    ));
+  } catch {
+    return false;
+  }
+};
 
 const isValidWorkspaceChromeDocument = (entry) => (
   entry
@@ -566,6 +577,20 @@ const isValidWorkspaceChromeState = (state) => (
   && (!state.activeId || state.documents.some(document => document.id === state.activeId))
   && typeof state.history === 'boolean'
 );
+
+// Лимиты нативной полосы — мягкие: лишние вкладки и длинные заголовки режем,
+// а не отклоняем снимок целиком (иначе полоса исчезает совсем).
+const normalizeWorkspaceChromeState = (state) => {
+  if (!state || typeof state !== 'object' || !Array.isArray(state.documents)) return state;
+  const documents = state.documents
+    .slice(0, MAXIMUM_WORKSPACE_DOCUMENTS)
+    .map((entry) => (
+      entry && typeof entry.title === 'string' && entry.title.length > MAXIMUM_WORKSPACE_DOCUMENT_TITLE_LENGTH
+        ? { ...entry, title: entry.title.slice(0, MAXIMUM_WORKSPACE_DOCUMENT_TITLE_LENGTH) }
+        : entry
+    ));
+  return documents === state.documents ? state : { ...state, documents };
+};
 
 // Команда нативной полосы: history идёт без id, activate/close — с id вкладки.
 const isValidWorkspaceChromeCommandMessage = (message) => {
@@ -978,14 +1003,15 @@ export function syncDesktopQuickRoutes(routes) {
 /** Снимок вкладочной полосы workspace → нативная шапка второго окна. */
 export function syncDesktopWorkspaceChrome(state) {
   if (!isDesktopCapabilityAvailable(DESKTOP_WORKSPACE_CHROME_CAPABILITY)) return false;
-  if (!isValidWorkspaceChromeState(state)) return false;
+  const normalized = normalizeWorkspaceChromeState(state);
+  if (!isValidWorkspaceChromeState(normalized)) return false;
 
   const message = {
     type: WORKSPACE_CHROME_MESSAGE_TYPE,
     version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
-    documents: state.documents,
-    activeId: state.activeId,
-    history: state.history,
+    documents: normalized.documents,
+    activeId: normalized.activeId,
+    history: normalized.history,
   };
   if (JSON.stringify(message).length > MAXIMUM_INBOUND_MESSAGE_LENGTH) return false;
 

@@ -605,7 +605,7 @@ async function handleNavigationRequest(request, event) {
   return await cachedResponse() || networkResponse || buildOfflineShellResponse();
 }
 
-async function handleStaticAssetRequest(request) {
+async function handleStaticAssetRequest(request, event) {
   const cache = await caches.open(APP_ASSET_CACHE);
   const cachedResponse = await cache.match(request, { ignoreSearch: true });
   const networkPromise = fetch(request)
@@ -618,6 +618,8 @@ async function handleStaticAssetRequest(request) {
     .catch(() => null);
 
   if (cachedResponse) {
+    // Держим воркер живым, пока фоновая ревалидация пишет в runtime-кэш.
+    event.waitUntil(networkPromise);
     return cachedResponse;
   }
 
@@ -1007,7 +1009,7 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (isStaticAssetRequest(request, url)) {
-    event.respondWith(handleStaticAssetRequest(request));
+    event.respondWith(handleStaticAssetRequest(request, event));
   }
 });
 

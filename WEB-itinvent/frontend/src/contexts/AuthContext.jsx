@@ -173,6 +173,10 @@ const isLoginRoute = () => {
 };
 
 const SESSION_RECOVERY_RETRY_DELAYS_MS = [1000, 2000, 5000, 15000, 30000];
+// Плановые ретраи ограничены: без лимита офлайн-перезагрузка навсегда висела бы
+// на «Загружаем раздел…». После лимита loading снимается, а online/focus/
+// visibilitychange-слушатели продолжают проверять сессию в фоне.
+const SESSION_RECOVERY_MAX_ATTEMPTS = 8;
 
 const isDefinitiveSessionRejection = (requestError) => {
   const status = Number(requestError?.response?.status || 0);
@@ -323,6 +327,10 @@ export const AuthProvider = ({ children }) => {
 
     const scheduleRetry = () => {
       if (cancelled || definitiveRejection || retryTimer !== null) return;
+      if (retryAttempt >= SESSION_RECOVERY_MAX_ATTEMPTS) {
+        setLoading(false);
+        return;
+      }
       const retryDelay = SESSION_RECOVERY_RETRY_DELAYS_MS[
         Math.min(retryAttempt, SESSION_RECOVERY_RETRY_DELAYS_MS.length - 1)
       ];
@@ -424,7 +432,7 @@ export const AuthProvider = ({ children }) => {
         }
       } catch (requestError) {
         if (cancelled || generation !== sessionGenerationRef.current) return;
-        if (isDefinitiveSessionRejection(requestError)) {
+        if (isDefinitiveSessionRejection(requestError) || attempt >= SESSION_RECOVERY_MAX_ATTEMPTS) {
           setLoading(false);
           return;
         }

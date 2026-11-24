@@ -7,6 +7,49 @@ let displayModeListenersBound = false;
 let pendingReloadAfterUpdate = false;
 let swMessageHandler = null;
 let swControllerChangeHandler = null;
+let pwaUpdateChannel = null;
+let crossTabReloadTimer = null;
+
+const PWA_UPDATE_CHANNEL_NAME = 'itinvent:pwa-update';
+const CROSS_TAB_RELOAD_FALLBACK_MS = 5000;
+
+// A user-applied SW update reloads this tab on controllerchange; sibling tabs
+// stay on the old bundle without a broadcast. Peer tabs arm the same reload
+// path and fall back to a timed reload if their controllerchange already fired.
+function getPwaUpdateChannel() {
+  if (pwaUpdateChannel !== null) return pwaUpdateChannel;
+  if (typeof BroadcastChannel === 'undefined') {
+    pwaUpdateChannel = false;
+    return null;
+  }
+  try {
+    const channel = new BroadcastChannel(PWA_UPDATE_CHANNEL_NAME);
+    channel.addEventListener('message', (event) => {
+      if (event?.data?.type !== 'applied') return;
+      pendingReloadAfterUpdate = true;
+      if (crossTabReloadTimer === null && typeof window !== 'undefined') {
+        crossTabReloadTimer = window.setTimeout(() => {
+          crossTabReloadTimer = null;
+          if (!pendingReloadAfterUpdate) return;
+          pendingReloadAfterUpdate = false;
+          window.location.reload();
+        }, CROSS_TAB_RELOAD_FALLBACK_MS);
+      }
+    });
+    pwaUpdateChannel = channel;
+  } catch {
+    pwaUpdateChannel = false;
+  }
+  return pwaUpdateChannel || null;
+}
+
+function broadcastPwaUpdateApplied() {
+  try {
+    getPwaUpdateChannel()?.postMessage({ type: 'applied' });
+  } catch {
+    // Channel failures must not break the local reload path.
+  }
+}
 
 let runtimeState = {
   updateAvailable: false,
@@ -163,6 +206,7 @@ function bindDisplayModeListeners() {
 function bindRuntimeListeners() {
   if (runtimeListenersBound || typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
   runtimeListenersBound = true;
+  getPwaUpdateChannel();
 
   swMessageHandler = (event) => {
     const messageType = String(event?.data?.type || '').trim();
@@ -188,6 +232,11 @@ function bindRuntimeListeners() {
       return;
     }
     pendingReloadAfterUpdate = false;
+    if (crossTabReloadTimer !== null) {
+      window.clearTimeout(crossTabReloadTimer);
+      crossTabReloadTimer = null;
+    }
+    broadcastPwaUpdateApplied();
     window.location.reload();
   };
 
@@ -266,6 +315,7 @@ export function bindPwaRuntime(registration) {
 export async function applyPwaUpdate() {
   if (!currentRegistration?.waiting) return false;
   pendingReloadAfterUpdate = true;
+  getPwaUpdateChannel();
   try {
     currentRegistration.waiting.postMessage({ type: 'itinvent:skip-waiting' });
     return true;
