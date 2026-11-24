@@ -4084,7 +4084,7 @@
       "id": "FE-0239",
       "severity": "High",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P0",
       "batch": "account-departments",
       "page": null,
@@ -4092,10 +4092,13 @@
       "lines": "58-89 (loadMembers без seq-guard),129-142 (handleSaveManagers шлёт draftManagerIds в selectedDepartmentId)",
       "title": "Аккаунт: гонка loadMembers между отделами → «Сохранить начальников» пишет роли в чужой отдел",
       "related": [],
-      "pr": null,
+      "pr": 28,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "2f80488b",
+      "note": "PR #28 fix/account-department-race: seq-guard in loadMembers, membersDeptId draft tag, save guard+disabled button, selectedDeptRef post-save reload. Tests 3 new pass; build pass. Review: 2 medium wedge-states found and fixed."
     },
     {
       "id": "FE-0240",
