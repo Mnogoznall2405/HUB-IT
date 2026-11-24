@@ -2138,7 +2138,9 @@ function Networks() {
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Открытый диалог/дровер сам обрабатывает Escape и Ctrl+S — не трогаем.
-      if (document.querySelector('.MuiModal-root')) return;
+      // keepMounted-модалки MainLayout остаются в DOM с классом MuiModal-hidden —
+      // открытость определяем по ней, иначе глобальные клавиши молча умирают.
+      if (document.querySelector('.MuiModal-root:not(.MuiModal-hidden)')) return;
       const portId = editingPortIdRef.current;
 
       // Escape key
