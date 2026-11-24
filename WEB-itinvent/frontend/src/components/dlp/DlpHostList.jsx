@@ -412,8 +412,18 @@ export default function DlpHostList({ hosts, attentionMap, onOpenHost, onOpenBro
                           <TableRow
                             key={host.computer_name}
                             hover
+                            tabIndex={0}
                             onClick={() => onOpenHost(host.computer_name)}
-                            sx={{ cursor: 'pointer' }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                onOpenHost(host.computer_name);
+                              }
+                            }}
+                            sx={{
+                              cursor: 'pointer',
+                              '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
+                            }}
                           >
                             <TableCell>
                               <Typography fontWeight={600}>{host.computer_name}</Typography>

@@ -46,6 +46,8 @@ export default function FileEgress() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [reportHtml, setReportHtml] = useState(null);
+  const [reportBusy, setReportBusy] = useState(false);
+  const loadInFlight = useRef(false);
   const [channel, setChannel] = useState('all');
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -161,6 +163,8 @@ export default function FileEgress() {
   }, []);
 
   const load = useCallback(async () => {
+    if (loadInFlight.current) return;
+    loadInFlight.current = true;
     setLoading(true);
     setError('');
     try {
@@ -173,6 +177,7 @@ export default function FileEgress() {
     } catch (err) {
       setError(err?.response?.data?.detail || err.message || 'Ошибка загрузки');
     } finally {
+      loadInFlight.current = false;
       setLoading(false);
     }
   }, []);
@@ -251,13 +256,16 @@ export default function FileEgress() {
   const hostBrowserTotal = Number(selectedStats?.visits) || 0;
 
   const openReport = async () => {
-    if (!selectedHost) return;
+    if (!selectedHost || reportBusy) return;
+    setReportBusy(true);
     try {
       const res = await fsEgressAPI.getTelegramReport(selectedHost);
       const html = typeof res.data === 'string' ? res.data : String(res.data || '');
       setReportHtml(html);
     } catch (err) {
       setError(err?.response?.data?.detail || err.message || 'Не удалось открыть отчёт');
+    } finally {
+      setReportBusy(false);
     }
   };
 
@@ -305,7 +313,7 @@ export default function FileEgress() {
               </Tabs>
             ) : null}
             actions={(
-              <Button size="small" startIcon={<RefreshIcon />} onClick={load} variant="outlined" sx={{ flexShrink: 0 }}>
+              <Button size="small" startIcon={<RefreshIcon />} onClick={load} disabled={loading} variant="outlined" sx={{ flexShrink: 0 }}>
                 Обновить
               </Button>
             )}
@@ -349,6 +357,7 @@ export default function FileEgress() {
                 onDayChange={setDay}
                 onBack={closeHost}
                 onOpenReport={openReport}
+                reportBusy={reportBusy}
               />
               <DlpActivityBlock
                 computerName={selectedHost}

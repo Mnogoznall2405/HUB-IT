@@ -1,5 +1,5 @@
 import useRequestGuard from '../lib/useRequestGuard';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -551,6 +551,14 @@ function KnowledgeBase() {
   const [selectedArticleId, setSelectedArticleId] = useState('');
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
   const [selectedCardId, setSelectedCardId] = useState('');
+  // Выбор элемента не должен инвалидировать/перезапускать загрузку списков —
+  // только загрузку детали. Поэтому списочные загрузчики читают id через ref.
+  const selectedArticleIdRef = useRef('');
+  const selectedTemplateIdRef = useRef('');
+  const selectedCardIdRef = useRef('');
+  selectedArticleIdRef.current = selectedArticleId;
+  selectedTemplateIdRef.current = selectedTemplateId;
+  selectedCardIdRef.current = selectedCardId;
   const [selectedArticle, setSelectedArticle] = useState(null);
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [selectedCard, setSelectedCard] = useState(null);
@@ -598,12 +606,15 @@ function KnowledgeBase() {
     }
   }, [notifyApiError]);
 
-  const beginArticleDetail = useRequestGuard(JSON.stringify([selectedArticleId, articleFilters]));
-  const beginTemplateDetail = useRequestGuard(JSON.stringify([selectedTemplateId, templateFilters]));
-  const beginCardDetail = useRequestGuard(JSON.stringify([selectedCardId, cardFilters]));
-  const beginArticles = useRequestGuard(JSON.stringify([articleFilters, selectedArticleId]));
-  const beginTemplates = useRequestGuard(JSON.stringify([templateFilters, selectedTemplateId]));
-  const beginCards = useRequestGuard(JSON.stringify([cardFilters, selectedCardId]));
+  // Выбор не входит в scope ни одного гарда: клик синхронно стартует загрузку
+  // детали, и ререндер по selectedXId тут же её инвалидировал бы. Порядок
+  // ответов держит счётчик версий — новый вызов гасит предыдущий in-flight.
+  const beginArticleDetail = useRequestGuard(JSON.stringify([articleFilters]));
+  const beginTemplateDetail = useRequestGuard(JSON.stringify([templateFilters]));
+  const beginCardDetail = useRequestGuard(JSON.stringify([cardFilters]));
+  const beginArticles = useRequestGuard(JSON.stringify([articleFilters]));
+  const beginTemplates = useRequestGuard(JSON.stringify([templateFilters]));
+  const beginCards = useRequestGuard(JSON.stringify([cardFilters]));
 
   const loadArticleDetail = useCallback(async (articleId, target = 'article') => {
     const isCurrent = (target === 'template' ? beginTemplateDetail : beginArticleDetail)();
@@ -663,7 +674,7 @@ function KnowledgeBase() {
       if (!isCurrent()) return;
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setArticlesState({ items, total: Number(payload?.total || items.length) });
-      const nextSelectedId = items.some((item) => item.id === selectedArticleId) ? selectedArticleId : (items[0]?.id || '');
+      const nextSelectedId = items.some((item) => item.id === selectedArticleIdRef.current) ? selectedArticleIdRef.current : (items[0]?.id || '');
       setSelectedArticleId(nextSelectedId);
       if (nextSelectedId) {
         await loadArticleDetail(nextSelectedId, 'article');
@@ -676,7 +687,7 @@ function KnowledgeBase() {
     } finally {
       if (isCurrent()) setArticlesLoading(false);
     }
-  }, [beginArticles, articleFilters, loadArticleDetail, notifyApiError, selectedArticleId]);
+  }, [beginArticles, articleFilters, loadArticleDetail, notifyApiError]);
 
   const loadTemplates = useCallback(async () => {
     const isCurrent = beginTemplates();
@@ -694,7 +705,7 @@ function KnowledgeBase() {
       if (!isCurrent()) return;
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setTemplatesState({ items, total: Number(payload?.total || items.length) });
-      const nextSelectedId = items.some((item) => item.id === selectedTemplateId) ? selectedTemplateId : (items[0]?.id || '');
+      const nextSelectedId = items.some((item) => item.id === selectedTemplateIdRef.current) ? selectedTemplateIdRef.current : (items[0]?.id || '');
       setSelectedTemplateId(nextSelectedId);
       if (nextSelectedId) {
         await loadArticleDetail(nextSelectedId, 'template');
@@ -707,7 +718,7 @@ function KnowledgeBase() {
     } finally {
       if (isCurrent()) setTemplatesLoading(false);
     }
-  }, [beginTemplates, loadArticleDetail, notifyApiError, selectedTemplateId, templateFilters]);
+  }, [beginTemplates, loadArticleDetail, notifyApiError, templateFilters]);
 
   const loadCards = useCallback(async () => {
     const isCurrent = beginCards();
@@ -726,7 +737,7 @@ function KnowledgeBase() {
       if (!isCurrent()) return;
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setCardsState({ items, total: Number(payload?.total || items.length) });
-      const nextSelectedId = items.some((item) => item.id === selectedCardId) ? selectedCardId : (items[0]?.id || '');
+      const nextSelectedId = items.some((item) => item.id === selectedCardIdRef.current) ? selectedCardIdRef.current : (items[0]?.id || '');
       setSelectedCardId(nextSelectedId);
       if (nextSelectedId) {
         await loadCardDetail(nextSelectedId);
@@ -739,7 +750,7 @@ function KnowledgeBase() {
     } finally {
       if (isCurrent()) setCardsLoading(false);
     }
-  }, [beginCards, cardFilters, loadCardDetail, notifyApiError, selectedCardId]);
+  }, [beginCards, cardFilters, loadCardDetail, notifyApiError]);
 
   useEffect(() => {
     void loadReferenceData();
