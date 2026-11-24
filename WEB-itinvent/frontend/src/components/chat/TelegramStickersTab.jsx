@@ -19,10 +19,12 @@ import { alpha } from '@mui/material/styles';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
+import DeleteSweepRoundedIcon from '@mui/icons-material/DeleteSweepRounded';
 import EmojiEmotionsRoundedIcon from '@mui/icons-material/EmojiEmotionsRounded';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
+import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded';
 import StarOutlineRoundedIcon from '@mui/icons-material/StarOutlineRounded';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
 import StickyNote2RoundedIcon from '@mui/icons-material/StickyNote2Rounded';
@@ -37,6 +39,7 @@ import {
   primeStickerPacksCache,
   scheduleRecentStickersSync,
 } from '../../api/chatStickers';
+import ChatStickerManageDialog from './ChatStickerManageDialog';
 import ChatStickerMedia from './ChatStickerMedia';
 import ChatStickerThumbnail from './ChatStickerThumbnail';
 import {
@@ -98,6 +101,8 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   const [loading, setLoading] = useState(() => !Array.isArray(peekStickerPacksCache(cacheScope)?.items));
   const [loadError, setLoadError] = useState('');
   const [importOpen, setImportOpen] = useState(false);
+  // «Управление наборами» — диалог со списком, удалением и DnD-порядком.
+  const [manageOpen, setManageOpen] = useState(false);
   const [source, setSource] = useState('');
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState('');
@@ -495,6 +500,23 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     });
   }, [recentStorageKey]);
 
+  const clearRecentStickers = useCallback(() => {
+    // Отложенный дебаунс-синк отменяем до немедленного PUT — иначе
+    // устаревший список улетел бы на сервер уже после очистки.
+    cancelRecentStickersSync(recentStorageKey);
+    setRecentStickerIds((current) => {
+      if (current.length === 0) return current;
+      writeRecentStickerIds(recentStorageKey, []);
+      notifyStickerRecentsChanged(recentStorageKey);
+      return [];
+    });
+    chatStickersAPI.pushRecentStickers([]).catch(() => {
+      // Локальный список уже пуст — серверный догонит при следующей
+      // успешной записи, пользователю показываем только статус.
+      setStatusText('Не удалось очистить список недавних стикеров.');
+    });
+  }, [recentStorageKey]);
+
   const handleImportSubmit = useCallback(async (event) => {
     event.preventDefault();
     const normalizedSource = String(source || '').trim();
@@ -708,6 +730,65 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     forgetRecentSticker(menuStickerId);
   }, [closeStickerMenu, forgetRecentSticker, menuStickerId]);
 
+  const handleMenuClearRecents = useCallback(() => {
+    closeStickerMenu();
+    clearRecentStickers();
+  }, [closeStickerMenu, clearRecentStickers]);
+
+  const handleManageOpenPack = useCallback((pack) => {
+    const packId = String(pack?.id || '').trim();
+    setManageOpen(false);
+    if (packId) scrollToSection(packId);
+  }, [scrollToSection]);
+
+  const handleManageAddPack = useCallback(() => {
+    setManageOpen(false);
+    setImportError('');
+    // Поле получит фокус через эффект на importOpen — как у «+» в ленте.
+    setImportOpen(true);
+  }, []);
+
+  // Удаление набора: исключение уходит в диалог (он показывает ошибку),
+  // поэтому здесь без catch. Ответ {ok} списка не содержит — локальный
+  // фильтр + прайм кэша дешевле повторного GET.
+  const handleRemovePack = useCallback(async (pack) => {
+    const packId = String(pack?.id || '').trim();
+    if (!packId) return;
+    await chatStickersAPI.removePack(packId);
+    const requestEpoch = getStickerPacksEpoch();
+    const nextPacks = packs.filter((item) => String(item?.id) !== packId);
+    applyPackPayload({ items: nextPacks }, '', requestEpoch);
+    setStatusText(`Набор «${pack?.title || 'стикеров'}» удалён.`);
+    // Параллельно смонтированные вкладки (поповер + док) подтянут список.
+    window.dispatchEvent(new CustomEvent('chat-sticker-packs-changed'));
+  }, [applyPackPayload, packs]);
+
+  // Порядок из диалога применяем оптимистично; ответ сервера (полный
+  // список в новом порядке) подтверждает, при ошибке — откат.
+  const handleReorderPacks = useCallback(async (packIds) => {
+    const nextIds = (Array.isArray(packIds) ? packIds : [])
+      .map((id) => String(id || '').trim())
+      .filter(Boolean);
+    if (nextIds.length === 0) return;
+    const previousPacks = packs;
+    const packsById = new Map(previousPacks.map((item) => [String(item?.id), item]));
+    setPacks([
+      ...nextIds.map((id) => packsById.get(id)).filter(Boolean),
+      ...previousPacks.filter((item) => !nextIds.includes(String(item?.id))),
+    ]);
+    try {
+      const payload = await chatStickersAPI.setPackOrder(nextIds);
+      applyPackPayload(payload, '', getStickerPacksEpoch());
+      window.dispatchEvent(new CustomEvent('chat-sticker-packs-changed'));
+    } catch (error) {
+      // setPackOrder инвалидирует кэш только после успеха — при отказе
+      // серверный порядок не менялся, локальный откат безопасен.
+      setPacks(previousPacks);
+      setStatusText(getApiError(error, 'Не удалось изменить порядок наборов.'));
+      throw error;
+    }
+  }, [applyPackPayload, packs]);
+
   // Одна и та же ячейка используется и в обычных секциях, и в результатах
   // поиска — обработчики (клик, hold-preview, контекстное меню) общие.
   const renderStickerButton = (sticker, sectionKey) => (
@@ -744,11 +825,19 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
         containIntrinsicSize: dense ? '72px 72px' : '80px 80px',
         transition: 'background-color 120ms ease, transform 100ms ease, opacity 120ms ease',
         opacity: sendingStickerIds[String(sticker.id)] ? 0.55 : 1,
-        '&:hover': { bgcolor: alpha(ui.accentText || theme.palette.primary.main, 0.08) },
+        '&:hover': {
+          bgcolor: alpha(ui.accentText || theme.palette.primary.main, 0.08),
+          transform: 'scale(1.05)',
+        },
         '&:active': { transform: 'scale(0.96)' },
         '&:focus-visible': {
           outline: `2px solid ${ui.accentText || theme.palette.primary.main}`,
           outlineOffset: 1,
+        },
+        '@media (prefers-reduced-motion: reduce)': {
+          transition: 'none',
+          '&:hover': { transform: 'none' },
+          '&:active': { transform: 'none' },
         },
       }}
     >
@@ -857,197 +946,25 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
             <EmojiEmotionsRoundedIcon sx={{ fontSize: 19 }} aria-hidden="true" />
           </IconButton>
         </Tooltip>
-      </Box>
-      <Box
-        data-testid="chat-sticker-pack-strip-row"
-        sx={{
-          minHeight: dense ? 44 : 48,
-          display: isSearching ? 'none' : 'flex',
-          alignItems: 'center',
-          gap: 0.5,
-          px: 0.75,
-          borderBottom: `1px solid ${border}`,
-        }}
-      >
-        <Box
-          ref={packStripRef}
-          role="tablist"
-          aria-label="Наборы стикеров"
-          onWheel={handlePackStripWheel}
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 0.4,
-            overflowX: 'auto',
-            overscrollBehaviorInline: 'contain',
-            scrollbarWidth: 'none',
-            flex: 1,
-            minWidth: 0,
-            '&::-webkit-scrollbar': { display: 'none' },
-          }}
-        >
-          <Tooltip title="Недавние" placement="top">
-            <Box
-              ref={(node) => registerPackTabRef('recent', node)}
-              component="button"
-              type="button"
-              role="tab"
-              aria-selected={activeSectionId === 'recent'}
-              aria-label="Недавние"
-              onClick={() => scrollToSection('recent')}
-              sx={{
-                width: dense ? 38 : 42,
-                height: dense ? 38 : 42,
-                flexShrink: 0,
-                display: 'grid',
-                placeItems: 'center',
-                p: 0.35,
-                border: 'none',
-                borderRadius: 2,
-                color: activeSectionId === 'recent' ? accent : (ui.textSecondary || theme.palette.text.secondary),
-                bgcolor: activeSectionId === 'recent' ? alpha(accent, 0.14) : 'transparent',
-                cursor: 'pointer',
-                transition: 'background-color 120ms ease, color 120ms ease, transform 100ms ease',
-                '&:hover': { bgcolor: alpha(accent, 0.1) },
-                '&:active': { transform: 'scale(0.96)' },
-                '&:focus-visible': { outline: `2px solid ${accent}`, outlineOffset: 1 },
-              }}
-            >
-              <HistoryRoundedIcon sx={{ fontSize: dense ? 23 : 25 }} aria-hidden="true" />
-            </Box>
-          </Tooltip>
-          <Tooltip title="Избранные" placement="top">
-            <Box
-              ref={(node) => registerPackTabRef('favorites', node)}
-              component="button"
-              type="button"
-              role="tab"
-              aria-selected={activeSectionId === 'favorites'}
-              aria-label="Избранные"
-              onClick={() => scrollToSection('favorites')}
-              sx={{
-                width: dense ? 38 : 42,
-                height: dense ? 38 : 42,
-                flexShrink: 0,
-                display: 'grid',
-                placeItems: 'center',
-                p: 0.35,
-                border: 'none',
-                borderRadius: 2,
-                color: activeSectionId === 'favorites' ? accent : (ui.textSecondary || theme.palette.text.secondary),
-                bgcolor: activeSectionId === 'favorites' ? alpha(accent, 0.14) : 'transparent',
-                cursor: 'pointer',
-                transition: 'background-color 120ms ease, color 120ms ease, transform 100ms ease',
-                '&:hover': { bgcolor: alpha(accent, 0.1) },
-                '&:active': { transform: 'scale(0.96)' },
-                '&:focus-visible': { outline: `2px solid ${accent}`, outlineOffset: 1 },
-              }}
-            >
-              <StarRoundedIcon sx={{ fontSize: dense ? 23 : 25 }} aria-hidden="true" />
-            </Box>
-          </Tooltip>
-          {packs.map((pack) => {
-            const selected = pack.id === activeSectionId;
-            const cover = pack.stickers?.[0];
-            return (
-              <Tooltip key={pack.id} title={pack.title} placement="top">
-                <Box
-                  ref={(node) => registerPackTabRef(pack.id, node)}
-                  component="button"
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  aria-label={pack.title}
-                  onClick={() => scrollToSection(pack.id)}
-                  sx={{
-                    width: dense ? 38 : 42,
-                    height: dense ? 38 : 42,
-                    flexShrink: 0,
-                    display: 'grid',
-                    placeItems: 'center',
-                    p: 0.35,
-                    border: 'none',
-                    borderRadius: 2,
-                    color: 'inherit',
-                    bgcolor: selected ? alpha(accent, 0.14) : 'transparent',
-                    cursor: 'pointer',
-                    transition: 'background-color 120ms ease, transform 100ms ease',
-                    '&:hover': { bgcolor: alpha(accent, 0.1) },
-                    '&:active': { transform: 'scale(0.96)' },
-                    '&:focus-visible': { outline: `2px solid ${accent}`, outlineOffset: 1 },
-                  }}
-                >
-                  {cover ? (
-                    <ChatStickerThumbnail sticker={cover} size={dense ? 30 : 34} staticOnly />
-                  ) : (
-                    <TelegramIcon sx={{ fontSize: 22 }} aria-hidden="true" />
-                  )}
-                </Box>
-              </Tooltip>
-            );
-          })}
-        </Box>
-        <Tooltip title={importOpen ? 'Закрыть добавление' : 'Добавить набор из Telegram'}>
+        <Tooltip title="Управление наборами стикеров" placement="top">
           <IconButton
             type="button"
-            aria-label={importOpen ? 'Закрыть добавление набора' : 'Добавить набор стикеров из Telegram'}
-            onClick={() => {
-              setImportOpen((value) => !value);
-              setImportError('');
-            }}
+            aria-label="Управление наборами стикеров"
+            onClick={() => setManageOpen(true)}
             sx={{
-              width: dense ? 36 : 40,
-              height: dense ? 36 : 40,
+              width: 32,
+              height: 32,
               flexShrink: 0,
-              color: accent,
-              bgcolor: alpha(accent, 0.08),
+              color: ui.textSecondary || theme.palette.text.secondary,
               transition: 'background-color 120ms ease, transform 100ms ease',
-              '&:hover': { bgcolor: alpha(accent, 0.14) },
+              '&:hover': { bgcolor: alpha(accent, 0.1) },
               '&:active': { transform: 'scale(0.96)' },
             }}
           >
-            {importOpen ? <CloseRoundedIcon /> : <AddRoundedIcon />}
+            <SettingsRoundedIcon sx={{ fontSize: 19 }} aria-hidden="true" />
           </IconButton>
         </Tooltip>
       </Box>
-
-      {importOpen ? (
-        <Box
-          component="form"
-          onSubmit={handleImportSubmit}
-          noValidate
-          sx={{ p: 1, display: 'grid', gap: 0.8, borderBottom: `1px solid ${border}` }}
-        >
-          <TextField
-            inputRef={sourceInputRef}
-            value={source}
-            onChange={(event) => {
-              setSource(event.target.value);
-              setImportError('');
-            }}
-            label="Ссылка на набор Telegram"
-            placeholder="https://t.me/addstickers/PackName"
-            size="small"
-            fullWidth
-            autoComplete="off"
-            error={Boolean(importError)}
-            helperText={importError || 'Откройте набор в Telegram и скопируйте его ссылку.'}
-            inputProps={{ inputMode: 'url', 'aria-describedby': 'telegram-sticker-import-help' }}
-            FormHelperTextProps={{ id: 'telegram-sticker-import-help' }}
-            sx={{ '& .MuiInputBase-input': { fontSize: 16 } }}
-          />
-          <Button
-            type="submit"
-            variant="contained"
-            disabled={importing}
-            startIcon={importing ? <CircularProgress size={16} color="inherit" /> : <TelegramIcon />}
-            sx={{ minHeight: 40, justifySelf: 'end', textTransform: 'none', '&:active': { transform: 'scale(0.96)' } }}
-          >
-            {importing ? 'Импортируем…' : 'Добавить набор'}
-          </Button>
-        </Box>
-      ) : null}
-
       <Box role="status" aria-live="polite" sx={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>
         {statusText}
       </Box>
@@ -1207,6 +1124,196 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
         </>
       )}
 
+      {importOpen ? (
+        <Box
+          component="form"
+          onSubmit={handleImportSubmit}
+          noValidate
+          sx={{ p: 1, display: 'grid', gap: 0.8, borderTop: `1px solid ${border}` }}
+        >
+          <TextField
+            inputRef={sourceInputRef}
+            value={source}
+            onChange={(event) => {
+              setSource(event.target.value);
+              setImportError('');
+            }}
+            label="Ссылка на набор Telegram"
+            placeholder="https://t.me/addstickers/PackName"
+            size="small"
+            fullWidth
+            autoComplete="off"
+            error={Boolean(importError)}
+            helperText={importError || 'Откройте набор в Telegram и скопируйте его ссылку.'}
+            inputProps={{ inputMode: 'url', 'aria-describedby': 'telegram-sticker-import-help' }}
+            FormHelperTextProps={{ id: 'telegram-sticker-import-help' }}
+            sx={{ '& .MuiInputBase-input': { fontSize: 16 } }}
+          />
+          <Button
+            type="submit"
+            variant="contained"
+            disabled={importing}
+            startIcon={importing ? <CircularProgress size={16} color="inherit" /> : <TelegramIcon />}
+            sx={{ minHeight: 40, justifySelf: 'end', textTransform: 'none', '&:active': { transform: 'scale(0.96)' } }}
+          >
+            {importing ? 'Импортируем…' : 'Добавить набор'}
+          </Button>
+        </Box>
+      ) : null}
+
+      <Box
+        data-testid="chat-sticker-pack-strip-row"
+        sx={{
+          minHeight: dense ? 44 : 48,
+          display: isSearching ? 'none' : 'flex',
+          alignItems: 'center',
+          gap: 0.5,
+          px: 0.75,
+          borderTop: `1px solid ${border}`,
+        }}
+      >
+        <Box
+          ref={packStripRef}
+          role="tablist"
+          aria-label="Наборы стикеров"
+          onWheel={handlePackStripWheel}
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 0.4,
+            overflowX: 'auto',
+            overscrollBehaviorInline: 'contain',
+            scrollbarWidth: 'none',
+            flex: 1,
+            minWidth: 0,
+            '&::-webkit-scrollbar': { display: 'none' },
+          }}
+        >
+          <Tooltip title="Недавние" placement="top">
+            <Box
+              ref={(node) => registerPackTabRef('recent', node)}
+              component="button"
+              type="button"
+              role="tab"
+              aria-selected={activeSectionId === 'recent'}
+              aria-label="Недавние"
+              onClick={() => scrollToSection('recent')}
+              sx={{
+                width: dense ? 38 : 42,
+                height: dense ? 38 : 42,
+                flexShrink: 0,
+                display: 'grid',
+                placeItems: 'center',
+                p: 0.35,
+                border: 'none',
+                borderRadius: 2,
+                color: activeSectionId === 'recent' ? accent : (ui.textSecondary || theme.palette.text.secondary),
+                bgcolor: activeSectionId === 'recent' ? alpha(accent, 0.14) : 'transparent',
+                cursor: 'pointer',
+                transition: 'background-color 120ms ease, color 120ms ease, transform 100ms ease',
+                '&:hover': { bgcolor: alpha(accent, 0.1) },
+                '&:active': { transform: 'scale(0.96)' },
+                '&:focus-visible': { outline: `2px solid ${accent}`, outlineOffset: 1 },
+              }}
+            >
+              <HistoryRoundedIcon sx={{ fontSize: dense ? 23 : 25 }} aria-hidden="true" />
+            </Box>
+          </Tooltip>
+          <Tooltip title="Избранные" placement="top">
+            <Box
+              ref={(node) => registerPackTabRef('favorites', node)}
+              component="button"
+              type="button"
+              role="tab"
+              aria-selected={activeSectionId === 'favorites'}
+              aria-label="Избранные"
+              onClick={() => scrollToSection('favorites')}
+              sx={{
+                width: dense ? 38 : 42,
+                height: dense ? 38 : 42,
+                flexShrink: 0,
+                display: 'grid',
+                placeItems: 'center',
+                p: 0.35,
+                border: 'none',
+                borderRadius: 2,
+                color: activeSectionId === 'favorites' ? accent : (ui.textSecondary || theme.palette.text.secondary),
+                bgcolor: activeSectionId === 'favorites' ? alpha(accent, 0.14) : 'transparent',
+                cursor: 'pointer',
+                transition: 'background-color 120ms ease, color 120ms ease, transform 100ms ease',
+                '&:hover': { bgcolor: alpha(accent, 0.1) },
+                '&:active': { transform: 'scale(0.96)' },
+                '&:focus-visible': { outline: `2px solid ${accent}`, outlineOffset: 1 },
+              }}
+            >
+              <StarRoundedIcon sx={{ fontSize: dense ? 23 : 25 }} aria-hidden="true" />
+            </Box>
+          </Tooltip>
+          {packs.map((pack) => {
+            const selected = pack.id === activeSectionId;
+            const cover = pack.stickers?.[0];
+            return (
+              <Tooltip key={pack.id} title={pack.title} placement="top">
+                <Box
+                  ref={(node) => registerPackTabRef(pack.id, node)}
+                  component="button"
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  aria-label={pack.title}
+                  onClick={() => scrollToSection(pack.id)}
+                  sx={{
+                    width: dense ? 38 : 42,
+                    height: dense ? 38 : 42,
+                    flexShrink: 0,
+                    display: 'grid',
+                    placeItems: 'center',
+                    p: 0.35,
+                    border: 'none',
+                    borderRadius: 2,
+                    color: 'inherit',
+                    bgcolor: selected ? alpha(accent, 0.14) : 'transparent',
+                    cursor: 'pointer',
+                    transition: 'background-color 120ms ease, transform 100ms ease',
+                    '&:hover': { bgcolor: alpha(accent, 0.1) },
+                    '&:active': { transform: 'scale(0.96)' },
+                    '&:focus-visible': { outline: `2px solid ${accent}`, outlineOffset: 1 },
+                  }}
+                >
+                  {cover ? (
+                    <ChatStickerThumbnail sticker={cover} size={dense ? 30 : 34} staticOnly />
+                  ) : (
+                    <TelegramIcon sx={{ fontSize: 22 }} aria-hidden="true" />
+                  )}
+                </Box>
+              </Tooltip>
+            );
+          })}
+        </Box>
+        <Tooltip title={importOpen ? 'Закрыть добавление' : 'Добавить набор из Telegram'}>
+          <IconButton
+            type="button"
+            aria-label={importOpen ? 'Закрыть добавление набора' : 'Добавить набор стикеров из Telegram'}
+            onClick={() => {
+              setImportOpen((value) => !value);
+              setImportError('');
+            }}
+            sx={{
+              width: dense ? 36 : 40,
+              height: dense ? 36 : 40,
+              flexShrink: 0,
+              color: accent,
+              bgcolor: alpha(accent, 0.08),
+              transition: 'background-color 120ms ease, transform 100ms ease',
+              '&:hover': { bgcolor: alpha(accent, 0.14) },
+              '&:active': { transform: 'scale(0.96)' },
+            }}
+          >
+            {importOpen ? <CloseRoundedIcon /> : <AddRoundedIcon />}
+          </IconButton>
+        </Tooltip>
+      </Box>
+
       <Menu
         open={Boolean(stickerMenu)}
         onClose={closeStickerMenu}
@@ -1247,7 +1354,25 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
             <ListItemText>Убрать из недавних</ListItemText>
           </MenuItem>
         ) : null}
+        {menuStickerIsRecent ? (
+          <MenuItem onClick={handleMenuClearRecents} sx={{ minHeight: 40 }}>
+            <ListItemIcon><DeleteSweepRoundedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>Очистить недавние</ListItemText>
+          </MenuItem>
+        ) : null}
       </Menu>
+
+      <ChatStickerManageDialog
+        open={manageOpen}
+        packs={packs}
+        theme={theme}
+        ui={ui}
+        onClose={() => setManageOpen(false)}
+        onOpenPack={handleManageOpenPack}
+        onRemovePack={handleRemovePack}
+        onReorderPacks={handleReorderPacks}
+        onAddPack={handleManageAddPack}
+      />
 
       {previewSticker ? (
         <Portal>

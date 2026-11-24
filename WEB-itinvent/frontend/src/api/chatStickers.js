@@ -143,6 +143,9 @@ export const chatStickersAPI = {
 
   removePack: async (packId) => {
     const response = await apiClient.delete(`/chat/sticker-packs/${encodeURIComponent(packId)}`);
+    // Список наборов изменился так же, как при импорте: сбрасываем кэш,
+    // чтобы listPacks у любого потребителя не вернул удалённый набор.
+    invalidateStickerPacksCache();
     return response.data;
   },
 

@@ -11,6 +11,7 @@ vi.mock('../../api/chatStickers', () => {
   const chatStickersAPI = {
     listPacks: vi.fn(),
     importPack: vi.fn(),
+    removePack: vi.fn(),
     listFavorites: vi.fn(),
     addFavoriteSticker: vi.fn(),
     removeFavoriteSticker: vi.fn(),
@@ -105,6 +106,7 @@ describe('TelegramStickersTab', () => {
     chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [] });
     chatStickersAPI.addFavoriteSticker.mockResolvedValue({ items: [] });
     chatStickersAPI.removeFavoriteSticker.mockResolvedValue({ items: [] });
+    chatStickersAPI.removePack.mockResolvedValue({ ok: true });
     chatStickersAPI.setPackOrder.mockResolvedValue({ items: [] });
   });
 
@@ -672,5 +674,154 @@ describe('TelegramStickersTab', () => {
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
     expect(window.localStorage.getItem('hubit.chat.sticker-suggestions.v1')).toBe('1');
+  });
+
+  it('opens the manage dialog listing installed packs with covers and counts', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack, secondStickerPack] });
+    renderTab();
+    await screen.findByRole('tabpanel', { name: 'Офисные звери' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Управление наборами стикеров' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Наборы стикеров' });
+
+    const list = within(dialog).getByRole('list', { name: 'Установленные наборы стикеров' });
+    expect(within(list).getByText('Офисные звери')).toBeInTheDocument();
+    expect(within(list).getByText('Офисные птицы')).toBeInTheDocument();
+    expect(within(list).getAllByText('1 стикер')).toHaveLength(2);
+    expect(
+      within(dialog).getByRole('button', { name: 'Удалить набор Офисные звери' }),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('button', { name: 'Добавить набор' }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Закрыть управление наборами' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Наборы стикеров' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('removes a pack through the manage dialog after inline confirmation', async () => {
+    // После DELETE вкладка диспатчит packs-changed и рефетчит список —
+    // второй ответ уже без удалённого набора, как вернул бы сервер.
+    chatStickersAPI.listPacks
+      .mockResolvedValueOnce({ items: [stickerPack, secondStickerPack] })
+      .mockResolvedValue({ items: [secondStickerPack] });
+    const { container } = renderTab();
+    await screen.findByRole('tabpanel', { name: 'Офисные звери' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Управление наборами стикеров' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Наборы стикеров' });
+
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: 'Удалить набор Офисные звери' }),
+    );
+    // Инлайн-подтверждение вместо window.confirm — как принято в кодовой базе.
+    fireEvent.click(
+      await within(dialog).findByRole('button', { name: 'Подтвердить удаление Офисные звери' }),
+    );
+
+    await waitFor(() => {
+      expect(chatStickersAPI.removePack).toHaveBeenCalledWith('pack-1');
+    });
+    await waitFor(() => {
+      expect(within(dialog).queryByText('Офисные звери')).not.toBeInTheDocument();
+    });
+    expect(within(dialog).getByText('Офисные птицы')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(container.querySelector('[data-sticker-section="pack-1"]')).not.toBeInTheDocument();
+    });
+    expect(container.querySelector('[data-sticker-section="pack-2"]')).toBeInTheDocument();
+  });
+
+  it('reorders packs through drag and drop in the manage dialog', async () => {
+    chatStickersAPI.listPacks
+      .mockResolvedValueOnce({ items: [stickerPack, secondStickerPack] })
+      .mockResolvedValue({ items: [secondStickerPack, stickerPack] });
+    chatStickersAPI.setPackOrder.mockResolvedValue({ items: [secondStickerPack, stickerPack] });
+    const { container } = renderTab();
+    await screen.findByRole('tabpanel', { name: 'Офисные звери' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Управление наборами стикеров' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Наборы стикеров' });
+    const dragHandle = within(dialog).getByRole('button', { name: 'Перетащить набор Офисные звери' });
+    const targetRow = within(dialog).getByTestId('sticker-manage-row-pack-2');
+
+    fireEvent.dragStart(dragHandle);
+    fireEvent.dragOver(targetRow);
+    fireEvent.drop(targetRow);
+
+    await waitFor(() => {
+      expect(chatStickersAPI.setPackOrder).toHaveBeenCalledWith(['pack-2', 'pack-1']);
+    });
+    await waitFor(() => {
+      expect(
+        Array.from(container.querySelectorAll('[data-sticker-section]')).map(
+          (section) => section.getAttribute('data-sticker-section'),
+        ),
+      ).toEqual(['recent', 'favorites', 'pack-2', 'pack-1']);
+    });
+  });
+
+  it('scrolls to the pack section from the manage dialog and closes it', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack, secondStickerPack] });
+    renderTab();
+    await screen.findByRole('tabpanel', { name: 'Офисные птицы' });
+    const scrollRoot = screen.getByTestId('chat-sticker-sections-scroll');
+    scrollRoot.scrollTo = vi.fn();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Управление наборами стикеров' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Наборы стикеров' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Открыть набор Офисные птицы' }));
+
+    expect(scrollRoot.scrollTo).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: 'smooth' }),
+    );
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'Офисные птицы' })).toHaveAttribute('aria-selected', 'true');
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Наборы стикеров' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('opens the inline import row from the manage dialog add-pack action', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    renderTab();
+    await screen.findByRole('tabpanel', { name: 'Офисные звери' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Управление наборами стикеров' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Наборы стикеров' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Добавить набор' }));
+
+    expect(await screen.findByLabelText('Ссылка на набор Telegram')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Наборы стикеров' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('clears the whole recents list through the context menu', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    chatStickersAPI.listRecentStickers.mockResolvedValue({
+      items: [{ ...stickerPack.stickers[0], pack_short_name: stickerPack.short_name }],
+    });
+    renderTab();
+
+    const recentGrid = await screen.findByRole('tabpanel', { name: 'Недавние' });
+    const recentButton = within(recentGrid).getByRole('button', { name: 'Отправить стикер 🐈' });
+    fireEvent.contextMenu(recentButton, { clientX: 24, clientY: 24 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Очистить недавние' }));
+
+    // Немедленный PUT пустого массива — дебаунс-путь здесь не используется.
+    await waitFor(() => {
+      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith([]);
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole('tabpanel', { name: 'Недавние' })).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('Отправленные стикеры появятся здесь')).toBeInTheDocument();
+    expect(
+      JSON.parse(window.localStorage.getItem('hubit.chat.recent-stickers.v1:device')),
+    ).toEqual([]);
   });
 });
