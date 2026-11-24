@@ -263,11 +263,42 @@ AI_TOOL_GROUP_EXPANSION_LIMIT = max(0, min(5, int(os.environ.get("AI_TOOL_GROUP_
 AI_TOOL_SPECS_WARN_LIMIT = max(5, int(os.environ.get("AI_TOOL_SPECS_WARN_LIMIT", "20") or 20))
 AI_MODEL_CONTEXT_WINDOW = max(4096, min(32000, int(os.environ.get("AI_MODEL_CONTEXT_WINDOW", "32000"))))
 AI_TOKEN_BUDGET_SAFETY_MARGIN = int(os.environ.get("AI_TOKEN_BUDGET_SAFETY_MARGIN", "2000"))
+# Reserve for token-estimation error: the 3 chars/token calibration is
+# conservative for English but only approximate for Russian/JSON — the
+# effective input limit is reduced by this margin so a near-limit prompt
+# cannot overflow the real provider context.
+AI_TOKENIZER_MARGIN_TOKENS = max(0, min(4000, int(os.environ.get("AI_TOKENIZER_MARGIN_TOKENS", "512"))))
+# Known model context windows (substring match on the resolved model name).
+# Unknown models fall back to the configured AI_MODEL_CONTEXT_WINDOW.
+_MODEL_CONTEXT_WINDOWS: tuple[tuple[str, int], ...] = (
+    ("gemini-3.", 1_048_576),
+    ("gemini-2.5", 1_048_576),
+    ("gemini-2.0", 1_048_576),
+    ("deepseek", 131_072),
+    ("mistral-small", 128_000),
+    ("gpt-4o", 128_000),
+    ("qwen", 131_072),
+)
+
+
+def _model_context_window(model: str) -> int:
+    """Context window of the resolved model; configured fallback for unknown
+    ones. Never raised by an artificial floor — the effective input limit can
+    be smaller than 4096 for a genuinely small window."""
+    name = _normalize_text(model).lower()
+    for marker, window in _MODEL_CONTEXT_WINDOWS:
+        if marker in name:
+            return window
+    return AI_MODEL_CONTEXT_WINDOW
+
+
 # A9 feature flags: quality-affecting optimizations can be disabled for a
 # safe rollback without a deploy. Safety checks (budget enforcement,
 # untrusted wrappers, mandatory instructions) stay ON at any flag value.
+# Release default is OFF: enable AI_PROMPT_OPTIMIZATION_ENABLED=1 only after
+# the controlled baseline comparison is accepted.
 _AI_FLAG_ON = {"1", "true", "yes", "on"}
-AI_PROMPT_OPTIMIZATION_ENABLED = str(os.environ.get("AI_PROMPT_OPTIMIZATION_ENABLED", "1")).strip().lower() in _AI_FLAG_ON
+AI_PROMPT_OPTIMIZATION_ENABLED = str(os.environ.get("AI_PROMPT_OPTIMIZATION_ENABLED", "0")).strip().lower() in _AI_FLAG_ON
 AI_COMPACT_SPECS_ENABLED = (
     AI_PROMPT_OPTIMIZATION_ENABLED
     and str(os.environ.get("AI_COMPACT_SPECS_ENABLED", "1")).strip().lower() in _AI_FLAG_ON
@@ -1837,6 +1868,61 @@ def _request_tool_group_spec() -> dict[str, Any] | None:
 
 
 AI_TOOL_READ_MORE = "ai.results.read_more"
+# Local re-reads are capped per run — the meta-tool must not turn into an
+# unbounded loop of free calls.
+AI_READ_MORE_MAX_CALLS = max(1, min(20, int(os.environ.get("AI_READ_MORE_MAX_CALLS", "8"))))
+AI_READ_MORE_MAX_LIMIT = 50
+# Field-page size fits the projection string cap so the requested slice is
+# not truncated a second time on its way into the prompt.
+AI_READ_MORE_CHAR_LIMIT = 3800
+
+
+def _read_more_int_arg(raw_args: dict[str, Any], name: str, default: int, lo: int, hi: int) -> tuple[int, bool]:
+    try:
+        value = int(raw_args.get(name))
+    except (TypeError, ValueError):
+        return default, False
+    return max(lo, min(hi, value)), True
+
+
+def _resolve_data_field(data: dict[str, Any], path: str) -> tuple[Any, bool]:
+    """Resolve a dotted path inside a result's ``data`` (``body``,
+    ``items.3.text``). Returns (value, found)."""
+    current: Any = data
+    for part in _normalize_text(path).split("."):
+        if not part:
+            return None, False
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+            current = current[int(part)]
+        else:
+            return None, False
+    return current, True
+
+
+def _read_more_error(
+    message: str, *, args: dict[str, Any], run_id: str, source: dict[str, Any] | None = None,
+    accumulated_tool_results: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    data: dict[str, Any] = {"source_tool_id": _normalize_text((source or {}).get("tool_id")) or None}
+    if isinstance(source, dict) and isinstance(source.get("data"), dict):
+        data["available_fields"] = list(source["data"].keys())[:30]
+    if accumulated_tool_results is not None:
+        data["available_results"] = [
+            {"result_index": i + 1, "tool_id": _normalize_text(r.get("tool_id")) or None}
+            for i, r in enumerate(accumulated_tool_results[:30])
+            if isinstance(r, dict)
+        ]
+    result = {"tool_id": AI_TOOL_READ_MORE, "ok": False, "data": data, "error": message}
+    trace = {
+        "tool_id": AI_TOOL_READ_MORE,
+        "args": args,
+        "status": "failed",
+        "duration_ms": 0,
+        "diagnostic": {"served": "local_result_page", "run_id": run_id, "error": message[:200]},
+    }
+    return result, trace
 
 
 def _handle_result_read_more(
@@ -1844,43 +1930,157 @@ def _handle_result_read_more(
     call: dict[str, Any],
     accumulated_tool_results: list[dict[str, Any]],
     run_id: str,
+    calls_used: int = 0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Serve ``ai.results.read_more`` inside the run: page through an
-    already-fetched result's ``items`` without re-querying the corporate
-    API. Reads only this run's accumulated results — user scope and run
-    isolation are inherited, nothing new is reachable.
+    already-fetched result — its ``items`` list, any nested list field, or a
+    long text field — without re-querying the corporate API. Reads only this
+    run's accumulated results — user scope and run isolation are inherited,
+    nothing new is reachable.
     """
     raw_args = call.get("args") if isinstance(call.get("args"), dict) else {}
-    index = max(1, int(raw_args.get("result_index") or 1))
-    offset = max(0, int(raw_args.get("offset") or 0))
-    limit = max(1, min(50, int(raw_args.get("limit") or 15)))
+    args_echo = {
+        "result_index": raw_args.get("result_index"),
+        "offset": raw_args.get("offset"),
+        "limit": raw_args.get("limit"),
+        "field": raw_args.get("field"),
+        "char_offset": raw_args.get("char_offset"),
+        "char_limit": raw_args.get("char_limit"),
+    }
+    if calls_used >= AI_READ_MORE_MAX_CALLS:
+        return _read_more_error(
+            f"ai.results.read_more limit reached ({AI_READ_MORE_MAX_CALLS} per run)",
+            args=args_echo, run_id=run_id,
+        )
+    index, index_ok = _read_more_int_arg(raw_args, "result_index", 1, 1, 1_000_000)
+    offset, offset_ok = _read_more_int_arg(raw_args, "offset", 0, 0, 1_000_000)
+    limit, limit_ok = _read_more_int_arg(raw_args, "limit", 15, 1, AI_READ_MORE_MAX_LIMIT)
+    invalid = [
+        name for name, ok in (
+            ("result_index", index_ok), ("offset", offset_ok), ("limit", limit_ok),
+        )
+        if not ok and raw_args.get(name) is not None
+    ]
+    if invalid:
+        return _read_more_error(
+            f"invalid integer argument(s): {', '.join(invalid)}",
+            args=args_echo, run_id=run_id,
+            accumulated_tool_results=accumulated_tool_results,
+        )
     source = (
         accumulated_tool_results[index - 1]
         if 0 < index <= len(accumulated_tool_results)
         else None
     )
-    data = (source or {}).get("data") if isinstance((source or {}).get("data"), dict) else {}
+    if source is None:
+        return _read_more_error(
+            f"result_index {index} out of range ({len(accumulated_tool_results)} results)",
+            args=args_echo, run_id=run_id,
+            accumulated_tool_results=accumulated_tool_results,
+        )
+    data = source.get("data") if isinstance(source.get("data"), dict) else {}
+    source_tool_id = _normalize_text(source.get("tool_id")) or None
+
+    field_path = _normalize_text(raw_args.get("field"))
+    if field_path:
+        char_offset, char_off_ok = _read_more_int_arg(raw_args, "char_offset", 0, 0, 10_000_000)
+        char_limit, char_lim_ok = _read_more_int_arg(raw_args, "char_limit", AI_READ_MORE_CHAR_LIMIT, 1, AI_READ_MORE_CHAR_LIMIT)
+        if (not char_off_ok and raw_args.get("char_offset") is not None) or (
+            not char_lim_ok and raw_args.get("char_limit") is not None
+        ):
+            return _read_more_error(
+                "char_offset/char_limit must be integers",
+                args=args_echo, run_id=run_id, source=source,
+            )
+        value, found = _resolve_data_field(data, field_path)
+        if not found:
+            return _read_more_error(
+                f"field '{field_path}' not found in result {index}",
+                args=args_echo, run_id=run_id, source=source,
+            )
+        if isinstance(value, str):
+            total_chars = len(value)
+            page = value[char_offset:char_offset + char_limit]
+            result = {
+                "tool_id": AI_TOOL_READ_MORE,
+                "ok": True,
+                "data": {
+                    "field": field_path,
+                    "text": page,
+                    "char_offset": char_offset,
+                    "char_limit": char_limit,
+                    "total_chars": total_chars,
+                    "has_more": char_offset + len(page) < total_chars,
+                    "next_offset": char_offset + len(page) if char_offset + len(page) < total_chars else None,
+                    "source_tool_id": source_tool_id,
+                    "source_result_index": index,
+                },
+                "error": None,
+            }
+        elif isinstance(value, list):
+            total = len(value)
+            page = value[offset:offset + limit]
+            result = {
+                "tool_id": AI_TOOL_READ_MORE,
+                "ok": True,
+                "data": {
+                    "field": field_path,
+                    "items": page,
+                    "offset": offset,
+                    "limit": limit,
+                    "total_in_result": total,
+                    "has_more": offset + len(page) < total,
+                    "next_offset": offset + len(page) if offset + len(page) < total else None,
+                    "source_tool_id": source_tool_id,
+                    "source_result_index": index,
+                },
+                "error": None,
+            }
+        else:
+            # Scalar/compound field: hand the whole value over — it is
+            # already fetched data, projection will still mark truncations.
+            result = {
+                "tool_id": AI_TOOL_READ_MORE,
+                "ok": True,
+                "data": {
+                    "field": field_path,
+                    "value": value,
+                    "source_tool_id": source_tool_id,
+                    "source_result_index": index,
+                },
+                "error": None,
+            }
+        trace = {
+            "tool_id": AI_TOOL_READ_MORE,
+            "args": args_echo,
+            "status": "ok",
+            "duration_ms": 0,
+            "diagnostic": {"served": "local_result_field", "run_id": run_id, "field": field_path},
+        }
+        return result, trace
+
     items = data.get("items") if isinstance(data.get("items"), list) else []
     total_in_result = len(items)
     page = items[offset:offset + limit]
-    ok = source is not None
     result = {
         "tool_id": AI_TOOL_READ_MORE,
-        "ok": ok,
+        "ok": True,
         "data": {
             "items": page,
             "offset": offset,
             "limit": limit,
             "total_in_result": total_in_result,
-            "has_more": offset + limit < total_in_result,
-            "source_tool_id": _normalize_text((source or {}).get("tool_id")) or None,
+            "has_more": offset + len(page) < total_in_result,
+            "next_offset": offset + len(page) if offset + len(page) < total_in_result else None,
+            "source_tool_id": source_tool_id,
+            "source_result_index": index,
         },
-        "error": None if ok else f"result_index {index} out of range ({len(accumulated_tool_results)} results)",
+        "error": None,
     }
     trace = {
         "tool_id": AI_TOOL_READ_MORE,
-        "args": {"result_index": index, "offset": offset, "limit": limit},
-        "status": "ok" if ok else "failed",
+        "args": args_echo,
+        "status": "ok",
         "duration_ms": 0,
         "diagnostic": {"served": "local_result_page", "run_id": run_id},
     }
@@ -2305,6 +2505,8 @@ _LLM_PROJ_DETAIL = {"list_cap": 25, "str_cap": 4000, "drop_keys": _LLM_RESULT_DR
 _LLM_PROJ_ACTION = {"list_cap": 50, "str_cap": 8000, "drop_keys": frozenset()}
 # unknown tools: conservative — no aggressive field drops
 _LLM_PROJ_UNKNOWN = {"list_cap": 50, "str_cap": 4000, "drop_keys": _LLM_RESULT_DROP_KEYS}
+# ai.results.read_more: the requested page passes through un-retruncated
+_LLM_PROJ_READ_MORE = {"list_cap": AI_READ_MORE_MAX_LIMIT, "str_cap": AI_READ_MORE_CHAR_LIMIT, "drop_keys": frozenset()}
 
 _LLM_PROJ_ACTION_MARKERS = (
     ".action.", ".draft", ".create", ".update", ".delete", ".send",
@@ -2324,6 +2526,11 @@ _LLM_PROJ_SEARCH_MARKERS = (
 
 def _llm_projection_policy(tool_id: str) -> dict[str, Any]:
     tid = _normalize_text(tool_id)
+    if tid == AI_TOOL_READ_MORE:
+        # A read_more page was explicitly requested — re-truncating it would
+        # defeat the meta-tool. Cap only matches the max page the handler
+        # can emit (50 items / 3800-char field slices).
+        return _LLM_PROJ_READ_MORE
     if any(marker in tid for marker in _LLM_PROJ_ACTION_MARKERS):
         return _LLM_PROJ_ACTION
     if any(marker in tid for marker in _LLM_PROJ_SEARCH_MARKERS):
@@ -2412,7 +2619,10 @@ def _schema_type_label(schema: dict[str, Any], defs: dict[str, Any]) -> str:
     if ref:
         schema = defs.get(ref.rsplit("/", 1)[-1], {}) if isinstance(defs, dict) else {}
     if isinstance(schema.get("enum"), list):
-        return "|".join(str(item) for item in schema["enum"][:12])
+        shown = [str(item) for item in schema["enum"][:24]]
+        if len(schema["enum"]) > 24:
+            shown.append(f"…(+{len(schema['enum']) - 24})")
+        return "|".join(shown)
     variants = schema.get("anyOf") if isinstance(schema.get("anyOf"), list) else None
     if variants:
         labels = [_schema_type_label(item, defs) for item in variants if isinstance(item, dict)]
@@ -2427,15 +2637,22 @@ def _schema_type_label(schema: dict[str, Any], defs: dict[str, Any]) -> str:
         # fields the model guesses arg structure (e.g. files[] in ai.files.create).
         props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
         if props:
+            # Required fields are emitted first and are never dropped by the
+            # cap — a required name hidden by truncation makes the model guess
+            # the mandatory argument. Optional fields fill the remaining slots.
             req = set(schema.get("required") or [])
+            ordered = [kv for kv in props.items() if kv[0] in req]
+            ordered += [kv for kv in props.items() if kv[0] not in req]
+            shown = [(n, p) for n, p in ordered[:12] if isinstance(p, dict)]
             inner = ", ".join(
                 f"{name}{'*' if name in req else ''}: {_schema_type_label(prop, defs)}"
-                for name, prop in list(props.items())[:6]
-                if isinstance(prop, dict)
+                for name, prop in shown
             )
-            if len(props) > 6:
-                inner += ", …"
-            return "{" + inner[:140] + "}"
+            if len(props) > len(shown):
+                inner += f", …(+{len(props) - len(shown)})"
+            if len(inner) > 400:
+                inner = inner[:397].rstrip(", ") + "…"
+            return "{" + inner + "}"
         return "object"
     return kind
 
@@ -8188,9 +8405,11 @@ class AiChatService:
             call_kind: str = "chat",
             tool_round: int = 0,
         ) -> tuple[dict[str, Any], dict[str, Any]]:
-            # Effective input limit: model context window minus the response
-            # reserve (max_tokens + response schema + transport overhead),
-            # capped by the configured input budget.
+            # Effective input limit: the actual model's context window minus
+            # the response reserve (max_tokens + response schema + transport
+            # overhead) and a tokenizer-uncertainty margin, capped by the
+            # configured input budget. No artificial floor — a small real
+            # window must produce a small limit, not a fake 4096.
             response_reserve = (
                 int(bot.max_tokens or 2000)
                 + max(256, len(_json_dumps(response_schema)) // 8)
@@ -8198,7 +8417,8 @@ class AiChatService:
             )
             effective_input_limit = min(
                 AI_INPUT_BUDGET_TOKENS,
-                max(4096, AI_MODEL_CONTEXT_WINDOW - response_reserve),
+                max(0, _model_context_window(_normalize_text(bot.model))
+                    - response_reserve - AI_TOKENIZER_MARGIN_TOKENS),
             )
             bounded_system_prompt, bounded_user_prompt, fit_meta = _fit_prompt_pair_blocks(
                 current_system_prompt,
@@ -8353,6 +8573,7 @@ class AiChatService:
         final_payload = payload
         final_usage = usage or {}
         accumulated_tool_results: list[dict[str, Any]] = []
+        read_more_calls_used = 0
         tool_rounds_used = 0
         # Per-bot limits from context (with env fallback)
         max_rounds = tool_context.max_tool_rounds if tool_context else AI_TOOL_ROUND_LIMIT
@@ -8401,7 +8622,9 @@ class AiChatService:
                     call=read_call,
                     accumulated_tool_results=accumulated_tool_results,
                     run_id=run_id,
+                    calls_used=read_more_calls_used,
                 )
+                read_more_calls_used += 1
                 tool_results.append(read_result)
                 round_traces.append(read_trace)
             for expansion_call in expansion_calls:
@@ -8540,7 +8763,8 @@ class AiChatService:
                         "re-call the same tool with an increased offset to fetch the next page. "
                         "If a result is marked projection_truncated, the missing items were already "
                         f"fetched — call {AI_TOOL_READ_MORE} with result_index/offset/limit to read "
-                        "the next slice instead of re-querying.",
+                        "the next slice, or with field/char_offset to continue a truncated text "
+                        "field, instead of re-querying.",
                     ),
                 ]
                 if _normalize_text(text)

@@ -23,7 +23,7 @@ from shared.llm.errors import OpenRouterClientError
 logger = logging.getLogger(__name__)
 
 DEFAULT_JEV_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_JEV_MODEL = "typesafe/jev-1.13"
+DEFAULT_JEV_MODEL = "typesafe/jev-1.14"
 JEV_SYSTEMONE_PATH = "/systemone"
 JEV_DEFAULT_TIMEOUT_SEC = 15.0
 JEV_DEFAULT_MAX_RETRIES = 2

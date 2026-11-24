@@ -200,7 +200,7 @@ def test_registry_signatures_preserve_required_and_enum():
         def enums_of(node, out):
             if isinstance(node, dict):
                 if isinstance(node.get('enum'), list):
-                    out.extend(node['enum'][:12])
+                    out.extend(node['enum'][:24])
                 for v in node.values():
                     enums_of(v, out)
             elif isinstance(node, list):
@@ -210,6 +210,40 @@ def test_registry_signatures_preserve_required_and_enum():
         enums_of(schema, enums)
         for val in enums:
             assert str(val) in sig, (spec['tool_id'], val, sig)
+
+
+def test_registry_signatures_preserve_nested_required():
+    """Every required name at ANY object nesting level must appear in the
+    compact signature — a hidden required field makes the model guess the
+    mandatory argument."""
+    svc = _service()
+    from backend.ai_chat.tools.registry import ai_tool_registry
+
+    def required_names(node, out):
+        if isinstance(node, dict):
+            out.extend(node.get('required') or [])
+            for v in node.values():
+                required_names(v, out)
+        elif isinstance(node, list):
+            for v in node:
+                required_names(v, out)
+        return out
+
+    for spec in ai_tool_registry.list_specs():
+        sig = svc._tool_spec_args_signature(spec.get('input_schema'), with_descriptions=False)
+        missing = [
+            name for name in required_names(spec.get('input_schema') or {}, [])
+            if f'{name}*' not in sig
+        ]
+        assert not missing, (spec['tool_id'], missing, sig)
+
+
+def test_model_context_window_has_no_artificial_floor():
+    svc = _service()
+    assert svc._model_context_window('acme/small-model') == svc.AI_MODEL_CONTEXT_WINDOW
+    assert svc._model_context_window('google/gemini-3.7-flash') > 32000
+    # a small real window must yield a small limit, not a fake 4096
+    assert svc._model_context_window('google/gemini-3.7-flash') - 3000 - 512 < 1_048_576
 
 
 def test_result_read_more_pages_already_fetched_items():
@@ -223,8 +257,92 @@ def test_result_read_more_pages_already_fetched_items():
     assert result['ok'] and result['data']['items'][0]['id'] == 15
     assert result['data']['has_more'] is True
     assert result['data']['total_in_result'] == 60
+    assert result['data']['next_offset'] == 35
+    last, _ = svc._handle_result_read_more(
+        call={'args': {'result_index': 1, 'offset': 55, 'limit': 20}},
+        accumulated_tool_results=acc, run_id='r1',
+    )
+    assert last['ok'] and len(last['data']['items']) == 5
+    assert last['data']['has_more'] is False and last['data']['next_offset'] is None
+    # an object absent from the first projected page is reachable
+    assert last['data']['items'][-1]['id'] == 59
     bad, _ = svc._handle_result_read_more(
         call={'args': {'result_index': 5, 'offset': 0, 'limit': 10}},
         accumulated_tool_results=acc, run_id='r1',
     )
     assert bad['ok'] is False
+    assert bad['data']['available_results'][0]['result_index'] == 1
+
+
+def test_result_read_more_rejects_invalid_args_without_crashing():
+    svc = _service()
+    acc = [{'tool_id': 'x.search', 'ok': True, 'data': {'items': [{'id': 1}]}}]
+    for args in (
+        {'result_index': 'abc'},
+        {'result_index': 1, 'offset': 'x'},
+        {'result_index': 1, 'field': 'nope'},
+    ):
+        result, _ = svc._handle_result_read_more(
+            call={'args': args}, accumulated_tool_results=acc, run_id='r1',
+        )
+        assert result['ok'] is False, args
+        assert result['error']
+
+
+def test_result_read_more_run_call_limit():
+    svc = _service()
+    acc = [{'tool_id': 'x.search', 'ok': True, 'data': {'items': [{'id': 1}]}}]
+    result, _ = svc._handle_result_read_more(
+        call={'args': {'result_index': 1}},
+        accumulated_tool_results=acc, run_id='r1',
+        calls_used=svc.AI_READ_MORE_MAX_CALLS,
+    )
+    assert result['ok'] is False and 'limit' in result['error']
+
+
+def test_result_read_more_pages_long_text_field():
+    svc = _service()
+    body = 'преамбула ' * 500 + 'ВАЖНЫЙ ФАКТ' + ' хвост' * 500
+    acc = [{'tool_id': 'office.mail.get', 'ok': True, 'data': {'body': body}}]
+    first, _ = svc._handle_result_read_more(
+        call={'args': {'result_index': 1, 'field': 'body', 'char_offset': 0}},
+        accumulated_tool_results=acc, run_id='r1',
+    )
+    assert first['ok'] and first['data']['has_more'] is True
+    assert first['data']['total_chars'] == len(body)
+    fact_at = body.find('ВАЖНЫЙ ФАКТ')
+    second, _ = svc._handle_result_read_more(
+        call={'args': {'result_index': 1, 'field': 'body', 'char_offset': fact_at}},
+        accumulated_tool_results=acc, run_id='r1',
+    )
+    assert second['ok'] and second['data']['text'].startswith('ВАЖНЫЙ ФАКТ')
+
+
+def test_result_read_more_nested_list_and_scalar_fields():
+    svc = _service()
+    acc = [{
+        'tool_id': 'office.action.mail_send_draft', 'ok': True,
+        'data': {'recipients': [f'u{i}@x' for i in range(30)], 'draft_id': 'd1'},
+    }]
+    page, _ = svc._handle_result_read_more(
+        call={'args': {'result_index': 1, 'field': 'recipients', 'offset': 20, 'limit': 15}},
+        accumulated_tool_results=acc, run_id='r1',
+    )
+    assert page['ok'] and page['data']['items'] == [f'u{i}@x' for i in range(20, 30)]
+    assert page['data']['has_more'] is False
+    scalar, _ = svc._handle_result_read_more(
+        call={'args': {'result_index': 1, 'field': 'draft_id'}},
+        accumulated_tool_results=acc, run_id='r1',
+    )
+    assert scalar['ok'] and scalar['data']['text'] == 'd1' and scalar['data']['has_more'] is False
+
+
+def test_result_read_more_page_not_retruncated_by_projection():
+    svc = _service()
+    result = {
+        'tool_id': 'ai.results.read_more', 'ok': True,
+        'data': {'items': [{'id': i} for i in range(50)], 'offset': 10, 'has_more': False},
+    }
+    projected = svc._project_tool_result_for_llm(result)
+    assert len(projected['data']['items']) == 50
+    assert '_projection' not in projected
