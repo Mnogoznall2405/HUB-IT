@@ -45,6 +45,7 @@ const formatDateTime = (value) => {
 };
 
 function QuotaEditor({ row, saving, onSave }) {
+  const { notifyWarning } = useNotification();
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState('');
   const currentGb = Math.round(Number(row.quota_limit_bytes || 0) / (1024 ** 3));
@@ -55,9 +56,13 @@ function QuotaEditor({ row, saving, onSave }) {
   };
 
   const submit = async () => {
+    if (saving) return;
     const trimmed = String(value).trim();
     const gb = trimmed === '' ? 0 : Number(trimmed);
-    if (trimmed !== '' && (!Number.isFinite(gb) || gb < 1 || gb > QUOTA_MAX_GB)) return;
+    if (trimmed !== '' && (!Number.isFinite(gb) || gb < 1 || gb > QUOTA_MAX_GB)) {
+      notifyWarning(`Укажите целое число от 1 до ${QUOTA_MAX_GB} ГБ или оставьте поле пустым для стандартного лимита.`);
+      return;
+    }
     const ok = await onSave(row, gb > 0 ? gb : null);
     if (ok) setEditing(false);
   };

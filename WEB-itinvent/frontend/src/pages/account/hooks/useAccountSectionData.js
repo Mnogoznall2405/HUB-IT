@@ -40,6 +40,11 @@ import {
 } from '../accountUserModel';
 import { normalizeAppSettingsState } from '../admin/appSettingsModel';
 
+const normalizeFontScale = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(1.2, Math.max(0.9, parsed)) : 1;
+};
+
 export function useAccountSectionData(area = 'settings') {
   const isDesktopViewport = useMediaQuery(DESKTOP_SCROLL_QUERY);
   const isVeryWide = useMediaQuery(SETTINGS_VERY_WIDE_QUERY);
@@ -110,7 +115,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   const [blockingError, setBlockingError] = useState('');
   const [themeMode, setThemeMode] = useState(preferences.theme_mode || 'system');
   const [fontFamily, setFontFamily] = useState(preferences.font_family || 'Aptos');
-  const [fontScale, setFontScale] = useState(Number(preferences.font_scale || 1));
+  const [fontScale, setFontScale] = useState(() => normalizeFontScale(preferences.font_scale));
   const [mobileBottomNavItems, setMobileBottomNavItems] = useState(
     () => normalizeMobileBottomNavItems(preferences.mobile_bottom_nav_items),
   );
@@ -163,7 +168,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     const synced = {
       themeMode: preferences.theme_mode || 'system',
       fontFamily: preferences.font_family || 'Aptos',
-      fontScale: Number(preferences.font_scale || 1),
+      fontScale: normalizeFontScale(preferences.font_scale),
       mobileBottomNavItems: normalizeMobileBottomNavItems(preferences.mobile_bottom_nav_items),
     };
     const syncedKey = JSON.stringify(synced);
@@ -414,7 +419,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
       await savePreferences({
         theme_mode: themeMode,
         font_family: fontFamily,
-        font_scale: Number(fontScale),
+        font_scale: normalizeFontScale(fontScale),
         mobile_bottom_nav_items: mobileBottomNavItems,
       });
       notifySuccess('Настройки внешнего вида сохранены.', { source: 'settings', dedupeMode: 'none' });
@@ -700,6 +705,11 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   }, [canManageUsers, loadSessions, loadUsers, notifyApiError, notifySuccess]);
 
   const handleCleanupSessions = useCallback(async () => {
+    if (typeof window !== 'undefined' && !window.confirm(
+      'Очистить устаревшие сессии? Неактивные и просроченные сессии будут закрыты.',
+    )) {
+      return;
+    }
     setCleaningSessions(true);
     try {
       const result = await authAPI.cleanupSessions();
@@ -723,6 +733,11 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   }, [loadSessions, notifyApiError, notifySuccess]);
 
   const handlePurgeInactiveSessions = useCallback(async () => {
+    if (typeof window !== 'undefined' && !window.confirm(
+      'Удалить все неактивные сессии пользователей? Это действие нельзя отменить.',
+    )) {
+      return;
+    }
     setPurgingSessions(true);
     try {
       const result = await authAPI.purgeInactiveSessions();
@@ -884,6 +899,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   }, [loadPasswordGroups, notifyApiError, notifySuccess]);
 
   const handleCreateAiBot = useCallback(async (draft) => {
+    if (savingAiBotId) return;
     setSavingAiBotId('new');
     try {
       const created = await settingsAPI.createAiBot({
@@ -917,11 +933,11 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     } finally {
       setSavingAiBotId('');
     }
-  }, [loadAiBotsAdmin, notifyApiError, notifySuccess]);
+  }, [loadAiBotsAdmin, notifyApiError, notifySuccess, savingAiBotId]);
 
   const handleUpdateAiBot = useCallback(async (botId, draft) => {
     const normalizedBotId = String(botId || '').trim();
-    if (!normalizedBotId) return;
+    if (!normalizedBotId || savingAiBotId) return;
     setSavingAiBotId(normalizedBotId);
     try {
       const updated = await settingsAPI.updateAiBot(normalizedBotId, {
@@ -954,7 +970,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     } finally {
       setSavingAiBotId('');
     }
-  }, [loadAiBotsAdmin, notifyApiError, notifySuccess]);
+  }, [loadAiBotsAdmin, notifyApiError, notifySuccess, savingAiBotId]);
 
   return {
     area,

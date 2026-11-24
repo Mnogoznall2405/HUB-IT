@@ -85,6 +85,7 @@ function AvatarUploadBlock({ user }) {
   }, [notifyApiError, notifySuccess, refreshSession]);
 
   const handleDelete = useCallback(async () => {
+    if (!window.confirm('Удалить фото профиля?')) return;
     setUploading(true);
     try {
       await authAPI.deleteAvatar();
@@ -181,13 +182,14 @@ function AvatarUploadBlock({ user }) {
 export function ProfileTab({ user, dbOptions, canAccessMail }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
-  const { notifyApiError, notifySuccess } = useNotification();
+  const { notifyApiError, notifyInfo, notifySuccess } = useNotification();
   const [mailboxes, setMailboxes] = useState([]);
   const [mailboxesLoading, setMailboxesLoading] = useState(true);
   const [mailboxDialogOpen, setMailboxDialogOpen] = useState(false);
   const [mailboxDialogMode, setMailboxDialogMode] = useState('create');
   const [mailboxDraft, setMailboxDraft] = useState(() => createEmptyMailboxDraft(user));
   const [mailboxSaving, setMailboxSaving] = useState(false);
+  const [mailboxBusy, setMailboxBusy] = useState(false);
 
   const loadMailboxes = useCallback(async () => {
     if (!canAccessMail) {
@@ -257,8 +259,15 @@ export function ProfileTab({ user, dbOptions, canAccessMail }) {
       is_primary: authMode === 'primary_credentials' ? false : Boolean(mailboxDraft.is_primary),
       is_active: Boolean(mailboxDraft.is_active),
     };
-    if (!payload.mailbox_email) return;
-    if (authMode === 'stored_credentials' && mailboxDialogMode === 'create' && !payload.mailbox_password) return;
+    if (mailboxSaving) return;
+    if (!payload.mailbox_email) {
+      notifyInfo('Укажите адрес почтового ящика.', { source: 'settings-mailboxes', dedupeMode: 'none' });
+      return;
+    }
+    if (authMode === 'stored_credentials' && mailboxDialogMode === 'create' && !payload.mailbox_password) {
+      notifyInfo('Укажите пароль почтового ящика.', { source: 'settings-mailboxes', dedupeMode: 'none' });
+      return;
+    }
     setMailboxSaving(true);
     try {
       if (mailboxDialogMode === 'edit' && mailboxDraft.id) {
@@ -277,9 +286,11 @@ export function ProfileTab({ user, dbOptions, canAccessMail }) {
     } finally {
       setMailboxSaving(false);
     }
-  }, [loadMailboxes, mailboxDialogMode, mailboxDraft, notifyApiError, notifySuccess]);
+  }, [loadMailboxes, mailboxDialogMode, mailboxDraft, mailboxSaving, notifyApiError, notifyInfo, notifySuccess]);
 
   const handleMailboxPrimary = useCallback(async (entry) => {
+    if (mailboxBusy) return;
+    setMailboxBusy(true);
     try {
       await mailAPI.updateMailbox(entry.id, { is_primary: true });
       notifySuccess('Основной ящик обновлён.', { source: 'settings-mailboxes', dedupeMode: 'none' });
@@ -288,10 +299,14 @@ export function ProfileTab({ user, dbOptions, canAccessMail }) {
       notifyApiError(error, 'Не удалось назначить основной ящик.', {
         source: 'settings-mailboxes',
       });
+    } finally {
+      setMailboxBusy(false);
     }
-  }, [loadMailboxes, notifyApiError, notifySuccess]);
+  }, [loadMailboxes, mailboxBusy, notifyApiError, notifySuccess]);
 
   const handleMailboxActiveToggle = useCallback(async (entry) => {
+    if (mailboxBusy) return;
+    setMailboxBusy(true);
     try {
       await mailAPI.updateMailbox(entry.id, { is_active: !Boolean(entry?.is_active) });
       notifySuccess(entry?.is_active ? 'Ящик отключён.' : 'Ящик включён.', {
@@ -303,12 +318,15 @@ export function ProfileTab({ user, dbOptions, canAccessMail }) {
       notifyApiError(error, 'Не удалось изменить состояние ящика.', {
         source: 'settings-mailboxes',
       });
+    } finally {
+      setMailboxBusy(false);
     }
-  }, [loadMailboxes, notifyApiError, notifySuccess]);
+  }, [loadMailboxes, mailboxBusy, notifyApiError, notifySuccess]);
 
   const handleMailboxDelete = useCallback(async (entry) => {
-    if (!entry?.id) return;
-    if (!window.confirm(`Отключить ящик "${entry.label || entry.mailbox_email || 'без названия'}"?`)) return;
+    if (!entry?.id || mailboxBusy) return;
+    if (!window.confirm(`Удалить ящик "${entry.label || entry.mailbox_email || 'без названия'}"? Это действие нельзя отменить.`)) return;
+    setMailboxBusy(true);
     try {
       await mailAPI.deleteMailbox(entry.id);
       notifySuccess('Ящик удалён.', { source: 'settings-mailboxes', dedupeMode: 'none' });
@@ -317,8 +335,10 @@ export function ProfileTab({ user, dbOptions, canAccessMail }) {
       notifyApiError(error, 'Не удалось удалить ящик.', {
         source: 'settings-mailboxes',
       });
+    } finally {
+      setMailboxBusy(false);
     }
-  }, [loadMailboxes, notifyApiError, notifySuccess]);
+  }, [loadMailboxes, mailboxBusy, notifyApiError, notifySuccess]);
 
   const handleMailboxAction = useCallback((action, entry) => {
     if (action === 'edit') {

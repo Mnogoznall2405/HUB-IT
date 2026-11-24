@@ -44,6 +44,7 @@ import SyncOutlinedIcon from '@mui/icons-material/SyncOutlined';
 import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
 import OverflowMenu from '../../../components/common/OverflowMenu';
+import { useNotification } from '../../../contexts/NotificationContext';
 import { buildOfficeUiTokens } from '../../../theme/officeUiTokens';
 import {
   DEFAULT_USER_ROWS_PER_PAGE,
@@ -79,6 +80,7 @@ export default function UsersTab({
 
   const navigate = useNavigate();
   const theme = useTheme();
+  const { notifyWarning } = useNotification();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -91,6 +93,7 @@ export default function UsersTab({
   const [draft, setDraft] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deletingUser, setDeletingUser] = useState(false);
   const [filtersExpanded, setFiltersExpanded] = useState(false);
 
   const activeSessionCounts = useMemo(() => {
@@ -205,9 +208,18 @@ export default function UsersTab({
       my_files_quota_bytes: myFilesQuotaGbToBytes(draft.my_files_quota_gb),
     };
 
-    if (payload.username.length < 3) return;
-    if (payload.telegram_id && !Number.isInteger(Number(payload.telegram_id))) return;
-    if (payload.my_files_quota_bytes === undefined) return;
+    if (payload.username.length < 3) {
+      notifyWarning('Имя пользователя должно содержать не менее 3 символов.');
+      return;
+    }
+    if (payload.telegram_id && !Number.isInteger(Number(payload.telegram_id))) {
+      notifyWarning('Telegram ID должен быть целым числом.');
+      return;
+    }
+    if (payload.my_files_quota_bytes === undefined) {
+      notifyWarning('Укажите корректную квоту «Мои файлы» в ГБ.');
+      return;
+    }
 
     const result = editorMode === 'create'
       ? await onCreateUser(payload)
@@ -220,7 +232,7 @@ export default function UsersTab({
     } else if (result.user) {
       setDraft(createUserDraftFromItem(result.user));
     }
-  }, [draft, editorMode, isVeryWide, onCreateUser, onUpdateUser]);
+  }, [draft, editorMode, isVeryWide, notifyWarning, onCreateUser, onUpdateUser]);
 
   const tableRows = pagedUsers.map((item) => {
     const roleMeta = roleOptions.find((option) => option.value === item.role);
@@ -318,7 +330,7 @@ export default function UsersTab({
           </Typography>
         </Box>
         {!isVeryWide ? (
-          <IconButton onClick={closeEditor} disabled={savingUser} size="small">
+          <IconButton onClick={closeEditor} disabled={savingUser} size="small" aria-label="Скрыть редактор пользователя">
             <VisibilityOffOutlinedIcon fontSize="small" />
           </IconButton>
         ) : null}
@@ -597,23 +609,29 @@ export default function UsersTab({
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>Отмена</Button>
+          <Button onClick={() => setDeleteTarget(null)} disabled={deletingUser}>Отмена</Button>
           <Button
             color="error"
             variant="contained"
+            disabled={deletingUser}
             onClick={async () => {
-              if (!deleteTarget) return;
-              const result = await onDeleteUser(deleteTarget);
-              if (result?.ok && Number(draft?.id) === Number(deleteTarget.id)) {
-                setDraft(null);
-                setDrawerOpen(false);
-              }
-              if (result?.ok) {
-                setDeleteTarget(null);
+              if (!deleteTarget || deletingUser) return;
+              setDeletingUser(true);
+              try {
+                const result = await onDeleteUser(deleteTarget);
+                if (result?.ok && Number(draft?.id) === Number(deleteTarget.id)) {
+                  setDraft(null);
+                  setDrawerOpen(false);
+                }
+                if (result?.ok) {
+                  setDeleteTarget(null);
+                }
+              } finally {
+                setDeletingUser(false);
               }
             }}
           >
-            Удалить
+            {deletingUser ? 'Удаление...' : 'Удалить'}
           </Button>
         </DialogActions>
       </Dialog>
