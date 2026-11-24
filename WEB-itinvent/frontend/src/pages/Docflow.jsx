@@ -1247,7 +1247,9 @@ export default function Docflow() {
     }
     const login = String(profile?.login || '').trim();
     const requestKey = `${credentialsRevision}|${scope}|${search}`;
-    if (!force && inFlightRequest.current?.key === requestKey) {
+    // Force-вызов присоединяется к летящему запросу — он и есть свежие данные;
+    // иначе realtime-connect на загрузке плодил дубль tasks?scope=inbox.
+    if (inFlightRequest.current?.key === requestKey) {
       return inFlightRequest.current.promise;
     }
     const requestId = requestSequence.current + 1;
@@ -1721,7 +1723,6 @@ export default function Docflow() {
           if (objectUrl) window.URL.revokeObjectURL(objectUrl);
           return;
         }
-        previewObjectUrl.current = objectUrl;
         nextPreview = {
           ...createEmptyAttachmentPreview(),
           open: true,
@@ -1742,17 +1743,16 @@ export default function Docflow() {
         nextPreview = await buildAttachmentPreviewState({
           response,
           attachment: { name: filename, content_type: contentType, size: file?.size || 0 },
-          createObjectUrl: (blob) => {
-            const objectUrl = typeof window.URL?.createObjectURL === 'function'
-              ? window.URL.createObjectURL(blob)
-              : '';
-            previewObjectUrl.current = objectUrl;
-            return objectUrl;
-          },
+          createObjectUrl: (blob) => (
+            typeof window.URL?.createObjectURL === 'function' ? window.URL.createObjectURL(blob) : ''
+          ),
         });
         nextPreview.downloadContext = { task, file };
       }
       if (previewSequence.current === sequence) {
+        // Ref ведёт только живой URL: запись до проверки sequence ломала учёт
+        // при out-of-order ответах — следующий предпросмотр утекал.
+        previewObjectUrl.current = nextPreview?.objectUrl || '';
         setAttachmentPreview(nextPreview);
       } else if (nextPreview?.objectUrl && typeof window.URL?.revokeObjectURL === 'function') {
         window.URL.revokeObjectURL(nextPreview.objectUrl);
