@@ -268,7 +268,7 @@
       "id": "FE-0014",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "layout",
       "page": "global (MainLayout)",
@@ -279,7 +279,8 @@
       "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "37317636"
     },
     {
       "id": "FE-0015",
@@ -3647,7 +3648,7 @@
       "id": "FE-0204",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "layout",
       "page": null,
@@ -3658,13 +3659,14 @@
       "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "37317636"
     },
     {
       "id": "FE-0205",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "layout",
       "page": null,
@@ -3675,13 +3677,14 @@
       "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "37317636"
     },
     {
       "id": "FE-0206",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "layout",
       "page": null,
@@ -3692,13 +3695,14 @@
       "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "37317636"
     },
     {
       "id": "FE-0207",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "layout",
       "page": null,
@@ -3709,7 +3713,8 @@
       "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "37317636"
     },
     {
       "id": "FE-0208",
@@ -3818,7 +3823,7 @@
       "id": "FE-0214",
       "severity": "Info",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "layout",
       "page": null,
@@ -3829,7 +3834,8 @@
       "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "37317636"
     },
     {
       "id": "FE-0215",
