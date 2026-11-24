@@ -223,6 +223,14 @@
 | Scratch PostgreSQL | **BLOCKED** — на хосте нет docker/psql/5432, env PG-URL не задан → PG serialization/realtime relay/reconnect остаются skipped, не выданы за PASS |
 | Двухпроцессный PG relay | **BLOCKED** (та же причина) — логика покрыта local-transport интеграционными тестами + unit; PG-специфика (LISTEN/NOTIFY payload limits, catch-up cursor) требует живого PG |
 
+## Регрессия Cycle 3
+
+- `test_ai_summary_upgrade.py`: 36/36 (+14 новых: CAS-после-reset repro, legacy-строки, backoff×5, inflight, fairness, rate-limit, lease, token-budget, metrics, flag-off)
+- `test_chat_readcache_invalidation.py`: 11/11 (+3: epoch-guard redis, `_cache_set` skip, bump-on-invalidate)
+- `test_ai_summary_worker_supervisor.py`: 5/5 (default-OFF флаг совместим)
+- Полный набор `tests/test_ai_*.py + tests/test_chat_*.py + test_e2e_chat_flow.py` (1557 шт, ~7 мин): **1514 passed / 23 skipped / 20 failed — все 20 воспроизводятся побайтово на базовом HEAD `810c586e` без изменений цикла 3** (проверено `git stash` + прогон тех же тестов): pre-existing environment issues, а не регрессия — 7×`test_ai_chat_runtime` (db-context `OBJ-ITINVENT` не настроен), `test_ai_sandbox_release`/`runtime` (release-артефакты), 3×`test_chat_address_book_resolve`, `test_chat_calls_migration`, 2×`test_chat_files_and_notifications` (push-payload), `test_chat_runtime_split` (scale_pool), 3×`test_chat_scheduled_messages` + `test_chat_calls_migration` (alembic-цепочка 0144/0160 на scratch-БД без chat/my_files-таблиц).
+- 22–23 PG-skipped как в цикле 2 (`test_ai_run_serialization_pg` — живого PG нет).
+
 ## Оставшиеся риски
 
 1. Lease granularity = `updated_at` — общий «recent activity» маркер: фон уступает интерактиву до 45с задержки (фича, не баг; self-healing через scan).
