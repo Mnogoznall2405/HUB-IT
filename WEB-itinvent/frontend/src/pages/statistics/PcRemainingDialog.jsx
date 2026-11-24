@@ -74,7 +74,7 @@ function PcRemainingDialog({
     : (Number(branchRow?.remaining_pc) || items.length);
   const totalCount = Number(loadedTotal ?? branchRow?.total_pc ?? 0) || 0;
 
-  const reloadRemaining = useCallback(() => {
+  const reloadRemaining = useCallback((isCancelled = () => false) => {
     if (!branchRow?.branch) return Promise.resolve();
     return jsonAPI.getPcCleaningRemaining({
       period_days: periodDays,
@@ -83,6 +83,7 @@ function PcRemainingDialog({
       const data = response?.data && typeof response.data === 'object'
         ? response.data
         : response;
+      if (isCancelled()) return data;
       setItems(readRemainingPcs(data));
       if (data?.remaining_pc != null) setLoadedRemaining(Number(data.remaining_pc) || 0);
       if (data?.total_pc != null) setLoadedTotal(Number(data.total_pc) || 0);
@@ -105,7 +106,7 @@ function PcRemainingDialog({
     setConfirmRow(null);
     setLoading(true);
 
-    reloadRemaining()
+    reloadRemaining(() => cancelled)
       .catch((requestError) => {
         if (cancelled) return;
         if (seeded.length === 0) {
