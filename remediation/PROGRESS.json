@@ -20,10 +20,10 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 224,
+    "OPEN": 221,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
-    "FIXED": 44,
+    "FIXED": 47,
     "IN_PROGRESS": 2
   },
   "issues": [
@@ -4238,7 +4238,7 @@
       "id": "FE-0243",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4246,16 +4246,17 @@
       "lines": "39-46 (эффект сбрасывает draftValues на новый items),232 (onRefresh без dirtyCount) + useAccountSectionData.js:400-404",
       "title": "Аккаунт: «Обновить»/повторный вход в раздел стирает несохранённые правки .env",
       "related": [],
-      "pr": null,
+      "pr": 40,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | draft-loss cluster, stacked on PR#39",
+      "commit": "1f9100e6"
     },
     {
       "id": "FE-0244",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4263,16 +4264,17 @@
       "lines": "24-32 (useEffect по currentIps-новому массиву) + appSettingsModel.js:18 + TransferActReminderSettingsCard.jsx:85",
       "title": "Аккаунт: черновик IP-allowlist стирается сохранением соседней карточки",
       "related": [],
-      "pr": null,
+      "pr": 40,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | draft-loss cluster, stacked on PR#39",
+      "commit": "1f9100e6"
     },
     {
       "id": "FE-0245",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4280,10 +4282,11 @@
       "lines": "845-856 (autosave→return true БЕЗ запроса) + PasswordVaultGroupsSettingsCard.jsx:69,78,29,92",
       "title": "Аккаунт: псевдо-автосохранение групп паролей затирается любым рефрешем",
       "related": [],
-      "pr": null,
+      "pr": 40,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | draft-loss cluster, stacked on PR#39",
+      "commit": "1f9100e6"
     },
     {
       "id": "FE-0246",
