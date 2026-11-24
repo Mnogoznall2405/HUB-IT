@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import useRequestGuard from '../lib/useRequestGuard';
 import {
@@ -561,13 +561,17 @@ export default function MyFiles() {
         signal: controller.signal,
       });
       if (!latestIsCurrentRef.current() || pageFetchRef.current.key !== pageKey) return;
-      setItems((prev) => {
-        const seen = new Set(prev.map((item) => String(item.id)));
-        const fresh = (Array.isArray(page?.items) ? page.items : []).filter((item) => !seen.has(String(item.id)));
-        return fresh.length ? [...prev, ...fresh] : prev;
+      // The appended page is rendered as a transition so a fast scroll in
+      // progress can interrupt the commit instead of stalling on one frame.
+      startTransition(() => {
+        setItems((prev) => {
+          const seen = new Set(prev.map((item) => String(item.id)));
+          const fresh = (Array.isArray(page?.items) ? page.items : []).filter((item) => !seen.has(String(item.id)));
+          return fresh.length ? [...prev, ...fresh] : prev;
+        });
+        setNextCursor(page?.next_cursor || '');
+        if (page?.total != null) setListTotal(page.total);
       });
-      setNextCursor(page?.next_cursor || '');
-      if (page?.total != null) setListTotal(page.total);
     } catch (error) {
       if (error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return;
       notifyApiError(error, 'Не удалось загрузить следующую страницу файлов.', { dedupeMode: 'recent' });

@@ -1,10 +1,13 @@
 import http.client
 import json
+import sys
 import time
+
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 18013
 
 
 def req(method, path, body=None, cookie=None):
-    c = http.client.HTTPConnection('127.0.0.1', 18013, timeout=60)
+    c = http.client.HTTPConnection('127.0.0.1', PORT, timeout=60)
     hdrs = {'Content-Type': 'application/json'}
     if cookie:
         hdrs['Cookie'] = cookie
@@ -20,10 +23,10 @@ print('login', s)
 for label, path in [
     ('f10', '/api/v1/my-files?folder_id=c8ce7d9b01a4407da945ef8948a7fdb7'),
     ('f100', '/api/v1/my-files?folder_id=9e941cbdb9324de59fb21dde3729e783'),
+    ('f500', '/api/v1/my-files?folder_id=006e82085d6e420482391629b9be203a'),
     ('f1000', '/api/v1/my-files?folder_id=ba4e6ae1501e493fbea8037da36282e9'),
-    ('f5000', '/api/v1/my-files?folder_id=b5f9699ca35945e194c0b74491617a72'),
-    ('f10000', '/api/v1/my-files?folder_id=8b45ec3bc397410a8e40226442601cfa'),
-    ('f10000+inc', '/api/v1/my-files?folder_id=8b45ec3bc397410a8e40226442601cfa&include=tree,quota'),
+    ('f1000+p1', '/api/v1/my-files?folder_id=ba4e6ae1501e493fbea8037da36282e9&limit=150&sort=name&order=asc'),
+    ('f1000+inc', '/api/v1/my-files?folder_id=ba4e6ae1501e493fbea8037da36282e9&include=tree,quota'),
     ('search', '/api/v1/my-files?q=zebra'),
     ('quota', '/api/v1/my-files/quota'),
 ]:

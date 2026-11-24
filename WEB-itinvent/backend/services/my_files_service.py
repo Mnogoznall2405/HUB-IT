@@ -849,6 +849,7 @@ class MyFilesService:
         cursor: str = "",
         merge_libraries: bool = False,
         params_ctx: str = "",
+        folder_scoped: bool = False,
     ) -> str:
         """Weak-change fingerprint for conditional listing requests (If-None-Match).
 
@@ -864,32 +865,48 @@ class MyFilesService:
         """
         now = _utc_now()
         owner = int(owner_user_id)
+        folder = _normalize_text(folder_id)
         include_parts = {part.strip().lower() for part in str(include or "").split(",") if part.strip()}
+        # Scope matters: a folder view depends only on that folder's rows, so
+        # its aggregates ride the folder_id index and stay sub-millisecond on
+        # large tables; owner-wide views keep owner-wide aggregates. Every
+        # delete/restore path stamps ``updated_at`` too, so a separate
+        # ``max(deleted_at)`` term would only double the index scan.
+        file_scope = [AppMyFile.owner_user_id == owner]
+        if folder_scoped:
+            # The listing branch reached only for non-global views scopes rows
+            # by folder_id (NULL for the root view) — mirror it so the
+            # aggregates ride the folder index instead of the owner scan.
+            file_scope.append(
+                AppMyFile.folder_id == folder if folder else AppMyFile.folder_id.is_(None)
+            )
         files = session.execute(
             select(
                 func.count(AppMyFile.id),
                 func.max(AppMyFile.updated_at),
-                func.max(AppMyFile.deleted_at),
-                func.coalesce(func.sum(case((AppMyFile.expires_at <= now, 1), else_=0)), 0),
-            ).where(AppMyFile.owner_user_id == owner)
+            ).where(*file_scope)
         ).one()
+        expired = session.execute(
+            select(func.count(AppMyFile.id)).where(
+                *file_scope, AppMyFile.expires_at.is_not(None), AppMyFile.expires_at <= now
+            )
+        ).scalar() or 0
         folders = session.execute(
             select(
                 func.count(AppMyFileFolder.id),
                 func.max(AppMyFileFolder.updated_at),
-                func.max(AppMyFileFolder.deleted_at),
             ).where(AppMyFileFolder.owner_user_id == owner)
         ).one()
-        extras: list[Any] = []
+        extras: list[Any] = [expired]
         if self._collab_tables_present(session):
-            owner_files = select(AppMyFile.id).where(AppMyFile.owner_user_id == owner)
+            file_ids_scope = select(AppMyFile.id).where(*file_scope)
             extras.extend(
                 session.execute(
                     select(
                         func.count(AppMyFileCollaborator.file_id),
                         func.max(AppMyFileCollaborator.created_at),
                         func.max(AppMyFileCollaborator.updated_at),
-                    ).where(AppMyFileCollaborator.file_id.in_(owner_files))
+                    ).where(AppMyFileCollaborator.file_id.in_(file_ids_scope))
                 ).one()
             )
             owner_folders = select(AppMyFileFolder.id).where(AppMyFileFolder.owner_user_id == owner)
@@ -902,27 +919,28 @@ class MyFilesService:
                     ).where(AppMyFileFolderCollaborator.folder_id.in_(owner_folders))
                 ).one()
             )
-            extras.extend(
-                session.execute(
-                    select(
-                        func.count(AppMyFileVersion.id),
-                        func.coalesce(
-                            func.sum(AppMyFileVersion.original_size_bytes + AppMyFileVersion.office_changes_size_bytes), 0
-                        ),
-                    )
-                    .join(AppMyFile, AppMyFile.id == AppMyFileVersion.file_id)
-                    .where(AppMyFile.owner_user_id == owner)
-                ).one()
-            )
-        owner_blobs = select(AppMyFile.blob_id).where(
-            AppMyFile.owner_user_id == owner, AppMyFile.blob_id.is_not(None)
-        )
+            if "quota" in include_parts:
+                # Version bytes only feed the quota include; without it the
+                # join would scan the whole version table for nothing.
+                extras.extend(
+                    session.execute(
+                        select(
+                            func.count(AppMyFileVersion.id),
+                            func.coalesce(
+                                func.sum(AppMyFileVersion.original_size_bytes + AppMyFileVersion.office_changes_size_bytes), 0
+                            ),
+                        )
+                        .join(AppMyFile, AppMyFile.id == AppMyFileVersion.file_id)
+                        .where(AppMyFile.owner_user_id == owner)
+                    ).one()
+                )
+        blobs_scope = select(AppMyFile.blob_id).where(*file_scope, AppMyFile.blob_id.is_not(None))
         extras.extend(
             session.execute(
                 select(
                     func.count(AppMyFilePreview.blob_id),
                     func.max(AppMyFilePreview.updated_at),
-                ).where(AppMyFilePreview.blob_id.in_(owner_blobs))
+                ).where(AppMyFilePreview.blob_id.in_(blobs_scope))
             ).one()
         )
         if "quota" in include_parts:
@@ -2761,6 +2779,11 @@ class MyFilesService:
         # owners, so revocation must re-run the access checks on every request.
         etag_eligible = normalized_view != "shared"
         merges_libraries = normalized_view != "shared" and (normalized_view == "recent" or bool(_normalize_text(query)))
+        # Folder scoping only holds when the impl takes the folder branch;
+        # global views (search, favorites, recent, shared) ignore folder_id.
+        folder_scoped = not _normalize_text(query) and normalized_view not in {
+            "shared", "favorites", "recent",
+        }
         params_ctx = "|".join(
             (
                 _normalize_text(sort).lower(),
@@ -2787,6 +2810,7 @@ class MyFilesService:
                         cursor=cursor,
                         merge_libraries=merges_libraries,
                         params_ctx=params_ctx,
+                        folder_scoped=folder_scoped,
                     )
                 if expected_etag and etag == expected_etag:
                     return {"not_modified": True, "etag": etag}
@@ -2821,6 +2845,7 @@ class MyFilesService:
                     cursor=cursor,
                     merge_libraries=True,
                     params_ctx=params_ctx,
+                    folder_scoped=not _normalize_text(query),
                 )
                 if etag_eligible
                 else ""

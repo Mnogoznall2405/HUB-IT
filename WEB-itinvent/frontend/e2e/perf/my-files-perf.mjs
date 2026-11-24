@@ -267,6 +267,7 @@ async function measure(page, name, act, readyLocator, { settleMs = 120 } = {}) {
   await page.evaluate((n) => window.__perf.mark(n), name);
   const before = await page.evaluate(() => ({
     commits: window.__perf.commits, api: window.__perf.api.length,
+    apiBytes: window.__perf.api.reduce((s, e) => s + e.t, 0),
     heap: performance.memory ? performance.memory.usedJSHeapSize : 0,
   }));
   await act();
