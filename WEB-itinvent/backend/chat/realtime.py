@@ -672,6 +672,23 @@ class ChatRealtimeManager:
             256,
             int(str(os.getenv("CHAT_REALTIME_DEDUPE_SIZE", "8192") or "8192").strip() or "8192"),
         )
+        # Cross-node read-cache invalidation, coalesced per conversation.
+        # {conversation_id: set(user_ids)} or None for "every cached user":
+        # many targeted events (one per member) merge into a single
+        # invalidation pass after the debounce window.
+        self._cache_invalidation_pending: dict[str, set[int] | None] = {}
+        self._cache_invalidation_task: asyncio.Task | None = None
+        self._cache_invalidation_debounce_sec = max(
+            0.02,
+            min(
+                2.0,
+                float(
+                    str(os.getenv("CHAT_READCACHE_INVALIDATE_DEBOUNCE_MS", "120") or "120").strip()
+                    or "120"
+                )
+                / 1000.0,
+            ),
+        )
         self._queue_full_count = 0
         self._send_timeout_count = 0
         self._coalesced_events = 0
@@ -1621,6 +1638,14 @@ class ChatRealtimeManager:
             durable=durable,
             volatile_key=volatile_key,
         )
+        if durable:
+            # Room broadcasts carry no member list; drop the conversation's
+            # pages for every locally cached user (member or not — cheap,
+            # self-healing).
+            self._schedule_read_cache_invalidation(
+                conversation_id=normalized_conversation_id,
+                whole_conversation=True,
+            )
         if distribute and self._distribution_publish_enabled():
             # Local peers must not wait on shared-transport RTT.
             self._schedule_transport_publish(
@@ -1725,6 +1750,30 @@ class ChatRealtimeManager:
         request_id = _normalize_text(event.get("request_id")) or None
         conversation_id = _normalize_text(event.get("conversation_id")) or None
         watched_user_id = int(event.get("watched_user_id", 0) or 0)
+        # Cross-node read-cache invalidation: any durable event about a
+        # conversation means the locally cached thread/conversation pages for
+        # the affected users may be stale. The writer node already dropped
+        # its own entries; every other node learns it here (the shared SKIP
+        # LOCKED outbox only reaches ONE consumer and cannot do this job).
+        if conversation_id and not self._is_volatile_event(event_type):
+            affected_user_ids = {
+                int(item)
+                for item in list(event.get("target_user_ids") or [])
+                if int(item or 0) > 0
+            }
+            excluded_user = int(event.get("exclude_user_id") or 0)
+            if excluded_user > 0:
+                affected_user_ids.add(excluded_user)
+            if affected_user_ids:
+                self._schedule_read_cache_invalidation(
+                    conversation_id=conversation_id,
+                    user_ids=affected_user_ids,
+                )
+            elif distribution in {"conversation_room", "global", "room_evict"}:
+                self._schedule_read_cache_invalidation(
+                    conversation_id=conversation_id,
+                    whole_conversation=True,
+                )
         envelope = self.build_envelope(
             event_type=event_type,
             payload=payload,
@@ -1810,6 +1859,90 @@ class ChatRealtimeManager:
             volatile_key=volatile_key,
         )
 
+    def _schedule_read_cache_invalidation(
+        self,
+        *,
+        conversation_id: str,
+        user_ids: list[int] | set[int] | None = None,
+        whole_conversation: bool = False,
+    ) -> None:
+        """Coalesce per-event invalidations into one pass per conversation."""
+        normalized_conversation_id = _normalize_text(conversation_id)
+        if not normalized_conversation_id:
+            return
+        with self._lock:
+            if whole_conversation:
+                self._cache_invalidation_pending[normalized_conversation_id] = None
+            else:
+                current = self._cache_invalidation_pending.get(normalized_conversation_id)
+                if current is None and normalized_conversation_id not in self._cache_invalidation_pending:
+                    current = set()
+                    self._cache_invalidation_pending[normalized_conversation_id] = current
+                if isinstance(current, set):
+                    current.update(
+                        int(item)
+                        for item in list(user_ids or [])
+                        if int(item or 0) > 0
+                    )
+            task = self._cache_invalidation_task
+        if task is None or task.done():
+            try:
+                self._cache_invalidation_task = asyncio.get_running_loop().create_task(
+                    self._flush_read_cache_invalidation(),
+                    name="chat-readcache-invalidate",
+                )
+            except RuntimeError:
+                # No running loop (sync callers): fall back to an immediate
+                # invalidation — correctness over coalescing.
+                try:
+                    self._flush_read_cache_invalidation_now()
+                except Exception:
+                    logger.debug("chat.realtime read-cache invalidation failed", exc_info=True)
+
+    def _flush_read_cache_invalidation_now(self) -> None:
+        with self._lock:
+            pending = self._cache_invalidation_pending
+            self._cache_invalidation_pending = {}
+        try:
+            from backend.chat.service import chat_service
+
+            self._apply_read_cache_invalidation(pending=pending, service=chat_service)
+        except Exception:
+            logger.debug("chat.realtime read-cache invalidation flush failed", exc_info=True)
+
+    async def _flush_read_cache_invalidation(self) -> None:
+        try:
+            await asyncio.sleep(self._cache_invalidation_debounce_sec)
+            self._flush_read_cache_invalidation_now()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("chat.realtime read-cache invalidation task failed", exc_info=True)
+
+    @staticmethod
+    def _apply_read_cache_invalidation(*, pending: dict, service) -> None:
+        """Apply a coalesced invalidation map to one service instance.
+
+        ``pending[conv]`` is a set of affected user ids or ``None`` meaning
+        "the whole conversation" (room/global broadcasts that do not carry a
+        member list).
+        """
+        for conversation_id, users in dict(pending or {}).items():
+            try:
+                if users is None:
+                    service._invalidate_conversation_views(conversation_id=conversation_id)
+                elif users:
+                    service._invalidate_conversation_views_for_users(
+                        conversation_id=conversation_id,
+                        user_ids=users,
+                    )
+            except Exception:
+                logger.debug(
+                    "chat.realtime read-cache invalidation failed conversation_id=%s",
+                    conversation_id,
+                    exc_info=True,
+                )
+
     async def _publish_targeted_event(
         self,
         *,
@@ -1861,6 +1994,16 @@ class ChatRealtimeManager:
             durable=durable,
             volatile_key=volatile_key,
         )
+        # Origin-node half of the cross-node invalidation contract: events
+        # published here (e.g. by the outbox consumer that applied a
+        # worker-written message) may reflect a committed DB change that this
+        # process never saw through its own write path.
+        normalized_conversation_id = _normalize_text(conversation_id)
+        if normalized_conversation_id and durable:
+            self._schedule_read_cache_invalidation(
+                conversation_id=normalized_conversation_id,
+                user_ids=target_user_ids,
+            )
         if distribute and self._distribution_publish_enabled():
             self._schedule_transport_publish(
                 {
@@ -1870,7 +2013,7 @@ class ChatRealtimeManager:
                     "watched_user_id": int(watched_user_id or 0),
                     "event_type": str(event_type or "").strip(),
                     "payload": payload or {},
-                    "conversation_id": _normalize_text(conversation_id) or None,
+                    "conversation_id": normalized_conversation_id or None,
                     "request_id": request_id,
                 },
                 durable=durable,

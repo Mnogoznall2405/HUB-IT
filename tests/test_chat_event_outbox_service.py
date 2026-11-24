@@ -204,6 +204,46 @@ def test_chat_event_outbox_dispatcher_processes_batch_with_bounded_concurrency(c
     assert max_active == 2
 
 
+def test_delivery_state_invalidates_local_read_cache(chat_event_env, monkeypatch):
+    """A8/P0: every node that applies a delivery_state event must drop its
+    in-process conversation read caches, otherwise REST reads stay stale for
+    up to CHAT_CACHE_TTL_SEC (15s) behind the commit."""
+    service = chat_event_env["service"]
+    conversation = chat_event_env["conversation"]
+    worker = chat_event_env["worker"]
+
+    service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Cross-node freshness",
+        defer_push_notifications=True,
+    )
+
+    invalidated: list[tuple[str, frozenset]] = []
+
+    def _spy(*, conversation_id, user_ids, **kwargs):
+        invalidated.append((conversation_id, frozenset(int(u) for u in user_ids)))
+
+    monkeypatch.setattr(
+        chat_service_module.chat_service,
+        "_invalidate_conversation_views_for_users",
+        _spy,
+        raising=False,
+    )
+
+    async def _noop_publish(**kwargs):
+        return None
+
+    monkeypatch.setattr(chat_realtime_side_effects_module.chat_realtime, "publish_inbox_event", _noop_publish)
+    monkeypatch.setattr(chat_realtime_side_effects_module.chat_realtime, "publish_conversation_event", _noop_publish)
+
+    result = asyncio.run(worker.poll_once())
+
+    assert result["delivered"] >= 1
+    assert invalidated, "delivery_state processing must invalidate local read caches"
+    assert any(conv_id == conversation["id"] and {1, 2}.issubset(ids) for conv_id, ids in invalidated)
+
+
 def test_metadata_failure_does_not_block_message_and_is_retried_durably(chat_event_env, monkeypatch):
     from dataclasses import asdict
     from datetime import datetime, timezone
