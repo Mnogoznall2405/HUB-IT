@@ -1,9 +1,22 @@
 """A9: compaction/projection/budget regression tests for pure prompt helpers."""
 import importlib
 
+import pytest
+
 
 def _service():
     return importlib.import_module("backend.ai_chat.service")
+
+
+@pytest.fixture(autouse=True)
+def _a9_flags_on(monkeypatch):
+    """These tests verify the A9 features themselves — pin the feature
+    flags ON so the ambient env (rollback mode) does not change results."""
+    svc = _service()
+    monkeypatch.setattr(svc, "AI_PROMPT_OPTIMIZATION_ENABLED", True)
+    monkeypatch.setattr(svc, "AI_COMPACT_SPECS_ENABLED", True)
+    monkeypatch.setattr(svc, "AI_TOOL_RESULT_PROJECTION_ENABLED", True)
+    monkeypatch.setattr(svc, "AI_PROMPT_BLOCKS_ENABLED", True)
 
 
 def test_compact_spec_description_strips_examples_but_keeps_semantics():
@@ -171,3 +184,47 @@ def test_tool_spec_signature_expands_nested_objects():
     assert 'files*' in sig
     assert 'object[]' not in sig
     assert 'file_name*' in sig and 'xlsx|csv' in sig
+
+
+def test_registry_signatures_preserve_required_and_enum():
+    svc = _service()
+    from backend.ai_chat.tools.registry import ai_tool_registry
+    specs = ai_tool_registry.list_specs()
+    assert len(specs) > 20
+    for spec in specs:
+        sig = svc._tool_spec_args_signature(spec.get('input_schema'), with_descriptions=False)
+        schema = spec.get('input_schema') or {}
+        props = schema.get('properties') or {}
+        for name in schema.get('required') or []:
+            assert f'{name}*' in sig, (spec['tool_id'], name, sig)
+        def enums_of(node, out):
+            if isinstance(node, dict):
+                if isinstance(node.get('enum'), list):
+                    out.extend(node['enum'][:12])
+                for v in node.values():
+                    enums_of(v, out)
+            elif isinstance(node, list):
+                for v in node:
+                    enums_of(v, out)
+        enums = []
+        enums_of(schema, enums)
+        for val in enums:
+            assert str(val) in sig, (spec['tool_id'], val, sig)
+
+
+def test_result_read_more_pages_already_fetched_items():
+    svc = _service()
+    items = [{'id': i} for i in range(60)]
+    acc = [{'tool_id': 'itinvent.equipment.search', 'ok': True, 'data': {'items': items}}]
+    result, trace = svc._handle_result_read_more(
+        call={'args': {'result_index': 1, 'offset': 15, 'limit': 20}},
+        accumulated_tool_results=acc, run_id='r1',
+    )
+    assert result['ok'] and result['data']['items'][0]['id'] == 15
+    assert result['data']['has_more'] is True
+    assert result['data']['total_in_result'] == 60
+    bad, _ = svc._handle_result_read_more(
+        call={'args': {'result_index': 5, 'offset': 0, 'limit': 10}},
+        accumulated_tool_results=acc, run_id='r1',
+    )
+    assert bad['ok'] is False
