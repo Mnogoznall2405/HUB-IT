@@ -1354,7 +1354,7 @@
                        "id":  "FE-0064",
                        "severity":  "Medium",
                        "auditStatus":  "Confirmed",
-                       "status":  "IN_PROGRESS",
+                       "status":  "FIXED",
                        "priority":  "P2",
                        "batch":  "tasks",
                        "page":  null,
@@ -1369,7 +1369,8 @@
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "paste sanitization via taskRichText (PR #10, fix/fe-0064-task-editor-safe-paste)",
+                       "commit":  "1d93d28b"
                    },
                    {
                        "id":  "FE-0065",
@@ -3416,7 +3417,7 @@
                        "id":  "FE-0159",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "IN_PROGRESS",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "networks",
                        "page":  null,
@@ -3431,9 +3432,9 @@
 
                                  ],
                        "review":  null,
-                       "notes":  "",
+                       "notes":  "dead createBranchCity removed; tmn made explicit constant (PR #36 fix/networks-sites-deadcode)",
                        "pr_status":  "open",
-                       "commit":  "b483d2ce",
+                       "commit":  "18083545",
                        "note":  "PR #36: dead createBranchCity state removed, city_code tmn made explicit. Residual: city selector needs product decision (no cities source). Record stays open."
                    },
                    {
