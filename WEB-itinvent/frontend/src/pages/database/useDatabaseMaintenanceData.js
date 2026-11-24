@@ -84,6 +84,7 @@ export function useDatabaseMaintenanceData({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     const loadWorkConsumables = async () => {
       if (!shouldLoadWorkConsumables(actionModal)) return;
 
@@ -121,6 +122,7 @@ export function useDatabaseMaintenanceData({
           options = toWorkConsumableOptions(groupedRows);
         }
 
+        if (cancelled) return;
         const dedupedOptions = dedupeWorkConsumableOptions(options);
         setWorkConsumableOptions(dedupedOptions);
         setSelectedWorkConsumable((prev) => {
@@ -129,15 +131,17 @@ export function useDatabaseMaintenanceData({
           return dedupedOptions.find((entry) => entry.id === prevId) || null;
         });
       } catch (error) {
+        if (cancelled) return;
         console.error('Error loading consumables for works:', error);
         setWorkConsumableOptions([]);
         setSelectedWorkConsumable(null);
       } finally {
-        setWorkConsumablesLoading(false);
+        if (!cancelled) setWorkConsumablesLoading(false);
       }
     };
 
     void loadWorkConsumables();
+    return () => { cancelled = true; };
   }, [actionModal?.open, actionModal?.type, actionModal?.componentKind]);
 
   useEffect(() => {
@@ -159,6 +163,7 @@ export function useDatabaseMaintenanceData({
   }, [actionWorkConsumableOptions, selectedWorkConsumable]);
 
   useEffect(() => {
+    let cancelled = false;
     const loadCartridgeHistory = async () => {
       if (!actionModal?.open || actionModal?.type !== 'cartridge') return;
 
@@ -186,14 +191,17 @@ export function useDatabaseMaintenanceData({
           undefined,
           cartridgeModel || undefined
         );
+        if (cancelled) return;
         setCartridgeHistory(readHistoryResponse(response));
       } catch (error) {
+        if (cancelled) return;
         console.error('Error fetching cartridge history:', error);
         setCartridgeHistory({ ...EMPTY_MAINTENANCE_HISTORY });
       }
     };
 
     void loadCartridgeHistory();
+    return () => { cancelled = true; };
   }, [actionModal?.open, actionModal?.type, cartridgeModel, resolveSingleActionTarget]);
 
   useEffect(() => {

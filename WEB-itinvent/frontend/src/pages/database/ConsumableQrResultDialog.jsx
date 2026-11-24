@@ -120,6 +120,7 @@ function ConsumableQrResultDialog({
   const compatiblePrinters = pickerActive ? printerPicker.compatibleModels : localCompatiblePrinters;
   const pickerQuery = String(printerPicker?.printerQuery || '');
   const pickerSearching = Boolean(printerPicker?.searching);
+  const pickerError = Boolean(printerPicker?.searchError);
   const pickerRows = pickerQuery.trim()
     ? (printerPicker?.searchResults ?? null)
     : (printerPicker?.suggestedPrinters ?? []);
@@ -239,11 +240,17 @@ function ConsumableQrResultDialog({
                         <Typography variant="body2" color="text.secondary">Ищем МФУ…</Typography>
                       </Box>
                     ) : pickerQuery.trim() ? (
-                      <PrinterPickList
-                        rows={pickerRows || []}
-                        emptyText="МФУ не найдены — уточните запрос."
-                        onSelect={printerPicker?.selectPrinter}
-                      />
+                      pickerError ? (
+                        <Typography variant="body2" color="error" sx={{ mt: 1 }}>
+                          Ошибка поиска МФУ. Повторите запрос чуть позже.
+                        </Typography>
+                      ) : (
+                        <PrinterPickList
+                          rows={pickerRows || []}
+                          emptyText="МФУ не найдены — уточните запрос."
+                          onSelect={printerPicker?.selectPrinter}
+                        />
+                      )
                     ) : (
                       <>
                         {printerPicker?.suggestionsLoading ? (

@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, Chip, IconButton, Typography, alpha } from '@mui/material';
 import BatteryFullIcon from '@mui/icons-material/BatteryFull';
 import CheckIcon from '@mui/icons-material/Check';
@@ -198,6 +198,8 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
       longPressTimerRef.current = null;
     }
   }, []);
+
+  useEffect(() => () => clearLongPress(), [clearLongPress]);
 
   const handleClick = useCallback((e) => {
     if (e.target.closest('.MuiIconButton-root') || e.target.closest('[data-select-toggle]')) {
