@@ -381,7 +381,7 @@
       "id": "FE-0020",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "construction",
       "page": "/construction,/it/requests",
@@ -389,10 +389,11 @@
       "lines": "604",
       "title": "Возраст снимка 1С в сырых секундах; интеграция отстаёт на ~2 дня",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "11e7cffc",
+      "pr": 60
     },
     {
       "id": "FE-0022",
@@ -4861,7 +4862,7 @@
       "id": "FE-0271",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "construction",
       "page": null,
@@ -4869,16 +4870,17 @@
       "lines": "163: onClose=setCrewEditor(null) без confirm",
       "title": "Construction-workspace: Escape/backdrop молча сбрасывает форму бригады (при этом входит в dirty)",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "11e7cffc",
+      "pr": 60
     },
     {
       "id": "FE-0272",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "construction",
       "page": null,
@@ -4886,10 +4888,11 @@
       "lines": "164: entry.after.targets.length без guard (асимметрично entry.before?)",
       "title": "Construction-workspace: рендер истории без optional chain → TypeError на битой записи",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "11e7cffc",
+      "pr": 60
     },
     {
       "id": "FE-0273",
@@ -4929,7 +4932,7 @@
       "id": "FE-0275",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "construction",
       "page": null,
@@ -4937,10 +4940,11 @@
       "lines": "editDay/setAttendance vs Panel.jsx:184-187",
       "title": "Construction-workspace: нет лимита 300 записей на batch (в Panel есть с сообщением)",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "11e7cffc",
+      "pr": 60
     },
     {
       "id": "FE-0276",
