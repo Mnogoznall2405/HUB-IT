@@ -423,7 +423,7 @@
       "id": "FE-0024",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -431,10 +431,13 @@
       "lines": "2132,2214,2704,2712,2748,3006",
       "title": "Networks: 16+ IconButton без aria-label",
       "related": [],
-      "pr": null,
+      "pr": 33,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "d947914f",
+      "note": "PR #33 fix/networks-a11y @d947914f: aria-labels on IconButtons, TableRow/markers keyboard, action buttons out of CardActionArea (valid DOM). Tests +3. PR open."
     },
     {
       "id": "FE-0025",
@@ -610,7 +613,7 @@
       "id": "FE-0035",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -618,10 +621,13 @@
       "lines": "2243",
       "title": "Networks: кликабельные TableRow без клавиатуры",
       "related": [],
-      "pr": null,
+      "pr": 33,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "d947914f",
+      "note": "PR #33 fix/networks-a11y @d947914f: aria-labels on IconButtons, TableRow/markers keyboard, action buttons out of CardActionArea (valid DOM). Tests +3. PR open."
     },
     {
       "id": "FE-0036",
@@ -2655,7 +2661,7 @@
       "id": "FE-0155",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "networks",
       "page": null,
@@ -2663,16 +2669,19 @@
       "lines": "50-88 (IconButton ×2 внутри CardActionArea=button); SocketsTab.jsx:241-301; EquipmentTab.jsx:376-430",
       "title": "Networks: вложенные <button> внутри CardActionArea — невалидный DOM",
       "related": [],
-      "pr": null,
+      "pr": 33,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "d947914f",
+      "note": "PR #33 fix/networks-a11y @d947914f: aria-labels on IconButtons, TableRow/markers keyboard, action buttons out of CardActionArea (valid DOM). Tests +3. PR open."
     },
     {
       "id": "FE-0156",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "networks",
       "page": null,
@@ -2680,10 +2689,13 @@
       "lines": "516-565,644-695: <Box onClick> без role/tabIndex/onKeyDown",
       "title": "Networks: маркеры карты недоступны с клавиатуры",
       "related": [],
-      "pr": null,
+      "pr": 33,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "d947914f",
+      "note": "PR #33 fix/networks-a11y @d947914f: aria-labels on IconButtons, TableRow/markers keyboard, action buttons out of CardActionArea (valid DOM). Tests +3. PR open."
     },
     {
       "id": "FE-0157",
