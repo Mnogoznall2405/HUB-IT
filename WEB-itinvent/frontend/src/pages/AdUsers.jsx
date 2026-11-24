@@ -547,7 +547,7 @@ const AdUsers = ({ embedded = false }) => {
 
                     <Collapse in={isExpanded} timeout="auto" unmountOnExit>
                       <TableContainer component={Paper} elevation={0} sx={{ borderTop: `1px solid ${theme.palette.divider}`, borderRadius: 0 }}>
-                        <Table size="small" aria-label="AD import candidates table">
+                        <Table size="small" aria-label="Кандидаты на импорт из AD">
                           <TableHead>
                             <TableRow sx={{ backgroundColor: 'action.hover' }}>
                               {canManageAdUsers ? <TableCell padding="checkbox" /> : null}

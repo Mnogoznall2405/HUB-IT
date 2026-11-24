@@ -285,6 +285,11 @@ export function getOfficePageShellSx(ui, { fullHeight = false } = {}) {
   return {
     width: '100%',
     minHeight: 0,
+    // Широкие дочерние блоки (таблицы, строки действий) скроллятся внутри себя;
+    // на уровне страницы переполнение обрезаем, чтобы при зуме 200% не было
+    // горизонтального скролла всей страницы. clip — не scroll-контейнер,
+    // sticky/overflow-y у потомков не ломает.
+    overflowX: 'clip',
     display: 'flex',
     flexDirection: 'column',
     gap: 1.2,
