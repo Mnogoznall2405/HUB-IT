@@ -3961,7 +3961,7 @@
       "id": "FE-0232",
       "severity": "High",
       "auditStatus": "Confirmed",
-      "status": "IN_PROGRESS",
+      "status": "FIXED",
       "priority": "P0",
       "batch": "account-delegates",
       "page": null,
@@ -3969,13 +3969,14 @@
       "lines": "244-251 (catch→merge с items:[] + console.error),637-644 (updateTaskDelegates из черновика); accountUserModel.js:27-39",
       "title": "Аккаунт: падение bulk-загрузки делегатов → сохранение пользователя стирает все связи помощник/зам",
       "related": [],
-      "pr": null,
+      "pr": 27,
       "tests": [],
       "review": null,
       "notes": "",
       "branch": "fix/account-delegate-integrity",
-      "commit": "5bc077f9",
-      "note": "Fix committed+pushed; regression test + PR pending next session. Design: taskDelegatesLoadFailed flag skips updateTaskDelegates when bulk load failed."
+      "commit": "d1af1245",
+      "note": "PR #27 fix/account-delegate-integrity: taskDelegatesLoadFailed skips updateTaskDelegates after failed bulk + UsersTab reseed preserves links (2nd same-cause path via review). Tests 4 new + 13 regression pass; build pass. Independent review: approve.",
+      "pr_status": "open"
     },
     {
       "id": "FE-0233",
