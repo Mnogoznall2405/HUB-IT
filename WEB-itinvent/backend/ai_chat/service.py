@@ -2214,11 +2214,46 @@ def _build_running_summary(accumulated_results: list[dict[str, Any]]) -> str:
     return "\n".join([header] + facts[:20])  # Cap at 20 entries to avoid bloat
 
 
+# A9: LLM-facing projection of tool results. The execution pipeline keeps the
+# original dicts untouched; only the prompt representation is compacted.
+_LLM_RESULT_LIST_CAP = 10
+_LLM_RESULT_STR_CAP = 800
+_LLM_RESULT_DROP_KEYS = {
+    "html_body", "body_html", "raw_html", "raw", "raw_json",
+    "debug", "trace", "traceback", "stack", "stacktrace",
+}
+
+
+def _project_llm_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _project_llm_value(item)
+            for key, item in value.items()
+            if _normalize_text(key) not in _LLM_RESULT_DROP_KEYS
+        }
+    if isinstance(value, list):
+        if len(value) > _LLM_RESULT_LIST_CAP and value and isinstance(value[0], dict):
+            kept = [_project_llm_value(item) for item in value[:_LLM_RESULT_LIST_CAP]]
+            kept.append({"_omitted_items": len(value) - _LLM_RESULT_LIST_CAP})
+            return kept
+        return [_project_llm_value(item) for item in value]
+    if isinstance(value, str) and len(value) > _LLM_RESULT_STR_CAP:
+        return f"{value[:_LLM_RESULT_STR_CAP]}…[{len(value) - _LLM_RESULT_STR_CAP} more chars]"
+    return value
+
+
+def _project_tool_result_for_llm(result: dict[str, Any]) -> dict[str, Any]:
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return result
+    return {**result, "data": _project_llm_value(data)}
+
+
 def _format_tool_results_for_prompt(results: list[dict[str, Any]]) -> str:
     normalized = [item for item in list(results or []) if isinstance(item, dict)]
     if not normalized:
         return "No tool results."
-    return _json_dumps([_without_file_bodies(item) for item in normalized])
+    return _json_dumps([_project_tool_result_for_llm(_without_file_bodies(item)) for item in normalized])
 
 
 def _without_file_bodies(result: dict[str, Any]) -> dict[str, Any]:
@@ -2274,6 +2309,29 @@ def _tool_spec_args_signature(input_schema: Any, *, with_descriptions: bool) -> 
     return ", ".join(parts) if parts else "no arguments"
 
 
+_SPEC_EXAMPLE_LIST_RE = re.compile(
+    r"\s+Use for\s+"
+    r"(?:['\"\u00ab\u201c][^'\"\u00bb\u201d]*['\"\u00bb\u201d]"
+    r"(?:\s*[,;]\s*(?:or\s+)?['\"\u00ab\u201c][^'\"\u00bb\u201d]*['\"\u00bb\u201d])*)"
+    r"\.?"
+)
+_SPEC_NOARGS_RE = re.compile(r"\s*\(no arguments\)", re.I)
+
+
+def _compact_tool_spec_description(text: object) -> str:
+    """Strip example-query lists from a tool description.
+
+    Quoted usage examples ('найди контакты', ...) duplicate the per-group
+    routing guides, which carry the same disambiguation queries once per
+    group. Semantic guidance (what the tool returns, draft/confirm rules,
+    which tool to prefer) is kept verbatim.
+    """
+    description = _normalize_text(text)
+    description = _SPEC_NOARGS_RE.sub("", description)
+    description = _SPEC_EXAMPLE_LIST_RE.sub("", description)
+    return description.rstrip()
+
+
 def _format_tool_specs_for_prompt(specs: list[dict[str, Any]], token_limit: int) -> str:
     """Compact one-line-per-tool listing that always keeps every tool.
 
@@ -2286,14 +2344,14 @@ def _format_tool_specs_for_prompt(specs: list[dict[str, Any]], token_limit: int)
         return "No tools."
     max_chars = max(0, int(token_limit or 0)) * 4
     text = ""
-    for description_limit, arg_descriptions in ((400, True), (220, True), (220, False), (120, False), (60, False), (0, False)):
+    for description_limit, arg_descriptions in ((280, True), (220, True), (220, False), (120, False), (60, False), (0, False)):
         lines = []
         for item in rows:
-            description = _normalize_text(item.get("description"))
+            description = _compact_tool_spec_description(item.get("description"))
             if description_limit and len(description) > description_limit:
                 description = description[:description_limit].rsplit(" ", 1)[0] + "…"
             head = f"- {_normalize_text(item.get('tool_id'))}"
-            if description_limit:
+            if description_limit and description:
                 head += f": {description}"
             if item.get("admin_only"):
                 head += " [admin only]"
@@ -3020,19 +3078,21 @@ _PROMPT_BLOCK_HEADERS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _prompt_block_label(segment: str) -> str:
+    head = segment.lstrip()[:400]
+    for prefix, name in _PROMPT_BLOCK_HEADERS:
+        if head.startswith(prefix):
+            return name
+    return "other"
+
+
 def _prompt_block_sizes(prompt: str) -> dict[str, int]:
     """Estimated tokens per labeled prompt block (headers + content)."""
     blocks: dict[str, int] = {}
     for segment in str(prompt or "").split("\n\n"):
-        if not segment.strip():
-            continue
-        label = "other"
-        head = segment.lstrip()[:400]
-        for prefix, name in _PROMPT_BLOCK_HEADERS:
-            if head.startswith(prefix):
-                label = name
-                break
-        blocks[label] = blocks.get(label, 0) + _estimated_tokens(segment)
+        if segment.strip():
+            label = _prompt_block_label(segment)
+            blocks[label] = blocks.get(label, 0) + _estimated_tokens(segment)
     return blocks
 
 
@@ -3075,6 +3135,78 @@ def _compact_head_tail(value: object, token_limit: int, *, head_ratio: float = 0
     return f"{text[:head_chars].rstrip()}{marker}{text[-tail_chars:].lstrip()}" if tail_chars else text[:max_chars]
 
 
+# A9 block-aware budget: lower number = more essential. Protected blocks are
+# never compressed or removed; everything else shrinks lowest-priority-first
+# instead of a single blind head/tail cut.
+_FIT_BLOCK_PRIORITY: dict[str, int] = {
+    "bot_title": 0,
+    "current_request": 0,
+    "current_request_tail": 0,
+    "tool_results": 1,
+    "tool_validation_errors": 1,
+    "running_summary": 2,
+    "task_state": 3,
+    "active_draft": 3,
+    "unattached_groups_hint": 4,
+    "answer_instructions": 4,
+    "memory_status": 5,
+    "conversation_history": 6,
+    "personal_memory": 7,
+    "rolling_summary": 8,
+    "other": 8,
+    "kb_context": 9,
+    "file_context": 9,
+    "template_candidates": 10,
+    "template_flag": 10,
+}
+_FIT_PROTECTED_LABELS = {
+    "bot_title", "current_request", "current_request_tail",
+    "tool_results", "tool_validation_errors", "running_summary",
+    "task_state", "active_draft", "unattached_groups_hint",
+}
+
+
+def _fit_block_priority(label: str) -> int:
+    if label.startswith("tool_specs") or label == "db_label":
+        return 2
+    if label.startswith("guide_"):
+        return 7
+    return _FIT_BLOCK_PRIORITY.get(label, 8)
+
+
+def _fit_prompt_blocks(user_text: str, char_budget: int) -> str:
+    """Compress the prompt block-by-block, least essential first.
+
+    Unlike a single head/tail cut this never slices through the current
+    request, tool results or authoritative state, and shrinks low-priority
+    context (templates, file/KB, summary, guides) before touching specs or
+    instructions. Blocks keep their own structure (head+tail marker), so
+    untrusted wrappers are not cut mid-tag more than necessary.
+    """
+    segments = [seg for seg in str(user_text or "").split("\n\n") if seg.strip()]
+    entries = [{"text": seg, "label": _prompt_block_label(seg)} for seg in segments]
+
+    def _total() -> int:
+        return sum(len(e["text"]) for e in entries) + 2 * max(0, len(entries) - 1)
+
+    while _total() > char_budget:
+        candidates = [
+            e for e in entries
+            if e["label"] not in _FIT_PROTECTED_LABELS and len(e["text"]) > 200
+        ]
+        if not candidates:
+            break
+        victim = max(candidates, key=lambda e: (_fit_block_priority(e["label"]), len(e["text"])))
+        need = _total() - char_budget
+        target = max(120, len(victim["text"]) - need)
+        victim["text"] = _compact_head_tail(victim["text"], max(1, target // 4), head_ratio=0.4)
+
+    joined = "\n\n".join(e["text"] for e in entries if e["text"].strip())
+    if len(joined) > char_budget:
+        joined = _compact_head_tail(joined, max(1, char_budget // 4), head_ratio=0.2)
+    return joined
+
+
 def _fit_prompt_pair(system_prompt: str, user_prompt: str, *, token_limit: int = AI_INPUT_BUDGET_TOKENS) -> tuple[str, str]:
     max_chars = max(1024, int(token_limit or AI_INPUT_BUDGET_TOKENS) * 4)
     system_text = str(system_prompt or "")
@@ -3082,10 +3214,15 @@ def _fit_prompt_pair(system_prompt: str, user_prompt: str, *, token_limit: int =
     if len(system_text) + len(user_text) <= max_chars:
         return system_text, user_text
     system_budget = min(len(system_text), max_chars // 3)
-    bounded_system = _compact_head_tail(system_text, max(1, system_budget // 4), head_ratio=0.7)
+    # The system prompt is mandatory instruction: it is preserved intact
+    # unless it alone exceeds its share — only then head/tail compressed.
+    bounded_system = (
+        _compact_head_tail(system_text, max(1, system_budget // 4), head_ratio=0.7)
+        if len(system_text) > system_budget
+        else system_text
+    )
     user_budget = max(512, max_chars - len(bounded_system))
-    # Current request and file context are repeated at the tail by the caller.
-    bounded_user = _compact_head_tail(user_text, max(1, user_budget // 4), head_ratio=0.2)
+    bounded_user = _fit_prompt_blocks(user_text, user_budget)
     overflow = len(bounded_system) + len(bounded_user) - max_chars
     if overflow > 0:
         bounded_user = bounded_user[:-overflow] if overflow < len(bounded_user) else ""
@@ -7923,6 +8060,7 @@ class AiChatService:
                         "tool_round": tool_round,
                         "model": _normalize_text(usage_dict.get("model")) or _normalize_text(bot.model),
                         "schema": schema_name,
+                        "outcome": "ok",
                         "est_system_tokens": _estimated_tokens(bounded_system_prompt),
                         "est_user_tokens": _estimated_tokens(bounded_user_prompt),
                         "prompt_blocks": _prompt_block_sizes(bounded_user_prompt),
@@ -7936,6 +8074,21 @@ class AiChatService:
                     _append_llm_call_record(record)
                     return payload, usage_dict
                 except OpenRouterClientError as exc:
+                    llm_call_records.append({
+                        "run_id": run_id,
+                        "call_seq": len(llm_call_records) + 1,
+                        "call_kind": call_kind,
+                        "tool_round": tool_round,
+                        "model": _normalize_text(bot.model),
+                        "schema": schema_name,
+                        "outcome": "failed",
+                        "est_system_tokens": _estimated_tokens(bounded_system_prompt),
+                        "est_user_tokens": _estimated_tokens(bounded_user_prompt),
+                        "usage": None,
+                        "attempts": attempts,
+                        "duration_ms": int((time.perf_counter() - call_started_at) * 1000),
+                        "error_type": type(exc).__name__,
+                    })
                     if attempt == 0 and "invalid json payload" in str(exc).lower():
                         # Retry only model formatting, never replay completed tools.
                         # Transport retries already belong to shared.llm.

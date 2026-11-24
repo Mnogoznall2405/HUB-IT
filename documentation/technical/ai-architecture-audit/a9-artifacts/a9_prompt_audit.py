@@ -3,9 +3,16 @@ assembled system/user prompts per LLM call + per-block token accounting.
 
 Run from repo root:
     $env:APP_ENV='development'; $env:JWT_SECRET_KEY='x'*32
-    python .codex_tmp/a9_prompt_audit.py
-Writes .codex_tmp/a9_artifacts/prompt_audit.json
+    python documentation/technical/ai-architecture-audit/a9-artifacts/a9_prompt_audit.py --label candidate
+Writes documentation/technical/ai-architecture-audit/a9-artifacts/prompt_audit_<label>.json
+
+Experiment flags are set explicitly (AI_JEV_ROUTING=1,
+AI_SUMMARY_BACKGROUND_ENABLED=0) — the result must not depend on ambient env.
+Every scenario asserts the run outcome and, for the tool-round scenario,
+that the scripted tool was actually executed (its result appears in the
+follow-up prompt's tool_results block).
 """
+import argparse
 import json
 import os
 import sys
@@ -14,9 +21,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = next(p for p in Path(__file__).resolve().parents if (p / "WEB-itinvent").is_dir())
 sys.path.insert(0, str(ROOT / "WEB-itinvent"))
 sys.path.insert(0, str(ROOT / "tests"))
+
+_parser = argparse.ArgumentParser()
+_parser.add_argument("--label", default="candidate")
+_parser.add_argument("--jev", choices=("0", "1"), default="1")
+_args = _parser.parse_args()
+LABEL = _args.label
 
 TMP = Path(tempfile.mkdtemp(prefix="a9_audit_"))
 DB_URL = f"sqlite:///{(TMP / 'audit.db').as_posix()}"
@@ -26,6 +39,8 @@ os.environ.setdefault("JWT_SECRET_KEY", "x" * 32)
 os.environ["APP_DATABASE_URL"] = DB_URL
 os.environ["CHAT_DATABASE_URL"] = DB_URL
 os.environ["CHAT_ENABLED"] = "1"
+os.environ["AI_JEV_ROUTING"] = _args.jev
+os.environ["AI_SUMMARY_BACKGROUND_ENABLED"] = "0"
 os.environ.pop("AI_LLM_CALL_LOG_FILE", None)
 
 import conftest  # tests/conftest.py helpers  # noqa: E402
@@ -209,23 +224,30 @@ start = len(CALLS)
 _run(conv4["id"], f"msg-{conv4['id']}-60", int(actor["id"]))
 results["scenarios"].append(_capture("all_tools_60msg", start))
 
-# S5: ACT with a scripted tool round — captures followup prompt composition
-file_tools = [t for t in ALL_TOOL_IDS if t.startswith("ai.files.") or t.startswith("itinvent.equipment.search")]
+# S5: ACT with a scripted tool round — captures followup prompt composition.
+# ai.files.create executes locally (no external deps), so the follow-up prompt
+# must contain its real tool result — proof the tool ran, not just scripted.
 SCRIPT.append((
     {"answer_markdown": "", "artifacts": [], "kb_attachment_send": None,
-     "tool_calls": [{"tool_id": "itinvent.equipment.search", "args": {"query": "принтер"}}]},
+     "tool_calls": [{"tool_id": "ai.files.create", "args": {
+         "files": [{"format": "txt", "file_name": "audit.txt", "content": "audit"}]}}]},
     {"prompt_tokens": 0, "completion_tokens": 9, "total_tokens": 9, "model": "audit-model"},
 ))
 conv5 = ai_service.create_bot_conversation(bot_id=bot3["id"], current_user_id=int(actor["id"]))
-_send(conv5["id"], int(actor["id"]), 1, "Найди принтер HP и подготовь отчёт")
+_send(conv5["id"], int(actor["id"]), 1, "Создай файл с итогом")
 start = len(CALLS)
-_run(conv5["id"], f"msg-{conv5['id']}-1", int(actor["id"]))
+ok5 = _run(conv5["id"], f"msg-{conv5['id']}-1", int(actor["id"]))
+assert ok5, "run did not complete"
+followup_prompt = str(CALLS[start + 1].get("user_prompt")) if len(CALLS) > start + 1 else ""
+assert '"tool_id": "ai.files.create"' in followup_prompt or "ai.files.create" in followup_prompt, (
+    "scripted tool was not executed — no result in follow-up prompt")
 results["scenarios"].append(_capture("act_tool_round_followup", start))
 
-OUT = ROOT / ".codex_tmp" / "a9_artifacts"
+OUT = ROOT / "documentation" / "technical" / "ai-architecture-audit" / "a9-artifacts"
 OUT.mkdir(parents=True, exist_ok=True)
-(OUT / "prompt_audit.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+out_path = OUT / f"prompt_audit_{LABEL}.json"
+out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 print(json.dumps({
     "scenarios": [(s["scenario"], s["call_count"], [c["est_total_tokens"] for c in s["calls"]]) for s in results["scenarios"]],
-    "out": str(OUT / "prompt_audit.json"),
+    "out": str(out_path),
 }, ensure_ascii=False, indent=2))
