@@ -762,7 +762,7 @@
       "id": "FE-0042",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "statistics",
       "page": null,
@@ -770,10 +770,11 @@
       "lines": "290-296",
       "title": "Statistics: повторный fetch при переключении вкладки/периода (без swrCache)",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5459e652",
+      "pr": 55
     },
     {
       "id": "FE-0043",
@@ -2402,7 +2403,7 @@
       "id": "FE-0135",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "statistics",
       "page": null,
@@ -2410,10 +2411,11 @@
       "lines": "333-335",
       "title": "Statistics: текст ошибки blob-ответа нечитаем в тосте экспорта",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5459e652",
+      "pr": 55
     },
     {
       "id": "FE-0136",
@@ -5159,7 +5161,7 @@
       "id": "FE-0289",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "statistics",
       "page": null,
@@ -5167,16 +5169,17 @@
       "lines": "598 (loadPcStats с isCurrent=()=>true) + :239-242",
       "title": "Statistics: обновление статистики после чистки обходит seq-guard → данные не того периода",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5459e652",
+      "pr": 55
     },
     {
       "id": "FE-0290",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "statistics",
       "page": null,
@@ -5184,10 +5187,11 @@
       "lines": "324-331 (нет задержки, у useTransferActJob:147-148 — 60 с)",
       "title": "Statistics: немедленный revokeObjectURL после anchor.click() при экспорте Excel",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5459e652",
+      "pr": 55
     },
     {
       "id": "FE-0291",
@@ -5333,7 +5337,7 @@
       "id": "FE-0299",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "statistics",
       "page": null,
@@ -5341,10 +5345,11 @@
       "lines": "82-90: .then пишет без проверки cancelled (есть только в catch/finally)",
       "title": "Statistics: setItems после cancelled в reloadRemaining — запись на размонтированном диалоге",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "5459e652",
+      "pr": 55
     },
     {
       "id": "FE-0300",
