@@ -125,10 +125,11 @@ export function useTransferFormState({
     }
 
     let canceled = false;
+    const controller = new AbortController();
     setTransferEmployeeLoading(true);
     const timer = window.setTimeout(async () => {
       try {
-        const response = await searchOwnersCached?.(query, 20);
+        const response = await searchOwnersCached?.(query, 20, { signal: controller.signal });
         if (canceled) return;
         const currentOption = newEmployeeNo ? [{
           OWNER_NO: newEmployeeNo,
@@ -137,7 +138,10 @@ export function useTransferFormState({
         }] : [];
         setTransferEmployeeOptions(dedupeOwners([...currentOption, ...readOwners(response)]));
       } catch (error) {
-        console.error('Error searching transfer employees:', error);
+        if (!canceled) {
+          setTransferEmployeeOptions([]);
+          console.error('Error searching transfer employees:', error);
+        }
       } finally {
         if (!canceled) setTransferEmployeeLoading(false);
       }
@@ -146,6 +150,7 @@ export function useTransferFormState({
     return () => {
       canceled = true;
       window.clearTimeout(timer);
+      controller.abort();
     };
   }, [
     actionModal?.open,

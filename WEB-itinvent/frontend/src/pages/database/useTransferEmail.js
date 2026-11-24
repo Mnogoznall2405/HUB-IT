@@ -46,13 +46,17 @@ export function useTransferEmail({
     }
 
     let canceled = false;
+    const controller = new AbortController();
     setTransferRecipientLoading(true);
     const timer = window.setTimeout(async () => {
       try {
-        const response = await searchOwnersCached?.(query, 20);
+        const response = await searchOwnersCached?.(query, 20, { signal: controller.signal });
         if (!canceled) setTransferRecipientOptions(readOwners(response));
       } catch (error) {
-        console.error('Error searching email recipient employees:', error);
+        if (!canceled) {
+          setTransferRecipientOptions([]);
+          console.error('Error searching email recipient employees:', error);
+        }
       } finally {
         if (!canceled) setTransferRecipientLoading(false);
       }
@@ -61,6 +65,7 @@ export function useTransferEmail({
     return () => {
       canceled = true;
       window.clearTimeout(timer);
+      controller.abort();
     };
   }, [actionModal?.open, actionModal?.type, transferEmailMode, transferRecipientInput, searchOwnersCached]);
 
