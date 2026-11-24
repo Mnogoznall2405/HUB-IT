@@ -356,8 +356,8 @@ Inline persist вынесен в `_persist_run_summary` (общая точка �
 ## Регрессия Cycle 4
 
 - `test_ai_summary_upgrade.py`: **43/43** (+7 новых c4-тестов).
-- PG-migration gate (`.codex_tmp/pg_migration_gate.py`): **6/6 PASS**.
-- PG-relay probe (`.codex_tmp/pg_relay_probe.py`, два реальных процесса): **3/3 PASS**.
+- PG-migration gate (репо: `tests/test_pg_a8_gate.py::test_migration_gate`): **6/6 PASS**.
+- PG-relay probe (репо: `tests/test_pg_a8_gate.py::test_two_process_relay`, два реальных процесса): **3/3 PASS**.
 - `test_ai_run_serialization_pg.py`: **22/22 PASS** на живом PG.
 - Полный набор `tests + WEB-itinvent/backend/tests` (6700+, 41 мин): **6564 passed / 76 skipped / 70 failed / 11 collection-errors** — все проверенные на принадлежность к циклу: спот-проверка ключевых падений на базовом HEAD `11f98726` без изменений цикла 4 показала побайтовое воспроизведение (`test_e2e_ai_smart_memory`, `test_e2e_ai_draft_reliability` — env: нет провайдеров/токенов; `test_route_metrics_include_cache_hit_rate` изолированно **pass** — падение в полном прогоне = test-pollution). Классы ошибок: missing deps (`watchdog`, `soundfile`, `telegram`), `TELEGRAM_BOT_TOKEN`, db-context `OBJ-ITINVENT`, release-артефакты, alembic-цепочки на scratch без базовых таблиц — та же природа, что 20 pre-existing цикла 3; ни один файл цикла 4 не регрессировал.
 
@@ -366,3 +366,91 @@ Inline persist вынесен в `_persist_run_summary` (общая точка �
 **GO с условиями**: код готов к выкладке с `AI_SUMMARY_BACKGROUND_ENABLED=0` (дефолт OFF сохранён
 в обоих местах — проверено). Условия: (a) деплой-план выше; (b) flag=1 включается отдельным
 разрешением после нового baseline; (c) реальный A/B с провайдером — post-deploy контур.
+
+## Release integration (Cycle 4.5)
+
+### Зафиксированные gate-артефакты
+
+PG-gate и двухпроцессный relay перенесены из `.codex_tmp` в репозиторий — независимо
+воспроизводимы с любого HEAD через `AI_RUN_TEST_DATABASE_URL`:
+
+- `tests/test_pg_a8_gate.py` — migration gate (fresh schema, scope all/app/chat, 0176→0177 на
+  данных, идемпотентность, rollback-compat) + двухпроцессный relay (LISTEN/NOTIFY, доставка <1с,
+  post-commit cross-node read, reconnect, restart no-replay контракт): **2/2 PASS** на
+  PostgreSQL 17.6 (127.0.0.1:55432, scratch `a8t_*`).
+- `tests/pg_relay_node_helper.py` — helper-процесс нод (не собирается pytest).
+
+### Lease-блокер — закрыт
+
+`test_lease_held_while_single_llm_call_outlives_it`: worker B пытается получить lease **после**
+истечения окна, пока worker A всё ещё внутри одного заблокированного `summarize()` — результат
+`lease_busy`, ровно один платный LLM-вызов (`calls == [60]`). Механизм: per-call heartbeat-поток
+(`_summary_lease_heartbeat` + `_summarize_with_lease_hold`, service.py ~3076-3135) бампает
+`updated_at` каждые `LEASE/3` с условием `context_reset_seq` — держит cross-process владение
+ровно на длительность вызова (daemon + join 2с в finally). Suite: **44/44**.
+
+### Статусы веток/PR
+
+| Объект | До | После |
+|---|---|---|
+| PR #25 (docs/a7-performance, +5704 строк docs/artifacts, secret-scan чист) | open `003a009b` | **merged → main `9b94ddef`** |
+| PR #26 (perf/a8-ai-latency) | `4c4c30de` | обновлён vs main → `9d093a90` → merge в main (SHA в PR/git log) |
+| Release branch `release/a8-myv2` = main(post-#26) + `perf/my-files-v2` `60b7cf54` | — | clean merge без конфликтов (SHA в git log) |
+
+Сохранено при интеграции (проверено на дереве мерджа): MyFilesVirtualViews.jsx,
+useWindowVirtualRows.js, NestedMenuItem.jsx (My Files V2/V2.1 + compact UX), emoji/sticker
+подсистема (`ChatEmoji`, `getEmojiOnlyCount`, `isStickerAttachment` в ChatBubble.jsx), весь
+код A8 (`service.py` идентичен `perf/a8-ai-latency` — пустой diff). Незакоммиченные файлы
+пользователя в `C:\Project\HUB-IT-main` не затронуты — все мерджи в отдельных worktree.
+
+### Сравнительная матрица полного прогона
+
+Два полных прогона `pytest tests --continue-on-collection-errors --tb=no -q -rfE`
+(отдельные worktree, одно окружение, ~40 мин каждый):
+
+| Метрика | baseline `c8a1d057` (main pre-#26) | candidate `9d093a90` (ветка + main) |
+|---|---|---|
+| collected | 6629 / 11 collection errors | 6689 / 11 collection errors |
+| passed | 6483 | **6545** (+62 — новые тесты A8 и PR #17) |
+| failed | 70 | **69** |
+| skipped | 76 | 77 |
+| errors | 11 | **11 (идентичный сет)** |
+
+**Дельта FAIL-сетов — пустая в сторону ухудшения**: все 69 падений кандидата побайтово
+присутствуют в baseline (те же env-причины: `TELEGRAM_BOT_TOKEN`, missing deps
+`watchdog`/`soundfile`/`telegram`, `OBJ-ITINVENT` db-context, release-артефакты,
+alembic на scratch без базовых таблиц). В сторону улучшения: baseline падал на
+`test_frozen_spec_matches_the_orm_models` — **исправлено фиксом spec 0139**
+(`server_default` на `last_run_seq`/`rolling_summary_llm`/`summary_llm_until_seq`),
+кандидат проходит. Flaky: `test_agent_enrichment_when_snapshot_returns_data`
+(файл и `ai_chat/tools/itinvent.py` в PR не менялись; 5/5 изолированных прогонов
+зелёные — cross-file pollution, не регрессия PR).
+
+Отдельно (не входят в suite — PG-gated): `test_pg_a8_gate` 2/2 PASS,
+`test_ai_run_serialization_pg` 22/22 PASS на живом PostgreSQL 17.6.
+
+### Deploy-план (готов, не выполняется)
+
+1. **Backup**: `pg_dump` схем `app`+`chat` production PG; сохранить текущий код (`git rev-parse HEAD`
+   + tar backend), frontend build, `pm2 save`/`pm2 describe` выгрузку; зафиксировать список
+   незакоммиченных изменений на проде (`git status --porcelain` на prod-хосте).
+2. **Миграция 0177 до запуска нового кода**: `alembic -x url=<prod> upgrade head` — metadata-only
+   ADD COLUMN с `server_default`, идемпотентна, `lock_timeout=10s`; старый код продолжает
+   работать на новой схеме (rollback-compat проверен в gate).
+3. **Координированный апдейт**: backend + обе chat-ноды + AI worker в одном окне; старт с
+   `AI_SUMMARY_BACKGROUND_ENABLED=0`, `AI_JEV_ROUTING` — текущее prod-значение (не трогать
+   threshold JEV).
+4. **Smoke**: REST reply visibility, WS-доставка, чтение треда на обеих нодах,
+   `/health` realtime_mode, отсутствие ошибок миграции в логах.
+5. **Rollback**: flag=0 без выката кода; выкат кода на pre-A8 — additive-колонки 0177
+   (`rolling_summary_llm`, `summary_llm_until_seq`) **оставить** — старый код их игнорирует
+   (серверные дефолты есть), разрушительный downgrade только при доказанной необходимости.
+
+### Post-deploy benchmark-план (A7-repeat, flag=0)
+
+Штатная авторизация, разрешённый тестовый аккаунт, синтетические данные, та же harness-цепочка,
+что в A7 (`a7-artifacts/a7_harness.py`). Метрики: send→REST reply visibility, send→WS delivery,
+server_total, queue_wait, JEV, context (messages/ctx_summary), LLM first/followup latency,
+tokens in/out, error rate. Сравнение с A7: клиент p50 16.3с/p95 47.1с, сервер
+p50 13.7с/p95 31.9с. После отдельной приёмки фоновой саммаризации и разрешения владельца —
+повтор с `AI_SUMMARY_BACKGROUND_ENABLED=1` + `get_summary_upgrade_metrics()`.
