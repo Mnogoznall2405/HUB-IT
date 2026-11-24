@@ -124,3 +124,23 @@ SUPERSEDED: нет. BLOCKED: нет (см. ограничения проверк
 2. Прогнать E2E на стенде с SQL Server (screens-smoke + multi-tab + 2FA).
 3. Решить 5 OPEN-записей (arch/design/backend-scope) и 4 Known Issues.
 4. Отдельно: PR #10 (FE-0064) и устранение trusted-device dead path.
+
+## Addendum — второй раунд ревью (post-signoff)
+
+Ветка с тех пор продвинулась (коммиты `dfd73112`, `1debbc23`,
+merge `e6aa9251` = PR #69 sticker V2, plus `d50ca236` — фиксы этого раунда).
+Два дополнительных ревьюера:
+
+- **UI/UX & Accessibility** — 1 MEDIUM: глобальный Escape/Ctrl+S в
+  `Networks.jsx` гасился `.MuiModal-root`, который матчит и ЗАКРЫТЫЕ
+  keepMounted-модалки MainLayout (мобильные дроверы) → клавиши молча умирали
+  на mobile/bare-роутах. FIXED `d50ca236` (`:not(.MuiModal-hidden)`).
+  + inert расширен на VPN/notice-баннеры при открытом trusted-device
+  диалоге (`d50ca236`). Остальное — LOW polish (focus-restore при закрытии,
+  aria-controls на части expander'ов, aria-current в навигации) — в бэклог.
+- **Integration & Regression** — cross-file contracts clean: все ~58 ключей
+  ChatPageContent ↔ sub-controllers сходятся, sticker-V2 цепочка полная
+  (api → context → composer → thread), импорты во всех 15 горячих файлах
+  резолвятся, alembic-цепочка линейная до 0179. 1 LOW (mock
+  `getStickerPacksEpoch` в ChatThread.test.jsx) — уже закрывается
+  собственным WIP владельца ветки.
