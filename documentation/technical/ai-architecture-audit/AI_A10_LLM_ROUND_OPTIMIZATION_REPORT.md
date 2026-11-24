@@ -149,6 +149,7 @@
 - `tests/test_ai_prompt_compaction.py` — **20/20**
 - A1: `test_ai_run_stability.py` + `test_ai_run_watchdog.py` — green (включая `test_tool_call_timeout_integration_in_execute_tool_calls` после фикса `reuse_state`)
 - A3: `test_ai_prompt_injection.py` — 1 падение `test_prompt_contains_no_highest_priority_and_untrusted_blocks`, **идентичное baseline `4f5349c9`** (env-sensitivity, не A10)
+- A5/A5.1: `test_e2e_ai_draft_reliability` + `test_e2e_ai_smart_memory` — 67/70; 3 падения (`claude_transport…`, `correction_replaces_fact…`, `action_state…`) **идентичны baseline `4f5349c9`** — env-sensitivity (ожидают включённые A9-флаги в промпте), не A10
 - PG gate: `test_pg_a8_gate` + `test_ai_run_serialization_pg` — **24/24** (portable PG, `a8test`@55432, база `a10_gate`)
 
 ## 12. Риски и rollback
