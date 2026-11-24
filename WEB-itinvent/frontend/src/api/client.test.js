@@ -182,7 +182,10 @@ describe('apiClient auth response interceptor', () => {
     window.addEventListener('auth-required', onAuthRequired);
     window.localStorage.setItem('user', JSON.stringify({ id: 1, username: 'user' }));
     const refreshError = Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK' });
-    apiClientMock.post.mockRejectedValueOnce(refreshError);
+    // Transport failures get exactly one bounded retry — reject both attempts.
+    apiClientMock.post
+      .mockRejectedValueOnce(refreshError)
+      .mockRejectedValueOnce(refreshError);
 
     const rejectedHandler = getRejectedHandler();
     const error = {

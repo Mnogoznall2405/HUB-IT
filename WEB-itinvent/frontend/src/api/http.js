@@ -63,9 +63,143 @@ const resetAuthRejectionEpoch = () => {
   refreshFailureReported = false;
 };
 
+// Cross-tab refresh coordination. The backend rotates the refresh cookie and
+// tolerates exactly one replay of the old cookie (reuse limit). All tabs share
+// the cookie jar, so a second tab POSTing /auth/refresh with the same cookie
+// counts as a replay and revokes the whole token family. Coordinate through
+// navigator.locks plus a localStorage epoch marker: one tab rotates, siblings
+// observe the fresh epoch and skip their own POST.
+const REFRESH_EPOCH_STORAGE_KEY = 'hubit.auth.refresh_epoch';
+const REFRESH_CLAIM_STORAGE_KEY = 'hubit.auth.refresh_claim';
+const REFRESH_RECENT_WINDOW_MS = 10_000;
+const REFRESH_NETWORK_RETRY_DELAY_MS = 500;
+const REFRESH_CLAIM_POLL_MS = 150;
+const REFRESH_CLAIM_WAIT_MS = 12_000;
+const REFRESH_LOCK_NAME = 'hubit.auth.refresh';
+
+const readRefreshMarker = (key) => {
+  try {
+    return Number(window.localStorage.getItem(key) || 0);
+  } catch {
+    return 0;
+  }
+};
+
+const writeRefreshMarker = (key, timestamp) => {
+  try {
+    window.localStorage.setItem(key, String(timestamp));
+  } catch {
+    // Storage unavailable (private mode) — coordination degrades to per-tab only.
+  }
+};
+
+const markRefreshEpoch = () => writeRefreshMarker(REFRESH_EPOCH_STORAGE_KEY, Date.now());
+const siblingRefreshedRecently = () => (
+  Date.now() - readRefreshMarker(REFRESH_EPOCH_STORAGE_KEY) < REFRESH_RECENT_WINDOW_MS
+);
+const markRefreshClaim = () => writeRefreshMarker(REFRESH_CLAIM_STORAGE_KEY, Date.now());
+const clearRefreshClaim = () => {
+  try {
+    window.localStorage.removeItem(REFRESH_CLAIM_STORAGE_KEY);
+  } catch {
+    // Storage unavailable — nothing to clear.
+  }
+};
+const siblingClaimedRecently = () => (
+  Date.now() - readRefreshMarker(REFRESH_CLAIM_STORAGE_KEY) < REFRESH_RECENT_WINDOW_MS
+);
+
+// Callers only await the refresh and retry their own request (or ignore the
+// payload entirely) — a defined-shape sentinel keeps `response.data` readers
+// safe when a sibling tab performed the rotation.
+const skippedRefreshResponse = () => ({ data: { skipped: true }, skippedRefresh: true });
+
+const postRefreshRequest = () => (
+  apiClient.post('/auth/refresh', null, { suppressAuthRequired: true })
+);
+
+const REFRESH_RETRYABLE_CODES = new Set(['ERR_NETWORK', 'ECONNABORTED', 'ETIMEDOUT']);
+const isRetryableTransportError = (requestError) => (
+  !requestError?.response && REFRESH_RETRYABLE_CODES.has(requestError?.code)
+);
+
+// A lost rotation response (network cut between server commit and client read)
+// leaves this tab holding an already-rotated cookie. The reuse limit tolerates
+// exactly one replay within the grace window, so retry a transport-failed
+// refresh exactly once. A definitive response (4xx/5xx) is never retried —
+// posting again would burn the grace replay and revoke the family.
+const performRefreshRequest = async () => {
+  try {
+    return await postRefreshRequest();
+  } catch (firstError) {
+    if (!isRetryableTransportError(firstError)) throw firstError;
+    if (siblingRefreshedRecently()) return skippedRefreshResponse();
+    await new Promise((resolve) => { setTimeout(resolve, REFRESH_NETWORK_RETRY_DELAY_MS); });
+    try {
+      return await postRefreshRequest();
+    } catch (secondError) {
+      // Both attempts were lost in transport — the server may have rotated the
+      // cookie anyway, leaving the jar with a replay-prone stale cookie. Mark
+      // the epoch (shifted so it outlives the backend grace window) so no tab
+      // burns the last allowed reuse and revokes the whole family. The next
+      // attempt after the window gets a definitive answer instead.
+      if (!secondError?.response) {
+        writeRefreshMarker(REFRESH_EPOCH_STORAGE_KEY, Date.now() + REFRESH_RECENT_WINDOW_MS);
+      }
+      throw secondError;
+    }
+  }
+};
+
+const refreshAuthSessionLocked = async () => {
+  // NOTE: a tab that waited on the lock longer than the epoch window performs
+  // a redundant — but legitimate — rotation of the *current* cookie, never a
+  // replay. The epoch only dedupes the common fast case.
+  if (siblingRefreshedRecently()) return skippedRefreshResponse();
+  const response = await performRefreshRequest();
+  markRefreshEpoch();
+  return response;
+};
+
+const waitForSiblingClaim = async () => {
+  const deadline = Date.now() + REFRESH_CLAIM_WAIT_MS;
+  while (siblingClaimedRecently() && Date.now() < deadline) {
+    await new Promise((resolve) => { setTimeout(resolve, REFRESH_CLAIM_POLL_MS); });
+  }
+};
+
+// Fallback when Web Locks is unavailable (e.g. plain-HTTP intranet deploys —
+// the API is secure-context only). The localStorage claim narrows the
+// check-then-POST race from a full request RTT to one synchronous write.
+// A tab seeing a fresh claim must WAIT for the holder — skipping immediately
+// would retry its request with the still-old cookie and log the session out.
+const refreshAuthSessionUnlocked = async () => {
+  if (siblingRefreshedRecently()) return skippedRefreshResponse();
+  if (siblingClaimedRecently()) {
+    await waitForSiblingClaim();
+    if (siblingRefreshedRecently()) return skippedRefreshResponse();
+  }
+  markRefreshClaim();
+  try {
+    const response = await performRefreshRequest();
+    markRefreshEpoch();
+    return response;
+  } finally {
+    clearRefreshClaim();
+  }
+};
+
+const refreshAuthSessionAcrossTabs = () => {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : null;
+  if (!locks || typeof locks.request !== 'function') {
+    return refreshAuthSessionUnlocked();
+  }
+  return locks.request(REFRESH_LOCK_NAME, () => refreshAuthSessionLocked());
+};
+
 function refreshAuthSession() {
   if (!refreshInFlight) {
-    refreshInFlight = apiClient.post('/auth/refresh', null, { suppressAuthRequired: true })
+    refreshInFlight = refreshAuthSessionAcrossTabs()
       .then((response) => {
         resetAuthRejectionEpoch();
         return response;
@@ -278,8 +412,18 @@ apiClient.interceptors.response.use(
   (response) => {
     const metadata = response?.config?.metadata || {};
     const responseUrl = String(response?.config?.url || '');
-    if (responseUrl.includes('/auth/login') || responseUrl.includes('/auth/verify-2fa')) {
+    // Exact-path match: '/auth/login-mode' is public (no cookies issued) and a
+    // substring check would let it mark the epoch, wrongly skipping queued
+    // refreshes for live sessions.
+    const responsePath = responseUrl.split('?')[0];
+    if (
+      responsePath === '/auth/login'
+      || responsePath.endsWith('/auth/login')
+      || responsePath.includes('/auth/verify-2fa')
+      || responsePath.includes('/auth/passkey-login/verify')
+    ) {
       resetAuthRejectionEpoch();
+      markRefreshEpoch();
     }
     if (shouldDebugChatRequests()) {
       pushChatRequestDebugEntry({
