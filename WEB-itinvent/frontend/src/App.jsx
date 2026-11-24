@@ -228,13 +228,15 @@ const PostAuthNavigate = ({ destination, consumeReturnPath }) => {
 };
 
 const LoginRoute = () => {
-  const { hasPermission, isAuthenticated, loading, user } = useAuth();
+  const { hasPermission, isAuthenticated, loading, postAuthUiHold, user } = useAuth();
 
   if (loading) {
     return <PageFallback />;
   }
 
-  if (!isAuthenticated()) {
+  // Login owns post-auth screens (backup codes, trusted-device sheet); it lifts
+  // the hold only when it commits the navigation itself.
+  if (!isAuthenticated() || postAuthUiHold) {
     return <Login />;
   }
 

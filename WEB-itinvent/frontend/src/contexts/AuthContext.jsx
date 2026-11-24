@@ -186,6 +186,7 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [postAuthUiHold, setPostAuthUiHold] = useState(false);
   const [mailSessionEnabled, setMailSessionEnabled] = useState(() => isMailSessionEnabled());
 
   const sessionRefreshGateRef = useRef(null);
@@ -206,6 +207,7 @@ export const AuthProvider = ({ children }) => {
     sweepLogoutSessionData();
     invalidateStickerPacksCache();
     setUser(null);
+    setPostAuthUiHold(false);
     setLoading(false);
     const generation = sessionGenerationRef.current;
     return synchronizePrivateMediaSession('', { clear: true }).then((cleared) => {
@@ -717,6 +719,8 @@ export const AuthProvider = ({ children }) => {
     user,
     loading,
     error,
+    postAuthUiHold,
+    setPostAuthUiHold,
     login,
     startTwoFactorSetup,
     verifyTwoFactorSetup,
@@ -734,6 +738,7 @@ export const AuthProvider = ({ children }) => {
     user,
     loading,
     error,
+    postAuthUiHold,
     login,
     startTwoFactorSetup,
     verifyTwoFactorSetup,
