@@ -58,6 +58,7 @@ def _clear_pending():
     svc._summary_suppressed_until.clear()
     svc._summary_inflight.clear()
     svc._summary_rate_window.clear()
+    svc._summary_llm_window.clear()
     for _k in svc._summary_metrics:
         svc._summary_metrics[_k] = 0
     yield
@@ -66,6 +67,7 @@ def _clear_pending():
     svc._summary_suppressed_until.clear()
     svc._summary_inflight.clear()
     svc._summary_rate_window.clear()
+    svc._summary_llm_window.clear()
 
 
 @pytest.fixture
@@ -728,3 +730,174 @@ def test_background_flag_default_off():
     import os
     if "AI_SUMMARY_BACKGROUND_ENABLED" not in os.environ:
         assert svc.AI_SUMMARY_BACKGROUND_ENABLED is False
+
+
+# ---------- A8c4: legacy inline path (flag off) ----------
+
+def _persist_kwargs(conv, **over):
+    base = dict(
+        conversation_id=conv, user_id=7, reset_seq=0,
+        summary_until_seq=30, next_summary_until_seq=50,
+        rolling_summary="OLD-SUMMARY",
+        summary_append_lines=[f"Пользователь: msg-{i}" for i in range(10)],
+        memory_enabled=True, memory_usage={"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+        memory_model="test-model",
+    )
+    base.update(over)
+    return base
+
+
+def test_inline_summary_success_usage_and_both_checkpoints(env, monkeypatch):
+    """flag=0 legacy path: inline LLM summarize — usage merged into run
+    usage, llm-checkpoint advances together with the prompt one."""
+    monkeypatch.setattr(svc, "AI_SUMMARY_BACKGROUND_ENABLED", False)
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=50,
+          summary_until_seq=30, llm_until_seq=0)
+    monkeypatch.setattr(svc, "AI_SUMMARY_MIN_BATCH", 2)
+
+    def _ok(base, lines, model=None):
+        return "LLM-SUMMARY", {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}
+
+    monkeypatch.setattr(svc.smart_memory, "summarize", _ok)
+    text, usage = svc.ai_chat_service._persist_run_summary(**_persist_kwargs(conv))
+    assert text == "LLM-SUMMARY"
+    assert int(usage["total_tokens"]) == 126  # 6 prior + 120 summary
+    row = _mapping(env, conv, 7)
+    assert int(row.summary_until_seq) == 50
+    assert int(row.summary_llm_until_seq) == 50
+    assert row.rolling_summary == "LLM-SUMMARY" == row.rolling_summary_llm
+
+
+def test_inline_summary_failure_preserves_checkpoint(env, monkeypatch):
+    """flag=0: a failed summarize must NOT advance summary_until_seq —
+    otherwise the range is lost forever with the background path off.
+    The prompt still gets the head/tail fallback."""
+    monkeypatch.setattr(svc, "AI_SUMMARY_BACKGROUND_ENABLED", False)
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=50,
+          summary_until_seq=30, llm_until_seq=0)
+    monkeypatch.setattr(svc, "AI_SUMMARY_MIN_BATCH", 2)
+
+    def _boom(base, lines, model=None):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(svc.smart_memory, "summarize", _boom)
+    text, usage = svc.ai_chat_service._persist_run_summary(**_persist_kwargs(conv))
+    assert "msg-0" in text or text  # fallback text went to the prompt
+    row = _mapping(env, conv, 7)
+    # Checkpoint unchanged → the NEXT run retries the same range.
+    assert int(row.summary_until_seq) == 30
+    assert int(row.summary_llm_until_seq) == 0
+    assert row.rolling_summary == "FALLBACK"
+
+
+def test_inline_summary_background_flag_registers_pending(env, monkeypatch):
+    """flag=1: run persists fallback + registers the background upgrade."""
+    monkeypatch.setattr(svc, "AI_SUMMARY_BACKGROUND_ENABLED", True)
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=50,
+          summary_until_seq=30, llm_until_seq=0)
+    monkeypatch.setattr(svc, "AI_SUMMARY_MIN_BATCH", 2)
+    calls = []
+    monkeypatch.setattr(svc.smart_memory, "summarize", _fake_summarize(calls))
+    text, _usage = svc.ai_chat_service._persist_run_summary(**_persist_kwargs(conv))
+    assert calls == []  # no LLM call on the critical path
+    assert (conv, 7) in svc._pending_summary_upgrades
+    row = _mapping(env, conv, 7)
+    assert int(row.summary_until_seq) == 50
+    assert int(row.summary_llm_until_seq) == 0
+
+
+# ---------- A8c4: provider-level cost control ----------
+
+def test_llm_calls_rate_limit_pauses_job(env, monkeypatch):
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=60)
+    calls = []
+    monkeypatch.setattr(svc.smart_memory, "summarize", _fake_summarize(calls))
+    for _ in range(svc.AI_SUMMARY_UPGRADE_LLM_PER_MIN):
+        svc._summary_llm_window.append(time.monotonic())
+    outcome = svc.ai_chat_service._upgrade_conversation_summary(
+        conversation_id=conv, user_id=7, reset_seq=0,
+    )
+    assert outcome["outcome"] == "rate_limited"
+    assert calls == []
+    assert int(_mapping(env, conv, 7).summary_llm_until_seq) == 0
+    # process() re-registers with a future deadline — no busy spin.
+    svc._pending_summary_upgrades[(conv, 7)] = (0, 0.0, time.monotonic())
+    svc.ai_chat_service.process_pending_summary_upgrade()
+    entry = svc._pending_summary_upgrades[(conv, 7)]
+    assert entry[1] > time.monotonic()
+
+
+def test_job_token_cap_stops_and_resumes(env, monkeypatch):
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=60)
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_JOB_TOKEN_CAP", 100)
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_BATCH_TOKENS", 50)
+
+    def _fat(base, lines, model=None):
+        return "\n".join(str(x) for x in lines), {"total_tokens": 90}
+
+    monkeypatch.setattr(svc.smart_memory, "summarize", _fat)
+    outcome = svc.ai_chat_service._upgrade_conversation_summary(
+        conversation_id=conv, user_id=7, reset_seq=0,
+    )
+    assert outcome["outcome"] == "budget_capped"
+    row = _mapping(env, conv, 7)
+    # Progress through the first capped chunk is checkpointed — the job
+    # resumes, it does not restart.
+    assert 0 < int(row.summary_llm_until_seq) < 60
+    # A later claim finishes the remaining range.
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_JOB_TOKEN_CAP", 1000000)
+    svc.ai_chat_service._upgrade_conversation_summary(
+        conversation_id=conv, user_id=7, reset_seq=0,
+    )
+    assert int(_mapping(env, conv, 7).summary_llm_until_seq) == 60
+
+
+# ---------- A8c4: lease ownership ----------
+
+def test_lease_renewal_blocks_second_worker(env, monkeypatch):
+    """Worker A holds the lease while its LLM calls run — renewal on every
+    chunk keeps updated_at fresh, so worker B never claims a duplicate."""
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_LEASE_SEC", 0.2)
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=60)
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_BATCH", 30)
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_BATCH_TOKENS", 50)
+    results = []
+
+    def _slow(base, lines, model=None):
+        # Inside A's call, B tries to claim the same conversation.
+        outcome_b = svc.ai_chat_service._upgrade_conversation_summary(
+            conversation_id=conv, user_id=7, reset_seq=0,
+        )
+        results.append(str(outcome_b["outcome"]))
+        time.sleep(0.25)  # exceeds the tiny lease — renewal must cover it
+        return ("S", {})
+
+    monkeypatch.setattr(svc.smart_memory, "summarize", _slow)
+    outcome = svc.ai_chat_service._upgrade_conversation_summary(
+        conversation_id=conv, user_id=7, reset_seq=0,
+    )
+    assert outcome["outcome"] == "done"
+    assert results and all(r == "lease_busy" for r in results)
+    assert int(_mapping(env, conv, 7).summary_llm_until_seq) == 60
+
+
+def test_lease_expires_for_dead_worker(env, monkeypatch):
+    """A crashed worker never renews: after LEASE_SEC the next worker
+    claims and completes the job."""
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_LEASE_SEC", 45)
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=40,
+          updated_at_offset_sec=3600)  # dead worker's last touch
+    calls = []
+    monkeypatch.setattr(svc.smart_memory, "summarize", _fake_summarize(calls))
+    outcome = svc.ai_chat_service._upgrade_conversation_summary(
+        conversation_id=conv, user_id=7, reset_seq=0,
+    )
+    assert outcome["outcome"] == "done"
+    assert int(_mapping(env, conv, 7).summary_llm_until_seq) == 40

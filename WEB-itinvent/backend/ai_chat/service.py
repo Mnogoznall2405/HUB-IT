@@ -277,6 +277,10 @@ AI_SUMMARY_UPGRADE_SUPPRESS_SEC = max(60, min(86400, int(os.environ.get("AI_SUMM
 AI_SUMMARY_UPGRADE_SCAN_LIMIT = max(5, min(500, int(os.environ.get("AI_SUMMARY_UPGRADE_SCAN_LIMIT", "50") or 50)))
 AI_SUMMARY_UPGRADE_LOOKBACK_DAYS = max(1, min(365, int(os.environ.get("AI_SUMMARY_UPGRADE_LOOKBACK_DAYS", "30") or 30)))
 AI_SUMMARY_UPGRADE_JOBS_PER_MIN = max(1, min(120, int(os.environ.get("AI_SUMMARY_UPGRADE_JOBS_PER_MIN", "6") or 6)))
+# Provider-level caps (cost control): jobs/min alone is not enough — one
+# job can fold many batches, each batch many chunks.
+AI_SUMMARY_UPGRADE_LLM_PER_MIN = max(1, min(600, int(os.environ.get("AI_SUMMARY_UPGRADE_LLM_PER_MIN", "30") or 30)))
+AI_SUMMARY_UPGRADE_JOB_TOKEN_CAP = max(10000, min(2000000, int(os.environ.get("AI_SUMMARY_UPGRADE_JOB_TOKEN_CAP", "200000") or 200000)))
 # Cross-process lease via updated_at CAS: prevents duplicate paid LLM
 # calls when more than one AI worker runs.
 AI_SUMMARY_UPGRADE_LEASE_SEC = max(15, min(600, int(os.environ.get("AI_SUMMARY_UPGRADE_LEASE_SEC", "45") or 45)))
@@ -1366,6 +1370,7 @@ _summary_upgrade_attempts: dict[tuple[str, int], int] = {}
 _summary_inflight: dict[tuple[str, int], int] = {}
 _summary_suppressed_until: dict[tuple[str, int], tuple[float, int]] = {}
 _summary_rate_window: list[float] = []
+_summary_llm_window: list[float] = []
 _summary_metrics: dict[str, int] = {
     "registrations": 0,
     "discarded_registrations": 0,
@@ -1377,6 +1382,8 @@ _summary_metrics: dict[str, int] = {
     "cas_conflicts": 0,
     "lease_busy": 0,
     "llm_calls": 0,
+    "llm_rate_limited": 0,
+    "budget_capped": 0,
     "messages_folded": 0,
     "prompt_tokens": 0,
     "completion_tokens": 0,
@@ -5019,6 +5026,16 @@ class AiChatService:
                     _summary_metrics["cas_conflicts"] += 1
                 elif result == "lease_busy":
                     _summary_metrics["lease_busy"] += 1
+                elif result in {"rate_limited", "budget_capped"}:
+                    # Progress is checkpointed — resume after the window
+                    # cools down instead of dropping or hammering.
+                    with _pending_summary_lock:
+                        _summary_inflight.pop(key, None)
+                    self._register_pending_summary(
+                        conversation_id=key[0], user_id=key[1],
+                        reset_seq=reset_seq,
+                        not_before_mono=time.monotonic() + 60.0,
+                    )
                 _summary_metrics["llm_calls"] += int(outcome.get("llm_calls") or 0)
                 _summary_metrics["messages_folded"] += int(outcome.get("folded") or 0)
                 _summary_metrics["duration_ms_total"] += int(outcome.get("duration_ms") or 0)
@@ -5173,6 +5190,7 @@ class AiChatService:
         cur_until = read_from          # read position
         folded = 0
         llm_calls = 0
+        last_lease_touch = time.monotonic()
         total_usage: dict[str, int] = {}
         while cur_until < until_seq and folded < AI_SUMMARY_UPGRADE_MAX_MESSAGES:
             with chat_session() as session:
@@ -5227,9 +5245,61 @@ class AiChatService:
                 else:
                     lines = []
                 if lines:
-                    new_text, usage = smart_memory.summarize(
-                        cur_text, lines, model=memory_model,
-                    )
+                    # Provider-level cap: one job folds many chunks — jobs/min
+                    # alone cannot bound paid calls.
+                    with _pending_summary_lock:
+                        now_mono = time.monotonic()
+                        while _summary_llm_window and now_mono - _summary_llm_window[0] > 60.0:
+                            _summary_llm_window.pop(0)
+                        if len(_summary_llm_window) >= AI_SUMMARY_UPGRADE_LLM_PER_MIN:
+                            _summary_metrics["llm_rate_limited"] += 1
+                            outcome.update(
+                                outcome="rate_limited", folded=folded, llm_calls=llm_calls,
+                                usage=total_usage, checkpoint_before=db_llm_until,
+                                checkpoint_after=cur_until,
+                                duration_ms=int((time.monotonic() - started_at) * 1000),
+                            )
+                            return outcome
+                        _summary_llm_window.append(now_mono)
+                    if int(total_usage.get("total_tokens") or 0) >= AI_SUMMARY_UPGRADE_JOB_TOKEN_CAP:
+                        _summary_metrics["budget_capped"] += 1
+                        outcome.update(
+                            outcome="budget_capped", folded=folded, llm_calls=llm_calls,
+                            usage=total_usage, checkpoint_before=db_llm_until,
+                            checkpoint_after=cur_until,
+                            duration_ms=int((time.monotonic() - started_at) * 1000),
+                        )
+                        return outcome
+                    # Lease renewal: ownership survives long fold runs — the
+                    # gap between updated_at writes is one chunk (LLM calls
+                    # are socket-capped ~10s), far below LEASE_SEC. A dead
+                    # worker's lease expires within LEASE_SEC, error/restart
+                    # the same; a reset flips context_reset_seq anyway.
+                    if time.monotonic() - last_lease_touch > AI_SUMMARY_UPGRADE_LEASE_SEC / 2:
+                        with app_session() as lease_db:
+                            lease_db.execute(
+                                update(AppAiBotConversation)
+                                .where(
+                                    AppAiBotConversation.conversation_id == normalized_conversation_id,
+                                    AppAiBotConversation.user_id == int(user_id),
+                                    AppAiBotConversation.context_reset_seq == int(reset_seq),
+                                )
+                                .values(updated_at=_utc_now())
+                                .execution_options(synchronize_session=False)
+                            )
+                        last_lease_touch = time.monotonic()
+                    try:
+                        new_text, usage = smart_memory.summarize(
+                            cur_text, lines, model=memory_model,
+                        )
+                    except Exception:
+                        # Count the partial spend before propagating — a
+                        # failed chunk may still have cost tokens upstream.
+                        with _pending_summary_lock:
+                            _summary_metrics["llm_calls"] += llm_calls
+                            for uk in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                                _summary_metrics[uk] += int(total_usage.get(uk) or 0)
+                        raise
                     llm_calls += 1
                     for usage_key, usage_val in dict(usage or {}).items():
                         if isinstance(usage_val, (int, float)):
@@ -5300,6 +5370,105 @@ class AiChatService:
             outcome["outcome"] = "partial"
             outcome["duration_ms"] = int((time.monotonic() - started_at) * 1000)
         return outcome
+
+    def _persist_run_summary(
+        self,
+        *,
+        conversation_id: str,
+        user_id: int,
+        reset_seq: int,
+        summary_until_seq: int,
+        next_summary_until_seq: int,
+        rolling_summary: str,
+        summary_append_lines: list[str],
+        memory_enabled: bool,
+        memory_usage: dict[str, Any],
+        memory_model: str,
+    ) -> tuple[str, dict[str, Any]]:
+        """Persist the summarized range for a run.
+
+        Background path (flag on): the prompt gets the head/tail fallback,
+        the LLM upgrade is queued. Rollback path (flag off): synchronous
+        LLM summarize on the critical path — on success both checkpoints
+        advance and the summary usage is merged into the run usage; on
+        failure the checkpoint does NOT move (baseline parity — the next
+        run retries the range) while the prompt still gets the fallback.
+        Returns (rolling_summary_for_prompt, memory_usage).
+        """
+        normalized_conversation_id = _normalize_text(conversation_id)
+        llm_persisted = False
+        fallback_summary = _compact_head_tail(
+            "\n".join(part for part in [rolling_summary, *summary_append_lines] if part),
+            AI_ROLLING_SUMMARY_TOKENS,
+            head_ratio=0.25,
+        )
+        summary_ready = True
+        if memory_enabled and len(summary_append_lines) < AI_SUMMARY_MIN_BATCH:
+            # Небольшой хвост не сжимаем LLM-вызовом (~6 с на каждое сообщение):
+            # он попадает в промпт как есть, контрольная точка не двигается,
+            # а накопившийся пакет будет сжат одним вызовом.
+            summary_ready = False
+            rolling_summary = fallback_summary
+        elif memory_enabled:
+            if AI_SUMMARY_BACKGROUND_ENABLED:
+                # A8/P1: LLM-саммаризация уходит из критического пути ответа —
+                # в промпт уходит head/tail fallback, а LLM-качество догоняет
+                # фоновой upgrade (см. process_pending_summary_upgrade).
+                self._register_pending_summary(
+                    conversation_id=normalized_conversation_id,
+                    user_id=int(user_id),
+                    reset_seq=reset_seq,
+                )
+                rolling_summary = fallback_summary
+            else:
+                # Rollback path (AI_SUMMARY_BACKGROUND_ENABLED=0):
+                # synchronous LLM summarize on the critical path. The
+                # persisted text is already LLM quality, so the LLM
+                # checkpoint advances together with the prompt one.
+                llm_persisted = True
+                try:
+                    rolling_summary, _summary_usage = smart_memory.summarize(
+                        rolling_summary, summary_append_lines, model=memory_model,
+                    )
+                    if _MEMORY_SENSITIVE_RE.search(rolling_summary):
+                        raise ValueError("Summary contains sensitive content")
+                    rolling_summary = _truncate_tokens(rolling_summary, AI_ROLLING_SUMMARY_TOKENS)
+                    # A8c4: inline summary tokens belong to the run's
+                    # usage — they were paid inside the critical path.
+                    memory_usage = _merge_usage(memory_usage or {}, _summary_usage)
+                except Exception:
+                    llm_persisted = False
+                    # Baseline parity: a failed summarize must NOT advance
+                    # summary_until_seq — otherwise the range is skipped
+                    # forever when the background path is off. The prompt
+                    # still gets the head/tail fallback; the next run
+                    # retries the same range.
+                    summary_ready = False
+                    logger.warning("ai_summary inline summarize failed; head/tail fallback", exc_info=True)
+                    rolling_summary = fallback_summary
+        else:
+            rolling_summary = fallback_summary
+        if summary_ready:
+            values: dict[str, Any] = {
+                "rolling_summary": rolling_summary,
+                "summary_until_seq": next_summary_until_seq,
+                "updated_at": _utc_now(),
+            }
+            if llm_persisted:
+                values["rolling_summary_llm"] = rolling_summary
+                values["summary_llm_until_seq"] = next_summary_until_seq
+            with app_session() as app_db:
+                app_db.execute(
+                    update(AppAiBotConversation)
+                    .where(
+                        AppAiBotConversation.conversation_id == normalized_conversation_id,
+                        AppAiBotConversation.user_id == int(user_id),
+                        AppAiBotConversation.summary_until_seq == summary_until_seq,
+                        AppAiBotConversation.context_reset_seq == reset_seq,
+                    )
+                    .values(**values)
+                )
+        return rolling_summary, memory_usage
 
     def reap_stale_runs(
         self,
@@ -8336,69 +8505,18 @@ class AiChatService:
             _log_ai_run_timing("memory", memory_started_at, run_id=lap_run_id)
         _lap("ctx_memory")
         if summary_append_lines:
-            llm_persisted = False
-            fallback_summary = _compact_head_tail(
-                "\n".join(part for part in [rolling_summary, *summary_append_lines] if part),
-                AI_ROLLING_SUMMARY_TOKENS,
-                head_ratio=0.25,
+            rolling_summary, memory_usage = self._persist_run_summary(
+                conversation_id=normalized_conversation_id,
+                user_id=int(user_payload["id"]),
+                reset_seq=reset_seq,
+                summary_until_seq=summary_until_seq,
+                next_summary_until_seq=next_summary_until_seq,
+                rolling_summary=rolling_summary,
+                summary_append_lines=summary_append_lines,
+                memory_enabled=memory_enabled,
+                memory_usage=memory_usage,
+                memory_model=memory_model,
             )
-            summary_ready = True
-            if memory_enabled and len(summary_append_lines) < AI_SUMMARY_MIN_BATCH:
-                # Небольшой хвост не сжимаем LLM-вызовом (~6 с на каждое сообщение):
-                # он попадает в промпт как есть, контрольная точка не двигается,
-                # а накопившийся пакет будет сжат одним вызовом.
-                summary_ready = False
-                rolling_summary = fallback_summary
-            elif memory_enabled:
-                if AI_SUMMARY_BACKGROUND_ENABLED:
-                    # A8/P1: LLM-саммаризация уходит из критического пути ответа —
-                    # в промпт уходит head/tail fallback, а LLM-качество догоняет
-                    # фоновой upgrade (см. process_pending_summary_upgrade).
-                    self._register_pending_summary(
-                        conversation_id=normalized_conversation_id,
-                        user_id=int(user_payload["id"]),
-                        reset_seq=reset_seq,
-                    )
-                    rolling_summary = fallback_summary
-                else:
-                    # Rollback path (AI_SUMMARY_BACKGROUND_ENABLED=0):
-                    # synchronous LLM summarize on the critical path. The
-                    # persisted text is already LLM quality, so the LLM
-                    # checkpoint advances together with the prompt one.
-                    llm_persisted = True
-                    try:
-                        rolling_summary, _summary_usage = smart_memory.summarize(
-                            rolling_summary, summary_append_lines, model=memory_model,
-                        )
-                        if _MEMORY_SENSITIVE_RE.search(rolling_summary):
-                            raise ValueError("Summary contains sensitive content")
-                        rolling_summary = _truncate_tokens(rolling_summary, AI_ROLLING_SUMMARY_TOKENS)
-                    except Exception:
-                        llm_persisted = False
-                        logger.warning("ai_summary inline summarize failed; head/tail fallback", exc_info=True)
-                        rolling_summary = fallback_summary
-            else:
-                rolling_summary = fallback_summary
-            if summary_ready:
-                values: dict[str, Any] = {
-                    "rolling_summary": rolling_summary,
-                    "summary_until_seq": next_summary_until_seq,
-                    "updated_at": _utc_now(),
-                }
-                if llm_persisted:
-                    values["rolling_summary_llm"] = rolling_summary
-                    values["summary_llm_until_seq"] = next_summary_until_seq
-                with app_session() as app_db:
-                    app_db.execute(
-                        update(AppAiBotConversation)
-                        .where(
-                            AppAiBotConversation.conversation_id == normalized_conversation_id,
-                            AppAiBotConversation.user_id == int(user_payload["id"]),
-                            AppAiBotConversation.summary_until_seq == summary_until_seq,
-                            AppAiBotConversation.context_reset_seq == reset_seq,
-                        )
-                        .values(**values)
-                    )
         _lap("ctx_summary")
         with app_session() as app_db:
             current_mapping = app_db.execute(select(AppAiBotConversation).where(

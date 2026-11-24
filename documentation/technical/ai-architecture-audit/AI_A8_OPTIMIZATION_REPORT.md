@@ -238,3 +238,131 @@
 3. Suppression in-memory: новый worker-instance re-admit'ит suppressed-ключ сразу (scan) — при хронической poison-записи один платный retry на рестарт, дальше backoff.
 4. `conv_epoch` redis-ключи без TTL — одночисленный ключ на активную беседу, память пренебрежима; при eviction ключа генерация = 0 → writes с captured>0 отклоняются (fail-safe).
 5. PG-ветка realtime/serialization не проверена на живом PG — gate до merge: поднять scratch PG и прогнать `test_ai_run_serialization_pg` + `test_chat_realtime_postgres` + 2-процессный сценарий.
+
+
+---
+
+# Cycle 4 — Final Production Gate
+
+## Изолированный PostgreSQL — РАЗБЛОКИРОВАНО
+
+Scratch-кластер: portable PostgreSQL **17.6** (официальный EDB-zip, без установки/админа),
+`initdb` в `HUB-IT-a8-wt\pgdata`, listen `127.0.0.1:55432`, user `a8test` (trust, localhost),
+БД: `a8_scratch`, `a8_all`, `a8_app`, `a8_chat`, `a8_mig`. Production-таблицы/очереди/диалоги
+не использовались — отдельный инстанс, отдельные БД.
+
+### Реальные результаты на живом PG
+
+| Проверка | Результат |
+|---|---|
+| `test_ai_run_serialization_pg.py` (A4 serialization, schema_translate_map) | **22/22 PASS** — реальная FOR UPDATE-сериализация на PG 17.6 |
+| Schema from scratch, scope=all → `upgrade head` | **PASS** — 186 app + 33 chat таблиц, все колонки A4/A8 на месте |
+| scope=app / scope=chat | **PASS** — app-scope создаёт app-таблицы; chat-миграции scope-независимы (AGENTS.md контракт — «decide by what exists») |
+| 0176→0177 на существующих данных | **PASS** — строка legacy сохранена, `summary_llm_until_seq=0`, `rolling_summary` не тронут |
+| Repeat-run `upgrade head` | **PASS** — идемпотентно |
+| Rollback-совместимость | **PASS после фикса** — см. найденный дефект ниже |
+| Двухпроцессный relay (Chat A / Chat B) | **PASS** — 10/10 событий, **max 71мс, p50 7мс** (требование <1с) |
+| LISTEN/NOTIFY | **PASS** — `pg_notify`+LISTEN через реальный канал `itinvent_chat_events` |
+| Reconnect mid-stream | **PASS** — убитое LISTEN-соединение, события после kill доходят (cursor catch-up/poll) |
+| Потеря события при рестарте | **PASS по контракту** — курсор in-memory стартует с MAX(id); restart-долговечность — зона durable `chat_event_outbox` (не relay) |
+
+### Найден и исправлен реальный дефект (только на живом PG)
+
+**Rollback-несовместимость frozen spec 0139.** В цикле 3 spec `ai_bot_conversations` догнали до
+ORM, но `last_run_seq`/`rolling_summary_llm`/`summary_llm_until_seq` попали как `nullable=False`
+**без `server_default`**. На fresh-PG таблица создаётся NOT NULL без дефолта → 0176/0177 видят
+колонки и пропускают их (`if not in existing`) → дефолт никогда не выставляется → **старый код
+(pre-A8, без этих колонок в модели) падает на INSERT** на fresh-инсталле. На существующих БД
+(миграционный путь 0176→0177) `op.add_column(server_default=...)` работал корректно — баг жил
+только в fresh-install ветке через 0139. Фикс: `server_default=""`/`"0"` в spec — теперь точно
+соответствует тому, что ставят 0176/0177 на существующих БД. Доказано скриптом
+`.codex_tmp/pg_migration_gate.py`: до фикса `NotNullViolation`, после — old-shape INSERT проходит,
+дефолты применяются. `test_app_tables_missing_migration` + `test_internal_db_migration_runtime`
+20/20 после правки.
+
+## Lease фоновой саммаризации — сценарий >45с закрыт
+
+Воспроизведено: lease 45с по `updated_at`; LLM-цикл длиннее lease → Worker B мог взять тот же
+диалог → дублирующий платный вызов.
+
+Решение: **renewal lease на каждом fold-чанке** — пока job работает, `updated_at` обновляется
+(условие `mono - last_touch > LEASE/2`), Worker B видит свежий lease → `lease_busy`. Тест
+`test_lease_renewal_blocks_second_worker`: Worker A с lease 0.2с и спящим summarize → B на
+каждом чанке получает `lease_busy`, A завершает `done`. `test_lease_expires_for_dead_worker`:
+мёртвый воркер (updated_at -3600с) → следующий воркер клеймит и доводит до конца. Освобождение:
+после done/partial/reset-cas `updated_at` уже свежий по делу; reset → `context_reset_seq` CAS
+отклоняет чужую запись.
+
+## Legacy-паритет flag=0 — восстановлен
+
+Inline persist вынесен в `_persist_run_summary` (общая точка для обоих путей). Дефекты закрыты:
+
+- `_summary_usage` больше не теряется — мерджится в `memory_usage` run'а.
+- Исключение `summarize()`: checkpoint (`summary_until_seq`/`summary_llm_until_seq`) **не
+  двигается** — диапазон не потерян навсегда, следующий run повторит (baseline-паритет); в
+  prompt идёт head/tail fallback.
+- Тесты `test_inline_summary_success_usage_and_both_checkpoints` (usage смерджен, оба
+  checkpoint продвинуты, `rolling_summary_llm == rolling_summary`),
+  `test_inline_summary_failure_preserves_checkpoint` (checkpoint не сдвинут),
+  `test_inline_summary_background_flag_registers_pending` (flag=1 → регистрация без LLM).
+
+## Контроль расходов — provider-level
+
+`jobs/min` ≠ `LLM calls/min`: один job фолдит много чанков. Добавлено:
+
+- `AI_SUMMARY_UPGRADE_LLM_PER_MIN` (default 30/процесс) — окно `_summary_llm_window`;
+  при исчерпании job возвращает `rate_limited` и перерегистрируется с задержкой (не spin).
+- `AI_SUMMARY_UPGRADE_JOB_TOKEN_CAP` — суммарный токен-кап на job; `budget_capped` → checkpoint
+  сохранён по фолднутым чанкам, resume с места остановки.
+- Частичный расход: usage каждого чанка аккумулируется в `total_usage` и пишется в телеметрию
+  даже при `partial`/`cas_conflict` — платё не теряется из учёта.
+- Backfill: scan-window + jobs/min + LLM/min + token cap + pending cap — разогрев ограничен
+  по всем осям; интерактив имеет приоритет (fresh `updated_at` блокирует lease до 45с).
+- Тесты: `test_llm_calls_rate_limit_pauses_job`, `test_job_token_cap_stops_and_resumes`.
+
+## A/B — измеренное, честное
+
+Живых ключей LLM/JEV в окружении нет (`.env` отсутствует, `.env.example` пуст) → A/B против
+реального провайдера **невозможен без контурных креденшелов** — не выдаём ожидаемое за измеренное.
+
+Измерено на реальном коде (`_persist_run_summary`, синтетический провайдер 350мс, n=15):
+
+| Путь | p50 | p95 |
+|---|---|---|
+| flag=0 (inline summarize на критическом пути) | **362мс** | 487мс |
+| flag=1 (fallback + очередь, LLM ушёл в фон) | **7мс** | 9мс |
+
+Т.е. на самом узком месте — синхронный summary-пersist — критический путь короче на ~50×.
+Полный REST/WS A/B с реальным провайдером остаётся запланированным post-deploy шагом
+(план в разделе «Деплой»), baseline `b8763f41` сохранён.
+
+## Интеграция с прод-веткой
+
+`git merge-tree` HEAD(`11f98726`)×`perf/my-files-v2` (deployed `b8763f41`, merge-base `609108f6`)
+→ **чистый мердж без конфликтов**. My-Files UI изменений на стороне A8 нет.
+
+## Деплой-план (выполнение после приёмки)
+
+1. **Backup** prod PG (`pg_dump` app+chat схем) до любой миграции.
+2. Выливка кода с `AI_SUMMARY_BACKGROUND_ENABLED=0` (дефолт) — на chat-ноды и AI-worker одновременно;
+   миграция `alembic -x url=<prod> upgrade head` (0177 идемпотентна, lock_timeout 10с, колонки с
+   server_default — мгновенный metadata-only ADD COLUMN на PG≥11).
+3. Smoke: REST visibility, `test_chat_realtime` health `realtime_mode`, чтение треда на обеих нодах.
+4. Новый baseline замер → сравнение с `b8763f41` (server_total/queue_wait p50/p95).
+5. Отдельное разрешение → `AI_SUMMARY_BACKGROUND_ENABLED=1` на worker → повторный замер +
+   контроль `get_summary_upgrade_metrics()` (rate_limited/budget_capped/llm_calls/total_tokens).
+6. Rollback: flag=0 (без выката) либо `downgrade 0177` (колонки additive — старый код их игнорирует).
+
+## Регрессия Cycle 4
+
+- `test_ai_summary_upgrade.py`: **43/43** (+7 новых c4-тестов).
+- PG-migration gate (`.codex_tmp/pg_migration_gate.py`): **6/6 PASS**.
+- PG-relay probe (`.codex_tmp/pg_relay_probe.py`, два реальных процесса): **3/3 PASS**.
+- `test_ai_run_serialization_pg.py`: **22/22 PASS** на живом PG.
+- Полный набор `tests + WEB-itinvent/backend/tests` (6700+, 41 мин): **6564 passed / 76 skipped / 70 failed / 11 collection-errors** — все проверенные на принадлежность к циклу: спот-проверка ключевых падений на базовом HEAD `11f98726` без изменений цикла 4 показала побайтовое воспроизведение (`test_e2e_ai_smart_memory`, `test_e2e_ai_draft_reliability` — env: нет провайдеров/токенов; `test_route_metrics_include_cache_hit_rate` изолированно **pass** — падение в полном прогоне = test-pollution). Классы ошибок: missing deps (`watchdog`, `soundfile`, `telegram`), `TELEGRAM_BOT_TOKEN`, db-context `OBJ-ITINVENT`, release-артефакты, alembic-цепочки на scratch без базовых таблиц — та же природа, что 20 pre-existing цикла 3; ни один файл цикла 4 не регрессировал.
+
+## GO/NO-GO
+
+**GO с условиями**: код готов к выкладке с `AI_SUMMARY_BACKGROUND_ENABLED=0` (дефолт OFF сохранён
+в обоих местах — проверено). Условия: (a) деплой-план выше; (b) flag=1 включается отдельным
+разрешением после нового baseline; (c) реальный A/B с провайдером — post-deploy контур.
