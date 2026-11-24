@@ -160,6 +160,8 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   const [passwordGroupsLoading, setPasswordGroupsLoading] = useState(false);
   const [passwordGroupsSaving, setPasswordGroupsSaving] = useState(false);
   const linkTrustedDeviceModeRef = useRef({ platformOnly: false });
+  const passwordGroupSaveTimersRef = useRef({});
+  const passwordGroupPendingRef = useRef({});
 
   // PreferencesContext hands out a new object on every refresh (e.g. auth-changed) even when nothing changed on the
   // server. Re-seeding the drafts only when the stored values differ keeps unsaved edits from being reverted.
@@ -340,6 +342,17 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   const loadPasswordGroups = useCallback(async () => {
     const isCurrent = beginPasswordGroups();
     if (!isAdmin) return;
+    const pendingGroups = Object.entries(passwordGroupPendingRef.current);
+    if (pendingGroups.length) {
+      Object.values(passwordGroupSaveTimersRef.current).forEach(clearTimeout);
+      passwordGroupSaveTimersRef.current = {};
+      passwordGroupPendingRef.current = {};
+      try {
+        await Promise.all(pendingGroups.map(([groupId, payload]) => passwordsAPI.updateGroup(Number(groupId), payload)));
+      } catch (error) {
+        notifyApiError(error, 'Не удалось сохранить часть изменений групп паролей.', { dedupeMode: 'none' });
+      }
+    }
     setPasswordGroupsLoading(true);
     try {
       const data = await passwordsAPI.getGroups({ include_inactive: true });
@@ -353,7 +366,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     } finally {
       if (isCurrent()) setPasswordGroupsLoading(false);
     }
-  }, [beginPasswordGroups, isAdmin]);
+  }, [beginPasswordGroups, isAdmin, notifyApiError]);
 
   const loadAiBotsAdmin = useCallback(async () => {
     const isCurrent = beginAiBots();
@@ -883,6 +896,28 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     }
   }, [loadPasswordGroups, notifyApiError, notifySuccess]);
 
+  const persistPasswordGroupUpdate = useCallback(async (groupId, payload) => {
+    setPasswordGroupsSaving(true);
+    try {
+      await passwordsAPI.updateGroup(groupId, payload);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось обновить группу паролей.', { dedupeMode: 'none' });
+      await loadPasswordGroups();
+    } finally {
+      setPasswordGroupsSaving(false);
+    }
+  }, [loadPasswordGroups, notifyApiError]);
+
+  useEffect(() => () => {
+    const pending = passwordGroupPendingRef.current;
+    passwordGroupPendingRef.current = {};
+    Object.values(passwordGroupSaveTimersRef.current).forEach(clearTimeout);
+    passwordGroupSaveTimersRef.current = {};
+    Object.entries(pending).forEach(([groupId, payload]) => {
+      passwordsAPI.updateGroup(Number(groupId), payload).catch(() => {});
+    });
+  }, []);
+
   const handleUpdatePasswordGroup = useCallback(async (groupId, payload, options = {}) => {
     const autosave = Boolean(options?.autosave);
     setPasswordGroups((current) => current.map((item) => (
@@ -894,7 +929,20 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
         }
         : item
     )));
-    if (autosave) return true;
+    if (autosave) {
+      passwordGroupPendingRef.current[groupId] = payload;
+      clearTimeout(passwordGroupSaveTimersRef.current[groupId]);
+      passwordGroupSaveTimersRef.current[groupId] = setTimeout(() => {
+        const pending = passwordGroupPendingRef.current[groupId];
+        delete passwordGroupPendingRef.current[groupId];
+        delete passwordGroupSaveTimersRef.current[groupId];
+        if (pending) void persistPasswordGroupUpdate(groupId, pending);
+      }, 700);
+      return true;
+    }
+    clearTimeout(passwordGroupSaveTimersRef.current[groupId]);
+    delete passwordGroupSaveTimersRef.current[groupId];
+    delete passwordGroupPendingRef.current[groupId];
     setPasswordGroupsSaving(true);
     try {
       await passwordsAPI.updateGroup(groupId, payload);
@@ -908,7 +956,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     } finally {
       setPasswordGroupsSaving(false);
     }
-  }, [loadPasswordGroups, notifyApiError, notifySuccess]);
+  }, [loadPasswordGroups, notifyApiError, notifySuccess, persistPasswordGroupUpdate]);
 
   const handleArchivePasswordGroup = useCallback(async (group) => {
     if (!window.confirm(`Архивировать группу "${group?.name || ''}"?`)) return;
