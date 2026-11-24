@@ -20,10 +20,10 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 230,
+    "OPEN": 229,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
-    "FIXED": 38,
+    "FIXED": 39,
     "IN_PROGRESS": 2
   },
   "issues": [
@@ -4355,7 +4355,7 @@
       "id": "FE-0250",
       "severity": "Info",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "account",
       "page": null,
@@ -4363,10 +4363,11 @@
       "lines": "32-40",
       "title": "Аккаунт: test-only resolveAvailableSettingsTabs и избыточный adminOnlyFallback",
       "related": [],
-      "pr": null,
+      "pr": 38,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | test-only resolver+tab constants removed, mock-echo describe deleted",
+      "commit": "92c7413e"
     },
     {
       "id": "FE-0251",
