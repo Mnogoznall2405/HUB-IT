@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Accordion,
   AccordionDetails,
@@ -195,10 +195,16 @@ export default function FeedComposerDialog({
   const [existingAttachments, setExistingAttachments] = useState([]);
   const [coverAttachmentId, setCoverAttachmentId] = useState('');
   const [pendingDeleteAttachment, setPendingDeleteAttachment] = useState(null);
+  const formBaselineRef = useRef('');
+  const autosaveInFlightRef = useRef(false);
+  const autosavePendingRef = useRef(false);
+  const [autosaveTick, setAutosaveTick] = useState(0);
 
   useEffect(() => {
     if (!open) return;
-    setForm(normalizeForm(post));
+    const nextForm = normalizeForm(post);
+    formBaselineRef.current = JSON.stringify(nextForm);
+    setForm(nextForm);
     setCoverFile(null);
     setCoverPreview('');
     setFiles([]);
@@ -315,9 +321,16 @@ export default function FeedComposerDialog({
     ...extra,
   }), [form]);
 
+  const formDirty = JSON.stringify(form) !== formBaselineRef.current || files.length > 0 || Boolean(coverFile);
+
   useEffect(() => {
-    if (!open || saving || (editing && post?.status !== 'draft')) return undefined;
+    if (!open || saving || !formDirty || (editing && post?.status !== 'draft')) return undefined;
     const timeoutId = window.setTimeout(async () => {
+      if (autosaveInFlightRef.current) {
+        autosavePendingRef.current = true;
+        return;
+      }
+      autosaveInFlightRef.current = true;
       setAutosaveState('saving');
       try {
         if (draftId) {
@@ -329,10 +342,16 @@ export default function FeedComposerDialog({
         setAutosaveState('saved');
       } catch (error) {
         setAutosaveState('error');
+      } finally {
+        autosaveInFlightRef.current = false;
+        if (autosavePendingRef.current) {
+          autosavePendingRef.current = false;
+          setAutosaveTick((tick) => tick + 1);
+        }
       }
     }, 1500);
     return () => window.clearTimeout(timeoutId);
-  }, [buildPayload, draftId, editing, open, post?.status, saving]);
+  }, [autosaveTick, buildPayload, draftId, editing, formDirty, open, post?.status, saving]);
 
   const selectCover = (event) => {
     const file = event.target.files?.[0] || null;
