@@ -51,7 +51,9 @@ async function seedOneFile(page, stamp) {
 
 async function openMyFiles(page) {
   await page.goto('/my-files');
-  const firstAction = page.locator('[data-testid^="my-files-menu-file-"], [data-testid^="my-files-menu-folder-"]').first();
+  // Both tests assert file-action-group-* rows, which only exist on FILE menus;
+  // folder rows render before files, so a leftover folder must not win .first().
+  const firstAction = page.locator('[data-testid^="my-files-menu-file-"]').first();
   await expect(firstAction).toBeVisible({ timeout: 20_000 });
   return firstAction;
 }

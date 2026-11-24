@@ -91,6 +91,14 @@ async function seedFiles(page) {
     data: { is_favorite: true },
   });
   expect(patch.ok(), `favorite ${favorite.fileId}: ${patch.status()}`).toBe(true);
+
+  // Wait out server-side processing: while a file is «В очереди» its status
+  // chip sits inside the name cell and legitimately narrows the measured text
+  // width, making the readability assertions below racy.
+  await expect.poll(async () => {
+    const items = (await (await page.request.get('/api/v1/my-files')).json()).items || [];
+    return items.filter((item) => String(item.status || 'ready').toLowerCase() !== 'ready').length;
+  }, { timeout: 60_000, intervals: [1000, 2000, 5000] }).toBe(0);
 }
 
 // Everything worth knowing about the row geometry AND actual readability, in
@@ -134,7 +142,7 @@ async function measureRow(page) {
         iconsWidth: Math.round(svgs.reduce((a, s) => a + s.getBoundingClientRect().width, 0)),
       };
     }).filter(Boolean);
-    const headerRow = row.parentElement?.querySelector('[data-testid="my-files-sort-name"]')?.parentElement;
+    const headerRow = document.querySelector('[data-testid="my-files-sort-name"]')?.parentElement;
     const headerCols = headerRow
       ? getComputedStyle(headerRow).gridTemplateColumns.split(' ').map((v) => parseFloat(v))
       : [];
@@ -193,7 +201,7 @@ async function shot(page, name) {
 }
 
 test('name column keeps reading width at every sidebar/details combination', async ({ page }) => {
-  test.setTimeout(300_000);
+  test.setTimeout(420_000);
   await login(page);
   await seedFiles(page);
   await mkdir(OUT_DIR, { recursive: true });

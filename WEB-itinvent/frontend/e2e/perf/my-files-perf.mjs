@@ -170,9 +170,12 @@ async function seed(base, seedOut) {
   });
   console.log(`seed: library tree ${chain.length} deep + ${spread.length} spread`);
 
-  // Table-size folders.
+  // Table-size folders. PERF_TABLE_SIZES widens the default set (e.g. adds
+  // 5000 for virtualization checks); the run side reads the same env var.
+  const tableSizes = (process.env.PERF_TABLE_SIZES || '10,100,500,1000')
+    .split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => n > 0);
   const tableFolders = {};
-  for (const n of [10, 100, 500, 1000]) {
+  for (const n of tableSizes) {
     const folder = await post('/api/v1/my-files/folders', { name: `perf-f${n}-${stamp}`, parent_id: null });
     const kinds = ['txt', 'md', 'csv', 'json', 'log'];
     await pool(Array.from({ length: n }, (_, i) => i), 8, async (i) => {
@@ -211,7 +214,7 @@ async function seed(base, seedOut) {
 // -------------------------------------------------------------- runner ----
 
 const INIT_SCRIPT = `
-  window.__perf = { commits: 0, longtasks: [], api: [], marks: {}, muts: [], mark(name) {
+  window.__perf = { commits: 0, commitLog: [], longtasks: [], api: [], marks: {}, muts: [], mark(name) {
     this.marks[name] = performance.now(); this.muts = [];
   }, probe(name) {
     const t = this.marks[name] || 0;
@@ -220,7 +223,7 @@ const INIT_SCRIPT = `
       mutations: this.muts.length };
   } };
   const hook = { checkDCE() {}, supportsFiber: true, inject: () => 1,
-    onCommitFiberRoot() { window.__perf.commits += 1; },
+    onCommitFiberRoot() { window.__perf.commits += 1; window.__perf.commitLog.push(performance.now()); },
     onCommitFiberUnmount() {}, onScheduleFiberRoot() {} };
   Object.defineProperty(window, '__REACT_DEVTOOLS_GLOBAL_HOOK__', { value: hook });
   new PerformanceObserver((list) => list.getEntries()
@@ -228,7 +231,7 @@ const INIT_SCRIPT = `
     .observe({ entryTypes: ['longtask'] });
   new PerformanceObserver((list) => list.getEntries().forEach((e) => {
     if (e.name.includes('/api/')) {
-      window.__perf.api.push({ n: e.name.slice(e.name.indexOf('/api/'), e.name.indexOf('/api/') + 90), d: e.duration, t: e.transferSize || 0 });
+      window.__perf.api.push({ n: e.name.slice(e.name.indexOf('/api/'), e.name.indexOf('/api/') + 90), d: e.duration, t: e.transferSize || 0, s: e.startTime });
     }
   })).observe({ entryTypes: ['resource'] });
   new MutationObserver((list) => {
@@ -291,7 +294,13 @@ async function measure(page, name, act, readyLocator, { settleMs = 120 } = {}) {
 async function loginPage(context, base) {
   const page = await context.newPage();
   await page.goto(`${base}/login`);
+  // The login page may default to the SSO method card when the backend
+  // advertises windows_sso_enabled — pick the password method first.
   const form = page.getByTestId('password-auth-form');
+  if (!(await form.isVisible().catch(() => false))) {
+    await page.getByRole('button', { name: /логином и паролем|password/i }).first().click();
+  }
+  await form.waitFor({ state: 'visible', timeout: 15_000 });
   await form.locator('input[name="username"]').fill(USERNAME);
   await form.locator('input[name="password"]').fill(PASSWORD);
   await form.getByRole('button', { name: 'Войти', exact: true }).click();
@@ -459,6 +468,10 @@ async function run(base, label, seedFile, runs) {
     await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
     await page.goto(`${base}/login`);
     const form = page.getByTestId('password-auth-form');
+    if (!(await form.isVisible().catch(() => false))) {
+      await page.getByRole('button', { name: /логином и паролем|password/i }).first().click();
+    }
+    await form.waitFor({ state: 'visible', timeout: 15_000 });
     await form.locator('input[name="username"]').fill(USERNAME);
     await form.locator('input[name="password"]').fill(PASSWORD);
     await form.getByRole('button', { name: 'Войти', exact: true }).click();
@@ -547,7 +560,9 @@ async function run(base, label, seedFile, runs) {
   }
 
   // ---- C: table sizes ------------------------------------------------------
-  for (const n of [10, 100, 500, 1000]) {
+  const tableSizes = (process.env.PERF_TABLE_SIZES || '10,100,500,1000')
+    .split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => seed.tableFolders[n]);
+  for (const n of tableSizes) {
     const fid = seed.tableFolders[n];
     for (let i = 0; i < (blockOn('table_') ? runs : 0); i += 1) {
       await goMyFiles(page, base);
@@ -574,7 +589,8 @@ async function run(base, label, seedFile, runs) {
     }
   }
 
-  // Show-more expansion inside the 1000 folder (render chunks of 200).
+  // Scroll-to-bottom inside the 1000 folder. Legacy builds expand 200-row
+  // chunks via «Показать ещё»; the virtualized build mounts rows on scroll.
   for (let i = 0; i < (blockOn('table_') ? runs : 0); i += 1) {
     await goMyFiles(page, base, seed.tableFolders[1000]);
     const more = page.getByRole('button', { name: /Показать ещё/ }).first();
@@ -583,6 +599,13 @@ async function run(base, label, seedFile, runs) {
       await timed(page, 'table_show_more', i, () => more.click(), null, { settleMs: 200 });
       emit('table_show_more', 'rows_before', before, 'count', i);
       emit('table_show_more', 'rows_after', await page.locator(ROW_SEL).count(), 'count', i);
+    } else {
+      await timed(page, 'table_scroll_bottom', i,
+        () => page.evaluate(() => window.scrollTo(0, document.scrollingElement.scrollHeight)),
+        null, { settleMs: 250 });
+      emit('table_scroll_bottom', 'rows_dom', await page.locator(ROW_SEL).count(), 'count', i);
+      const bottomSpacer = await page.locator('[data-testid="my-files-rows-spacer-bottom"]').count();
+      emit('table_scroll_bottom', 'reached_end', bottomSpacer === 0 ? 1 : 0, 'bool', i);
     }
   }
 
@@ -596,7 +619,8 @@ async function run(base, label, seedFile, runs) {
     emit('table_sort', 'order_changed', (await page.locator(ROW_SEL).first().textContent()) !== firstName ? 1 : 0, 'bool', i);
   }
 
-  // Scroll FPS in the 1000 folder, all chunks expanded.
+  // Scroll FPS in the 1000 folder. Legacy builds expand all 200-row chunks
+  // first; the virtualized build mounts rows as the document scrolls.
   for (let i = 0; i < (blockOn('table_') ? runs : 0); i += 1) {
     await goMyFiles(page, base, seed.tableFolders[1000]);
     const more = page.getByRole('button', { name: /Показать ещё/ }).first();
@@ -604,6 +628,11 @@ async function run(base, label, seedFile, runs) {
       await more.click();
       await page.waitForTimeout(250);
     }
+    // One full pass so every thumbnail/lazy piece has mounted at least once.
+    await page.evaluate(() => window.scrollTo(0, document.scrollingElement.scrollHeight));
+    await page.waitForTimeout(200);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(100);
     const scroller = '[data-testid="main-layout-content"], main [class*="MuiBox"], main';
     const stats = await page.evaluate(async (sel) => {
       const candidates = [...document.querySelectorAll(sel)].filter((el) => el.scrollHeight > el.clientHeight + 200);
@@ -612,6 +641,8 @@ async function run(base, label, seedFile, runs) {
           ? document.scrollingElement : null);
       if (!sc) return { fps: -1, frames: 0 };
       window.__perf.longtasks.length = 0;
+      const commits0 = window.__perf.commits;
+      const muts0 = window.__perf.muts.length;
       let frames = 0; let worst = 0; let prev = performance.now();
       const t0 = prev;
       await new Promise((resolve) => {
@@ -625,12 +656,76 @@ async function run(base, label, seedFile, runs) {
       });
       return { fps: frames / ((performance.now() - t0) / 1000), frames, worst: Math.round(worst),
         lt: window.__perf.longtasks.splice(0).reduce((s, d) => s + d, 0),
+        commits: window.__perf.commits - commits0,
+        muts: window.__perf.muts.length - muts0,
         rows: document.querySelectorAll('[data-testid^="my-files-card-"]').length };
     }, scroller);
     emit('table_scroll_1000', 'fps', stats.fps, 'fps', i);
     emit('table_scroll_1000', 'worst_frame', stats.worst, 'ms', i);
     emit('table_scroll_1000', 'longtask_ms', Math.round(stats.lt), 'ms', i);
+    emit('table_scroll_1000', 'commits', stats.commits, 'count', i);
+    emit('table_scroll_1000', 'mutations', stats.muts, 'count', i);
     emit('table_scroll_1000', 'rows_dom', stats.rows, 'count', i);
+
+    // Scroll-mode variants on the same 1000 folder: slow wheel-like drift,
+    // fast swipe, and a scrollbar-drag jump start->end. Each measures the same
+    // fps/worst/commits trio so regressions are attributable per mode.
+    const modes = [
+      ['scroll_slow', 40, 2500],
+      ['scroll_fast', 500, 1500],
+    ];
+    for (const [name, stepPx, durMs] of modes) {
+      const m = await page.evaluate(async ({ sel, stepPx, durMs }) => {
+        const candidates = [...document.querySelectorAll(sel)].filter((el) => el.scrollHeight > el.clientHeight + 200);
+        const sc = candidates[0] || document.scrollingElement;
+        if (!sc) return { fps: -1 };
+        sc.scrollTop = 0;
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        window.__perf.longtasks.length = 0;
+        const commits0 = window.__perf.commits;
+        let frames = 0; let worst = 0; let prev = performance.now();
+        const t0 = prev;
+        await new Promise((resolve) => {
+          const step = (t) => {
+            const dt = t - prev; prev = t;
+            worst = Math.max(worst, dt); frames += 1;
+            sc.scrollTop = (sc.scrollTop + stepPx) % Math.max(1, sc.scrollHeight - sc.clientHeight);
+            if (t - t0 < durMs) requestAnimationFrame(step); else resolve();
+          };
+          requestAnimationFrame(step);
+        });
+        return { fps: frames / ((performance.now() - t0) / 1000), worst: Math.round(worst),
+          lt: window.__perf.longtasks.splice(0).reduce((s, d) => s + d, 0),
+          commits: window.__perf.commits - commits0 };
+      }, { sel: scroller, stepPx, durMs });
+      emit(name, 'fps', m.fps, 'fps', i);
+      emit(name, 'worst_frame', m.worst, 'ms', i);
+      emit(name, 'longtask_ms', Math.round(m.lt), 'ms', i);
+      emit(name, 'commits', m.commits, 'count', i);
+    }
+
+    const jump = await page.evaluate(async (sel) => {
+      const candidates = [...document.querySelectorAll(sel)].filter((el) => el.scrollHeight > el.clientHeight + 200);
+      const sc = candidates[0] || document.scrollingElement;
+      sc.scrollTop = 0;
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const commits0 = window.__perf.commits;
+      const t0 = performance.now();
+      sc.scrollTop = sc.scrollHeight - sc.clientHeight;
+      // Time until the last row is mounted (blank-window latency).
+      const lastRow = () => {
+        const rows = document.querySelectorAll('[data-testid^="my-files-card-"], [data-testid^="my-files-folder-"]');
+        return rows.length ? rows[rows.length - 1].getBoundingClientRect().top < innerHeight : false;
+      };
+      let settled = -1;
+      await new Promise((resolve) => {
+        const chk = () => { if (lastRow()) { settled = performance.now() - t0; resolve(); } else if (performance.now() - t0 > 3000) resolve(); else requestAnimationFrame(chk); };
+        requestAnimationFrame(chk);
+      });
+      return { settled: Math.round(settled), commits: window.__perf.commits - commits0 };
+    }, scroller);
+    emit('scroll_jump_end', 'settled_dom', jump.settled, 'ms', i);
+    emit('scroll_jump_end', 'commits', jump.commits, 'count', i);
   }
 
   // Selection latency + select-all + view toggle in the 100 folder.
@@ -683,11 +778,14 @@ async function run(base, label, seedFile, runs) {
     await goMyFiles(page, base, seed.tableFolders[100]);
     const rows = page.locator('[data-testid^="my-files-card-"]:not([data-testid^="my-files-card-menu-"])');
     const firstRow = rows.first();
-    const lastRow = rows.nth((await rows.count()) - 1);
     // Right-click opens the shared FileActionsContextMenu in BOTH builds (the
     // baseline has no visible ⋮ — its action column is hover-reveal icons).
     await timed(page, 'menu_open_first', i, () => firstRow.click({ button: 'right' }), page.locator(MENU_SEL).first());
     await page.keyboard.press('Escape');
+    // Scroll to the list end so the last item is mounted (window virtualization).
+    await page.evaluate(() => window.scrollTo(0, document.scrollingElement.scrollHeight));
+    await page.waitForTimeout(150);
+    const lastRow = rows.nth((await rows.count()) - 1);
     await timed(page, 'menu_open_last', i, () => lastRow.click({ button: 'right' }), page.locator(MENU_SEL).first());
     // Group flyout — PR #18 feature; on the flat baseline menu there is no
     // group row, so record -1 instead of failing the whole run. Runs while the
@@ -797,7 +895,8 @@ async function run(base, label, seedFile, runs) {
   {
     await goMyFiles(page, base);
     const heaps = [];
-    for (let i = 0; i < (blockOn('memory_') ? 12 : 0); i += 1) {
+    const memCycles = Number(process.env.PERF_MEM_CYCLES || '12');
+    for (let i = 0; i < (blockOn('memory_') ? memCycles : 0); i += 1) {
       await page.locator(`[data-testid="my-files-folder-${seed.tableFolders[10]}"]`).first().click();
       await page.locator(ROW_SEL).first().waitFor({ state: 'visible' });
       await page.goBack();

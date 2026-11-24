@@ -14,18 +14,33 @@ import { getFileExtension } from '../../lib/myFilesPreview';
 export const READY_STATUSES = new Set(['ready']);
 export const ACTIVE_PROCESSING_STATUSES = new Set(['uploading', 'queued', 'scanning', 'processing']);
 
+// Shared Intl formatters: instantiating DateTimeFormat per row render was a
+// measurable per-row cost on large listings.
+const DATE_TIME_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+const DATE_SHORT_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+});
+
 export const formatDateTime = (value) => {
   const text = String(value || '').trim();
   if (!text) return '-';
   const parsed = new Date(text);
   if (Number.isNaN(parsed.getTime())) return text;
-  return parsed.toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return DATE_TIME_FORMATTER.format(parsed);
+};
+
+export const formatDateShort = (value) => {
+  const parsed = new Date(String(value || ''));
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return DATE_SHORT_FORMATTER.format(parsed);
 };
 
 export const FILE_TYPE_META = {
@@ -117,9 +132,16 @@ export const QUICK_ACTIONS_OVERLAY_SX = {
   '@media (hover: none)': { display: 'none' },
 };
 
+// Fixed list row height — shared by the row components (they enforce it) and
+// by the window-scroll virtualizer (its spacer math relies on it).
+export const MY_FILES_ROW_HEIGHT = 50;
+// Fixed grid card heights for the same reason (thumb 110px + text block).
+export const MY_FILES_FILE_CARD_HEIGHT = 186;
+export const MY_FILES_FOLDER_CARD_HEIGHT = 56;
+
 export const VIRTUALIZED_ROW_SX = {
   contentVisibility: 'auto',
-  containIntrinsicSize: '0 50px',
+  containIntrinsicSize: `0 ${MY_FILES_ROW_HEIGHT}px`,
 };
 
 export const VIRTUALIZED_CARD_SX = {

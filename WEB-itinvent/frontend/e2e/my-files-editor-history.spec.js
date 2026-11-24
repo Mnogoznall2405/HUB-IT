@@ -12,7 +12,7 @@ const configFor = (state, viewer = false) => ({ can_view_history: true, role: 'o
 async function setup(page, state = {}) {
   state.calls = [];
   await page.route('**/e2e/fixtures/office-sdk/web-apps/apps/api/documents/api.js', route => route.fulfill({ path: sdkPath, contentType: 'text/javascript' }));
-  await page.route('**/my-files/recovery-file/office/config', route => route.fulfill({ json: configFor(state) }));
+  await page.route('**/my-files/recovery-file/office/config*', route => route.fulfill({ json: configFor(state) }));
   await page.route('**/my-files/recovery-file/office/history**', async route => {
     const path = new URL(route.request().url()).pathname;
     state.calls.push(path);
