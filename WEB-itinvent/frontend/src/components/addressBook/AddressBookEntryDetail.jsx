@@ -99,6 +99,9 @@ export default function AddressBookEntryDetail({
   primaryActionsInFooter = false,
   // Табельный номер, код подразделения and the separate «Отчество» field are not shown to the base (viewer) role.
   showStaffIdentifiers = false,
+  // Shared global absences payload from useDocflowAbsenceMarks — the per-employee
+  // panel derives its view from it instead of issuing a second 1C request.
+  absencesShared = null,
 }) {
   const theme = useTheme();
 
@@ -473,7 +476,7 @@ export default function AddressBookEntryDetail({
             </Stack>
           </Stack>
         ) : null}
-        {!dismissed ? <DocflowAbsencesPanel employee employeeCode={item.employee_code || ''} /> : null}
+        {!dismissed ? <DocflowAbsencesPanel employee employeeCode={item.employee_code || ''} shared={absencesShared} /> : null}
       </Stack>
     </Box>
   );

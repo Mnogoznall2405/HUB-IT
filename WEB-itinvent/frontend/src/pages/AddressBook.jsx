@@ -175,7 +175,7 @@ const AddressBook = () => {
   const [listMode, setListMode] = useState('all');
   const [modeCodes, setModeCodes] = useState([]);
   const [rawItems, setItems] = useState([]);
-  const { decorate: decorateAbsences, refresh: refreshAbsenceMarks, status: absenceMarksStatus } = useDocflowAbsenceMarks({
+  const { decorate: decorateAbsences, refresh: refreshAbsenceMarks, status: absenceMarksStatus, shared: absencesShared } = useDocflowAbsenceMarks({
     userKey,
     enabled: Boolean(user?.id && !dismissed && hasPermission('docflow.read') && hasPermission('address_book.read')),
   });
@@ -965,6 +965,7 @@ const AddressBook = () => {
                     chatBusy={Boolean(chatBusyEntryKey)}
                     isFavorite={selectedIsFavorite}
                     showStaffIdentifiers={canSeeStaffIdentifiers}
+                    absencesShared={absencesShared}
                     onToggleFavorite={dismissed ? undefined : handleToggleFavorite}
                   />
                 ) : (

@@ -13,7 +13,7 @@ export default function useDocflowAbsenceMarks({ userKey, enabled }) {
     const controller = new AbortController();
     setState({ userKey, status: 'loading' });
     docflowAPI.listAbsences({ signal: controller.signal }).then((data) => {
-      if (active) setState({ userKey, status: data?.status, items: data?.items });
+      if (active) setState({ userKey, status: data?.status, items: data?.items, data });
     }).catch((error) => {
       if (active) setState({ userKey, status: error?.response?.data?.detail?.code === 'DOCFLOW_CREDENTIALS_REQUIRED' ? 'credentials' : 'error' });
     });
@@ -45,5 +45,10 @@ export default function useDocflowAbsenceMarks({ userKey, enabled }) {
     if (item.docflow_absences) return { ...item, docflow_absences: EMPTY };
     return item;
   }, [byEmployee]);
-  return { decorate, refresh, status: current?.status };
+  // The global absences payload also serves the per-employee panel (backend filters
+  // employee_code over the same list) — sharing it avoids a second slow 1C read.
+  const shared = useMemo(() => (
+    enabled && current ? { status: current.status, data: current.data || null, refresh } : null
+  ), [enabled, current, refresh]);
+  return { decorate, refresh, status: current?.status, shared };
 }
