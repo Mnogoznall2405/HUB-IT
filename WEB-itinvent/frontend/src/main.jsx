@@ -12,6 +12,7 @@ import {
   storePwaInstallPrompt,
 } from './lib/pwaInstall'
 import { tryRecoverChunkLoad } from './lib/routeChunkRecovery'
+import { bindGlobalErrorReporting } from './lib/clientErrorReporting'
 import { initializeDesktopBridge } from './lib/desktopBridge'
 import './index.css'
 
@@ -31,6 +32,8 @@ const needsMyFilesGrantHardReload = () => {
     return false;
   }
 };
+
+bindGlobalErrorReporting();
 
 window.addEventListener('vite:preloadError', (event) => {
   event.preventDefault();

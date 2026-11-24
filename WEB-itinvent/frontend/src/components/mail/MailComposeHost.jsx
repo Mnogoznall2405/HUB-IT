@@ -128,6 +128,10 @@ export default function MailComposeHost({
   const composeFlushHandlerRef = useRef(null);
   const closeFlowLockRef = useRef(false);
   const inlinePreviewUrlsRef = useRef(new Set());
+  // cid → blob: preview уже загруженных в черновик inline-файлов. Нельзя терять:
+  // Quill-DOM продолжает ссылаться на blob: и маппинг нужен для обратной
+  // подмены cid: → preview при повторном открытии/рендере редактора (FE-0215).
+  const uploadedInlinePreviewRef = useRef({});
   const debouncedComposeToSearch = useDebounce(composeToSearch, 400);
 
   useEffect(() => {
@@ -139,6 +143,7 @@ export default function MailComposeHost({
       }
       inlinePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL?.(url));
       inlinePreviewUrlsRef.current.clear();
+      uploadedInlinePreviewRef.current = {};
     };
   }, []);
 
@@ -154,6 +159,7 @@ export default function MailComposeHost({
     }
     inlinePreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL?.(url));
     inlinePreviewUrlsRef.current.clear();
+    uploadedInlinePreviewRef.current = {};
     setComposeState(nextState);
     setComposeToSearch('');
     composeIdempotencyKeyRef.current = '';
@@ -321,20 +327,15 @@ export default function MailComposeHost({
       const source = String(attachment?.inline_src || attachment?.inline_data_url || '');
       if (contentId && source) sources[contentId] = source;
     });
+    Object.entries(uploadedInlinePreviewRef.current || {}).forEach(([contentId, source]) => {
+      if (contentId && source) sources[contentId] = source;
+    });
     composeState.composeInlineFiles.forEach((item) => {
       const contentId = normalizeContentId(item?.contentId);
       if (contentId && item?.previewUrl) sources[contentId] = item.previewUrl;
     });
     return sources;
   }, [composeState.composeDraftAttachments, composeState.composeInlineFiles]);
-
-  const releaseInlinePreviewUrls = useCallback((urls) => {
-    (Array.isArray(urls) ? urls : [urls]).forEach((url) => {
-      if (!url || !inlinePreviewUrlsRef.current.has(url)) return;
-      inlinePreviewUrlsRef.current.delete(url);
-      URL.revokeObjectURL?.(url);
-    });
-  }, []);
 
   const handlePasteInlineImages = useCallback((files) => {
     const descriptors = (Array.isArray(files) ? files : Array.from(files || [])).map((file) => {
@@ -568,14 +569,20 @@ export default function MailComposeHost({
               ), { markDirty: false });
             },
           });
-          // Uploaded inline files leave the state below; their blob URLs would
-          // otherwise sit in inlinePreviewUrlsRef until the composer unmounts.
+          // Uploaded inline files leave the state below; their blob URLs stay
+          // alive (revoked only on unmount/reset) because the Quill DOM and the
+          // cid → preview mapping keep referencing them (FE-0215).
           if (draftSaveAbortRef.current === saveController) {
             draftSaveAbortRef.current = null;
           }
-          const uploadedInlinePreviewUrls = shouldIncludeFiles
-            ? state.composeInlineFiles.map((item) => item?.previewUrl).filter(Boolean)
-            : [];
+          if (shouldIncludeFiles) {
+            state.composeInlineFiles.forEach((item) => {
+              const contentId = normalizeContentId(item?.contentId);
+              if (contentId && item?.previewUrl) {
+                uploadedInlinePreviewRef.current[contentId] = item.previewUrl;
+              }
+            });
+          }
           patchComposeState((current) => ({
             composeDraftId: String(data?.draft_id || current.composeDraftId || ''),
             composeDraftAttachments: Array.isArray(data?.attachments) ? data.attachments : current.composeDraftAttachments,
@@ -589,7 +596,6 @@ export default function MailComposeHost({
             draftSyncState: 'synced',
             composeUploadProgress: 0,
           }), { markDirty: false });
-          releaseInlinePreviewUrls(uploadedInlinePreviewUrls);
           clearStoredComposeDraft();
           lastResult = data;
         } catch (requestError) {
@@ -614,7 +620,7 @@ export default function MailComposeHost({
     });
     draftSaveInFlightRef.current = pending;
     return pending;
-  }, [clearStoredComposeDraft, patchComposeState, persistLocalComposeDraft, releaseInlinePreviewUrls, resolveComposeMailboxId]);
+  }, [clearStoredComposeDraft, patchComposeState, persistLocalComposeDraft, resolveComposeMailboxId]);
 
   const discardComposeDraft = useCallback(async (state) => {
     if (state?.composeDraftId) {

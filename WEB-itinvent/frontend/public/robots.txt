@@ -1,0 +1,3 @@
+# HUB-IT is an authenticated internal portal; keep all routes out of indexes.
+User-agent: *
+Disallow: /
