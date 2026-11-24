@@ -1976,7 +1976,7 @@ function Login() {
                   <button
                     type="button"
                     onClick={() => setShowPassword((prev) => !prev)}
-                    aria-label="toggle password visibility"
+                    aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
                     className="login-field-eye rounded-full p-1 text-white/72 transition hover:text-white"
                   >
                     <EyeGlyph open={showPassword} className="h-5 w-5" />

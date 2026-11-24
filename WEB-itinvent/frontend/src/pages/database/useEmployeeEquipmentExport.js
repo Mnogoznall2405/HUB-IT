@@ -49,7 +49,8 @@ export default function useEmployeeEquipmentExport({
           movements = Array.isArray(data?.items) ? data.items : [];
         } catch (err) {
           console.warn('Failed to load movements for export:', err);
-          movements = [];
+          setExportError('Не удалось загрузить перемещения для экспорта. Откройте вкладку «Перемещения» и повторите.');
+          return;
         }
       }
       await exportEmployeeEquipmentWorkbook({

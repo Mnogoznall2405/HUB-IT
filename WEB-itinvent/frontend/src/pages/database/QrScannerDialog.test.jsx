@@ -29,7 +29,7 @@ describe('QrScannerDialog', () => {
 
     render(<QrScannerDialog open onClose={onClose} />);
 
-    fireEvent.click(screen.getByLabelText('close'));
+    fireEvent.click(screen.getByLabelText('Закрыть сканер'));
     fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
 
     expect(onClose).toHaveBeenCalledTimes(2);

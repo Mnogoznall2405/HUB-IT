@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { databaseAPI } from '../../api/database';
 import { normalizeDbId } from './databaseRecordModel';
@@ -8,6 +8,8 @@ export function useDatabaseSelection({ notifyDatabaseError } = {}) {
   const [databases, setDatabases] = useState([]);
   const [currentDb, setCurrentDb] = useState(null);
   const [databaseReady, setDatabaseReady] = useState(false);
+  const [dbSwitching, setDbSwitching] = useState(false);
+  const dbSwitchingRef = useRef(false);
 
   const loadDbName = useCallback(async ({ isMounted = () => true } = {}) => {
     let dbId = normalizeDbId(localStorage.getItem('selected_database'));
@@ -80,8 +82,10 @@ export function useDatabaseSelection({ notifyDatabaseError } = {}) {
     const newDbId = normalizeDbId(event.target.value);
     const selectedDb = databases.find((db) => normalizeDbId(db.id) === newDbId);
     const previousDbId = normalizeDbId(dbName || currentDb?.id || localStorage.getItem('selected_database') || '');
-    if (!newDbId || newDbId === previousDbId) return;
+    if (!newDbId || newDbId === previousDbId || dbSwitchingRef.current) return;
 
+    dbSwitchingRef.current = true;
+    setDbSwitching(true);
     try {
       const result = await databaseAPI.switchDatabase(newDbId);
       const selectedId = normalizeDbId(result?.database?.id || selectedDb?.id || newDbId);
@@ -95,7 +99,10 @@ export function useDatabaseSelection({ notifyDatabaseError } = {}) {
     } catch (error) {
       console.error('Error switching database:', error);
       notifyDatabaseError?.(error?.response?.data?.detail || 'Ошибка при переключении базы данных.');
-      setDbName(previousDbId);
+      setDbName(normalizeDbId(localStorage.getItem('selected_database') || previousDbId));
+    } finally {
+      dbSwitchingRef.current = false;
+      setDbSwitching(false);
     }
   }, [currentDb?.id, databases, dbName, notifyDatabaseError]);
 
@@ -104,6 +111,7 @@ export function useDatabaseSelection({ notifyDatabaseError } = {}) {
     databases,
     currentDb,
     databaseReady,
+    dbSwitching,
     selectedDatabaseName,
     handleDatabaseSelectChange,
   };

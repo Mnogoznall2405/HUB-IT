@@ -128,6 +128,7 @@ export function useDatabaseListController({
     getDbCacheScope,
     setFilteredData,
     staleTimeMs: DATABASE_SWR_STALE_TIME_MS,
+    notifyDatabaseError,
   });
   const {
     initialLoading,
