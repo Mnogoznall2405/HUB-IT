@@ -1,6 +1,7 @@
 """A8c2/P1: async summary upgrade — incremental LLM checkpoint, durability, CAS."""
 import importlib
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -884,6 +885,55 @@ def test_lease_renewal_blocks_second_worker(env, monkeypatch):
     )
     assert outcome["outcome"] == "done"
     assert results and all(r == "lease_busy" for r in results)
+    assert int(_mapping(env, conv, 7).summary_llm_until_seq) == 60
+
+
+def test_lease_held_while_single_llm_call_outlives_it(env, monkeypatch):
+    """A8 blocker: chunk-level renewal cannot fire INSIDE one summarize().
+
+    Worker A is inside a call that outlives the lease window; worker B
+    attempts the claim only AFTER expiry — it must still see lease_busy and
+    never pay for a second LLM call. Without the per-call heartbeat this
+    test steals the lease (pre-fix reproduction)."""
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_LEASE_SEC", 0.4)
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=60)
+    # One chunk only: no renewal opportunity between calls.
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_BATCH", 60)
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_BATCH_TOKENS", 10**9)
+
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def _blocking(base, lines, model=None):
+        calls.append(len(lines))
+        entered.set()
+        release.wait(10)
+        return "S", {}
+
+    monkeypatch.setattr(svc.smart_memory, "summarize", _blocking)
+
+    outcome_a = []
+    worker_a = threading.Thread(
+        target=lambda: outcome_a.append(
+            svc.ai_chat_service._upgrade_conversation_summary(
+                conversation_id=conv, user_id=7, reset_seq=0,
+            )
+        ),
+        daemon=True,
+    )
+    worker_a.start()
+    assert entered.wait(10), "worker A never entered the LLM call"
+    time.sleep(0.7)  # past the lease — B attempts a live steal mid-call
+    outcome_b = svc.ai_chat_service._upgrade_conversation_summary(
+        conversation_id=conv, user_id=7, reset_seq=0,
+    )
+    release.set()
+    worker_a.join(15)
+
+    assert str(outcome_b["outcome"]) == "lease_busy"
+    assert outcome_a and outcome_a[0]["outcome"] == "done"
+    assert calls == [60]  # exactly one paid LLM call
     assert int(_mapping(env, conv, 7).summary_llm_until_seq) == 60
 
 

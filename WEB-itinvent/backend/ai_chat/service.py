@@ -3073,6 +3073,67 @@ def _conversation_title_from_prompt(value: object) -> str:
     return f"{shortened or text[:77]}…"
 
 
+def _summary_lease_heartbeat(
+    conversation_id: str,
+    user_id: int,
+    reset_seq: int,
+    stop: threading.Event,
+) -> None:
+    """Bump ``updated_at`` every LEASE/3 while one LLM call is in-flight.
+
+    A single ``smart_memory.summarize`` may outlive the lease window
+    (per-request socket timeout × transient-retry wall budget). Without a
+    heartbeat a second AI worker would claim the row mid-call and pay for a
+    duplicate LLM request. The update stays conditioned on our reset epoch.
+    """
+    interval = max(0.05, AI_SUMMARY_UPGRADE_LEASE_SEC / 3.0)
+    while not stop.wait(interval):
+        try:
+            with app_session() as hb_db:
+                hb_db.execute(
+                    update(AppAiBotConversation)
+                    .where(
+                        AppAiBotConversation.conversation_id == conversation_id,
+                        AppAiBotConversation.user_id == int(user_id),
+                        AppAiBotConversation.context_reset_seq == int(reset_seq),
+                    )
+                    .values(updated_at=_utc_now())
+                    .execution_options(synchronize_session=False)
+                )
+        except Exception:
+            continue
+
+
+def _summarize_with_lease_hold(
+    cur_text: str,
+    lines: list[str],
+    *,
+    conversation_id: str,
+    user_id: int,
+    reset_seq: int,
+    model: str,
+):
+    """Run one summarize() while a daemon thread holds the cross-process lease.
+
+    Covers the exact gap chunk-level renewal cannot: renewal between chunks
+    does not fire while a single call is still running. The heartbeat thread
+    is bounded to this call only (daemon + joined), never outlives the job.
+    """
+    stop = threading.Event()
+    heartbeat = threading.Thread(
+        target=_summary_lease_heartbeat,
+        args=(conversation_id, int(user_id), int(reset_seq), stop),
+        daemon=True,
+        name="ai-summary-lease-hb",
+    )
+    heartbeat.start()
+    try:
+        return smart_memory.summarize(cur_text, lines, model=model)
+    finally:
+        stop.set()
+        heartbeat.join(timeout=2.0)
+
+
 @dataclass(slots=True)
 class AiConversationRuntime:
     bot: AppAiBot
@@ -5289,8 +5350,11 @@ class AiChatService:
                             )
                         last_lease_touch = time.monotonic()
                     try:
-                        new_text, usage = smart_memory.summarize(
-                            cur_text, lines, model=memory_model,
+                        new_text, usage = _summarize_with_lease_hold(
+                            cur_text, lines,
+                            conversation_id=normalized_conversation_id,
+                            user_id=int(user_id), reset_seq=int(reset_seq),
+                            model=memory_model,
                         )
                     except Exception:
                         # Count the partial spend before propagating — a
