@@ -190,6 +190,7 @@ const DRAWER_WIDTH_CSS_VAR = 'var(--app-density-drawer-width)';
 const DRAWER_RAIL_WIDTH = 68;
 const HUB_POLL_INTERVAL_MS = 20_000;
 const HUB_REALTIME_RECONCILE_INTERVAL_MS = 120_000;
+const HUB_REALTIME_CONNECT_REFRESH_MIN_AGE_MS = 15_000;
 const PWA_BADGE_POLL_INTERVAL_MS = 60_000;
 const SIDEBAR_COLLAPSED_KEY = 'sidebar_collapsed';
 const SIDEBAR_PINNED_KEY = 'sidebar_pinned';
@@ -1699,7 +1700,10 @@ useEffect(() => {
       }, 0);
     };
     const handleConnected = () => {
-      if (hasHubNotificationPermission) {
+      // The mount-time forceFull poll just fetched the same data — skip the duplicate
+      // when it finished recently; reconnects after an outage still refresh.
+      const lastSuccessAt = Number(hubPollLastSuccessAtRef.current || 0);
+      if (hasHubNotificationPermission && Date.now() - lastSuccessAt > HUB_REALTIME_CONNECT_REFRESH_MIN_AGE_MS) {
         scheduleRefresh({ forceFull: true, enableToasts: false });
       }
       scheduleMailRefresh('hub-realtime-connected');

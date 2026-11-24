@@ -11,8 +11,8 @@ const mocks = vi.hoisted(() => ({
   savePreferences: vi.fn(),
 }));
 
-vi.mock('../api/client', () => ({
-  hubAPI: {
+vi.mock('../api/hubDashboard', () => ({
+  hubDashboardAPI: {
     getDashboard: (...args) => mocks.getDashboard(...args),
   },
 }));
@@ -460,15 +460,14 @@ describe('Dashboard today page', () => {
     });
   });
 
-  it('shows a stale warning in the attention section instead of a false calm state when the hub load fails', async () => {
+  it('shows a single error alert and no false calm state when the hub load fails', async () => {
     mocks.getDashboard.mockReset();
     mocks.getDashboard.mockRejectedValue(new Error('hub down'));
     renderDashboard();
 
-    const attention = await screen.findByTestId('dashboard-section-attention');
-    await waitFor(() => expect(attention).toHaveAttribute('data-state', 'error'));
-    expect(within(attention).getByText('Не удалось проверить события, требующие внимания. Повторите загрузку главной страницы.')).toBeInTheDocument();
-    expect(within(attention).queryByText('Всё спокойно')).toBeNull();
+    expect(await screen.findByText('hub down')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId('dashboard-section-attention')).toBeNull());
+    expect(screen.queryByText('Всё спокойно')).toBeNull();
 
     mocks.getDashboard.mockResolvedValue({
       announcements: { items: [], total: 0 },
