@@ -745,7 +745,7 @@
       "id": "FE-0041",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "shared-links",
       "page": null,
@@ -753,10 +753,11 @@
       "lines": "576-579",
       "title": "SharedFile: ежесекундный setNowMs безусловно",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "671375ca",
+      "pr": 56
     },
     {
       "id": "FE-0042",
@@ -1696,7 +1697,7 @@
       "id": "FE-0095",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "shared-links",
       "page": null,
@@ -1704,16 +1705,17 @@
       "lines": "60,77",
       "title": "SharedFolder: download-guard молча глотает ошибку скачивания",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "671375ca",
+      "pr": 56
     },
     {
       "id": "FE-0096",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "shared-links",
       "page": null,
@@ -1721,16 +1723,17 @@
       "lines": "29-36,66-67,84-85",
       "title": "SharedFolder: ошибка скачивания мапится в «не удалось связаться» (неверное сообщение)",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "671375ca",
+      "pr": 56
     },
     {
       "id": "FE-0097",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "shared-links",
       "page": null,
@@ -1738,16 +1741,17 @@
       "lines": "137-139",
       "title": "SharedFolder: состояние ошибки без кнопки повтора",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "671375ca",
+      "pr": 56
     },
     {
       "id": "FE-0098",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "shared-links",
       "page": null,
@@ -1755,10 +1759,11 @@
       "lines": "93,207",
       "title": "SharedFolder: полный список файлов рендерится без ограничений (лимит сервера неизвестен)",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "671375ca",
+      "pr": 56
     },
     {
       "id": "FE-0099",
