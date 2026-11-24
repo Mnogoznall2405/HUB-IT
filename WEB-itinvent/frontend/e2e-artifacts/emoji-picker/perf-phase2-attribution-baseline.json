@@ -1,0 +1,532 @@
+{
+  "runs": 5,
+  "scenarios": {
+    "pinnedOpen": {
+      "commits": {
+        "n": 5,
+        "p50": 5,
+        "p95": 5,
+        "min": 5,
+        "max": 5
+      },
+      "renderedComponents": {
+        "n": 5,
+        "p50": 12241,
+        "p95": 12600,
+        "min": 12175,
+        "max": 12600
+      },
+      "maxRenderedPerCommit": {
+        "n": 5,
+        "p50": 3024,
+        "p95": 3087,
+        "min": 3002,
+        "max": 3087
+      },
+      "threadRenderedComponents": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scrollMutations": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "ms": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "hoverMs": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageDockVisible": {
+        "n": 5,
+        "p50": 134,
+        "p95": 148,
+        "min": 130,
+        "max": 148
+      },
+      "stageFirstLoaded": {
+        "n": 5,
+        "p50": 134,
+        "p95": 148,
+        "min": 130,
+        "max": 148
+      },
+      "profiles": [
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.19999980926513672
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.19999980926513672
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          }
+        }
+      ]
+    },
+    "pinnedClose": {
+      "commits": {
+        "n": 5,
+        "p50": 4,
+        "p95": 8,
+        "min": 4,
+        "max": 8
+      },
+      "renderedComponents": {
+        "n": 5,
+        "p50": 10821,
+        "p95": 19215,
+        "min": 10821,
+        "max": 19215
+      },
+      "maxRenderedPerCommit": {
+        "n": 5,
+        "p50": 3011,
+        "p95": 3096,
+        "min": 3011,
+        "max": 3096
+      },
+      "threadRenderedComponents": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scrollMutations": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "ms": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "hoverMs": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageDockVisible": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageFirstLoaded": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "profiles": [
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.19999980926513672
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 3,
+            "actual": 0.7999999523162842,
+            "base": 0.7999999523162842
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          }
+        }
+      ]
+    },
+    "popoverOpen": {
+      "commits": {
+        "n": 5,
+        "p50": 11,
+        "p95": 18,
+        "min": 10,
+        "max": 18
+      },
+      "renderedComponents": {
+        "n": 5,
+        "p50": 31864,
+        "p95": 38947,
+        "min": 28521,
+        "max": 38947
+      },
+      "maxRenderedPerCommit": {
+        "n": 5,
+        "p50": 3329,
+        "p95": 3329,
+        "min": 2638,
+        "max": 3329
+      },
+      "threadRenderedComponents": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scrollMutations": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 1,
+      "ms": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "hoverMs": {
+        "n": 5,
+        "p50": 270,
+        "p95": 397,
+        "min": 255,
+        "max": 397
+      },
+      "stageDockVisible": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageFirstLoaded": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "profiles": [
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 2,
+            "actual": 0,
+            "base": 0.40000009536743164
+          },
+          "chat-emoji-panel": {
+            "mount": 1,
+            "update": 6,
+            "actual": 52.799999713897705,
+            "base": 96.59999799728394
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 5,
+            "actual": 24.90000009536743,
+            "base": 118.60000276565552
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 5,
+            "actual": 24.399999380111694,
+            "base": 116.99999904632568
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 5,
+            "actual": 27.899998903274536,
+            "base": 123.70000171661377
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 5,
+            "actual": 40.299999952316284,
+            "base": 161.39999651908875
+          }
+        }
+      ]
+    },
+    "toStickers": {
+      "commits": {
+        "n": 5,
+        "p50": 5,
+        "p95": 7,
+        "min": 5,
+        "max": 7
+      },
+      "renderedComponents": {
+        "n": 5,
+        "p50": 17826,
+        "p95": 24336,
+        "min": 17801,
+        "max": 24336
+      },
+      "maxRenderedPerCommit": {
+        "n": 5,
+        "p50": 3774,
+        "p95": 3774,
+        "min": 3770,
+        "max": 3774
+      },
+      "threadRenderedComponents": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scrollMutations": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "ms": {
+        "n": 5,
+        "p50": 131,
+        "p95": 173,
+        "min": 123,
+        "max": 173
+      },
+      "hoverMs": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageDockVisible": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageFirstLoaded": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "profiles": [
+        {},
+        {},
+        {},
+        {},
+        {}
+      ]
+    },
+    "backToEmoji": {
+      "commits": {
+        "n": 5,
+        "p50": 6,
+        "p95": 7,
+        "min": 6,
+        "max": 7
+      },
+      "renderedComponents": {
+        "n": 5,
+        "p50": 18640,
+        "p95": 22411,
+        "min": 18640,
+        "max": 22411
+      },
+      "maxRenderedPerCommit": {
+        "n": 5,
+        "p50": 3770,
+        "p95": 3774,
+        "min": 3770,
+        "max": 3774
+      },
+      "threadRenderedComponents": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scrollMutations": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "ms": {
+        "n": 5,
+        "p50": 182,
+        "p95": 198,
+        "min": 149,
+        "max": 198
+      },
+      "hoverMs": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageDockVisible": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageFirstLoaded": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "profiles": [
+        {},
+        {},
+        {},
+        {},
+        {}
+      ]
+    }
+  },
+  "threadWidthClosed": 1019,
+  "threadWidthOpen": 659,
+  "positiveControl": {
+    "profiles": {
+      "chat-message-list": {
+        "mount": 0,
+        "update": 7,
+        "actual": 10.400000095367432,
+        "base": 20.3000009059906
+      },
+      "chat-emoji-panel": {
+        "mount": 0,
+        "update": 12,
+        "actual": 50.8000009059906,
+        "base": 295.6000051498413
+      }
+    },
+    "msgListCalls": {
+      "mount": 0,
+      "update": 7,
+      "actual": 10.400000095367432,
+      "base": 20.3000009059906
+    },
+    "ok": true
+  },
+  "traces": {},
+  "measuredAt": "2026-11-24T04:31:12.404Z"
+}

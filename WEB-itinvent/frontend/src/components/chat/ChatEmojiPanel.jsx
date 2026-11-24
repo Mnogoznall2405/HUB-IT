@@ -1,14 +1,31 @@
-import { Suspense, lazy, memo, useState } from 'react';
+import { Suspense, lazy, memo, useCallback, useEffect, useState } from 'react';
 import { Box, CircularProgress, Tab, Tabs } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import InsertEmoticonRoundedIcon from '@mui/icons-material/InsertEmoticonRounded';
 import StickyNote2RoundedIcon from '@mui/icons-material/StickyNote2Rounded';
 import TelegramStickersTab from './TelegramStickersTab';
+import { ChatPerfProbe } from './ChatPerfProbe';
 import { emojiImageUrl } from '../../lib/chat/emojiImages';
 
 const getChatEmojiPickerUrl = (unified) => emojiImageUrl(unified);
 
 const LazyEmojiPicker = lazy(() => import('emoji-picker-react'));
+// memo на lazy-пикере: при ре-рендере панели (переключение вкладок,
+// keep-alive toggle) тяжёлая сетка эмодзи не перерендеривается — пропы
+// стабильны (модульные константы + useCallback ниже).
+const MemoEmojiPicker = memo(LazyEmojiPicker);
+const EMOJI_PREVIEW_CONFIG = { showPreview: false };
+const EMOJI_CATEGORIES = [
+  { category: 'suggested', name: 'Недавние' },
+  { category: 'smileys_people', name: 'Смайлы и люди' },
+  { category: 'animals_nature', name: 'Животные' },
+  { category: 'food_drink', name: 'Еда' },
+  { category: 'travel_places', name: 'Путешествия' },
+  { category: 'activities', name: 'Активности' },
+  { category: 'objects', name: 'Объекты' },
+  { category: 'symbols', name: 'Символы' },
+  { category: 'flags', name: 'Флаги' },
+];
 
 const TELEGRAM_CHAT_FONT_FAMILY = [
   '"SF Pro Text"',
@@ -24,15 +41,27 @@ const TELEGRAM_CHAT_FONT_FAMILY = [
 const PANEL_HEIGHT = 320;
 const TAB_BAR_HEIGHT = 42;
 
+// Активная вкладка переживает размонтирование панели (preview ↔ pinned ↔
+// повторное открытие), как в Telegram Desktop.
+const persistedPanelState = { activeTab: 0 };
+
 /* ─── Tab panel wrapper ─── */
-function TabPanel({ value, index, children, fillAvailableHeight = false }) {
-  if (value !== index) return null;
+// Вкладка монтируется при первой активации и дальше скрывается стилем:
+// переключение не платит за remount emoji-picker-react/сетки стикеров
+// (~250–300 мс по замерам) и сохраняет их внутренний скролл и поиск.
+function TabPanel({ value, index, children, fillAvailableHeight = false, forceMounted = false }) {
+  const [wasActive, setWasActive] = useState(value === index);
+  useEffect(() => {
+    if (value === index && !wasActive) setWasActive(true);
+  }, [index, value, wasActive]);
+  if (!wasActive && !forceMounted) return null;
   return (
     <Box sx={{
       height: fillAvailableHeight ? 'auto' : PANEL_HEIGHT - TAB_BAR_HEIGHT,
       flex: fillAvailableHeight ? 1 : undefined,
       minHeight: 0,
       overflow: 'hidden',
+      display: value === index ? undefined : 'none',
     }}>
       {children}
     </Box>
@@ -40,7 +69,7 @@ function TabPanel({ value, index, children, fillAvailableHeight = false }) {
 }
 
 /* ─── Stickers tab ─── */
-function StickersTab({ theme, ui, onSendSticker, dense = false, currentUserId = null }) {
+const StickersTab = memo(function StickersTab({ theme, ui, onSendSticker, dense = false, currentUserId = null }) {
   return (
     <TelegramStickersTab
       theme={theme}
@@ -50,7 +79,7 @@ function StickersTab({ theme, ui, onSendSticker, dense = false, currentUserId = 
       currentUserId={currentUserId}
     />
   );
-}
+});
 
 /* ─── Main panel component ─── */
 const ChatEmojiPanel = memo(function ChatEmojiPanel({
@@ -63,13 +92,34 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
   desktopDocked = false,
   currentUserId = null,
 }) {
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTabState] = useState(() => persistedPanelState.activeTab);
+  const setActiveTab = useCallback((value) => {
+    persistedPanelState.activeTab = value;
+    setActiveTabState(value);
+  }, []);
+  const handleEmojiClick = useCallback(
+    (emojiData) => onInsertEmoji?.(emojiData?.emoji || ''),
+    [onInsertEmoji],
+  );
+
+  // Прогрев скрытой вкладки в idle-время: первое переключение
+  // «Эмодзи ↔ Стикеры» встречает уже смонтированную сетку. Картинки
+  // стикеров при этом не грузятся — display:none не пересекается с IO.
+  const [warmHiddenTabs, setWarmHiddenTabs] = useState(false);
+  useEffect(() => {
+    if (!open) return undefined;
+    const schedule = window.requestIdleCallback || ((cb) => window.setTimeout(cb, 1500));
+    const cancel = window.cancelIdleCallback || window.clearTimeout;
+    const id = schedule(() => setWarmHiddenTabs(true), { timeout: 3000 });
+    return () => cancel.call(window, id);
+  }, [open]);
 
   if (!open) return null;
 
   const panelBg = ui.composerBg || ui.panelBg || theme.palette.background.paper;
 
   return (
+    <ChatPerfProbe id="chat-emoji-panel">
     <Box
       data-testid="chat-emoji-panel"
       data-layout={desktopDocked ? 'desktop-docked' : 'compact'}
@@ -154,7 +204,7 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
       </Tabs>
 
       {/* Emoji tab */}
-      <TabPanel value={activeTab} index={0} fillAvailableHeight={desktopDocked}>
+      <TabPanel value={activeTab} index={0} fillAvailableHeight={desktopDocked} forceMounted={warmHiddenTabs}>
         <Suspense
           fallback={
             <Box sx={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center' }}>
@@ -162,12 +212,12 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
             </Box>
           }
         >
-          <LazyEmojiPicker
-            onEmojiClick={(emojiData) => onInsertEmoji?.(emojiData?.emoji || '')}
+          <MemoEmojiPicker
+            onEmojiClick={handleEmojiClick}
             autoFocusSearch={false}
             searchPlaceholder="Поиск"
             skinTonesDisabled
-            previewConfig={{ showPreview: false }}
+            previewConfig={EMOJI_PREVIEW_CONFIG}
             // R48: Apple images served by us; the picker would otherwise load them from a CDN.
             emojiStyle="apple"
             getEmojiUrl={getChatEmojiPickerUrl}
@@ -176,23 +226,13 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
             width="100%"
             height={desktopDocked ? '100%' : PANEL_HEIGHT - TAB_BAR_HEIGHT}
             theme={theme.palette.mode === 'dark' ? 'dark' : 'light'}
-            categories={[
-              { category: 'suggested', name: 'Недавние' },
-              { category: 'smileys_people', name: 'Смайлы и люди' },
-              { category: 'animals_nature', name: 'Животные' },
-              { category: 'food_drink', name: 'Еда' },
-              { category: 'travel_places', name: 'Путешествия' },
-              { category: 'activities', name: 'Активности' },
-              { category: 'objects', name: 'Объекты' },
-              { category: 'symbols', name: 'Символы' },
-              { category: 'flags', name: 'Флаги' },
-            ]}
+            categories={EMOJI_CATEGORIES}
           />
         </Suspense>
       </TabPanel>
 
       {/* Stickers tab */}
-      <TabPanel value={activeTab} index={1} fillAvailableHeight={desktopDocked}>
+      <TabPanel value={activeTab} index={1} fillAvailableHeight={desktopDocked} forceMounted={warmHiddenTabs}>
         <StickersTab
           theme={theme}
           ui={ui}
@@ -202,6 +242,7 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
         />
       </TabPanel>
     </Box>
+    </ChatPerfProbe>
   );
 });
 

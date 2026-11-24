@@ -44,6 +44,7 @@ export default function useChatPageComposerStack({
   setComposerMenuAnchor,
   setEditingMessage,
   setEmojiAnchorEl,
+  setEmojiPanelMode,
   setMessageText,
   setOptimisticAiQueuedStatus,
   setReplyMessage,
@@ -53,6 +54,7 @@ export default function useChatPageComposerStack({
   syncComposerSelection,
   userId,
   emojiAnchorEl,
+  emojiPanelMode,
 }) {
   const {
     handleComposerSend,
@@ -120,6 +122,8 @@ export default function useChatPageComposerStack({
   const composerUi = useChatComposerUiController({
     composerRef,
     emojiAnchorEl,
+    emojiPanelMode,
+    setEmojiPanelMode,
     focusComposer,
     handleComposerSend,
     isMobile,

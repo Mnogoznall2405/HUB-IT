@@ -1,6 +1,9 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import Box from '@mui/material/Box';
 
 import ChatThread from '../../components/chat/ChatThread';
+import ChatEmojiDock from '../../components/chat/ChatEmojiDock';
+import { ChatEmojiUiContext } from '../../components/chat/ChatEmojiUiContext';
 import useChatComposerTextBridge from '../../components/chat/useChatComposerTextBridge';
 import ChatPageRightPanelContent from './ChatPageRightPanelContent';
 import buildChatPagePanesBags from './buildChatPagePanesBags';
@@ -8,6 +11,16 @@ import buildChatPagePanesBags from './buildChatPagePanesBags';
 export default function useChatThreadSection(ctx) {
   const { shell, thread, rightPanel } = buildChatPagePanesBags(ctx);
   const { theme, ui, isMobile, isPhone } = shell;
+  // Keep-alive дока эмодзи: после первого открытия панель остаётся
+  // смонтированной и скрывается стилем — повторное открытие не платит за
+  // remount emoji-picker-react (~250 мс по замерам) и сохраняет скролл.
+  const emojiDockOpen = Boolean(
+    !isMobile && thread.emojiPickerOpen && thread.emojiPanelMode === 'pinned',
+  );
+  const [emojiDockEverOpened, setEmojiDockEverOpened] = useState(false);
+  useEffect(() => {
+    if (emojiDockOpen) setEmojiDockEverOpened(true);
+  }, [emojiDockOpen]);
   const {
     activeConversation,
     navigate,
@@ -62,6 +75,8 @@ export default function useChatThreadSection(ctx) {
     syncComposerSelection,
     handleOpenEmojiPicker,
     handleCloseEmojiPicker,
+    handleEmojiHoverStart,
+    handleEmojiHoverEnd,
     handleComposerFocusChange,
     handleComposerSend,
     handleComposerPaste,
@@ -104,6 +119,7 @@ export default function useChatThreadSection(ctx) {
     handlePollVote,
     scrollToMessage,
     emojiPickerOpen,
+    emojiPanelMode,
     insertEmojiAtSelection,
     handleSendSticker,
     voiceRecording,
@@ -149,7 +165,35 @@ export default function useChatThreadSection(ctx) {
     onComposerSelectionSync: syncComposerSelection,
   });
 
-  const threadPane = useMemo(
+  // Phase 2: emoji-состояние выносится в контекст — переключение панели
+  // обновляет только консьюмеров (композер, поповер, док), а ChatThread
+  // держит memo и не перерисовывает ленту сообщений.
+  const emojiUiValue = useMemo(
+    () => ({
+      emojiPickerOpen: !isMobile && emojiPickerOpen,
+      mobileEmojiPickerOpen: Boolean(isMobile && emojiPickerOpen),
+      emojiPanelMode,
+      onOpenEmojiPicker: handleOpenEmojiPicker,
+      onCloseEmojiPicker: handleCloseEmojiPicker,
+      onEmojiHoverStart: handleEmojiHoverStart,
+      onEmojiHoverEnd: handleEmojiHoverEnd,
+      onInsertEmoji: insertEmojiAtSelection,
+      onSendSticker: handleSendSticker,
+    }),
+    [
+      isMobile,
+      emojiPickerOpen,
+      emojiPanelMode,
+      handleOpenEmojiPicker,
+      handleCloseEmojiPicker,
+      handleEmojiHoverStart,
+      handleEmojiHoverEnd,
+      insertEmojiAtSelection,
+      handleSendSticker,
+    ],
+  );
+
+  const threadPaneContent = useMemo(
     () => (
       <ChatThread
         theme={theme}
@@ -208,8 +252,6 @@ export default function useChatThreadSection(ctx) {
         onOpenComposerMenu={handleOpenComposerMenu}
         composerRef={composerRef}
         composerTextBridge={composerTextBridge}
-        onOpenEmojiPicker={handleOpenEmojiPicker}
-        onCloseEmojiPicker={handleCloseEmojiPicker}
         onComposerFocusChange={handleComposerFocusChange}
         onSendMessage={handleComposerSend}
         onComposerPaste={handleComposerPaste}
@@ -251,9 +293,6 @@ export default function useChatThreadSection(ctx) {
         onPollVote={handlePollVote}
         onScrollToMessage={scrollToMessage}
         currentUserId={user?.id}
-        mobileEmojiPickerOpen={isMobile && emojiPickerOpen}
-        desktopEmojiPickerOpen={!isMobile && emojiPickerOpen}
-        onInsertEmoji={insertEmojiAtSelection}
         onSendSticker={handleSendSticker}
         voiceRecording={voiceRecording}
         voiceRecordingDuration={voiceRecordingDuration}
@@ -289,7 +328,6 @@ export default function useChatThreadSection(ctx) {
       conversationMetaSubtitle,
       editAiAction,
       effectiveLastReadMessageId,
-      emojiPickerOpen,
       fileCaption,
       fileDialogOpen,
       fileDragActive,
@@ -301,9 +339,7 @@ export default function useChatThreadSection(ctx) {
       handleComposerFocusChange,
       handleComposerPaste,
       handleComposerSend,
-      handleCloseEmojiPicker,
       handleOpenComposerMenu,
-      handleOpenEmojiPicker,
       handleOpenInfo,
       handleOpenMenu,
       handleOpenPinnedMessage,
@@ -314,7 +350,6 @@ export default function useChatThreadSection(ctx) {
       handlePollVote,
       handleUnpinPinnedMessage,
       highlightedMessageId,
-      insertEmojiAtSelection,
       isMobile,
       isPhone,
       jumpToLatest,
@@ -372,6 +407,37 @@ export default function useChatThreadSection(ctx) {
       voiceRecordingLevelRef,
       editingMessage,
     ],
+  );
+
+  // Phase 2.1: Provider и док — вне мемо треда. При смене emoji-состояния
+  // пересоздаются только Provider/Box/dock-элементы (3 узла); ChatThread
+  // держит стабильную ссылку на элемент и reconciliation не заходит внутрь.
+  const threadPane = (
+    <ChatEmojiUiContext.Provider value={emojiUiValue}>
+      <Box
+        data-testid="chat-thread-pane-wrap"
+        sx={{
+          display: 'flex',
+          flex: 1,
+          minWidth: 0,
+          minHeight: 0,
+          position: 'relative',
+        }}
+      >
+        {threadPaneContent}
+        {emojiDockEverOpened ? (
+          <ChatEmojiDock
+            hidden={!emojiDockOpen}
+            theme={theme}
+            ui={ui}
+            currentUserId={user?.id}
+            onInsertEmoji={insertEmojiAtSelection}
+            onSendSticker={handleSendSticker}
+            onClose={handleCloseEmojiPicker}
+          />
+        ) : null}
+      </Box>
+    </ChatEmojiUiContext.Provider>
   );
 
   const desktopRightPanelContent = useMemo(

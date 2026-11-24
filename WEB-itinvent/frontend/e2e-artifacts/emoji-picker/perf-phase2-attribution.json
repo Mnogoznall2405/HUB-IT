@@ -1,0 +1,662 @@
+{
+  "runs": 5,
+  "scenarios": {
+    "pinnedOpen": {
+      "commits": {
+        "n": 5,
+        "p50": 5,
+        "p95": 5,
+        "min": 5,
+        "max": 5
+      },
+      "renderedComponents": {
+        "n": 5,
+        "p50": 12247,
+        "p95": 12603,
+        "min": 12178,
+        "max": 12603
+      },
+      "maxRenderedPerCommit": {
+        "n": 5,
+        "p50": 3025,
+        "p95": 3087,
+        "min": 3002,
+        "max": 3087
+      },
+      "threadRenderedComponents": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scrollMutations": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "ms": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "hoverMs": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageDockVisible": {
+        "n": 5,
+        "p50": 137,
+        "p95": 151,
+        "min": 129,
+        "max": 151
+      },
+      "stageFirstLoaded": {
+        "n": 5,
+        "p50": 137,
+        "p95": 151,
+        "min": 129,
+        "max": 151
+      },
+      "profiles": [
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.39999985694885254
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 5,
+            "actual": 35.09999966621399,
+            "base": 136.8000066280365
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.39999985694885254
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 5,
+            "actual": 30.600000143051147,
+            "base": 129.30000734329224
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 5,
+            "actual": 32.799999713897705,
+            "base": 131.40000104904175
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 5,
+            "actual": 33.80000019073486,
+            "base": 134.8000042438507
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 5,
+            "actual": 33.899999380111694,
+            "base": 133.50000071525574
+          }
+        }
+      ]
+    },
+    "pinnedClose": {
+      "commits": {
+        "n": 5,
+        "p50": 4,
+        "p95": 6,
+        "min": 4,
+        "max": 6
+      },
+      "renderedComponents": {
+        "n": 5,
+        "p50": 10824,
+        "p95": 15194,
+        "min": 10824,
+        "max": 15194
+      },
+      "maxRenderedPerCommit": {
+        "n": 5,
+        "p50": 3013,
+        "p95": 3098,
+        "min": 3013,
+        "max": 3098
+      },
+      "threadRenderedComponents": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scrollMutations": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "ms": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "hoverMs": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageDockVisible": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageFirstLoaded": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "profiles": [
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.39999985694885254
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 4,
+            "actual": 15.700000286102295,
+            "base": 109.10000538825989
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 2,
+            "actual": 0.40000009536743164,
+            "base": 0.6999998092651367
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 6,
+            "actual": 27.899999856948853,
+            "base": 163.20000624656677
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 4,
+            "actual": 15.800000667572021,
+            "base": 111.00000095367432
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 4,
+            "actual": 14.300000190734863,
+            "base": 100.90000104904175
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 4,
+            "actual": 15.299999952316284,
+            "base": 102.29999732971191
+          }
+        }
+      ]
+    },
+    "popoverOpen": {
+      "commits": {
+        "n": 5,
+        "p50": 11,
+        "p95": 22,
+        "min": 11,
+        "max": 22
+      },
+      "renderedComponents": {
+        "n": 5,
+        "p50": 31866,
+        "p95": 52523,
+        "min": 31866,
+        "max": 52523
+      },
+      "maxRenderedPerCommit": {
+        "n": 5,
+        "p50": 3329,
+        "p95": 3410,
+        "min": 3329,
+        "max": 3410
+      },
+      "threadRenderedComponents": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scrollMutations": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "ms": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "hoverMs": {
+        "n": 5,
+        "p50": 270,
+        "p95": 455,
+        "min": 256,
+        "max": 455
+      },
+      "stageDockVisible": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageFirstLoaded": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "profiles": [
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 1,
+            "update": 12,
+            "actual": 119.59999942779541,
+            "base": 277.10000109672546
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 7,
+            "actual": 35.00000047683716,
+            "base": 174.9999988079071
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 7,
+            "actual": 34.00000047683716,
+            "base": 172.39999866485596
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 7,
+            "actual": 38.59999942779541,
+            "base": 198.79999589920044
+          }
+        },
+        {
+          "chat-message-list": {
+            "mount": 0,
+            "update": 1,
+            "actual": 0,
+            "base": 0.20000004768371582
+          },
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 7,
+            "actual": 32,
+            "base": 168.099999666214
+          }
+        }
+      ]
+    },
+    "toStickers": {
+      "commits": {
+        "n": 5,
+        "p50": 5,
+        "p95": 6,
+        "min": 5,
+        "max": 6
+      },
+      "renderedComponents": {
+        "n": 5,
+        "p50": 17827,
+        "p95": 21538,
+        "min": 17802,
+        "max": 21538
+      },
+      "maxRenderedPerCommit": {
+        "n": 5,
+        "p50": 3775,
+        "p95": 3775,
+        "min": 3771,
+        "max": 3775
+      },
+      "threadRenderedComponents": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scrollMutations": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "ms": {
+        "n": 5,
+        "p50": 144,
+        "p95": 213,
+        "min": 121,
+        "max": 213
+      },
+      "hoverMs": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageDockVisible": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageFirstLoaded": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "profiles": [
+        {
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 5,
+            "actual": 11.000000238418579,
+            "base": 129.40000295639038
+          }
+        },
+        {
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 5,
+            "actual": 7.700000047683716,
+            "base": 123.60000133514404
+          }
+        },
+        {
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 6,
+            "actual": 7.999999761581421,
+            "base": 148.10000205039978
+          }
+        },
+        {
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 5,
+            "actual": 8.299999952316284,
+            "base": 126.4000039100647
+          }
+        },
+        {
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 6,
+            "actual": 7.5,
+            "base": 150.50000476837158
+          }
+        }
+      ]
+    },
+    "backToEmoji": {
+      "commits": {
+        "n": 5,
+        "p50": 6,
+        "p95": 7,
+        "min": 6,
+        "max": 7
+      },
+      "renderedComponents": {
+        "n": 5,
+        "p50": 18653,
+        "p95": 22412,
+        "min": 18641,
+        "max": 22412
+      },
+      "maxRenderedPerCommit": {
+        "n": 5,
+        "p50": 3772,
+        "p95": 3774,
+        "min": 3770,
+        "max": 3774
+      },
+      "threadRenderedComponents": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "scrollMutations": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "ms": {
+        "n": 5,
+        "p50": 183,
+        "p95": 194,
+        "min": 169,
+        "max": 194
+      },
+      "hoverMs": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageDockVisible": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "stageFirstLoaded": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "min": 0,
+        "max": 0
+      },
+      "profiles": [
+        {
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 6,
+            "actual": 22.399999618530273,
+            "base": 150.90000295639038
+          }
+        },
+        {
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 7,
+            "actual": 22.199999570846558,
+            "base": 170.10000252723694
+          }
+        },
+        {
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 6,
+            "actual": 22.800000190734863,
+            "base": 145.00000500679016
+          }
+        },
+        {
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 7,
+            "actual": 23.200000047683716,
+            "base": 170.8000044822693
+          }
+        },
+        {
+          "chat-emoji-panel": {
+            "mount": 0,
+            "update": 6,
+            "actual": 23.100000143051147,
+            "base": 141.90000176429749
+          }
+        }
+      ]
+    }
+  },
+  "threadWidthClosed": 1019,
+  "threadWidthOpen": 659,
+  "positiveControl": {
+    "profiles": {
+      "chat-message-list": {
+        "mount": 0,
+        "update": 7,
+        "actual": 9.600000143051147,
+        "base": 19.20000147819519
+      },
+      "chat-emoji-panel": {
+        "mount": 0,
+        "update": 24,
+        "actual": 99.89999961853027,
+        "base": 591.9999952316284
+      }
+    },
+    "msgListCalls": {
+      "mount": 0,
+      "update": 7,
+      "actual": 9.600000143051147,
+      "base": 19.20000147819519
+    },
+    "ok": true
+  },
+  "traces": {},
+  "measuredAt": "2026-11-24T04:27:20.711Z"
+}

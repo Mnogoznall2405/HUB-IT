@@ -184,6 +184,13 @@ export default defineConfig(({ mode }) => {
   return {
     envDir,
     base: basePath,
+    resolve: {
+      // E2E_PROFILING=1: profiling-сборка react-dom — включает <Profiler>
+      // onRender в production-бандле (обычный prod-билд молча его игнорирует).
+      alias: process.env.E2E_PROFILING === '1'
+        ? [{ find: /^react-dom$/, replacement: 'react-dom/profiling' }]
+        : [],
+    },
     plugins: [
       react(),
       tailwindcss(),
