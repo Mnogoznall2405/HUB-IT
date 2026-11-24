@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -126,6 +127,35 @@ _FOLDER_CHAIN_LIMIT = 64
 _LIBRARY_ROLE_RANK = {"view": 1, "comment": 2, "edit": 3, "manage": 4}
 # A library without its own quota is bounded only by the disk.
 LIBRARY_UNLIMITED_BYTES = 1 << 60
+
+
+def _encode_listing_cursor(created_at: Any, file_id: str) -> str:
+    """Opaque cursor for (created_at DESC, id DESC) keyset pagination."""
+    stamp = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+    return base64.urlsafe_b64encode(f"{stamp}|{_normalize_text(file_id)}".encode("utf-8")).decode("ascii")
+
+
+def _decode_listing_cursor(cursor: str) -> tuple[Any, str | None]:
+    """``(created_at, id)`` from a cursor produced by :func:`_encode_listing_cursor`.
+
+    The timestamp comes back as a real ``datetime`` — binding a raw string
+    would compare ``isoformat``'s ``T`` separator against the DB's stored
+    format and break the keyset filter. Returns ``(None, None)`` for
+    empty/malformed cursors: a bad cursor falls back to page one instead of
+    silently dropping rows.
+    """
+    raw = _normalize_text(cursor)
+    if not raw:
+        return None, None
+    try:
+        decoded = base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8")
+        stamp, _, file_id = decoded.rpartition("|")
+        if not stamp or not file_id:
+            return None, None
+        created = datetime.fromisoformat(stamp)
+        return created, file_id
+    except Exception:
+        return None, None
 
 
 class MyFilesError(RuntimeError):
@@ -725,6 +755,85 @@ class MyFilesService:
                 or 0
             )
         return used
+
+    def _listing_etag_locked(self, session, *, owner_user_id: int) -> str:
+        """Weak-change fingerprint for conditional listing requests (If-None-Match).
+
+        Aggregates only — a handful of index-covered counters — so a revalidation
+        costs a few ms instead of rebuilding the whole listing. Anything that can
+        alter a serialized response bumps the fingerprint: file/folder writes and
+        soft-deletes (updated_at/deleted_at), rows crossing their expiry boundary
+        (the count of already-expired rows flips visibility), collaborator and
+        version churn (row counts + total version bytes, which feeds the quota),
+        and library membership. Grants from other owners ride on the global
+        collaborator counts, so shared-view entries invalidate too.
+        """
+        now = _utc_now()
+        files = session.execute(
+            select(
+                func.count(AppMyFile.id),
+                func.max(AppMyFile.updated_at),
+                func.max(AppMyFile.deleted_at),
+                func.coalesce(func.sum(case((AppMyFile.expires_at <= now, 1), else_=0)), 0),
+            ).where(AppMyFile.owner_user_id == int(owner_user_id))
+        ).one()
+        folders = session.execute(
+            select(
+                func.count(AppMyFileFolder.id),
+                func.max(AppMyFileFolder.updated_at),
+                func.max(AppMyFileFolder.deleted_at),
+            ).where(AppMyFileFolder.owner_user_id == int(owner_user_id))
+        ).one()
+        extras: list[Any] = []
+        if self._collab_tables_present(session):
+            extras.extend(
+                session.execute(
+                    select(
+                        func.count(AppMyFileCollaborator.file_id),
+                        func.count(AppMyFileFolderCollaborator.folder_id),
+                    )
+                ).one()
+            )
+            extras.extend(
+                session.execute(
+                    select(
+                        func.count(AppMyFileVersion.id),
+                        func.coalesce(
+                            func.sum(AppMyFileVersion.original_size_bytes + AppMyFileVersion.office_changes_size_bytes), 0
+                        ),
+                    )
+                ).one()
+            )
+        if self._libraries_present(session):
+            # Own-drive listings merge library hits (search/recent), so library
+            # content must bump the fingerprint too — not just the owner rows.
+            extras.extend(
+                session.execute(
+                    select(
+                        func.count(AppMyFile.id),
+                        func.max(AppMyFile.updated_at),
+                        func.max(AppMyFile.deleted_at),
+                    ).where(AppMyFile.owner_user_id < 0)
+                ).one()
+            )
+            extras.extend(
+                session.execute(
+                    select(
+                        func.count(AppMyFileFolder.id),
+                        func.max(AppMyFileFolder.updated_at),
+                        func.max(AppMyFileFolder.deleted_at),
+                    ).where(AppMyFileFolder.owner_user_id < 0)
+                ).one()
+            )
+            row = session.execute(
+                select(func.count(AppMyFileLibrary.id), func.max(AppMyFileLibrary.updated_at))
+            ).one()
+            extras.extend(row)
+            extras.append(
+                session.execute(select(func.count(AppMyFileLibraryMember.library_id))).scalar() or 0
+            )
+        raw = "|".join(str(part) for part in (*files, *folders, *extras))
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:32]
 
     def _collab_tables_present(self, session) -> bool:
         """Co-editing tables come from an explicit release migration; stay inert until applied."""
@@ -2008,6 +2117,20 @@ class MyFilesService:
         ).all()
         return {row.id: row for row in rows}
 
+    @staticmethod
+    def _folder_names_locked(session, folder_ids) -> dict[str, str]:
+        """Names for exactly the referenced folders — search/favorites show a
+        ``folder_name`` label per hit and must not load the owner's whole tree."""
+        ids = {fid for fid in folder_ids if fid}
+        if not ids:
+            return {}
+        return {
+            row.id: _normalize_text(row.name)
+            for row in session.scalars(
+                select(AppMyFileFolder).where(AppMyFileFolder.id.in_(ids))
+            ).all()
+        }
+
     def folder_breadcrumbs(self, *, user_id: int, folder_id: str | None) -> list[dict[str, Any]]:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
@@ -2440,14 +2563,36 @@ class MyFilesService:
         view: str = "",
         query: str = "",
         library_id: str | None = None,
+        include: str = "",
+        if_none_match: str = "",
+        limit: int = 0,
+        cursor: str = "",
     ) -> dict[str, Any]:
         normalized_view = _normalize_text(view).lower()
+        include_set = {part.strip().lower() for part in str(include or "").split(",") if part.strip()}
+        expected_etag = _normalize_text(if_none_match).strip('"').removeprefix("W/").strip('"') or None
+        database_url = self._database_url_or_raise()
+        # The "shared with me" view stays ETag-free: entries belong to other
+        # owners, so revocation must re-run the access checks on every request.
+        etag_eligible = normalized_view != "shared"
         if normalized_view != "library" and not _normalize_text(library_id):
-            result = self._list_files_impl(user_id=user_id, folder_id=folder_id, view=view, query=query)
+            owner = int(user_id)
+            etag = ""
+            if etag_eligible:
+                with app_session(database_url) as session:
+                    owner = self._read_owner_locked(session, user_id=user_id, folder_id=folder_id)
+                    etag = self._listing_etag_locked(session, owner_user_id=owner)
+                if expected_etag and etag == expected_etag:
+                    return {"not_modified": True, "etag": etag}
+            result = self._list_files_impl(
+                user_id=user_id, folder_id=folder_id, view=view, query=query,
+                limit=limit, cursor=cursor,
+            )
             if normalized_view != "shared" and (normalized_view == "recent" or _normalize_text(query)):
                 self._merge_library_results(result, user_id=user_id, view=normalized_view, query=query)
+            self._attach_listing_includes(result, include_set=include_set, owner_user_id=owner)
+            result["etag"] = etag
             return result
-        database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
             owner = self._read_owner_locked(session, user_id=user_id, library_id=library_id, folder_id=folder_id)
             library = self._library_by_owner_locked(session, owner)
@@ -2455,13 +2600,57 @@ class MyFilesService:
                 raise MyFilesNotFoundError("Library not found")
             role = self.library_role_locked(session, library, user_id)
             library_info = {"id": library.id, "name": _normalize_text(library.name), "my_role": role}
-        result = self._list_files_impl(user_id=owner, folder_id=folder_id, view="", query=query, viewer_user_id=user_id)
+            etag = self._listing_etag_locked(session, owner_user_id=owner) if etag_eligible else ""
+        if expected_etag and etag and etag == expected_etag:
+            return {"not_modified": True, "etag": etag}
+        result = self._list_files_impl(
+            user_id=owner, folder_id=folder_id, view="", query=query, viewer_user_id=user_id,
+            limit=limit, cursor=cursor,
+        )
         for entry in [*result.get("items", []), *result.get("folders", []), *result.get("breadcrumbs", [])]:
             entry["my_role"] = role
         if result.get("folder"):
             result["folder"]["my_role"] = role
         result["library"] = library_info
+        self._attach_listing_includes(result, include_set=include_set, owner_user_id=owner)
+        result["etag"] = etag
         return result
+
+    def _attach_listing_includes(
+        self,
+        result: dict[str, Any],
+        *,
+        include_set: set[str],
+        owner_user_id: int,
+    ) -> None:
+        """Fold the folder tree and the quota into the listing response.
+
+        ``include=tree`` returns what ``GET /my-files/folders`` would; ``include=quota``
+        returns what ``GET /my-files/quota`` would — one round-trip and one session
+        instead of three. Old clients simply never send the flag.
+        """
+        if not include_set:
+            return
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            if "tree" in include_set:
+                rows = session.scalars(
+                    select(AppMyFileFolder)
+                    .where(
+                        AppMyFileFolder.owner_user_id == int(owner_user_id),
+                        AppMyFileFolder.deleted_at.is_(None),
+                    )
+                    .order_by(AppMyFileFolder.name.asc())
+                ).all()
+                result["tree_folders"] = [self._folder_response(row) for row in rows]
+            if "quota" in include_set:
+                used = self._quota_used_locked(session, int(owner_user_id))
+                limit = self._user_quota_limit_locked(session, int(owner_user_id))
+                result["quota"] = {
+                    "used_bytes": used,
+                    "limit_bytes": limit,
+                    "remaining_bytes": max(0, limit - used),
+                }
 
     def _merge_library_results(self, result: dict[str, Any], *, user_id: int, view: str, query: str) -> None:
         """Add what the user may see in shared libraries to a cross-folder listing (recent files, search).
@@ -2483,21 +2672,83 @@ class MyFilesService:
         if not libraries:
             return
         recent = view == "recent"
-        items = list(result.get("items", []))
-        folders = list(result.get("folders", []))
-        for library_id, library_name, owner_user_id, role in libraries:
-            part = self._list_files_impl(user_id=owner_user_id, view="recent" if recent else "", query=query, viewer_user_id=user_id)
-            for entry in [*part.get("items", []), *part.get("folders", [])]:
+        owner_to_library = {owner: (library_id, library_name, role) for library_id, library_name, owner, role in libraries}
+        lib_owners = list(owner_to_library)
+        now = _utc_now()
+        cap = 50 if recent else 500
+        # One scan over every accessible library instead of a full listing per
+        # library — the merged result is sorted by updated_at and truncated to
+        # ``cap`` afterwards, so a single UNION-style IN() query is equivalent.
+        with app_session(database_url) as session:
+            file_select = select(AppMyFile).where(
+                AppMyFile.owner_user_id.in_(lib_owners),
+                AppMyFile.deleted_at.is_(None),
+                AppMyFile.expires_at > now,
+            )
+            if not recent:
+                pattern = f"%{_normalize_text(query).lower()}%"
+                file_select = file_select.where(
+                    or_(
+                        func.lower(AppMyFile.original_file_name).like(pattern),
+                        func.lower(AppMyFile.download_file_name).like(pattern),
+                    )
+                )
+            rows = session.scalars(file_select.order_by(AppMyFile.updated_at.desc()).limit(cap)).all()
+            if recent:
+                flat_folders = []
+            else:
+                flat_folders = session.scalars(
+                    select(AppMyFileFolder)
+                    .where(
+                        AppMyFileFolder.owner_user_id.in_(lib_owners),
+                        AppMyFileFolder.deleted_at.is_(None),
+                        func.lower(AppMyFileFolder.name).like(pattern),
+                    )
+                    .order_by(AppMyFileFolder.name.asc())
+                ).all()
+            folder_names = self._folder_names_locked(session, [row.folder_id for row in rows])
+            collab_counts = self._collab_counts_locked(session, [row.id for row in rows])
+            blob_ids = [
+                _normalize_text(row.blob_id)
+                for row in rows
+                if _normalize_text(row.blob_id)
+            ]
+            preview_map = {
+                _normalize_text(preview_row.blob_id): preview_row
+                for preview_row in session.scalars(
+                    select(AppMyFilePreview).where(AppMyFilePreview.blob_id.in_(set(blob_ids)))
+                ).all()
+            } if blob_ids else {}
+            preview_exists = self._preview_existence_map(preview_map)
+            lib_items = []
+            for row in rows:
+                entry = self._response(
+                    row,
+                    session=session,
+                    preview=preview_map.get(_normalize_text(row.blob_id)),
+                    preview_exists=preview_exists.get(_normalize_text(row.blob_id)),
+                    viewer_user_id=user_id,
+                    folder_name=folder_names.get(row.folder_id, ""),
+                    collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
+                )
+                library_id, library_name, role = owner_to_library.get(int(row.owner_user_id), ("", "", ""))
                 entry["library_id"] = library_id
                 entry["library_name"] = library_name
                 entry["my_role"] = role
-            items.extend(part.get("items", []))
-            folders.extend(part.get("folders", []))
+                lib_items.append(entry)
+            lib_folder_items = []
+            for folder_row in flat_folders:
+                entry = self._folder_response(folder_row)
+                library_id, library_name, role = owner_to_library.get(int(folder_row.owner_user_id), ("", "", ""))
+                entry["library_id"] = library_id
+                entry["library_name"] = library_name
+                entry["my_role"] = role
+                lib_folder_items.append(entry)
+        items = [*result.get("items", []), *lib_items]
         stamp = lambda entry: str(entry.get("updated_at") or "")  # noqa: E731
         items.sort(key=stamp, reverse=True)
-        limit = 50 if recent else 500
-        result["items"] = items[:limit]
-        result["folders"] = folders
+        result["items"] = items[:cap]
+        result["folders"] = [*result.get("folders", []), *lib_folder_items]
 
     def _list_files_impl(
         self,
@@ -2507,6 +2758,8 @@ class MyFilesService:
         view: str = "",
         query: str = "",
         viewer_user_id: int | None = None,
+        limit: int = 0,
+        cursor: str = "",
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
         now = _utc_now()
@@ -2543,8 +2796,8 @@ class MyFilesService:
                     )
                     .order_by(AppMyFileFolder.name.asc())
                 ).all()
-                all_folders = self._folder_map_locked(session, owner_user_id=user_id)
                 rows = session.scalars(file_query).all()
+                folder_names = self._folder_names_locked(session, [row.folder_id for row in rows])
                 collab_counts = self._collab_counts_locked(session, [row.id for row in rows])
                 blob_ids = [
                     _normalize_text(row.blob_id)
@@ -2566,7 +2819,7 @@ class MyFilesService:
                             preview=preview_map.get(_normalize_text(row.blob_id)),
                             preview_exists=preview_exists.get(_normalize_text(row.blob_id)),
                             viewer_user_id=viewer_user_id or user_id,
-                            folder_name=(all_folders.get(row.folder_id).name if all_folders.get(row.folder_id) else ""),
+                            folder_name=folder_names.get(row.folder_id, ""),
                             collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
                         )
                         for row in rows
@@ -2595,8 +2848,8 @@ class MyFilesService:
                 else:
                     file_query = file_query.order_by(AppMyFile.updated_at.desc()).limit(50)
                     flat_folders = []
-                all_folders = self._folder_map_locked(session, owner_user_id=user_id)
                 rows = session.scalars(file_query).all()
+                folder_names = self._folder_names_locked(session, [row.folder_id for row in rows])
                 collab_counts = self._collab_counts_locked(session, [row.id for row in rows])
                 blob_ids = [
                     _normalize_text(row.blob_id)
@@ -2618,7 +2871,7 @@ class MyFilesService:
                             preview=preview_map.get(_normalize_text(row.blob_id)),
                             preview_exists=preview_exists.get(_normalize_text(row.blob_id)),
                             viewer_user_id=viewer_user_id or user_id,
-                            folder_name=(all_folders.get(row.folder_id).name if all_folders.get(row.folder_id) else ""),
+                            folder_name=folder_names.get(row.folder_id, ""),
                             collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
                         )
                         for row in rows
@@ -2629,16 +2882,33 @@ class MyFilesService:
                 }
 
             folder = self._folder_row_locked(session, owner_user_id=user_id, folder_id=folder_id)
-            rows = session.scalars(
-                select(AppMyFile)
-                .where(
-                    AppMyFile.owner_user_id == int(user_id),
-                    AppMyFile.deleted_at.is_(None),
-                    AppMyFile.expires_at > now,
-                    AppMyFile.folder_id.is_(None) if folder is None else AppMyFile.folder_id == folder.id,
+            file_select = select(AppMyFile).where(
+                AppMyFile.owner_user_id == int(user_id),
+                AppMyFile.deleted_at.is_(None),
+                AppMyFile.expires_at > now,
+                AppMyFile.folder_id.is_(None) if folder is None else AppMyFile.folder_id == folder.id,
+            )
+            cursor_created, cursor_id = _decode_listing_cursor(cursor)
+            paginating = limit > 0 or cursor_id is not None
+            if cursor_id is not None:
+                file_select = file_select.where(
+                    (AppMyFile.created_at < cursor_created)
+                    | ((AppMyFile.created_at == cursor_created) & (AppMyFile.id < cursor_id))
                 )
-                .order_by(AppMyFile.created_at.desc())
-            ).all()
+            if paginating:
+                # Deterministic tiebreak only when a client actually paginates —
+                # the unpaginated order stays byte-for-byte what it was.
+                file_select = file_select.order_by(AppMyFile.created_at.desc(), AppMyFile.id.desc())
+            else:
+                file_select = file_select.order_by(AppMyFile.created_at.desc())
+            if limit > 0:
+                file_select = file_select.limit(limit + 1)
+            rows = session.scalars(file_select).all()
+            next_cursor = ""
+            if limit > 0 and len(rows) > limit:
+                rows = rows[:limit]
+                tail = rows[-1]
+                next_cursor = _encode_listing_cursor(tail.created_at, tail.id)
             folders = session.scalars(
                 select(AppMyFileFolder)
                 .where(
@@ -2661,19 +2931,37 @@ class MyFilesService:
                     breadcrumbs.append(self._folder_response(current))
                     current = all_folders.get(current.parent_id)
                 breadcrumbs.reverse()
-            counts_by_folder: dict[str | None, int] = {
-                folder_key: int(count)
-                for folder_key, count in session.execute(
-                    select(AppMyFile.folder_id, func.count(AppMyFile.id))
-                    .where(
-                        AppMyFile.owner_user_id == int(user_id),
-                        AppMyFile.deleted_at.is_(None),
-                        AppMyFile.status != STATUS_DELETED,
-                        AppMyFile.expires_at > now,
-                    )
-                    .group_by(AppMyFile.folder_id)
-                ).all()
-            }
+            # file_count is only rendered on subfolders — counting every live row
+            # of the owner (a 16k-row index scan) just to label 9 folders is the
+            # dominant listing cost on large accounts. Restrict the GROUP BY to
+            # the displayed subtree; skip it entirely for leaf folders.
+            count_folder_ids: set[str] = set()
+            for folder_row in folders:
+                stack = [folder_row.id]
+                while stack:
+                    current_id = stack.pop()
+                    if current_id in count_folder_ids:
+                        continue
+                    count_folder_ids.add(current_id)
+                    stack.extend(children_map.get(current_id, []))
+            counts_by_folder: dict[str | None, int] = (
+                {
+                    folder_key: int(count)
+                    for folder_key, count in session.execute(
+                        select(AppMyFile.folder_id, func.count(AppMyFile.id))
+                        .where(
+                            AppMyFile.owner_user_id == int(user_id),
+                            AppMyFile.deleted_at.is_(None),
+                            AppMyFile.status != STATUS_DELETED,
+                            AppMyFile.expires_at > now,
+                            AppMyFile.folder_id.in_(count_folder_ids),
+                        )
+                        .group_by(AppMyFile.folder_id)
+                    ).all()
+                }
+                if count_folder_ids
+                else {}
+            )
 
             def subtree_file_count(root_id: str) -> int:
                 total = counts_by_folder.get(root_id, 0)
@@ -2726,6 +3014,7 @@ class MyFilesService:
                 "folders": folder_payloads,
                 "breadcrumbs": breadcrumbs,
                 "folder": self._folder_response(folder) if folder else None,
+                "next_cursor": next_cursor or None,
             }
 
     def list_audit(self, *, limit: int = 100) -> list[dict[str, Any]]:

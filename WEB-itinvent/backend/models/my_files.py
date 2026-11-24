@@ -103,6 +103,13 @@ class MyFileListResponse(BaseModel):
     breadcrumbs: list[MyFileFolderResponse] = Field(default_factory=list)
     folder: MyFileFolderResponse | None = None
     library: MyFileLibraryInfo | None = None
+    # Opt-in merged payloads (include=tree,quota): what GET /my-files/folders
+    # and GET /my-files/quota would return, folded into the listing round-trip.
+    tree_folders: list[MyFileFolderResponse] = Field(default_factory=list)
+    quota: MyFileQuotaResponse | None = None
+    # Opt-in keyset pagination (limit>0): pass back as ?cursor= to fetch the
+    # next page; null/absent keeps the legacy all-rows contract untouched.
+    next_cursor: str | None = None
 
 
 class MyFileFolderListResponse(BaseModel):

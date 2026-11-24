@@ -1774,3 +1774,93 @@ def test_may_manage_members_scoped_to_library_manage_role(tmp_path):
 
     with pytest.raises(MyFilesNotFoundError):
         libraries.may_manage_members(library_id="missing", user_id=7)
+
+
+def test_list_files_cursor_pagination_walks_all_pages(tmp_path):
+    """`limit`/`cursor` must page through the whole folder without duplicates."""
+    service = _new_service(tmp_path)
+    actor = _user()
+    names = []
+    for index in range(5):
+        name = f"page-{index}.txt"
+        spool_path = _stage_upload(service, name, f"payload-{index}".encode())
+        service.create_pending_upload(
+            actor=actor,
+            original_file_name=name,
+            mime_type="text/plain",
+            spool_path=spool_path,
+            original_size_bytes=spool_path.stat().st_size,
+            retention_days=1,
+        )
+        names.append(name)
+
+    full = service.list_files(user_id=7)
+    assert [item["original_file_name"] for item in full["items"]] == names[::-1]
+    assert full["next_cursor"] is None
+
+    seen: list[str] = []
+    cursor = ""
+    pages = 0
+    while True:
+        page = service.list_files(user_id=7, limit=2, cursor=cursor)
+        seen.extend(item["original_file_name"] for item in page["items"])
+        cursor = page["next_cursor"] or ""
+        pages += 1
+        if not cursor:
+            break
+        assert pages < 10  # safety net against a looping cursor
+    assert seen == names[::-1]
+    assert pages == 3
+
+
+def test_list_files_malformed_cursor_falls_back_to_first_page(tmp_path):
+    service = _new_service(tmp_path)
+    actor = _user()
+    spool_path = _stage_upload(service, "only.txt", b"only")
+    service.create_pending_upload(
+        actor=actor,
+        original_file_name="only.txt",
+        mime_type="text/plain",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=1,
+    )
+
+    page = service.list_files(user_id=7, limit=1, cursor="not-a-cursor")
+    assert [item["original_file_name"] for item in page["items"]] == ["only.txt"]
+    assert page["next_cursor"] is None
+
+
+def test_list_files_search_merges_library_hits_in_one_pass(tmp_path):
+    """Own-drive search must union accessible libraries — tagged per row."""
+    service = _new_service(tmp_path)
+    actor = _user()
+    own_path = _stage_upload(service, "zebra-own.txt", b"own")
+    service.create_pending_upload(
+        actor=actor,
+        original_file_name="zebra-own.txt",
+        mime_type="text/plain",
+        spool_path=own_path,
+        original_size_bytes=own_path.stat().st_size,
+        retention_days=1,
+    )
+    library = MyFilesLibraryService(files=service).create_library(actor=actor, name="ПОДБОР")
+    lib_path = _stage_upload(service, "zebra-lib.txt", b"lib")
+    service.create_pending_upload(
+        actor=actor,
+        original_file_name="zebra-lib.txt",
+        mime_type="text/plain",
+        spool_path=lib_path,
+        original_size_bytes=lib_path.stat().st_size,
+        retention_days=1,
+        library_id=library["id"],
+    )
+
+    found = service.list_files(user_id=7, query="zebra")
+    by_name = {item["original_file_name"]: item for item in found["items"]}
+    assert set(by_name) == {"zebra-own.txt", "zebra-lib.txt"}
+    assert not by_name["zebra-own.txt"].get("library_id")
+    lib_hit = by_name["zebra-lib.txt"]
+    assert lib_hit["library_id"] == library["id"]
+    assert lib_hit["library_name"] == "ПОДБОР"
+    assert lib_hit["my_role"] == "manage"

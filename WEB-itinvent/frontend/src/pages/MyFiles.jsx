@@ -139,6 +139,11 @@ import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 const LIBRARY_ROLE_RANK = { view: 1, comment: 2, edit: 3, manage: 4 };
 const LIBRARY_ROLE_LABELS = { manage: 'Управление', edit: 'Правка', comment: 'Комментарии', view: 'Просмотр' };
 
+// One shared collator for all row comparisons: String.prototype.localeCompare
+// spins up the Intl machinery per call, which dominated table_sort profiles
+// (thousands of comparisons on a 500+ row folder).
+const ROW_NAME_COLLATOR = new Intl.Collator('ru', { sensitivity: 'base' });
+
 const reconcileById = (previous, next) => {
   const previousById = new Map(previous.map((entry) => [String(entry?.id), entry]));
   let changed = previous.length !== next.length;
@@ -148,8 +153,17 @@ const reconcileById = (previous, next) => {
       changed = true;
       return entry;
     }
-    const keys = new Set([...Object.keys(old), ...Object.keys(entry)]);
-    const same = [...keys].every((key) => old[key] === entry[key]);
+    // Same key-set comparison without allocating a Set per entry (runs once per
+    // row on every listing apply — hot on 1000+ row folders).
+    let same = true;
+    for (const key in old) {
+      if (old[key] !== entry[key]) { same = false; break; }
+    }
+    if (same) {
+      for (const key in entry) {
+        if (!(key in old)) { same = false; break; }
+      }
+    }
     if (!same) changed = true;
     return same ? old : entry;
   });
@@ -369,6 +383,9 @@ export default function MyFiles() {
     const { signal } = controller;
     activeLoadsRef.current += 1;
     const cacheKey = `${authUserKey}|${isTrashView ? 'trash' : listView}|${libraryId || ''}|${currentFolderId || ''}|${debouncedSearchQuery}`;
+    // Delayed skeleton: sub-150ms responses (typical folder nav) never flash
+    // the skeleton at all — the current rows stay until the payload applies.
+    let loadingTimer = null;
     try {
       const cached = listingsCacheRef.current.get(cacheKey);
       // Optimistic paint is limited to the user's own space. Shared scopes (a
@@ -385,22 +402,66 @@ export default function MyFiles() {
         await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
         if (!isCurrent()) return;
       }
-      if (!silent && !cacheFresh) setLoading(true);
+      loadingTimer = !silent && !cacheFresh
+        ? window.setTimeout(() => { if (isCurrent()) setLoading(true); }, 150)
+        : null;
       setRefreshing(true);
       // A library has its own limit: its usage comes with the library list instead of the personal quota.
       // Сам список библиотек грузится один раз через loadLibraries (mount + refreshQuota):
       // здесь он дублировал GET /my-files/libraries на каждый переход по папкам.
-      const [filesPayload, quotaPayload, foldersPayload] = await Promise.all([
-        isTrashView && myFilesAPI.listTrash
-          ? myFilesAPI.listTrash({ libraryId, signal })
-          : myFilesAPI.listFiles({ folderId: currentFolderId, view: listView, q: debouncedSearchQuery, libraryId, signal }),
-        libraryId ? Promise.resolve(null) : myFilesAPI.getQuota({ signal }),
-        myFilesAPI.listFolders ? myFilesAPI.listFolders({ libraryId, signal }) : Promise.resolve({ items: [] }),
-      ]);
+      let filesPayload;
+      let quotaPayload;
+      let foldersPayload;
+      let listingEtag = '';
+      if (isTrashView && myFilesAPI.listTrash) {
+        // The trash endpoint is a separate route — no merged include there yet.
+        [filesPayload, quotaPayload, foldersPayload] = await Promise.all([
+          myFilesAPI.listTrash({ libraryId, signal }),
+          libraryId ? Promise.resolve(null) : myFilesAPI.getQuota({ signal }),
+          myFilesAPI.listFolders ? myFilesAPI.listFolders({ libraryId, signal }) : Promise.resolve({ items: [] }),
+        ]);
+      } else {
+        // include=tree,quota folds the tree + quota calls into the listing
+        // round-trip; If-None-Match lets a revalidation come back as a cheap
+        // 304 instead of re-serializing the folder contents.
+        const listing = await myFilesAPI.listFiles({
+          folderId: currentFolderId,
+          view: listView,
+          q: debouncedSearchQuery,
+          libraryId,
+          include: 'tree,quota',
+          ifNoneMatch: cached?.etag || '',
+          signal,
+        });
+        if (!isCurrent()) return;
+        if (listing?.__notModified && cached?.payload) {
+          ({ filesPayload, quotaPayload, foldersPayload } = cached.payload);
+          listingEtag = listing.__etag || cached.etag || '';
+        } else {
+          filesPayload = listing;
+          // A backend predating `include` returns no merged fields — fall back
+          // to the dedicated calls so mixed-version setups keep working.
+          const [treePayload, extraQuota] = await Promise.all([
+            listing && 'tree_folders' in listing
+              ? Promise.resolve(null)
+              : (myFilesAPI.listFolders ? myFilesAPI.listFolders({ libraryId, signal }) : Promise.resolve({ items: [] })),
+            libraryId || (listing && 'quota' in listing)
+              ? Promise.resolve(null)
+              : myFilesAPI.getQuota({ signal }),
+          ]);
+          if (!isCurrent()) return;
+          quotaPayload = libraryId ? null : (listing?.quota ?? extraQuota ?? null);
+          foldersPayload = listing && 'tree_folders' in listing
+            ? { items: Array.isArray(listing.tree_folders) ? listing.tree_folders : [] }
+            : (treePayload || { items: [] });
+          listingEtag = listing?.__etag || '';
+        }
+      }
       if (!isCurrent()) return;
       applyListingsPayload({ filesPayload, quotaPayload, foldersPayload });
       listingsCacheRef.current.set(cacheKey, {
         t: Date.now(),
+        etag: listingEtag,
         payload: { filesPayload, quotaPayload, foldersPayload },
       });
       if (listingsCacheRef.current.size > LISTINGS_CACHE_MAX) {
@@ -422,6 +483,7 @@ export default function MyFiles() {
       notifyApiError(error, 'Не удалось загрузить список файлов.', { dedupeMode: 'recent' });
     } finally {
       activeLoadsRef.current -= 1;
+      if (loadingTimer) window.clearTimeout(loadingTimer);
       if (isCurrent()) {
         setLoading(false);
         setRefreshing(false);
@@ -1284,7 +1346,10 @@ export default function MyFiles() {
     return allFolders.filter((folder) => !excluded.has(String(folder.id)));
   }, [allFolders, moveDialog.id, moveDialog.kind, selectedKeys]);
 
-  const clearSelection = useCallback(() => setSelectedKeys(new Set()), []);
+  const clearSelection = useCallback(
+    () => setSelectedKeys((current) => (current.size ? new Set() : current)),
+    [],
+  );
 
   useEffect(() => {
     clearSelection();
@@ -1318,31 +1383,41 @@ export default function MyFiles() {
     if (sortField === 'size') {
       result = Number(a.original_size_bytes || 0) - Number(b.original_size_bytes || 0);
     } else if (sortField === 'updated') {
-      result = String(a.updated_at || a.created_at || '').localeCompare(String(b.updated_at || b.created_at || ''));
+      // ISO-8601 timestamps compare lexicographically — no collator needed.
+      const aDate = String(a.updated_at || a.created_at || '');
+      const bDate = String(b.updated_at || b.created_at || '');
+      result = aDate < bDate ? -1 : aDate > bDate ? 1 : 0;
     } else if (sortField === 'owner') {
-      result = ownerLabel(a, currentUsername).localeCompare(ownerLabel(b, currentUsername), 'ru', { sensitivity: 'base' });
+      result = ROW_NAME_COLLATOR.compare(ownerLabel(a, currentUsername), ownerLabel(b, currentUsername));
     } else {
-      result = String(a.name || a.original_file_name || '').localeCompare(
-        String(b.name || b.original_file_name || ''), 'ru', { sensitivity: 'base' },
+      result = ROW_NAME_COLLATOR.compare(
+        String(a.name || a.original_file_name || ''),
+        String(b.name || b.original_file_name || ''),
       );
     }
     return sortDir === 'desc' ? -result : result;
   }, [currentUsername, sortDir, sortField]);
 
   const visibleFolders = useMemo(
-    () => folders.filter((folder) => (
-      matchesSearch(folder.name)
-      && matchesTypeFilter(folder, 'folder', typeFilter)
-      && matchesDateFilter(folder, dateFilter)
-    )).sort(compareRows),
+    () => {
+      const now = new Date();
+      return folders.filter((folder) => (
+        matchesSearch(folder.name)
+        && matchesTypeFilter(folder, 'folder', typeFilter)
+        && matchesDateFilter(folder, dateFilter, now)
+      )).sort(compareRows);
+    },
     [compareRows, dateFilter, folders, matchesSearch, typeFilter],
   );
   const visibleItems = useMemo(
-    () => items.filter((item) => (
-      (matchesSearch(item.original_file_name) || matchesSearch(item.download_file_name))
-      && matchesTypeFilter(item, 'file', typeFilter)
-      && matchesDateFilter(item, dateFilter)
-    )).sort(compareRows),
+    () => {
+      const now = new Date();
+      return items.filter((item) => (
+        (matchesSearch(item.original_file_name) || matchesSearch(item.download_file_name))
+        && matchesTypeFilter(item, 'file', typeFilter)
+        && matchesDateFilter(item, dateFilter, now)
+      )).sort(compareRows);
+    },
     [compareRows, dateFilter, items, matchesSearch, typeFilter],
   );
 

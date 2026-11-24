@@ -202,12 +202,28 @@ export const ROW_COL_OWNER_MIN = 960;
 export const ROW_COL_TRASH_RETENTION_MIN = 400;
 export const ROW_COL_TRASH_DATE_MIN = 560;
 
-export const secondaryColumnSx = (minWidth, display = 'block') => ({
-  display: 'none',
-  [`@container (min-width: ${minWidth}px)`]: { display },
-});
+// sx objects are re-created per row render; identical props must share an
+// identity so MUI's style cache hits instead of re-serializing ~200 objects
+// per windowed render.
+const _secondaryColumnSxCache = new Map();
+export const secondaryColumnSx = (minWidth, display = 'block') => {
+  const key = `${minWidth}|${display}`;
+  let sx = _secondaryColumnSxCache.get(key);
+  if (!sx) {
+    sx = {
+      display: 'none',
+      [`@container (min-width: ${minWidth}px)`]: { display },
+    };
+    _secondaryColumnSxCache.set(key, sx);
+  }
+  return sx;
+};
 
-export const rowGridColumns = (isTrashView) => (isTrashView
+const _rowGridColumnsCache = [null, null];
+export const rowGridColumns = (isTrashView) => {
+  const cached = _rowGridColumnsCache[isTrashView ? 1 : 0];
+  if (cached) return cached;
+  const columns = isTrashView
   ? {
     gridTemplateColumns: 'minmax(0,1fr) 80px',
     [`@container (min-width: ${ROW_COL_TRASH_RETENTION_MIN}px)`]: {
@@ -228,7 +244,10 @@ export const rowGridColumns = (isTrashView) => (isTrashView
     [`@container (min-width: ${ROW_COL_OWNER_MIN}px)`]: {
       gridTemplateColumns: '40px minmax(0,1fr) 140px 160px 96px 48px',
     },
-  });
+  };
+  _rowGridColumnsCache[isTrashView ? 1 : 0] = columns;
+  return columns;
+};
 
 export const ownerLabel = (entry, currentUsername) => {
   if (entry?.library_name) return entry.library_name;

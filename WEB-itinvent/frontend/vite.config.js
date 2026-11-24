@@ -230,6 +230,25 @@ export default defineConfig(({ mode }) => {
     optimizeDeps: {
       include: ['react', 'react-dom', '@emotion/react', '@emotion/styled'],
     },
+    // `vite preview` serves the production build for perf/E2E runs — mirror the
+    // dev proxy so the bundle can reach the backend exactly like `vite dev`.
+    preview: {
+      proxy: {
+        '/api/v1/voice': {
+          target: voiceBackendTarget,
+          changeOrigin: true,
+        },
+        '/api/v1/scan': {
+          target: scanBackendTarget,
+          changeOrigin: true,
+        },
+        '/api': {
+          target: backendTarget,
+          changeOrigin: true,
+          ws: true,
+        },
+      },
+    },
     build: {
       manifest: true,
       rollupOptions: {
