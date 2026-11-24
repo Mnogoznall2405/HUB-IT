@@ -545,7 +545,7 @@
       "id": "FE-0030",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "REJECTED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -556,7 +556,7 @@
       "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "Out-of-scope architectural refactor: god-component split (~80 useState / ~3300-line Networks.jsx) carries regression risk disproportionate to audit benefit; no functional defect identified"
     },
     {
       "id": "FE-0031",
@@ -2627,7 +2627,7 @@
       "id": "FE-0147",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2635,16 +2635,17 @@
       "lines": "2055-2074: window keydown Escape→cancelEditPort без проверки открытых Dialog/Drawer; Ctrl+S аналогично; listener перевешивается каждый рендер",
       "title": "Networks: Escape глобально отменяет редактирование порта поверх любых диалогов",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "d9bf6dc1",
+      "pr": 53
     },
     {
       "id": "FE-0148",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2652,16 +2653,17 @@
       "lines": "1477-1492,2086-2114 → startSocketPointCreation:1450-1475 → applySocketPointDraft:1340-1352 — ни один не проверяет canEdit",
       "title": "Networks: read-only пользователь попадает в режим размещения точки → серия 403",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "d9bf6dc1",
+      "pr": 53
     },
     {
       "id": "FE-0149",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2669,10 +2671,11 @@
       "lines": "1737-1753: openEditBranchDialog грузит getBranchDbMapping без seq/abort-guard",
       "title": "Networks: гонка загрузки db-mapping при быстром переоткрытии диалога филиала",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "d9bf6dc1",
+      "pr": 53
     },
     {
       "id": "FE-0150",
@@ -2715,7 +2718,7 @@
       "id": "FE-0152",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2723,10 +2726,11 @@
       "lines": "41-67 + EquipmentTab.jsx:339-344: state scrollTop переживает размонтирование TableContainer",
       "title": "Networks: виртуализация — stale scrollTop после размонтирования контейнера → «пустая» таблица",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "d9bf6dc1",
+      "pr": 53
     },
     {
       "id": "FE-0153",
