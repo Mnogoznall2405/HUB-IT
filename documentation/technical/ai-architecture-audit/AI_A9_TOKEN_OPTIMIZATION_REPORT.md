@@ -115,3 +115,47 @@ Routing guides (2139 est.) сознательно **не урезаны**: со�
 - `a9-artifacts/a9_prompt_audit.py` — воспроизводимый харнес разбивки (sqlite, scripted LLM).
 - `a9-artifacts/prompt_audit_candidate.json` — замер candidate.
 - `AI_LLM_CALL_LOG_FILE=<path>.jsonl` — live per-call телеметрия (sizes/ids only).
+
+## 10. Cycle 2 hardening (HEAD `9908a9f0`)
+
+Ревью-дефекты закрыты:
+
+- **P0 budget manager**: user prompt собирается как типизированные `(label, text)` блоки на этапе сборки — доверенность больше не выводится из текстовых заголовков (документ, имитирующий «CURRENT USER REQUEST», остаётся `file_context`). Слепой fallback `_compact_head_tail(joined)` удалён: system никогда не режется, protected-блоки (запрос, tool_results, running_summary, task_state, draft) не трогаются; при непомещении — целый промпт + `over_budget=true` в телеметрии вместо повреждённого.
+- **P1 per-tool projection**: реестр политик по tool_id — SEARCH 15 items/800c, DETAIL 25/4000c (mail/doc тела не рубятся на 800), ACTION 50/8000c без drop (draft_id/recipients/диагностика целы для подтверждения), UNKNOWN 50/4000c без агрессивного drop. Маркеры `projection_truncated`/`omitted_items` отделены от серверного `truncated`; running summary показывает `shown_in_prompt=N/M`.
+- **Spec signature**: вложенные объекты раскрываются `{file_name*: string, content*: string, format: xlsx|csv}[]` вместо голого `object[]` — модель не угадывает структуру аргументов.
+- **Telemetry**: `logical_call_id`/`attempt_id`/`transport_attempts`/`streaming_fallback`/`finish_reason`/`cache_write_tokens`; failed-попытки пишутся в JSONL; aux-вызовы (memory_planner, summary) идут через общий `record_llm_call` с локом; `usage: null` = unknown.
+- **Benchmark**: like-for-like матрица main@926dd9f5 × candidate × JEV{0,1} на одном харнесе и сценариях; `prompt_audit_base_jev*.json` сохранены отдельно от candidate.
+
+### Замер (est. tok, sqlite-харнес, scripted LLM)
+
+| Сценарий | base JEV=0 | c3 JEV=0 | base JEV=1 | c3 JEV=1 |
+|---|---|---|---|---|
+| chat_no_tools | 2228 | **1921 (−14%)** | 2228 | 1921 (−14%) |
+| read_itinvent | 2236 | **1929 (−14%)** | 2236 | 1929 (−14%) |
+| act_all_tools | 6730 | **6151 (−9%)** | 3276 | 2925 (−11%) |
+| 60msg | 7716 | **7180 (−7%)** | 4799 | 4469 (−7%) |
+| followup r1/r2 | 6710/7000 | **6131/6525 (−7..9%)** | 3256/3546 | 2905/3299 (−7..11%) |
+
+Экономия A9 изолирована от JEV: −7..14% input на всех сценариях. До цели −40% не дотягивает — остатки в §8/§11.
+
+### Тесты
+`test_ai_prompt_compaction.py` — 11 тестов (protected-overflow, спуфинг заголовков, per-tool projection, nested-object signature) + `test_ai_prompt_budget_preserves_high_priority_tail` переведён на typed API. Runtime suite: 97 passed, 9 pre-existing baseline failures (проверено ранее stash-прогоном).
+
+### Качество
+`a9_quality_corpus.json` — 100 размеченных сценариев (20 CHAT/30 READ/20 ACT/10 multi/10 longctx/10 err) с ожидаемыми инструментами, фактами, запретами. Scripted-LLM проверяет контракты; качество генерации реальной модели — **NOT MEASURED** (нет провайдера).
+
+## 11. TOP-10 оставшихся источников расхода (est. tok, JEV=0 act)
+
+1. `guide_*` routing ~2139 (семантика: draft/confirm/дизамбигуация — резать рискованно).
+2. `tool_specs_*` ~2400 после компакции (per-tool ~80–90 tok нижняя граница однострочника).
+3. system `S:other` 764 (JSON-лок + untrusted-правило + bot prompt).
+4. `guide_answer_style` 416 + `guide_understanding` 393 — дублируются в каждом раунде (часть кэш-префикса).
+5. `conversation_history` — растёт линейно; окно уже ограничено.
+6. `tool_results` — projection помогает, но большие детальные объекты (DETAIL 4000c) дороги.
+7. `running_summary` + `tool_results` частично дублируют друг друга.
+8. `file_context`/`kb_context` при вложениях.
+9. `memory_status`/`db_label`/hints — мелочь по одному, суммарно ~150.
+10. `task_state`/`active_draft` JSON — редко, но необжаты.
+
+## 12. Отключение
+Оптимизации обратимо: пустые блоки — условие рендера; compaction regexes — локальны; projection/fit — чистые функции, фолбэк = прошлое поведение по одному diff. Env-флаги не добавлялись (изменения безопасны по умолчанию).
