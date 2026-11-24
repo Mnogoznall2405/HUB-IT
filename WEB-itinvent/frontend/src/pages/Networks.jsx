@@ -97,7 +97,6 @@ import {
   isBranchWidePortSearch as isBranchWidePortSearchFor,
   makePortDraft,
   resolveDisplayedPorts,
-  resolveFocusPointId,
   resolveOptionValue,
   resolvePendingLookupStatus,
   resolvePortById,
@@ -201,7 +200,6 @@ function Networks() {
   const [pointEditMode, setPointEditMode] = useState(false);
   const [selectedPointSocketInput, setSelectedPointSocketInput] = useState('');
   const [mobileMapPanelOpen, setMobileMapPanelOpen] = useState(false);
-  const [mobilePortEditorOpen, setMobilePortEditorOpen] = useState(false);
 
   const [mapDialogOpen, setMapDialogOpen] = useState(false);
   const [focusMapPointId, setFocusMapPointId] = useState(null);
@@ -214,7 +212,6 @@ function Networks() {
   const [createBranchOpen, setCreateBranchOpen] = useState(false);
   const [createBranchCode, setCreateBranchCode] = useState('');
   const [createBranchName, setCreateBranchName] = useState('');
-  const [createBranchCity, setCreateBranchCity] = useState('tmn');
   const [createBranchDefaultSiteCode, setCreateBranchDefaultSiteCode] = useState('');
   const [createBranchDbId, setCreateBranchDbId] = useState('');
   const [availableDatabases, setAvailableDatabases] = useState([]);
@@ -299,9 +296,6 @@ function Networks() {
   }, [deviceCode, deviceEditId]); // Track deviceCode and whether we're editing
 
   const [loading, setLoading] = useState(false);
-  const [equipmentLoading, setEquipmentLoading] = useState(false);
-  const [socketsLoading, setSocketsLoading] = useState(false);
-  const [mapsLoading, setMapsLoading] = useState(false);
   const [editingPortId, setEditingPortId] = useState(null);
   const [portDraft, setPortDraft] = useState(null);
   const [portSaving, setPortSaving] = useState(false);
@@ -489,11 +483,6 @@ function Networks() {
     const mimeType = String(selectedMap?.mime_type || '').toLowerCase();
     return fileName.endsWith('.pdf') || mimeType.includes('application/pdf');
   }, [selectedMap]);
-
-  const hasBranchDbChanges = useMemo(
-    () => String(branchDbId || '').trim() !== String(branchDbInitialId || '').trim(),
-    [branchDbId, branchDbInitialId]
-  );
 
   const selectedPoint = useMemo(
     () => mapPoints.find((item) => Number(item.id) === Number(selectedPointId)) || null,
@@ -729,18 +718,6 @@ function Networks() {
   const selectedPointSocketMatches = useMemo(
     () => findExactSocketMatches(allPortsWithSocket, selectedPointSocketInput),
     [allPortsWithSocket, selectedPointSocketInput]
-  );
-
-  const focusPointId = useMemo(
-    () => resolveFocusPointId({
-      selectedPointId,
-      pointsForMap,
-      filteredPointsForMap,
-      mapPointSearch,
-      selectedDeviceId,
-      selectedMapId,
-    }),
-    [filteredPointsForMap, mapPointSearch, pointsForMap, selectedDeviceId, selectedMapId, selectedPointId]
   );
 
   const loadBranches = useCallback(async () => {
@@ -1179,14 +1156,10 @@ function Networks() {
   useEffect(() => {
     if (!isMobile) {
       setMobileMapPanelOpen(false);
-      setMobilePortEditorOpen(false);
       return;
     }
     if (tab !== 'maps') {
       setMobileMapPanelOpen(false);
-    }
-    if (tab !== 'equipment') {
-      setMobilePortEditorOpen(false);
     }
   }, [isMobile, tab]);
 
@@ -1216,7 +1189,7 @@ function Networks() {
     setMapFile(null);
     setMapTitle('');
     setMapFloor('');
-    setMapSiteCode('p19');
+    setMapSiteCode(String(selectedBranch?.default_site_code || determineSiteCode(selectedBranch?.name) || 'p19'));
     setMapDialogOpen(true);
   };
 
@@ -1260,6 +1233,7 @@ function Networks() {
 
   const saveMap = async () => {
     if (!branchIdNum || mapBusy) return;
+    const mapSiteName = (availableSites || []).find((site) => site.site_code === mapSiteCode)?.name || mapSiteCode;
     setMapBusy(true);
     try {
       if (mapEditId) {
@@ -1267,7 +1241,7 @@ function Networks() {
           title: mapTitle.trim() || null,
           floor_label: mapFloor.trim() || null,
           site_code: mapSiteCode,
-          site_name: mapSiteCode === 'p21' ? 'Первомайская 21' : 'Первомайская 19',
+          site_name: mapSiteName,
         });
       } else {
         if (!mapFile) {
@@ -1278,7 +1252,7 @@ function Networks() {
         formData.append('branch_id', String(branchIdNum));
         formData.append('file', mapFile);
         formData.append('site_code', mapSiteCode);
-        formData.append('site_name', mapSiteCode === 'p21' ? 'Первомайская 21' : 'Первомайская 19');
+        formData.append('site_name', mapSiteName);
         if (mapTitle.trim()) formData.append('title', mapTitle.trim());
         if (mapFloor.trim()) formData.append('floor_label', mapFloor.trim());
         await networksAPI.uploadMap(formData);
@@ -1654,7 +1628,8 @@ function Networks() {
     }
 
     let payload = {
-      city_code: createBranchCity || 'tmn',
+      // City is not selectable in the UI; the backend always receives 'tmn'.
+      city_code: 'tmn',
       branch_name: branchName,
       default_site_code: createBranchDefaultSiteCode || null,
       db_id: createBranchDbId || null,
@@ -1873,10 +1848,6 @@ function Networks() {
     });
 
     setSocketAutocompleteOptions(filteredFreeSockets);
-
-    if (isMobile) {
-      setMobilePortEditorOpen(true);
-    }
   };
 
   const cancelEditPort = (event) => {
@@ -1885,7 +1856,6 @@ function Networks() {
     setPortDraft(null);
     setSelectedSocketId(null);
     setSocketAutocompleteOpen(false);
-    setMobilePortEditorOpen(false);
   };
 
   const updatePortDraftField = (field, value) => {
@@ -2058,7 +2028,6 @@ function Networks() {
       setEditingPortId(null);
       setPortDraft(null);
       setSelectedSocketId(null);
-      setMobilePortEditorOpen(false);
       if (updatedPort?.requires_point_creation) {
         startSocketPointCreation({
           socket_id: updatedPort.socket_id,
@@ -2871,8 +2840,7 @@ function Networks() {
                   onCreateSocket={openCreateSocketDialog}
                   onDeleteSocket={requestDeleteSocket}
                   deletingSocketId={socketDeleteSaving ? Number(socketDeleteTarget?.id || 0) : null}
-                  pointEditMode={pointEditMode}
-                />
+                        />
               </Box>
             )}
 
