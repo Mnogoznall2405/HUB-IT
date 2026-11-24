@@ -3,7 +3,7 @@
 Репозиторий: `Mnogoznall2405/HUB-IT`
 Ветка: `integration/frontend-remediation` (worktree `C:\Project\HUB-IT-integration`)
 База: `origin/main` @ `926dd9f542d578a156ee7239549caf041d38da21` (post-PR #26, My Files V2)
-Итоговый SHA: `53732f53` (+ коммиты отчётов)
+Итоговый SHA: `a18fc5e7` (включает agent-review фиксы)
 Дата: 2026-11-24
 
 ## 1. Scope и метод
