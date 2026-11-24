@@ -688,7 +688,7 @@
                        "id":  "FE-0032",
                        "severity":  "Medium",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P2",
                        "batch":  "my-files",
                        "page":  null,
@@ -698,12 +698,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "bulk download sequential + bulkBusy + progress",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0033",
@@ -1576,7 +1577,7 @@
                        "id":  "FE-0074",
                        "severity":  "Info",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "my-files",
                        "page":  null,
@@ -1586,12 +1587,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "editor window.open drops opener (keeps popup handle)",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0075",
@@ -2285,7 +2287,7 @@
                        "id":  "FE-0107",
                        "severity":  "Medium",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P2",
                        "batch":  "my-files",
                        "page":  null,
@@ -2295,12 +2297,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "appliedCompareRef + watcher: repeated ?compare= reaches live editor",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0108",
@@ -2390,7 +2393,7 @@
                        "id":  "FE-0112",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "my-files",
                        "page":  null,
@@ -2400,18 +2403,19 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "loadDocsApi tracks src; reloads when public_path changed",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0113",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "my-files",
                        "page":  null,
@@ -2421,12 +2425,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "uiTheme read via ref; mid-session theme reaches next config fetch",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0114",
@@ -2518,7 +2523,7 @@
                        "id":  "FE-0118",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "my-files",
                        "page":  null,
@@ -2528,18 +2533,19 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "mountedRef guards download/restore/load setState",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0119",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "my-files",
                        "page":  null,
@@ -2549,12 +2555,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "initial config validates document.key/token like refresh path",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0120",
@@ -2582,7 +2589,7 @@
                        "id":  "FE-0121",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "my-files",
                        "page":  null,
@@ -2592,18 +2599,19 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "history-view accountKey falls back to username (matches session)",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0122",
                        "severity":  "Info",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "my-files",
                        "page":  null,
@@ -2613,18 +2621,19 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "?edit= deep-link routes through openOfficeEditor preferred window",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0123",
                        "severity":  "Medium",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P2",
                        "batch":  "my-files",
                        "page":  null,
@@ -2634,18 +2643,19 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "openUploadDialog refuses second queue during active upload",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0124",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "my-files",
                        "page":  null,
@@ -2655,18 +2665,19 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "selection reset effect deps + libraryId",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0125",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "my-files",
                        "page":  null,
@@ -2676,18 +2687,19 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "?folder= 403/404/410 -\u003e warn + drop param (no repeat failures)",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0126",
                        "severity":  "Low",
                        "auditStatus":  "Confirmed",
-                       "status":  "OPEN",
+                       "status":  "FIXED",
                        "priority":  "P3",
                        "batch":  "my-files",
                        "page":  null,
@@ -2697,12 +2709,13 @@
                        "related":  [
 
                                    ],
-                       "pr":  null,
+                       "pr":  49,
                        "tests":  [
 
                                  ],
                        "review":  null,
-                       "notes":  ""
+                       "notes":  "bulkProgress per-item in selection bar + confirm dialog",
+                       "commit":  "d73498ea"
                    },
                    {
                        "id":  "FE-0127",
