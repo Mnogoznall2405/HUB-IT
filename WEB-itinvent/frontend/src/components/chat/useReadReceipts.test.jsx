@@ -190,8 +190,12 @@ describe('useReadReceipts', () => {
       if (mode === 'unmount') unmount();
       await act(async () => { window.dispatchEvent(new Event('online')); });
       await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
-      expect(markRead).toHaveBeenCalledTimes(failedAttempts + (mode === 'recover' ? 1 : 0));
-      if (mode === 'recover') expect(markRead).toHaveBeenLastCalledWith('A', 'msg-b');
+      // 'switch' flushes the pending read position to the previous
+      // conversation once instead of dropping it (FE-0081).
+      expect(markRead).toHaveBeenCalledTimes(
+        failedAttempts + (mode === 'recover' || mode === 'switch' ? 1 : 0),
+      );
+      if (mode === 'recover' || mode === 'switch') expect(markRead).toHaveBeenLastCalledWith('A', 'msg-b');
       if (mode !== 'unmount') unmount();
     } finally { observer.restore(); }
   });
@@ -358,7 +362,7 @@ describe('useReadReceipts', () => {
     }
   });
 
-  it('clears pending reads when the conversation changes', async () => {
+  it('flushes pending reads to the previous conversation when it changes', async () => {
     const intersectionObserver = installIntersectionObserverMock();
     const markRead = vi.fn().mockResolvedValue({ ok: true });
 
@@ -390,7 +394,10 @@ describe('useReadReceipts', () => {
         vi.advanceTimersByTime(500);
       });
 
-      expect(markRead).not.toHaveBeenCalled();
+      // The pending read position is delivered to the old conversation before
+      // tracking resets — not dropped (FE-0081).
+      expect(markRead).toHaveBeenCalledTimes(1);
+      expect(markRead).toHaveBeenCalledWith('conv-1', 'msg-b');
     } finally {
       intersectionObserver.restore();
     }

@@ -729,7 +729,12 @@ class ChatSocketClient {
       return;
     }
     if (eventType === 'chat.pong') {
+      const hadMissedPongs = this.missedPongs > 0;
       this.missedPongs = 0;
+      // Recover the degraded status once the transport answers again.
+      if (hadMissedPongs && this.connectionState === 'reconnecting' && this.isOpen()) {
+        this.setStatus('connected');
+      }
       this.resolvePendingRequest(requestId, payload);
       return;
     }
@@ -954,6 +959,11 @@ class ChatSocketClient {
         return;
       }
       this.missedPongs += 1;
+      // A dead TCP socket still looks OPEN for ~2 heartbeat cycles — surface
+      // the degraded state after the first missed pong instead of waiting ~50s.
+      if (this.missedPongs === 1 && this.connectionState === 'connected') {
+        this.setStatus('reconnecting');
+      }
       this.sendCommand({
         type: 'chat.ping',
       }, { timeoutMs: HEARTBEAT_PROBE_TIMEOUT_MS }).catch(() => {
