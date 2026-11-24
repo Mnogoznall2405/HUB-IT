@@ -782,6 +782,7 @@ function VoiceMeetingDrawer({
   const [nameEditor, setNameEditor] = useState(null); // { anchor, speaker }
   const mediaRef = useRef(null);
   const transcriptAbortRef = useRef(null);
+  const drawerBaseRef = useRef(null);
   const scrollRef = useRef(null);
   const mediaTickRef = useRef(0); // троттлинг timeupdate до ~4 раз/с (T33)
   // T47: виртуальный список — видимый диапазон, высоты строк и цель
@@ -812,6 +813,7 @@ function VoiceMeetingDrawer({
   const speakerAudio = useSingleAudio();
 
   const base = meeting?.base_filename;
+  drawerBaseRef.current = base;
   const internalMeetingUrl = base
     ? `${window.location.origin}/voice?meeting=${encodeURIComponent(base)}`
     : '';
@@ -846,7 +848,7 @@ function VoiceMeetingDrawer({
     if (meeting?.has_media) {
       setMediaPartOffset(0);
       el.currentTime = target;
-      el.play?.();
+      el.play?.()?.catch?.(() => {});
       return;
     }
     const picked = pickMergedPart(mediaParts, target);
@@ -861,11 +863,11 @@ function VoiceMeetingDrawer({
         // Guard: another seek may have swapped src before this fired.
         if (el.src !== expected) return;
         el.currentTime = local;
-        el.play?.();
+        el.play?.()?.catch?.(() => {});
       }, { once: true });
     } else {
       el.currentTime = local;
-      el.play?.();
+      el.play?.()?.catch?.(() => {});
     }
   }, [meeting?.has_media, mediaParts]);
 
@@ -979,24 +981,30 @@ function VoiceMeetingDrawer({
   // T42: «Повторить» перезагружает только свой блок, остальные не трогает.
   const retryTopics = React.useCallback(() => {
     if (topicsStatus === 'loading') return;
+    const requestBase = base;
+    const isCurrent = () => requestBase === drawerBaseRef.current;
     setTopicsStatus('loading');
-    voiceJobsAPI.getTopics(base)
-      .then((data) => { setTopics(data.items || []); setTopicsStatus('ready'); })
-      .catch(() => { setTopics([]); setTopicsStatus('error'); });
+    voiceJobsAPI.getTopics(requestBase)
+      .then((data) => { if (isCurrent()) { setTopics(data.items || []); setTopicsStatus('ready'); } })
+      .catch(() => { if (isCurrent()) { setTopics([]); setTopicsStatus('error'); } });
   }, [topicsStatus, base]);
   const retryAssignments = React.useCallback(() => {
     if (assignStatus === 'loading') return;
+    const requestBase = base;
+    const isCurrent = () => requestBase === drawerBaseRef.current;
     setAssignStatus('loading');
-    voiceJobsAPI.getAssignments(base)
-      .then((data) => { setAssignmentItems(data.items || []); setAssignStatus('ready'); })
-      .catch(() => { setAssignmentItems([]); setAssignStatus('error'); });
+    voiceJobsAPI.getAssignments(requestBase)
+      .then((data) => { if (isCurrent()) { setAssignmentItems(data.items || []); setAssignStatus('ready'); } })
+      .catch(() => { if (isCurrent()) { setAssignmentItems([]); setAssignStatus('error'); } });
   }, [assignStatus, base]);
   const retryTranscript = React.useCallback(() => {
     if (transcriptBusy) return;
+    const requestBase = base;
+    const isCurrent = () => requestBase === drawerBaseRef.current;
     setTranscriptBusy(true);
-    voiceJobsAPI.getTranscript(base, { limit: 5000 })
-      .then((data) => setTranscript({ base, data }))
-      .catch(() => setTranscript({ base, data: { segments: [], total: 0, error: true } }))
+    voiceJobsAPI.getTranscript(requestBase, { limit: 5000 })
+      .then((data) => { if (isCurrent()) setTranscript({ base: requestBase, data }); })
+      .catch(() => { if (isCurrent()) setTranscript({ base: requestBase, data: { segments: [], total: 0, error: true } }); })
       .finally(() => setTranscriptBusy(false));
   }, [transcriptBusy, base]);
 

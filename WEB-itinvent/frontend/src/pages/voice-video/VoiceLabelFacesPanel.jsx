@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Autocomplete,
@@ -47,13 +47,23 @@ function ClusterCard({ projectId, cluster, choice, people, onChange }) {
         {cluster.count} лиц, с {formatDuration(cluster.first_t)}. Клик по лицу — оно лишнее (чужое или не лицо).
       </Typography>
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 1 }}>
-        {cluster.shown.map((faceId) => (
+        {cluster.shown.map((faceId, faceIndex) => (
           <Box
             key={faceId}
             component="img"
+            role="button"
+            tabIndex={0}
+            aria-pressed={excluded.includes(faceId)}
+            aria-label={`Лицо ${faceIndex + 1}: ${excluded.includes(faceId) ? 'убрано из выбора' : 'выбрано'}`}
             src={voiceLabelingAPI.faceThumbUrl(projectId, faceId)}
-            alt=""
+            alt={`Лицо ${faceIndex + 1}`}
             onClick={() => toggleFace(faceId)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleFace(faceId);
+              }
+            }}
             sx={{
               width: 56,
               height: 56,
@@ -63,6 +73,7 @@ function ClusterCard({ projectId, cluster, choice, people, onChange }) {
               border: '3px solid',
               borderColor: excluded.includes(faceId) ? 'error.main' : 'transparent',
               opacity: excluded.includes(faceId) ? 0.3 : 1,
+              '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 },
             }}
           />
         ))}
@@ -115,11 +126,15 @@ function VoiceLabelFacesPanel({ projectId, auxJob, onProjectUpdate }) {
   const running = faceJob && ['queued', 'processing'].includes(faceJob.status);
   const anyAuxActive = auxJob && ['queued', 'processing'].includes(auxJob.status);
 
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   const load = useCallback(async () => {
     try {
-      setData(await voiceLabelingAPI.getFaces(projectId));
+      const data = await voiceLabelingAPI.getFaces(projectId);
+      if (mountedRef.current) setData(data);
     } catch (err) {
-      setError(extractDetail(err, 'Не удалось загрузить лица'));
+      if (mountedRef.current) setError(extractDetail(err, 'Не удалось загрузить лица'));
     }
   }, [projectId]);
   const jobKey = faceJob ? `${faceJob.id}:${faceJob.status}` : '';

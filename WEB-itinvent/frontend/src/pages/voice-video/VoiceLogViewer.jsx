@@ -163,11 +163,15 @@ export default function VoiceLogViewer({ open, onClose, jobId, logText, loading 
     }
   }, [filtered, autoScroll]);
 
+  const copyTimerRef = useRef(null);
+  useEffect(() => () => clearTimeout(copyTimerRef.current), []);
+
   const handleCopy = useCallback(() => {
     navigator.clipboard?.writeText(logText || '').then(() => {
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+      clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
   }, [logText]);
 
   const handleDownload = useCallback(() => {
@@ -239,7 +243,7 @@ export default function VoiceLogViewer({ open, onClose, jobId, logText, loading 
 
       <DialogContent dividers sx={{ p: 0, bgcolor: '#1a1b23' }}>
         {loading ? (
-          <Box sx={{ p: 4, textAlign: 'center', color: 'text.secondary' }}>Загрузка…</Box>
+          <Box sx={{ p: 4, textAlign: 'center', color: 'rgba(255,255,255,0.7)' }}>Загрузка…</Box>
         ) : filtered.length === 0 ? (
           <Box sx={{ p: 4, textAlign: 'center', color: 'rgba(255,255,255,0.4)' }}>
             {search ? 'Ничего не найдено' : 'Лог пуст'}
