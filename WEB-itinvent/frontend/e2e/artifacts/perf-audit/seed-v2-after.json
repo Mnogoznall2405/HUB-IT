@@ -1,0 +1,26 @@
+{
+  "base": "http://localhost:18012",
+  "stamp": "mwtir5f1",
+  "libraries": {
+    "a": "7a635ec7e64a4222a06eb6aee7210025",
+    "b": "11bc4f4339d14ef18cd7d54c0744df08"
+  },
+  "libDeepFolderId": "65bced1b79bc477b92a9275c8b562a19",
+  "libChainDepth": 13,
+  "libSpreadCount": 150,
+  "tableFolders": {
+    "10": "45d7d8a6c8ac421aa6e2252e4ad180f7",
+    "100": "83c6ed7e18cd444080e4e69bf5fbac63",
+    "500": "2d6594481c584997867d1082ab164fba",
+    "1000": "ca9ad690d8554e7e87d8c5a520d93711",
+    "5000": "7458f84565894fbf866bdbd5bf75dfe8"
+  },
+  "nav": {
+    "a": "e07c0f999a0b4437bb40ab63079b6684",
+    "b": "431b393c953946819feb810c72afdda6",
+    "c": "c659b948c8c246449d8ce122f53d00fa"
+  },
+  "markerNavB": "marker-nav-b-mwtir5f1.txt",
+  "markerSearch": "perf-search-marker-zebra-mwtir5f1.txt",
+  "users": 39
+}

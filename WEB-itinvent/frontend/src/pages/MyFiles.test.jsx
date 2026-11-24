@@ -619,8 +619,11 @@ describe('MyFiles page', () => {
 
     fireEvent.change(screen.getByTestId('my-files-search-input'), { target: { value: 'photo' } });
 
-    expect(screen.queryByText('report.txt')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('my-files-folder-folder-1')).not.toBeInTheDocument();
+    // Клиентская фильтрация идёт по дебаунсированному запросу — как и серверный поиск.
+    await waitFor(() => {
+      expect(screen.queryByText('report.txt')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('my-files-folder-folder-1')).not.toBeInTheDocument();
+    });
     expect(await screen.findByText('photo.png')).toBeInTheDocument();
   });
 

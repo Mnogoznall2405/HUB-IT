@@ -170,9 +170,12 @@ async function seed(base, seedOut) {
   });
   console.log(`seed: library tree ${chain.length} deep + ${spread.length} spread`);
 
-  // Table-size folders.
+  // Table-size folders. PERF_TABLE_SIZES widens the default set (e.g. adds
+  // 5000 for virtualization checks); the run side reads the same env var.
+  const tableSizes = (process.env.PERF_TABLE_SIZES || '10,100,500,1000')
+    .split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => n > 0);
   const tableFolders = {};
-  for (const n of [10, 100, 500, 1000]) {
+  for (const n of tableSizes) {
     const folder = await post('/api/v1/my-files/folders', { name: `perf-f${n}-${stamp}`, parent_id: null });
     const kinds = ['txt', 'md', 'csv', 'json', 'log'];
     await pool(Array.from({ length: n }, (_, i) => i), 8, async (i) => {
@@ -547,7 +550,9 @@ async function run(base, label, seedFile, runs) {
   }
 
   // ---- C: table sizes ------------------------------------------------------
-  for (const n of [10, 100, 500, 1000]) {
+  const tableSizes = (process.env.PERF_TABLE_SIZES || '10,100,500,1000')
+    .split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => seed.tableFolders[n]);
+  for (const n of tableSizes) {
     const fid = seed.tableFolders[n];
     for (let i = 0; i < (blockOn('table_') ? runs : 0); i += 1) {
       await goMyFiles(page, base);
@@ -574,7 +579,8 @@ async function run(base, label, seedFile, runs) {
     }
   }
 
-  // Show-more expansion inside the 1000 folder (render chunks of 200).
+  // Scroll-to-bottom inside the 1000 folder. Legacy builds expand 200-row
+  // chunks via «Показать ещё»; the virtualized build mounts rows on scroll.
   for (let i = 0; i < (blockOn('table_') ? runs : 0); i += 1) {
     await goMyFiles(page, base, seed.tableFolders[1000]);
     const more = page.getByRole('button', { name: /Показать ещё/ }).first();
@@ -583,6 +589,13 @@ async function run(base, label, seedFile, runs) {
       await timed(page, 'table_show_more', i, () => more.click(), null, { settleMs: 200 });
       emit('table_show_more', 'rows_before', before, 'count', i);
       emit('table_show_more', 'rows_after', await page.locator(ROW_SEL).count(), 'count', i);
+    } else {
+      await timed(page, 'table_scroll_bottom', i,
+        () => page.evaluate(() => window.scrollTo(0, document.scrollingElement.scrollHeight)),
+        null, { settleMs: 250 });
+      emit('table_scroll_bottom', 'rows_dom', await page.locator(ROW_SEL).count(), 'count', i);
+      const bottomSpacer = await page.locator('[data-testid="my-files-rows-spacer-bottom"]').count();
+      emit('table_scroll_bottom', 'reached_end', bottomSpacer === 0 ? 1 : 0, 'bool', i);
     }
   }
 
@@ -596,7 +609,8 @@ async function run(base, label, seedFile, runs) {
     emit('table_sort', 'order_changed', (await page.locator(ROW_SEL).first().textContent()) !== firstName ? 1 : 0, 'bool', i);
   }
 
-  // Scroll FPS in the 1000 folder, all chunks expanded.
+  // Scroll FPS in the 1000 folder. Legacy builds expand all 200-row chunks
+  // first; the virtualized build mounts rows as the document scrolls.
   for (let i = 0; i < (blockOn('table_') ? runs : 0); i += 1) {
     await goMyFiles(page, base, seed.tableFolders[1000]);
     const more = page.getByRole('button', { name: /Показать ещё/ }).first();
@@ -604,6 +618,11 @@ async function run(base, label, seedFile, runs) {
       await more.click();
       await page.waitForTimeout(250);
     }
+    // One full pass so every thumbnail/lazy piece has mounted at least once.
+    await page.evaluate(() => window.scrollTo(0, document.scrollingElement.scrollHeight));
+    await page.waitForTimeout(200);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(100);
     const scroller = '[data-testid="main-layout-content"], main [class*="MuiBox"], main';
     const stats = await page.evaluate(async (sel) => {
       const candidates = [...document.querySelectorAll(sel)].filter((el) => el.scrollHeight > el.clientHeight + 200);
@@ -683,11 +702,14 @@ async function run(base, label, seedFile, runs) {
     await goMyFiles(page, base, seed.tableFolders[100]);
     const rows = page.locator('[data-testid^="my-files-card-"]:not([data-testid^="my-files-card-menu-"])');
     const firstRow = rows.first();
-    const lastRow = rows.nth((await rows.count()) - 1);
     // Right-click opens the shared FileActionsContextMenu in BOTH builds (the
     // baseline has no visible ⋮ — its action column is hover-reveal icons).
     await timed(page, 'menu_open_first', i, () => firstRow.click({ button: 'right' }), page.locator(MENU_SEL).first());
     await page.keyboard.press('Escape');
+    // Scroll to the list end so the last item is mounted (window virtualization).
+    await page.evaluate(() => window.scrollTo(0, document.scrollingElement.scrollHeight));
+    await page.waitForTimeout(150);
+    const lastRow = rows.nth((await rows.count()) - 1);
     await timed(page, 'menu_open_last', i, () => lastRow.click({ button: 'right' }), page.locator(MENU_SEL).first());
     // Group flyout — PR #18 feature; on the flat baseline menu there is no
     // group row, so record -1 instead of failing the whole run. Runs while the

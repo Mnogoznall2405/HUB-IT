@@ -94,10 +94,13 @@ import { buildEditorRoute, buildEditorUrl } from '../lib/myFilesEditorLink';
 import { requestDesktopEditorWindow } from '../lib/desktopBridge';
 import { useMyFilesDownload } from './myFiles/useMyFilesDownload';
 
-const MY_FILES_RENDER_CHUNK = 200;
+// Stable empty array: a fresh [] literal in props re-invalidates downstream
+// useMemo chains (e.g. the sidebar library tree) on every page render.
+const EMPTY_ENTRIES = [];
 import { useMyFilesPreviewController } from './myFiles/useMyFilesPreviewController';
 import { useMyFilesShares } from './myFiles/useMyFilesShares';
 import { useMyFilesUpload } from './myFiles/useMyFilesUpload';
+import { useElementWidth, useWindowVirtualRows } from './myFiles/useWindowVirtualRows';
 import { collectDataTransferFiles } from '../lib/myFilesFolderZip';
 import { folderIsInsideSubtree } from '../lib/myFilesFolderTree';
 import {
@@ -128,6 +131,9 @@ import {
   formatDateTime,
   getFileVisualColors,
   getFileVisualMeta,
+  MY_FILES_FILE_CARD_HEIGHT,
+  MY_FILES_FOLDER_CARD_HEIGHT,
+  MY_FILES_ROW_HEIGHT,
   READY_STATUSES,
 } from '../components/myFiles/myFilesVisual';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
@@ -191,7 +197,7 @@ export default function MyFiles() {
     && (!isLibraryView || authUser?.role === 'admin' || libraryRank >= LIBRARY_ROLE_RANK.manage);
   const libraryName = String(activeLibrary?.name || (libraryInfo && String(libraryInfo.id) === String(libraryId) ? libraryInfo.name : '') || 'Общая папка');
   // "Недавние" and search results mix in rows of libraries the user belongs to: each one is gated by its own role.
-  const entryAccess = (entry) => {
+  const entryAccess = useCallback((entry) => {
     const entryLibraryId = entry?.library_id ? String(entry.library_id) : '';
     const isFile = entry?.original_file_name !== undefined;
     // can_manage_access also marks the uploader of a library file: collaborators stay with the
@@ -225,7 +231,7 @@ export default function MyFiles() {
       canManageAccess: isFile ? fileAccess : adminShare,
       canManage: isFile ? fileAccess : adminShare,
     };
-  };
+  }, [authUser?.role, canManageLibrary, canShare, canWrite, hasPermission, isLibraryView, libraryId, libraryRank]);
   const [items, setItems] = useState([]);
   const [folders, setFolders] = useState([]);
   const [breadcrumbs, setBreadcrumbs] = useState([]);
@@ -317,11 +323,49 @@ export default function MyFiles() {
 
   const beginLoad = useRequestGuard();
   const activeLoadsRef = useRef(0);
+  // In-memory stale-while-revalidate cache for folder listings: a revisit of a
+  // recently opened folder paints instantly, then revalidates in background.
+  // Per page instance (unmount = cache gone), bounded, TTL-limited, and wiped
+  // by invalidateListingsCache on every local mutation — it never outlives a
+  // session or an auth change.
+  const listingsCacheRef = useRef(new Map());
+  const LISTINGS_CACHE_TTL_MS = 20_000;
+  const LISTINGS_CACHE_MAX = 30;
+  const invalidateListingsCache = useCallback(() => {
+    listingsCacheRef.current.clear();
+  }, []);
+  const applyListingsPayload = useCallback(({ filesPayload, quotaPayload, foldersPayload }) => {
+    setLibraryInfo(libraryId && filesPayload?.library ? filesPayload.library : null);
+    const nextItems = Array.isArray(filesPayload?.items) ? filesPayload.items : [];
+    const nextFolders = Array.isArray(filesPayload?.folders) ? filesPayload.folders : [];
+    const nextAllFolders = Array.isArray(foldersPayload?.items) ? foldersPayload.items : [];
+    setItems((prev) => reconcileById(prev, nextItems));
+    setFolders((prev) => reconcileById(prev, nextFolders));
+    setBreadcrumbs((prev) => reconcileById(prev, Array.isArray(filesPayload?.breadcrumbs) ? filesPayload.breadcrumbs : []));
+    setAllFolders((prev) => reconcileById(prev, nextAllFolders));
+    if (!libraryId) {
+      setQuota((prev) => {
+        if (!quotaPayload) return null;
+        if (prev && Object.keys(quotaPayload).every((key) => prev[key] === quotaPayload[key])) return prev;
+        return quotaPayload;
+      });
+    }
+  }, [libraryId]);
   const loadData = useCallback(async ({ silent = false } = {}) => {
     const isCurrent = beginLoad();
     latestIsCurrentRef.current = isCurrent;
     activeLoadsRef.current += 1;
-    if (!silent) setLoading(true);
+    const cacheKey = `${isTrashView ? 'trash' : listView}|${libraryId || ''}|${currentFolderId || ''}|${debouncedSearchQuery}`;
+    const cached = listingsCacheRef.current.get(cacheKey);
+    const cacheFresh = !silent && cached && (Date.now() - cached.t) < LISTINGS_CACHE_TTL_MS;
+    if (cacheFresh) {
+      applyListingsPayload(cached.payload);
+      // Let the cached paint commit before the revalidation fetch + second
+      // apply — keeps the perceived navigation instant.
+      await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+      if (!isCurrent()) return;
+    }
+    if (!silent && !cacheFresh) setLoading(true);
     setRefreshing(true);
     try {
       // A library has its own limit: its usage comes with the library list instead of the personal quota.
@@ -335,20 +379,13 @@ export default function MyFiles() {
         myFilesAPI.listFolders ? myFilesAPI.listFolders({ libraryId }) : Promise.resolve({ items: [] }),
       ]);
       if (!isCurrent()) return;
-      setLibraryInfo(libraryId && filesPayload?.library ? filesPayload.library : null);
-      const nextItems = Array.isArray(filesPayload?.items) ? filesPayload.items : [];
-      const nextFolders = Array.isArray(filesPayload?.folders) ? filesPayload.folders : [];
-      const nextAllFolders = Array.isArray(foldersPayload?.items) ? foldersPayload.items : [];
-      setItems((prev) => reconcileById(prev, nextItems));
-      setFolders((prev) => reconcileById(prev, nextFolders));
-      setBreadcrumbs((prev) => reconcileById(prev, Array.isArray(filesPayload?.breadcrumbs) ? filesPayload.breadcrumbs : []));
-      setAllFolders((prev) => reconcileById(prev, nextAllFolders));
-      if (!libraryId) {
-        setQuota((prev) => {
-          if (!quotaPayload) return null;
-          if (prev && Object.keys(quotaPayload).every((key) => prev[key] === quotaPayload[key])) return prev;
-          return quotaPayload;
-        });
+      applyListingsPayload({ filesPayload, quotaPayload, foldersPayload });
+      listingsCacheRef.current.set(cacheKey, {
+        t: Date.now(),
+        payload: { filesPayload, quotaPayload, foldersPayload },
+      });
+      if (listingsCacheRef.current.size > LISTINGS_CACHE_MAX) {
+        listingsCacheRef.current.delete(listingsCacheRef.current.keys().next().value);
       }
     } catch (error) {
       if (!isCurrent()) return;
@@ -360,7 +397,12 @@ export default function MyFiles() {
         setRefreshing(false);
       }
     }
-  }, [beginLoad, currentFolderId, debouncedSearchQuery, isTrashView, libraryId, listView, notifyApiError]);
+  }, [applyListingsPayload, beginLoad, currentFolderId, debouncedSearchQuery, isTrashView, libraryId, listView, notifyApiError]);
+
+  const postMutationLoadData = useCallback(
+    (opts) => { listingsCacheRef.current.clear(); return loadData(opts); },
+    [loadData],
+  );
 
   const loadLibraries = useCallback(async () => {
     try {
@@ -589,7 +631,9 @@ export default function MyFiles() {
     libraryId,
     isSpecialView,
     allFolders,
-    loadData,
+    // Upload completions refresh listings and may add files anywhere — the
+    // wrapped loader drops the SWR cache first so a revisit can't flash stale data.
+    loadData: postMutationLoadData,
     notifySuccess,
     notifyWarning,
     notifyApiError,
@@ -758,6 +802,7 @@ export default function MyFiles() {
       action: async () => {
         try {
           await myFilesAPI.deleteFile(item.id);
+          listingsCacheRef.current.clear();
           const id = String(item.id);
           setItems((prev) => prev.filter((entryItem) => String(entryItem.id) !== id));
           notifySuccess('Файл удалён.', { source: 'my-files-delete', dedupeMode: 'none' });
@@ -817,6 +862,7 @@ export default function MyFiles() {
     try {
       const created = await myFilesAPI.createFolder({ name, parentId: currentFolderId, libraryId });
       if (created?.id) {
+        listingsCacheRef.current.clear();
         setFolders((prev) => [...prev, created]);
         setAllFolders((prev) => [...prev, created]);
       }
@@ -852,6 +898,7 @@ export default function MyFiles() {
           String(entryItem.id) === id ? { ...entryItem, ...(updated?.id ? updated : fallback) } : entryItem
         )));
       }
+      listingsCacheRef.current.clear();
       setRenameDialog({ open: false, kind: '', id: '', name: '' });
       notifySuccess('Переименовано.', { source: 'my-files-rename', dedupeMode: 'none' });
     } catch (error) {
@@ -885,6 +932,7 @@ export default function MyFiles() {
           ? prev.map((entryItem) => (String(entryItem.id) === id ? { ...entryItem, folder_id: target } : entryItem))
           : prev.filter((entryItem) => String(entryItem.id) !== id));
       }
+      listingsCacheRef.current.clear();
       setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' });
       notifySuccess('Объект перемещён.', { source: 'my-files-move', dedupeMode: 'none' });
     } catch (error) {
@@ -902,6 +950,7 @@ export default function MyFiles() {
       action: async () => {
         try {
           await myFilesAPI.deleteFolder(folder.id);
+          listingsCacheRef.current.clear();
           const removed = collectFolderSubtreeIds(folder.id);
           setFolders((prev) => prev.filter((entryItem) => !removed.has(String(entryItem.id))));
           setAllFolders((prev) => prev.filter((entryItem) => !removed.has(String(entryItem.id))));
@@ -925,6 +974,7 @@ export default function MyFiles() {
         await myFilesAPI.restoreFile(id);
         setItems((prev) => prev.filter((entryItem) => String(entryItem.id) !== targetId));
       }
+      listingsCacheRef.current.clear();
       notifySuccess('Восстановлено из корзины.', { source: 'my-files-restore', dedupeMode: 'none' });
       void refreshQuota();
     } catch (error) {
@@ -950,6 +1000,7 @@ export default function MyFiles() {
             await myFilesAPI.purgeFile(id);
             setItems((prev) => prev.filter((entryItem) => String(entryItem.id) !== targetId));
           }
+          listingsCacheRef.current.clear();
           notifySuccess('Удалено навсегда.', { source: 'my-files-purge', dedupeMode: 'none' });
           void refreshQuota();
         } catch (error) {
@@ -968,6 +1019,7 @@ export default function MyFiles() {
       action: async () => {
         try {
           await myFilesAPI.emptyTrash({ libraryId });
+          listingsCacheRef.current.clear();
           setItems([]);
           setFolders([]);
           notifySuccess('Корзина очищена.', { source: 'my-files-empty-trash', dedupeMode: 'none' });
@@ -1143,7 +1195,7 @@ export default function MyFiles() {
 
   useEffect(() => {
     clearSelection();
-  }, [currentFolderId, viewParam, searchQuery, typeFilter, dateFilter, clearSelection]);
+  }, [currentFolderId, viewParam, debouncedSearchQuery, typeFilter, dateFilter, clearSelection]);
 
   // A fresh selection or a navigation wins over an entry pinned via «Сведения».
   useEffect(() => {
@@ -1159,11 +1211,14 @@ export default function MyFiles() {
     });
   }, []);
 
+  // Client filtering follows the debounced query (the same value the server
+  // search uses): refilter+resort per keystroke on a 1000-row list was the
+  // main input-latency cost during search.
   const matchesSearch = useCallback((name) => {
-    const query = String(searchQuery || '').trim().toLowerCase();
+    const query = String(debouncedSearchQuery || '').trim().toLowerCase();
     if (!query) return true;
     return String(name || '').toLowerCase().includes(query);
-  }, [searchQuery]);
+  }, [debouncedSearchQuery]);
 
   const compareRows = useCallback((a, b) => {
     let result = 0;
@@ -1198,21 +1253,52 @@ export default function MyFiles() {
     [compareRows, dateFilter, items, matchesSearch, typeFilter],
   );
 
-  // Progressive render: folders with hundreds of files mount in chunks instead
-  // of one 500-row DOM pass. Rows already carry content-visibility; the cap
-  // keeps React mount/reconcile cost bounded too.
-  const [renderLimit, setRenderLimit] = useState(MY_FILES_RENDER_CHUNK);
-  useEffect(() => {
-    setRenderLimit(MY_FILES_RENDER_CHUNK);
-  }, [currentFolderId, isSpecialView, searchQuery, sortField, sortDir, typeFilter, dateFilter]);
-  const renderedItems = useMemo(
-    () => visibleItems.slice(0, renderLimit),
-    [renderLimit, visibleItems],
+  // Per-entry access flags are computed once per data/permission change and
+  // shared by every row prop, instead of 3-4 entryAccess() calls per row on
+  // every page render.
+  const entryAccessById = useMemo(() => {
+    const map = new Map();
+    for (const folder of visibleFolders) map.set(`folder:${folder.id}`, entryAccess(folder));
+    for (const item of visibleItems) map.set(`file:${item.id}`, entryAccess(item));
+    return map;
+  }, [entryAccess, visibleFolders, visibleItems]);
+  const accessOfEntry = useCallback(
+    (entry) => (
+      entryAccessById.get(`${entry?.original_file_name !== undefined ? 'file' : 'folder'}:${entry?.id}`)
+      || entryAccess(entry)
+    ),
+    [entryAccess, entryAccessById],
   );
-  const hiddenItemsCount = Math.max(0, visibleItems.length - renderedItems.length);
-  const showMoreItems = useCallback(() => {
-    setRenderLimit((current) => current + MY_FILES_RENDER_CHUNK);
-  }, []);
+
+  // Flattened rows drive the window-scroll virtualizer: folders stay on top
+  // (existing layout), files follow; only the visible slice is mounted.
+  const virtualRows = useMemo(
+    () => [
+      ...visibleFolders.map((entry) => ({ kind: 'folder', entry })),
+      ...visibleItems.map((entry) => ({ kind: 'file', entry })),
+    ],
+    [visibleFolders, visibleItems],
+  );
+  const listVirtual = useWindowVirtualRows({
+    itemCount: virtualRows.length,
+    rowHeight: MY_FILES_ROW_HEIGHT,
+  });
+
+  // Grid view: virtualize by grid ROWS. Column counts mirror the CSS
+  // repeat(auto-fill, minmax(N,1fr)) rule — floor((width+gap)/(N+gap)).
+  const [gridWidthRef, gridWidth] = useElementWidth();
+  const folderGridCols = Math.max(1, Math.floor((gridWidth + 8) / (220 + 8)) || 1);
+  const fileGridCols = Math.max(1, Math.floor((gridWidth + 12) / (190 + 12)) || 1);
+  const foldersVirtual = useWindowVirtualRows({
+    itemCount: Math.ceil(visibleFolders.length / folderGridCols),
+    rowHeight: MY_FILES_FOLDER_CARD_HEIGHT + 8,
+    overscan: 4,
+  });
+  const filesVirtual = useWindowVirtualRows({
+    itemCount: Math.ceil(visibleItems.length / fileGridCols),
+    rowHeight: MY_FILES_FILE_CARD_HEIGHT + 12,
+    overscan: 4,
+  });
 
   const toggleSort = useCallback((field) => {
     if (sortField === field) {
@@ -1230,8 +1316,14 @@ export default function MyFiles() {
     ],
     [visibleFolders, visibleItems],
   );
-  const allSelected = allRowKeys.length > 0 && allRowKeys.every((key) => selectedKeys.has(key));
-  const someSelected = allRowKeys.some((key) => selectedKeys.has(key));
+  const allSelected = useMemo(
+    () => allRowKeys.length > 0 && allRowKeys.every((key) => selectedKeys.has(key)),
+    [allRowKeys, selectedKeys],
+  );
+  const someSelected = useMemo(
+    () => allRowKeys.some((key) => selectedKeys.has(key)),
+    [allRowKeys, selectedKeys],
+  );
 
   const toggleSelectAll = useCallback(() => {
     setSelectedKeys((current) => {
@@ -1360,6 +1452,7 @@ export default function MyFiles() {
             }
           }
           if (removedIds.size > 0) {
+            listingsCacheRef.current.clear();
             setFolders((prev) => prev.filter((entryItem) => !removedIds.has(String(entryItem.id))));
             setAllFolders((prev) => prev.filter((entryItem) => !removedIds.has(String(entryItem.id))));
             setItems((prev) => prev.filter((entryItem) => !removedIds.has(String(entryItem.id))));
@@ -1421,6 +1514,7 @@ export default function MyFiles() {
           failed.push(`файл «${getMyFileName(file)}»`);
         }
       }
+      if (movedFileIds.size > 0 || movedFolderIds.size > 0) listingsCacheRef.current.clear();
       if (movedFolderIds.size > 0) {
         setAllFolders((prev) => prev.map((entryItem) => (
           movedFolderIds.has(String(entryItem.id)) ? { ...entryItem, parent_id: targetFolderId } : entryItem
@@ -1597,7 +1691,7 @@ export default function MyFiles() {
     contextTitle: detailsContextTitle,
     contextChips: isLibraryView && libraryRole
       ? [{ key: 'role', label: LIBRARY_ROLE_LABELS[libraryRole] || libraryRole }]
-      : [],
+      : EMPTY_ENTRIES,
     quota: detailsTarget || detailsMulti ? null : activeQuota,
     ownerText: detailsTarget ? ownerLabel(detailsTarget.entry, currentUsername) : '',
     locationLabel: detailsLocationLabel,
@@ -1633,7 +1727,7 @@ export default function MyFiles() {
     },
     onLibraryCreate: () => setLibraryDialog({ open: true, library: null }),
     // Дерево показываем только под открытой библиотекой из уже загруженного списка папок.
-    libraryFolders: isLibraryView ? allFolders : [],
+    libraryFolders: isLibraryView ? allFolders : EMPTY_ENTRIES,
     currentFolderId: isLibraryView ? currentFolderId : null,
     onLibraryFolderOpen: (folder) => navigateToFolder(folder.id, libraryId),
     quota: activeQuota,
@@ -2103,6 +2197,7 @@ export default function MyFiles() {
                 anchorEl={filterMenu.anchor}
                 open={Boolean(filterMenu.anchor)}
                 onClose={() => setFilterMenu({ kind: '', anchor: null })}
+                disableScrollLock
               >
                 {(filterMenu.kind === 'date' ? DATE_FILTERS : TYPE_FILTERS).map((option) => (
                   <MenuItem
@@ -2386,73 +2481,70 @@ export default function MyFiles() {
                 </Stack>
               ) : null}
 
-              {!loading && visibleFolders.map((folder) => (
-                <FolderRow
-                  key={`folder-${folder.id}`}
-                  folder={folder}
-                  isTrashView={isTrashView}
-                  currentUsername={currentUsername}
-                  canWrite={entryAccess(folder).canWrite}
-                  canShare={entryAccess(folder).canShare}
-                  isSelected={selectedKeys.has(`folder:${folder.id}`)}
-                  isDropTarget={dropTargetFolderId === String(folder.id)}
-                  folderDropProps={folderDropProps}
-                  folderDragProps={folderDragProps}
-                  navigateToFolder={navigateToFolder}
-                  openFolderActionsMenu={openFolderActionsMenu}
-                  openRenameDialog={openRenameDialog}
-                  handleFolderShare={handleFolderShare}
-                  onFolderCollaborators={entryAccess(folder).canShare && officeStatus.enabled && !entryAccess(folder).library ? setCollaboratorsFolder : undefined}
-                  handleDeleteFolder={handleDeleteFolder}
-                  handleRestoreEntry={handleRestoreEntry}
-                  handlePurgeEntry={handlePurgeEntry}
-                  onToggleFavorite={entryAccess(folder).library ? undefined : handleToggleFavorite}
-                  toggleSelected={toggleSelected}
-                />
-              ))}
-
-              {!loading && renderedItems.map((item) => (
-                <FileRow
-                  key={item.id}
-                  item={item}
-                  isTrashView={isTrashView}
-                  currentUsername={currentUsername}
-                  canWrite={entryAccess(item).canWrite}
-                  canShare={entryAccess(item).canShare}
-                  isSelected={selectedKeys.has(`file:${item.id}`)}
-                  downloading={downloadingFileId === item.id}
-                  fileDragProps={fileDragProps}
-                  openDocumentPreview={openDocumentPreview}
-                  openFileActionsMenu={openFileActionsMenu}
-                  handleRestoreEntry={handleRestoreEntry}
-                  handlePurgeEntry={handlePurgeEntry}
-                  handleDownload={handleDownload}
-                  handleShare={handleShare}
-                  handleDelete={handleDelete}
-                  onToggleFavorite={entryAccess(item).library ? undefined : handleToggleFavorite}
-                  onOpenSharedFile={openSharedFile}
-                  onOpenVersions={setVersionsFile}
-                  officeEditable={item.shared_with_me ? isOfficeEditable(item) : undefined}
-                  opensInEditor={opensInEditor(item)}
-                  toggleSelected={toggleSelected}
-                />
-              ))}
-
-              {hiddenItemsCount > 0 ? (
-                <Box sx={{ display: 'flex', justifyContent: 'center', py: 1.5 }}>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    onClick={showMoreItems}
-                    data-testid="my-files-show-more"
-                  >
-                    Показать ещё {Math.min(MY_FILES_RENDER_CHUNK, hiddenItemsCount)} из {hiddenItemsCount}
-                  </Button>
+              {!loading && virtualRows.length > 0 ? (
+                <Box ref={listVirtual.containerRef} data-testid="my-files-rows">
+                  {listVirtual.topSpacerHeight > 0 ? (
+                    <Box aria-hidden="true" data-testid="my-files-rows-spacer-top" sx={{ height: listVirtual.topSpacerHeight }} />
+                  ) : null}
+                  {virtualRows.slice(listVirtual.start, listVirtual.end).map((row) => (
+                    row.kind === 'folder' ? (
+                      <FolderRow
+                        key={`folder-${row.entry.id}`}
+                        folder={row.entry}
+                        isTrashView={isTrashView}
+                        currentUsername={currentUsername}
+                        canWrite={accessOfEntry(row.entry).canWrite}
+                        canShare={accessOfEntry(row.entry).canShare}
+                        isSelected={selectedKeys.has(`folder:${row.entry.id}`)}
+                        isDropTarget={dropTargetFolderId === String(row.entry.id)}
+                        folderDropProps={folderDropProps}
+                        folderDragProps={folderDragProps}
+                        navigateToFolder={navigateToFolder}
+                        openFolderActionsMenu={openFolderActionsMenu}
+                        openRenameDialog={openRenameDialog}
+                        handleFolderShare={handleFolderShare}
+                        onFolderCollaborators={accessOfEntry(row.entry).canShare && officeStatus.enabled && !accessOfEntry(row.entry).library ? setCollaboratorsFolder : undefined}
+                        handleDeleteFolder={handleDeleteFolder}
+                        handleRestoreEntry={handleRestoreEntry}
+                        handlePurgeEntry={handlePurgeEntry}
+                        onToggleFavorite={accessOfEntry(row.entry).library ? undefined : handleToggleFavorite}
+                        toggleSelected={toggleSelected}
+                      />
+                    ) : (
+                      <FileRow
+                        key={row.entry.id}
+                        item={row.entry}
+                        isTrashView={isTrashView}
+                        currentUsername={currentUsername}
+                        canWrite={accessOfEntry(row.entry).canWrite}
+                        canShare={accessOfEntry(row.entry).canShare}
+                        isSelected={selectedKeys.has(`file:${row.entry.id}`)}
+                        downloading={downloadingFileId === row.entry.id}
+                        fileDragProps={fileDragProps}
+                        openDocumentPreview={openDocumentPreview}
+                        openFileActionsMenu={openFileActionsMenu}
+                        handleRestoreEntry={handleRestoreEntry}
+                        handlePurgeEntry={handlePurgeEntry}
+                        handleDownload={handleDownload}
+                        handleShare={handleShare}
+                        handleDelete={handleDelete}
+                        onToggleFavorite={accessOfEntry(row.entry).library ? undefined : handleToggleFavorite}
+                        onOpenSharedFile={openSharedFile}
+                        onOpenVersions={setVersionsFile}
+                        officeEditable={row.entry.shared_with_me ? isOfficeEditable(row.entry) : undefined}
+                        opensInEditor={opensInEditor(row.entry)}
+                        toggleSelected={toggleSelected}
+                      />
+                    )
+                  ))}
+                  {listVirtual.bottomSpacerHeight > 0 ? (
+                    <Box aria-hidden="true" data-testid="my-files-rows-spacer-bottom" sx={{ height: listVirtual.bottomSpacerHeight }} />
+                  ) : null}
                 </Box>
               ) : null}
             </Paper>
             ) : (
-            <Box data-testid="my-files-grid">
+            <Box data-testid="my-files-grid" ref={gridWidthRef}>
               {!loading && visibleItems.length === 0 && visibleFolders.length === 0 ? (
                 <Stack spacing={1.5} alignItems="center" sx={{ py: 6 }}>
                   {isTrashView
@@ -2483,33 +2575,40 @@ export default function MyFiles() {
                   >
                     Папки
                   </Typography>
-                  <Box
-                    sx={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-                      gap: 1,
-                      mb: visibleItems.length > 0 ? 2 : 0,
-                    }}
-                  >
-                    {visibleFolders.map((folder) => (
-                      <FolderCard
-                        key={`folder-${folder.id}`}
-                        folder={folder}
-                        isTrashView={isTrashView}
-                        canWrite={entryAccess(folder).canWrite}
-                        isSelected={selectedKeys.has(`folder:${folder.id}`)}
-                        isDropTarget={dropTargetFolderId === String(folder.id)}
-                        folderDropProps={folderDropProps}
-                        folderDragProps={folderDragProps}
-                        navigateToFolder={navigateToFolder}
-                        openFolderActionsMenu={openFolderActionsMenu}
-                        handleRestoreEntry={handleRestoreEntry}
-                        handlePurgeEntry={handlePurgeEntry}
-                        onToggleFavorite={entryAccess(folder).library ? undefined : handleToggleFavorite}
-                        onOpenSharedFile={openSharedFile}
-                        toggleSelected={toggleSelected}
-                      />
-                    ))}
+                  <Box ref={foldersVirtual.containerRef} sx={{ mb: visibleItems.length > 0 ? 2 : 0 }}>
+                    {foldersVirtual.topSpacerHeight > 0 ? (
+                      <Box aria-hidden="true" data-testid="my-files-grid-spacer-folders-top" sx={{ height: foldersVirtual.topSpacerHeight }} />
+                    ) : null}
+                    <Box
+                      sx={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+                        gap: 1,
+                      }}
+                    >
+                      {visibleFolders.slice(foldersVirtual.start * folderGridCols, foldersVirtual.end * folderGridCols).map((folder) => (
+                        <FolderCard
+                          key={`folder-${folder.id}`}
+                          folder={folder}
+                          isTrashView={isTrashView}
+                          canWrite={accessOfEntry(folder).canWrite}
+                          isSelected={selectedKeys.has(`folder:${folder.id}`)}
+                          isDropTarget={dropTargetFolderId === String(folder.id)}
+                          folderDropProps={folderDropProps}
+                          folderDragProps={folderDragProps}
+                          navigateToFolder={navigateToFolder}
+                          openFolderActionsMenu={openFolderActionsMenu}
+                          handleRestoreEntry={handleRestoreEntry}
+                          handlePurgeEntry={handlePurgeEntry}
+                          onToggleFavorite={accessOfEntry(folder).library ? undefined : handleToggleFavorite}
+                          onOpenSharedFile={openSharedFile}
+                          toggleSelected={toggleSelected}
+                        />
+                      ))}
+                    </Box>
+                    {foldersVirtual.bottomSpacerHeight > 0 ? (
+                      <Box aria-hidden="true" data-testid="my-files-grid-spacer-folders-bottom" sx={{ height: foldersVirtual.bottomSpacerHeight }} />
+                    ) : null}
                   </Box>
                 </>
               ) : null}
@@ -2525,46 +2624,42 @@ export default function MyFiles() {
                       Файлы
                     </Typography>
                   ) : null}
-                  <Box
-                    sx={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))',
-                      gap: 1.5,
-                    }}
-                  >
-                    {renderedItems.map((item) => (
-                      <FileCard
-                        key={item.id}
-                        item={item}
-                        isTrashView={isTrashView}
-                        canWrite={entryAccess(item).canWrite}
-                        isSelected={selectedKeys.has(`file:${item.id}`)}
-                        thumbUrl={thumbs[String(item.id)] || ''}
-                        fileDragProps={fileDragProps}
-                        observeThumbTarget={observeThumbTarget}
-                        openDocumentPreview={openDocumentPreview}
-                        openFileActionsMenu={openFileActionsMenu}
-                        handleRestoreEntry={handleRestoreEntry}
-                        handlePurgeEntry={handlePurgeEntry}
-                        onToggleFavorite={entryAccess(item).library ? undefined : handleToggleFavorite}
-                        onOpenSharedFile={openSharedFile}
-                        opensInEditor={opensInEditor(item)}
-                        toggleSelected={toggleSelected}
-                      />
-                    ))}
-                  </Box>
-                  {hiddenItemsCount > 0 ? (
-                    <Box sx={{ display: 'flex', justifyContent: 'center', py: 1.5 }}>
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        onClick={showMoreItems}
-                        data-testid="my-files-show-more"
-                      >
-                        Показать ещё {Math.min(MY_FILES_RENDER_CHUNK, hiddenItemsCount)} из {hiddenItemsCount}
-                      </Button>
+                  <Box ref={filesVirtual.containerRef}>
+                    {filesVirtual.topSpacerHeight > 0 ? (
+                      <Box aria-hidden="true" data-testid="my-files-grid-spacer-files-top" sx={{ height: filesVirtual.topSpacerHeight }} />
+                    ) : null}
+                    <Box
+                      sx={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))',
+                        gap: 1.5,
+                      }}
+                    >
+                      {visibleItems.slice(filesVirtual.start * fileGridCols, filesVirtual.end * fileGridCols).map((item) => (
+                        <FileCard
+                          key={item.id}
+                          item={item}
+                          isTrashView={isTrashView}
+                          canWrite={accessOfEntry(item).canWrite}
+                          isSelected={selectedKeys.has(`file:${item.id}`)}
+                          thumbUrl={thumbs[String(item.id)] || ''}
+                          fileDragProps={fileDragProps}
+                          observeThumbTarget={observeThumbTarget}
+                          openDocumentPreview={openDocumentPreview}
+                          openFileActionsMenu={openFileActionsMenu}
+                          handleRestoreEntry={handleRestoreEntry}
+                          handlePurgeEntry={handlePurgeEntry}
+                          onToggleFavorite={accessOfEntry(item).library ? undefined : handleToggleFavorite}
+                          onOpenSharedFile={openSharedFile}
+                          opensInEditor={opensInEditor(item)}
+                          toggleSelected={toggleSelected}
+                        />
+                      ))}
                     </Box>
-                  ) : null}
+                    {filesVirtual.bottomSpacerHeight > 0 ? (
+                      <Box aria-hidden="true" data-testid="my-files-grid-spacer-files-bottom" sx={{ height: filesVirtual.bottomSpacerHeight }} />
+                    ) : null}
+                  </Box>
                 </>
               ) : null}
             </Box>
@@ -2669,7 +2764,7 @@ export default function MyFiles() {
               notifySuccess('Копия создана.', { source: 'my-files-copy', dedupeMode: 'none' });
               const sameSpace = String(target.libraryId || '') === String(libraryId || '');
               const sameFolder = String(target.folderId || '') === String(currentFolderId || '');
-              if (sameSpace && sameFolder) void loadData({ silent: true });
+              if (sameSpace && sameFolder) void postMutationLoadData({ silent: true });
               if (!target.libraryId) void refreshQuota();
             }}
           />
@@ -2683,7 +2778,7 @@ export default function MyFiles() {
               if (!changed) return;
               void loadLibraries();
               if (removedId && String(removedId) === String(libraryId)) navigateToView(null);
-              else if (libraryId) void loadData({ silent: true });
+              else if (libraryId) void postMutationLoadData({ silent: true });
             }}
           />
 
@@ -2716,7 +2811,7 @@ export default function MyFiles() {
               setCollaboratorsFolder(null);
               if (saved) {
                 notifySuccess('Доступ к папке обновлён.', { source: 'my-files-collaborators', dedupeMode: 'none' });
-                void loadData({ silent: true });
+                void postMutationLoadData({ silent: true });
               }
             }}
           />
@@ -2732,7 +2827,7 @@ export default function MyFiles() {
               setVersionsFile(null);
               if (restored) {
                 notifySuccess('Версия возвращена.', { source: 'my-files-versions', dedupeMode: 'none' });
-                void loadData({ silent: true });
+                void postMutationLoadData({ silent: true });
               }
             }}
           />
@@ -2743,6 +2838,9 @@ export default function MyFiles() {
             anchorReference="anchorPosition"
             anchorPosition={folderActionsMenu.anchorPosition || undefined}
             MenuListProps={{ 'aria-label': `Действия с папкой ${folderActionsMenu.folder?.name || 'папка'}` }}
+            // См. FileActionsContextMenu: scroll-lock на большом списке даёт
+            // синхронный рефлоу всего документа при каждом открытии меню.
+            disableScrollLock
             PaperProps={{
               sx: {
                 minWidth: 220,

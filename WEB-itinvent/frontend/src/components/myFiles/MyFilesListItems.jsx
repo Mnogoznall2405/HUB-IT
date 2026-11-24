@@ -33,8 +33,12 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { isFileActionsKeyboardShortcut } from '../fileActions/FileActionsContextMenu';
 import { formatFileSize, isMyFilePreviewSupported } from '../../lib/myFilesPreview';
 import {
+  formatDateShort,
   formatDateTime,
   getFileVisualColors,
+  MY_FILES_FILE_CARD_HEIGHT,
+  MY_FILES_FOLDER_CARD_HEIGHT,
+  MY_FILES_ROW_HEIGHT,
   getFileVisualMeta,
   QUICK_ACTIONS_OVERLAY_SX,
   READY_STATUSES,
@@ -78,12 +82,6 @@ function CoEditChip({ item, overlay = false }) {
     </Tooltip>
   );
 }
-
-const formatDateShort = (value) => {
-  const parsed = new Date(String(value || ''));
-  if (Number.isNaN(parsed.getTime())) return '—';
-  return parsed.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
-};
 
 const getRemainingShort = (expiresAt) => {
   const target = new Date(String(expiresAt || '')).getTime();
@@ -304,6 +302,9 @@ export const FolderRow = memo(function FolderRow({
         alignItems: 'center',
         px: 1,
         py: 0.5,
+        // Fixed height keeps the window virtualizer's spacer math exact.
+        height: MY_FILES_ROW_HEIGHT,
+        boxSizing: 'border-box',
         cursor: isTrashView ? 'default' : 'pointer',
         borderBottom: `1px solid ${theme.palette.divider}`,
         bgcolor: isDropTarget
@@ -551,6 +552,9 @@ export const FileRow = memo(function FileRow({
         alignItems: 'center',
         px: 1,
         py: 0.5,
+        // Fixed height keeps the window virtualizer's spacer math exact.
+        height: MY_FILES_ROW_HEIGHT,
+        boxSizing: 'border-box',
         cursor: !isTrashView && (previewSupported || sharedWithMe) ? 'pointer' : 'default',
         borderBottom: `1px solid ${theme.palette.divider}`,
         bgcolor: isSelected ? 'action.selected' : 'transparent',
@@ -825,6 +829,9 @@ export const FolderCard = memo(function FolderCard({
         gap: 1,
         px: 1.25,
         py: 1,
+        // Fixed height keeps the window virtualizer's spacer math exact.
+        height: MY_FILES_FOLDER_CARD_HEIGHT,
+        boxSizing: 'border-box',
         cursor: isTrashView ? 'default' : 'pointer',
         borderColor: isDropTarget ? 'primary.main' : undefined,
         borderStyle: isDropTarget ? 'dashed' : 'solid',
@@ -995,6 +1002,10 @@ export const FileCard = memo(function FileCard({
         position: 'relative',
         p: 1,
         pb: 1.25,
+        // Fixed height keeps the window virtualizer's spacer math exact.
+        height: MY_FILES_FILE_CARD_HEIGHT,
+        boxSizing: 'border-box',
+        overflow: 'hidden',
         textAlign: 'center',
         cursor: !isTrashView && (previewSupported || sharedWithMe) ? 'pointer' : 'default',
         bgcolor: isSelected ? 'action.selected' : undefined,

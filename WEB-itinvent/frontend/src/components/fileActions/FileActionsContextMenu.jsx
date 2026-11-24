@@ -273,6 +273,10 @@ export default function FileActionsContextMenu({
       anchorReference={anchorPosition ? 'anchorPosition' : 'anchorEl'}
       anchorPosition={anchorPosition || undefined}
       MenuListProps={{ 'aria-label': `Действия с файлом ${fileName || 'файл'}` }}
+      // Отключение scroll-lock устраняет форсированный рефлоу всего документа
+      // (~600мс longtask на больших списках) при открытии меню; прецедент —
+      // ChatMessageContextMenu и flyout NestedMenuItem.
+      disableScrollLock
       PaperProps={{
         sx: {
           minWidth: 220,
