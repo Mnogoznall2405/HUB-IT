@@ -281,7 +281,12 @@ export function MainLayoutInner({
   const [windowsNotificationState, setWindowsNotificationState] = useState(() => getWindowsNotificationState());
   const [pwaState, setPwaState] = useState(() => getPwaInstallState());
   const [isOffline, setIsOffline] = useState(() => (typeof navigator !== 'undefined' ? !navigator.onLine : false));
-  const [connectionRestored, setConnectionRestored] = useState(consumeConnectionRestoredMarker);
+  // Потребление маркера — побочный эффект; ленивый useState-инициализатор под
+  // StrictMode вызвал бы его дважды, и второй вызов вернул бы false.
+  const [connectionRestored, setConnectionRestored] = useState(false);
+  useEffect(() => {
+    if (consumeConnectionRestoredMarker()) setConnectionRestored(true);
+  }, []);
   const [offlineCacheMeta, setOfflineCacheMeta] = useState(getMobileOfflineCacheMeta);
   const offlineWasObservedRef = useRef(isOffline || getMobileOfflineState().readOnly);
   const [notificationPermissionBannerDismissed, setNotificationPermissionBannerDismissed] = useState(
@@ -611,13 +616,10 @@ export function MainLayoutInner({
       setPendingNavigation(null);
       return;
     }
-    if (normalizedTargetPath === '/networks') {
-      if (location.pathname === '/networks' || location.pathname.startsWith('/networks/')) {
-        setPendingNavigation(null);
-      }
-      return;
-    }
-    if (location.pathname === normalizedTargetPath) {
+    // Снимаем оверлей при ЛЮБОЙ смене маршрута: PermissionRoute/AboutOnboardingRoute
+    // могут перенаправить не на targetPath — тогда оверлей иначе висит до 10-с таймаута.
+    const fromPath = String(pendingNavigation?.from || '').trim();
+    if (fromPath && location.pathname !== fromPath) {
       setPendingNavigation(null);
     }
   }, [location.pathname, pendingNavigation]);
@@ -1293,7 +1295,6 @@ useEffect(() => {
     hasChatPermission,
     hasHubNotificationPermission,
     hasMailPermission,
-    isMailRoute,
     showMailArrivalNotifications,
   ]);
 
@@ -1327,6 +1328,8 @@ useEffect(() => {
     try {
       let nextHubItems = [];
       let nextMailItems = [];
+      let hubLoaded = false;
+      let mailLoaded = false;
       const requests = [];
       if (hasHubNotificationPermission) {
         requests.push(
@@ -1339,6 +1342,7 @@ useEffect(() => {
             const readVisible = resolveOrdinaryChatHubReadVisible(response?.data?.hub_chat_ordinary);
             ordinaryChatHubReadVisibleRef.current = readVisible;
             nextHubItems = selectHubBellItems(response, { ordinaryReadVisible: readVisible });
+            hubLoaded = true;
           }),
         );
       }
@@ -1348,12 +1352,14 @@ useEffect(() => {
             limit: 20,
           }).then((data) => {
             nextMailItems = selectMailBellItems(data);
+            mailLoaded = true;
           }),
         );
       }
       await Promise.allSettled(requests);
-      setNotifications(nextHubItems);
-      setMailNotifications(nextMailItems);
+      // Частичный сбой не должен визуально обнулять семейство, чей запрос упал.
+      if (hubLoaded) setNotifications(nextHubItems);
+      if (mailLoaded) setMailNotifications(nextMailItems);
     } catch (error) {
       console.error('Bell inbox refresh failed:', error);
     }
@@ -1832,10 +1838,12 @@ useEffect(() => {
       void (async () => {
         try {
           await mailAPI.markAsRead(messageId, mailboxId);
+          // Мгновенная локальная дельта — иначе TTL-кэш (20 с) показывает завышенный бейдж.
+          applyMailUnreadDelta({ unreadDelta: -1, nextIsRead: true, targetId: messageId, mode: 'messages' });
           window.dispatchEvent(new CustomEvent('mail-needs-refresh'));
           await Promise.all([
             refreshBellInboxRef.current?.(),
-            fetchUnreadCountsRef.current?.(),
+            fetchUnreadCountsRef.current?.(null, { reason: 'mail-notification-read', forceMailUnread: true }),
           ]);
         } catch (error) {
           console.error('Mark mail notification read failed:', error);
@@ -1886,6 +1894,7 @@ useEffect(() => {
     setPendingNavigation({
       path: targetPath,
       label: String(item?.label || '').trim(),
+      from: location.pathname,
     });
     setDrawerOpen(false);
 
@@ -3079,7 +3088,12 @@ useEffect(() => {
         anchor="right"
         open={notificationsOpen}
         onClose={() => setNotificationsOpen(false)}
-        PaperProps={{ sx: { bgcolor: ui.navBg, borderLeft: '1px solid', borderColor: ui.borderSoft, boxShadow: ui.dialogShadow } }}
+        PaperProps={{
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-label': 'Уведомления',
+          sx: { bgcolor: ui.navBg, borderLeft: '1px solid', borderColor: ui.borderSoft, boxShadow: ui.dialogShadow },
+        }}
       >
         <Box sx={{ width: { xs: 340, sm: 400 }, display: 'flex', flexDirection: 'column', height: '100%' }}>
           {/* Header */}
