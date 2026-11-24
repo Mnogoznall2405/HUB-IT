@@ -10,7 +10,7 @@ const messageOf = error => typeof error?.response?.data?.detail === 'string' ? e
 /** A separate read-only SDK instance leaves the live editor and its unsent changes intact. */
 export default function MyFilesOfficeHistoryView({ fileId, fileName, onClose, active = true }) {
   const auth = useContext(AuthContext);
-  const accountKey = String(auth?.user?.id ?? '');
+  const accountKey = String(auth?.user?.id ?? auth?.user?.username ?? '');
   const hostRef = useRef(null);
   const callbacks = useRef({ onClose });
   callbacks.current = { onClose, active };

@@ -49,6 +49,8 @@ export function useMyFilesUpload({
   const [pendingFolderFiles, setPendingFolderFiles] = useState([]);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const uploadingRef = useRef(uploading);
+  uploadingRef.current = uploading;
   const [readingDrop, setReadingDrop] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({});
   const [uploadStats, setUploadStats] = useState({ total: 0, done: 0 });
@@ -268,6 +270,13 @@ export function useMyFilesUpload({
 
   const openUploadDialog = useCallback((files, { asFolder = false, targetFolderId = null } = {}) => {
     if (!canWrite || !accountSession.isCurrent()) return;
+    // A second drop/pick during an active queue would clobber uploadAbortRef and
+    // the progress maps — only one queue runs at a time. A ref read keeps this
+    // callback's identity stable across upload-state transitions.
+    if (uploadingRef.current) {
+      notifyWarning('Дождитесь окончания текущей загрузки.', { source: 'my-files-upload', dedupeMode: 'recent' });
+      return;
+    }
     const selected = normalizeFiles(files);
     if (selected.length === 0) return;
     setUploadTargetFolderId(targetFolderId || null);
