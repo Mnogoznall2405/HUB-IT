@@ -347,8 +347,8 @@ export default function useTaskCreateForm({
     setCreateDueCustomOpen(false);
     setCreateMobileSheet('');
     setCreateDescriptionPreview('');
-    setCreateFiles([]);
-    setCreateChecklistItems([]);
+    // Files and checklist drafts are kept across close — like title/description —
+    // and reset only after a successful create (see handleCreateTask).
     setCreateProjectName('');
     setCreateOptionalSections((prev) => {
       if (!Object.values(prev).some(Boolean)) return prev;

@@ -17,6 +17,9 @@ import { classifyRealtimeTaskChange } from '../taskRealtimeMembership';
 // next page replaces the buffer (sliding window) instead of growing it forever.
 const TASKS_PAGE_SIZE = 150;
 const MAX_APPEND_PAGES = 3;
+// Short staleness: rapid tab/filter switches reuse the cached list instead of
+// refetching; realtime reconcile still patches task items on top.
+const TASKS_LIST_STALE_TIME_MS = 15_000;
 
 const EMPTY_TASK_LIST_SECTIONS = { active: { items: [] }, completed: { items: [] } };
 const EMPTY_CALENDAR_PAYLOAD = { days: [], noDueCount: 0 };
@@ -155,7 +158,7 @@ export default function useTasksListQuery({
       const scope = viewMode === 'all' ? 'all' : (viewMode === 'department' ? 'department' : 'my');
       const roleScope = viewMode === 'all' || viewMode === 'department' ? 'both' : viewMode;
       const deadlineMode = ['deadlines', 'calendar', 'gantt'].includes(pageMode);
-      const response = await hubTasksAPI.getTasks({
+      const requestParams = {
         scope,
         role_scope: roleScope,
         status: statusFilter || undefined,
@@ -171,7 +174,14 @@ export default function useTasksListQuery({
         sort_dir: deadlineMode || pageMode === 'board' ? 'asc' : dateSortDirection,
         limit: TASKS_PAGE_SIZE,
         offset,
-      });
+      };
+      // SWR dedupe: rapid tab switches share the in-flight request / short
+      // cache instead of firing a fresh list query per click.
+      const { data: response } = await getOrFetchSWR(
+        ['hub', 'tasks', 'list', ...Object.values(requestParams).map((value) => (value === undefined ? '' : String(value)))],
+        () => hubTasksAPI.getTasks(requestParams),
+        { staleTimeMs: TASKS_LIST_STALE_TIME_MS },
+      );
       if (loadTasksRequestRef.current !== requestId) return;
       const defaultHours = Number(response?.meta?.email_deadline_soon_hours_default);
       if (Number.isFinite(defaultHours) && defaultHours > 0) {
@@ -410,6 +420,9 @@ export default function useTasksListQuery({
     if (!hasMoreTasks || loading) return;
     setListOffset((prev) => prev + TASKS_PAGE_SIZE);
   }, [hasMoreTasks, loading]);  const reloadTasks = useCallback(async () => {
+    // Explicit reloads (mutations, pull-refresh, realtime full reload) bypass
+    // the short SWR window so a just-changed list is always refetched.
+    invalidateSWRCacheByPrefix('hub', 'tasks', 'list');
     if (listOffset !== 0) {
       setListOffset(0);
       return;
