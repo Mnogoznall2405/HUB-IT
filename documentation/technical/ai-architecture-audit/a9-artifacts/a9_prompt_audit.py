@@ -165,6 +165,72 @@ def _run(conversation_id: str, trigger_id: str, actor_id: int):
     return ok
 
 
+# Fallback block classifier for baseline trees that lack _prompt_block_sizes.
+_BLOCK_HEADERS_FALLBACK: tuple[tuple[str, str], ...] = (
+    ("Bot title:", "bot_title"),
+    ("Rolling summary of older messages", "rolling_summary"),
+    ("Recent conversation", "conversation_history"),
+    ("Allowed personal memory", "personal_memory"),
+    ("Authoritative task/action state", "task_state"),
+    ("Memory reconciliation result", "memory_status"),
+    ("Current user request:", "current_request"),
+    ("Active draft to update", "active_draft"),
+    ("Attached file content", "file_context"),
+    ("Knowledge base snippets", "kb_context"),
+    ("Template document candidates", "template_candidates"),
+    ("Template auto-send allowed", "template_flag"),
+    ("Write a useful markdown answer", "answer_instructions"),
+    ("Enabled ITinvent tools:", "tool_specs_itinvent"),
+    ("Enabled file tools:", "tool_specs_files"),
+    ("Enabled office tools:", "tool_specs_office"),
+    ("Enabled MFU tools:", "tool_specs_mfu"),
+    ("Enabled network tools:", "tool_specs_network"),
+    ("Enabled AD tools:", "tool_specs_ad"),
+    ("Enabled Active Directory tools:", "tool_specs_ad"),
+    ("Enabled knowledge base tools:", "tool_specs_kb"),
+    ("Enabled Hub chat tools:", "tool_specs_chat"),
+    ("Enabled self-service tools", "tool_specs_self"),
+    ("Enabled company directory tools:", "tool_specs_directory"),
+    ("Enabled 1C warehouse tools:", "tool_specs_warehouse"),
+    ("Other enabled tools:", "tool_specs_other"),
+    ("Tool groups allowed for this employee", "unattached_groups_hint"),
+    ("CURRENT USER REQUEST (authoritative", "current_request_tail"),
+    ("Enabled tools:", "tool_specs_other"),
+    ("Current ITinvent database:", "db_label"),
+    ("Accumulated tool results", "tool_results"),
+    ("Running summary", "running_summary"),
+    ("Tool validation errors to fix", "tool_validation_errors"),
+    ("Tool routing for live ITinvent requests:", "guide_itinvent"),
+    ("File generation routing:", "guide_files"),
+    ("Office tool routing:", "guide_office"),
+    ("MFU/printer tool routing:", "guide_mfu"),
+    ("Network infrastructure tool routing:", "guide_network"),
+    ("Active Directory tool routing:", "guide_ad"),
+    ("Use kb tools when the user asks", "guide_kb"),
+    ("To message a colleague or group", "guide_chat"),
+    ("Self-service tools answer only", "guide_self"),
+    ("Company directory: phones", "guide_directory"),
+    ("1C warehouse (read-only):", "guide_warehouse"),
+    ("Answer style and structure rules", "guide_answer_style"),
+    ("User request understanding and query coaching:", "guide_understanding"),
+    ("When you answer with live ITinvent data", "guide_itinvent_response"),
+)
+
+
+def _block_sizes_fallback(prompt: str) -> dict[str, int]:
+    blocks: dict[str, int] = {}
+    for segment in str(prompt or "").split("\n\n"):
+        if not segment.strip():
+            continue
+        head = segment.lstrip()[:400]
+        label = next((name for prefix, name in _BLOCK_HEADERS_FALLBACK if head.startswith(prefix)), "other")
+        blocks[label] = blocks.get(label, 0) + ai_chat_module._estimated_tokens(segment)
+    return blocks
+
+
+_BLOCK_SIZES = getattr(ai_chat_module, "_prompt_block_sizes", None) or _block_sizes_fallback
+
+
 def _capture(label: str, start: int):
     out = []
     for kwargs in CALLS[start:]:
@@ -174,8 +240,8 @@ def _capture(label: str, start: int):
             "est_system_tokens": ai_chat_module._estimated_tokens(sys_p),
             "est_user_tokens": ai_chat_module._estimated_tokens(usr_p),
             "est_total_tokens": ai_chat_module._estimated_tokens(sys_p) + ai_chat_module._estimated_tokens(usr_p),
-            "system_blocks": ai_chat_module._prompt_block_sizes(sys_p),
-            "user_blocks": ai_chat_module._prompt_block_sizes(usr_p),
+            "system_blocks": _BLOCK_SIZES(sys_p),
+            "user_blocks": _BLOCK_SIZES(usr_p),
         })
     return {"scenario": label, "calls": out, "call_count": len(out)}
 
