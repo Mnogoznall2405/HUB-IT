@@ -1,0 +1,1237 @@
+{
+  "env": {
+    "AI_JEV_ROUTING": "1",
+    "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+    "AI_SUMMARY_BACKGROUND_ENABLED": "0",
+    "ROUTERAI_MODEL": "google/gemini-3.7-flash",
+    "JEV_MODEL": "(default)",
+    "env_keys_loaded": 449,
+    "registered_tools": 100,
+    "code_root": "C:\\Project\\HUB-IT-a9-wt"
+  },
+  "scenarios": [
+    {
+      "id": "read_01",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 33303,
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.34
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          }
+        }
+      ],
+      "tool_calls": [
+        "mfu.devices.list"
+      ],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 9211,
+        "llm_out": 1795,
+        "jev_total": 3427,
+        "est_in": 7333
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013713
+      },
+      "answer_len": 696,
+      "answer_head": "В кабинете 204 найдено 4 МФУ в двух филиалах компании.\n\n## Список устройств\n\n| Инв. номер | Серийный номер | Тип | Модель | Сотрудник | Статус | Филиал | Локация |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n| 157201.0 | URQ11",
+      "result_message": true
+    },
+    {
+      "id": "read_02",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 12462,
+      "llm_calls": 1,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 1,
+      "jev_answers": [],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "directory.people.search",
+        "itinvent.equipment.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 3875,
+        "llm_out": 480,
+        "jev_total": 0,
+        "est_in": 3558
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.0
+      },
+      "answer_len": 272,
+      "answer_head": "Инструменты для поиска оборудования в ITinvent недоступны для данного бота.\n\n## Как получить информацию\nДля проверки мониторов и другого оборудования, закреплённого за сотрудником, обратитесь в службу технической поддержки или проверьте дан",
+      "result_message": true
+    },
+    {
+      "id": "read_03",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 22979,
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.94
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          }
+        }
+      ],
+      "tool_calls": [
+        "office.mail.search"
+      ],
+      "expected_hit": [
+        "office.mail.search"
+      ],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 8300,
+        "llm_out": 719,
+        "jev_total": 3429,
+        "est_in": 7304
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137214
+      },
+      "answer_len": 287,
+      "answer_head": "Не удалось загрузить письма: для вашей учетной записи не настроен корпоративный почтовый ящик.\n\n## Причина\nВ системе отсутствует привязка почтового ящика к вашему профилю. \n\nДля настройки доступа к почте обратитесь к системному администрато",
+      "result_message": true
+    },
+    {
+      "id": "read_04",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 50904,
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.97
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.26
+          }
+        }
+      ],
+      "tool_calls": [
+        "kb.articles.search"
+      ],
+      "expected_hit": [
+        "kb.articles.search"
+      ],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 2930,
+        "llm_out": 2269,
+        "jev_total": 3421,
+        "est_in": 5641
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136878
+      },
+      "answer_len": 382,
+      "answer_head": "В базе знаний не найдено статей по запросу о настройке VPN.\n\n## Результаты поиска\nПо запросу «настройка VPN» подходящих инструкций или сопутствующих документов не обнаружено.\n\nПопробуйте уточнить запрос, указав конкретную технологию или исп",
+      "result_message": true
+    },
+    {
+      "id": "read_05",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 48125,
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.76
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.02
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.93
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.35
+          }
+        }
+      ],
+      "tool_calls": [
+        "directory.department.get",
+        "directory.people.search",
+        "directory.people.search",
+        "directory.people.search",
+        "directory.department.get"
+      ],
+      "expected_hit": [
+        "directory.people.search"
+      ],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 4752,
+        "jev_total": 3419,
+        "est_in": 9423
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136794
+      },
+      "answer_len": 530,
+      "answer_head": "По запросу «отдел логистики» подразделение и сотрудники в корпоративном справочнике не найдены.\n\n## Результаты поиска\nВ структуре компании и адресной книге 1С:ЗУП подразделение с точным наименованием «Отдел логистики» отсутствует. Возможно,",
+      "result_message": true
+    },
+    {
+      "id": "read_06",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 155629,
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.97
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          }
+        }
+      ],
+      "tool_calls": [
+        "office.tasks.search"
+      ],
+      "expected_hit": [
+        "office.tasks.search"
+      ],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 4000,
+        "jev_total": 3407,
+        "est_in": 7040
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013629
+      },
+      "answer_len": 175,
+      "answer_head": "На текущую неделю активных задач не найдено.\n\n## Задачи\nВ системе Hub нет назначенных вам или созданных вами задач со сроком выполнения на этой неделе.\n\nИсточник: Hub / Задачи",
+      "result_message": true
+    },
+    {
+      "id": "read_07",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 23708,
+      "llm_calls": 1,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.17
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 2000,
+        "jev_total": 3427,
+        "est_in": 2312
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013713
+      },
+      "answer_len": 496,
+      "answer_head": "Не удалось найти серийный номер ноутбука для сотрудника Petrova, так как инструменты работы с базой учета ITinvent отключены для данного бота.\n\n## Причина\nПоиск оборудования, серийных и инвентарных номеров выполняется через систему учета IT",
+      "result_message": true
+    },
+    {
+      "id": "read_08",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 82813,
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.45
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.21
+          }
+        }
+      ],
+      "tool_calls": [
+        "mfu.devices.list"
+      ],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 4000,
+        "jev_total": 3427,
+        "est_in": 6020
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013713
+      },
+      "answer_len": 304,
+      "answer_head": "В филиале «СПб» не найдено ни одного принтера или МФУ.\n\n## Устройства в филиале\nПо запросу для филиала «СПб» устройства печати в системе отсутствуют (всего найдено: 0).\n\nВозможно, филиал в базе данных указан как «Санкт-Петербург» или оборуд",
+      "result_message": true
+    },
+    {
+      "id": "read_09",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 79269,
+      "llm_calls": 5,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.91
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.17
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.3
+          }
+        }
+      ],
+      "tool_calls": [
+        "ai.request_tool_group",
+        "kb.articles.search",
+        "kb.articles.search",
+        "mfu.devices.list",
+        "kb.articles.search"
+      ],
+      "expected_hit": [],
+      "expected_missing": [
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 9119,
+        "llm_out": 5545,
+        "jev_total": 3425,
+        "est_in": 18541
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137046
+      },
+      "answer_len": 623,
+      "answer_head": "В базе знаний и системе мониторинга информация о совместимых картриджах для принтера **HP LaserJet M404** не найдена.\n\n## Результаты поиска\nПо запросам к базе знаний и списку печатных устройств совпадений по модели HP LaserJet M404 не обнар",
+      "result_message": true
+    },
+    {
+      "id": "read_10",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 69680,
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.47
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.6
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.16
+          }
+        }
+      ],
+      "tool_calls": [
+        "ai.request_tool_group",
+        "office.tasks.search",
+        "office.mail.search",
+        "office.mail.search"
+      ],
+      "expected_hit": [
+        "office.tasks.search"
+      ],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 2716,
+        "llm_out": 6000,
+        "jev_total": 3407,
+        "est_in": 12596
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013629
+      },
+      "answer_len": 367,
+      "answer_head": "Заявок и задач от сотрудника с фамилией Петров не найдено.\n\n## Результаты поиска\n- **Задачи Hub:** поиск по запросу «петров» не вернул результатов среди доступных задач.\n- **Почта:** поиск входящих писем-заявок недоступен, так как почтовый ",
+      "result_message": true
+    },
+    {
+      "id": "read_11",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 43801,
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.94
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.02
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          }
+        }
+      ],
+      "tool_calls": [
+        "office.mail.search"
+      ],
+      "expected_hit": [
+        "office.mail.search"
+      ],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 3614,
+        "llm_out": 2494,
+        "jev_total": 3423,
+        "est_in": 6968
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136962
+      },
+      "answer_len": 334,
+      "answer_head": "Не удалось выполнить поиск: для вашей учётной записи не настроен почтовый ящик.\n\n## Ошибка поиска\nПри попытке найти письма от бухгалтерии за март сервис вернул ошибку: почтовый ящик пользователя не настроен в системе.\n\nДля привязки и настро",
+      "result_message": true
+    },
+    {
+      "id": "read_12",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 24248,
+      "llm_calls": 1,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.21
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 2000,
+        "jev_total": 3425,
+        "est_in": 2306
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137046
+      },
+      "answer_len": 560,
+      "answer_head": "Не удалось получить данные о количестве ноутбуков на складе: инструменты работы с ITinvent отключены для данного бота.\n\n## Ограничение доступа\nИнформация о наличии, типах и статусах оборудования хранится в системе учета ITinvent. В текущей ",
+      "result_message": true
+    },
+    {
+      "id": "read_13",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 47448,
+      "llm_calls": 1,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.22
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.history"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 2000,
+        "jev_total": 3431,
+        "est_in": 2800
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137298
+      },
+      "answer_len": 613,
+      "answer_head": "Не удалось получить историю выдачи принтера INV-1024: инструменты прямого доступа к базе данных ITinvent отключены для этого бота.\n\n## Причина и следующие шаги\nИстория выдачи, перемещений и закрепления оборудования фиксируется в базе данных",
+      "result_message": true
+    },
+    {
+      "id": "read_14",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 47452,
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.22
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.19
+          }
+        }
+      ],
+      "tool_calls": [
+        "mfu.devices.list",
+        "mfu.devices.list",
+        "mfu.devices.list"
+      ],
+      "expected_hit": [
+        "mfu.devices.list"
+      ],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 7289,
+        "llm_out": 2395,
+        "jev_total": 3433,
+        "est_in": 9519
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137382
+      },
+      "answer_len": 448,
+      "answer_head": "В переговорной 3 этажа (и связанных локациях переговорных) МФУ и принтеры не найдены.\n\n## Результаты поиска\nПо запросам к базе оборудования устройства печати в локациях «Переговорка 3 этаж» / «3 этаж» не числятся. В локации «Переговорная» (",
+      "result_message": true
+    },
+    {
+      "id": "read_15",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 40572,
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.9
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.93
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          }
+        }
+      ],
+      "tool_calls": [
+        "directory.people.search"
+      ],
+      "expected_hit": [
+        "directory.people.search"
+      ],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 3462,
+        "llm_out": 891,
+        "jev_total": 3439,
+        "est_in": 5705
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137634
+      },
+      "answer_len": 219,
+      "answer_head": "Сотрудник по номеру телефона «+7 911» не найден.\n\nЗапрос содержит только префикс/код оператора. Пожалуйста, укажите полный номер телефона или ФИО сотрудника для точного поиска.\n\nИсточник: 1C:ЗУП / Справочник сотрудников",
+      "result_message": true
+    }
+  ],
+  "started_at": "2026-11-24T13:46:31.042955+00:00",
+  "aggregate": {
+    "scenarios": 15,
+    "run_ok": 15,
+    "llm_calls_total": 33,
+    "jev_calls_total": 15,
+    "tool_calls_total": 24,
+    "tokens_in_total": 50516,
+    "tokens_out_total": 41340,
+    "jev_tokens_total": 47940,
+    "est_in_total": 107066,
+    "cost_usd_total": 0.001918224,
+    "wall_ms_total": 782393,
+    "expected_coverage": [
+      8,
+      16
+    ],
+    "forbidden_violations": 0
+  },
+  "finished_at": "2026-11-24T13:59:34.002256+00:00"
+}
