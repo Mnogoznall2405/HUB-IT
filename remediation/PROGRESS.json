@@ -110,7 +110,7 @@
       "id": "FE-0005",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "dashboard",
       "page": "/dashboard (MainLayout)",
@@ -118,10 +118,11 @@
       "lines": "1413-1611 (tick 1577-1588, onVisible 1589-1593)",
       "title": "Дубли идентичных poll-запросов уведомлений на загрузке",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "9041657a",
+      "pr": 57
     },
     {
       "id": "FE-0006",
@@ -1593,7 +1594,7 @@
       "id": "FE-0089",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "dashboard",
       "page": null,
@@ -1601,16 +1602,17 @@
       "lines": "736-745",
       "title": "Dashboard: ошибка ручного обновления стирает все карточки в empty-state",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "9041657a",
+      "pr": 57
     },
     {
       "id": "FE-0090",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "dashboard",
       "page": null,
@@ -1618,16 +1620,17 @@
       "lines": "1046,1537",
       "title": "Dashboard: ошибка загрузки показана дважды (верхний Alert + warning секции)",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "9041657a",
+      "pr": 57
     },
     {
       "id": "FE-0091",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "dashboard",
       "page": null,
@@ -1635,16 +1638,17 @@
       "lines": "998-1008",
       "title": "Dashboard: ошибка сохранения раскладки невидима за диалогом редактирования",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "9041657a",
+      "pr": 57
     },
     {
       "id": "FE-0092",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "dashboard",
       "page": null,
@@ -1652,10 +1656,11 @@
       "lines": "50",
       "title": "Dashboard импортирует hubAPI через legacy client.js-баррель (нарушение конвенции api/)",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "9041657a",
+      "pr": 57
     },
     {
       "id": "FE-0093",
