@@ -76,9 +76,23 @@ const SEARCH_FIELD_LABELS = Object.fromEntries(COMPUTER_SEARCH_FIELD_OPTIONS.map
 const RECENT_SEARCHES_STORAGE_KEY = 'computers_recent_searches_v1';
 const RECENT_SEARCHES_MAX = 8;
 
+function readLocalStorageItem(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorageItem(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch { /* localStorage недоступен/переполнен — пропускаем запись */ }
+}
+
 function readRecentSearches() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(RECENT_SEARCHES_STORAGE_KEY) || '[]');
+    const parsed = JSON.parse(readLocalStorageItem(RECENT_SEARCHES_STORAGE_KEY) || '[]');
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((item) => typeof item === 'string' && item.trim()).slice(0, RECENT_SEARCHES_MAX);
   } catch {
@@ -880,13 +894,13 @@ function Computers() {
   const [branch, setBranch] = useState('all');
   const [changedOnly, setChangedOnly] = useState(false);
   const [hiddenOnly, setHiddenOnly] = useState(false);
-  const [hideVm172, setHideVm172] = useState(() => localStorage.getItem(HIDE_VM_172_STORAGE_KEY) !== '0');
+  const [hideVm172, setHideVm172] = useState(() => readLocalStorageItem(HIDE_VM_172_STORAGE_KEY) !== '0');
   const [showAllComputers, setShowAllComputers] = useState(
-    () => localStorage.getItem('computers_scope_all') !== '0',
+    () => readLocalStorageItem('computers_scope_all') !== '0',
   );
-  const [showDashboard, setShowDashboard] = useState(() => localStorage.getItem('computers_show_dashboard') !== '0');
-  const [showLocation, setShowLocation] = useState(() => localStorage.getItem('computers_show_location') !== '0');
-  const [hideSystemUserProfileFolders, setHideSystemUserProfileFolders] = useState(() => localStorage.getItem(USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY) === '1');
+  const [showDashboard, setShowDashboard] = useState(() => readLocalStorageItem('computers_show_dashboard') !== '0');
+  const [showLocation, setShowLocation] = useState(() => readLocalStorageItem('computers_show_location') !== '0');
+  const [hideSystemUserProfileFolders, setHideSystemUserProfileFolders] = useState(() => readLocalStorageItem(USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY) === '1');
   const [expandedLocations, setExpandedLocations] = useState({});
   const [expandedUserProfiles, setExpandedUserProfiles] = useState({});
   const [seenChangesByPc, setSeenChangesByPc] = useState(() => readSeenChangesMap());
@@ -914,6 +928,14 @@ function Computers() {
   // Ключ фильтров, для которого загружен список: хвост сохраняем только при том же запросе.
   const loadedScopeKeyRef = useRef('');
   const lastLoadOkAtRef = useRef(0);
+  const mountedRef = useRef(true);
+  const showDashboardRef = useRef(showDashboard);
+
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
+  useEffect(() => {
+    showDashboardRef.current = showDashboard;
+  }, [showDashboard]);
 
   const scope = canViewAllComputers && showAllComputers ? 'all' : 'selected';
   const searchDebouncePending = normalizeComputersSearchInput(q) !== normalizeComputersSearchInput(debouncedQuery);
@@ -950,11 +972,13 @@ function Computers() {
   const loadChangesDeferred = useCallback(() => {
     equipmentAPI.getAgentComputerChanges(50)
       .then((changeData) => {
+        if (!mountedRef.current) return;
         if (changeData && typeof changeData === 'object') {
           setChanges(changeData);
         }
       })
       .catch((err) => {
+        if (!mountedRef.current) return;
         console.error('Computers changes load failed', err);
       });
   }, []);
@@ -1039,7 +1063,8 @@ function Computers() {
         sortDir: 'asc',
         limit,
         offset,
-        includeSummary: true,
+        // Агрегаты по выдаче дорогие на scope=all — запрашиваем только при видимом дашборде.
+        includeSummary: showDashboardRef.current,
       };
       const etagKey = JSON.stringify(requestOptions);
       const pcPayload = await equipmentAPI.searchAgentComputers({
@@ -1402,19 +1427,19 @@ function Computers() {
   }, [load, loadChangesDeferred, scheduleNextPoll]);
 
   useEffect(() => {
-    localStorage.setItem('computers_show_dashboard', showDashboard ? '1' : '0');
+    writeLocalStorageItem('computers_show_dashboard', showDashboard ? '1' : '0');
   }, [showDashboard]);
 
   useEffect(() => {
-    localStorage.setItem('computers_show_location', showLocation ? '1' : '0');
+    writeLocalStorageItem('computers_show_location', showLocation ? '1' : '0');
   }, [showLocation]);
 
   useEffect(() => {
-    localStorage.setItem(HIDE_VM_172_STORAGE_KEY, hideVm172 ? '1' : '0');
+    writeLocalStorageItem(HIDE_VM_172_STORAGE_KEY, hideVm172 ? '1' : '0');
   }, [hideVm172]);
 
   useEffect(() => {
-    localStorage.setItem(USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY, hideSystemUserProfileFolders ? '1' : '0');
+    writeLocalStorageItem(USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY, hideSystemUserProfileFolders ? '1' : '0');
   }, [hideSystemUserProfileFolders]);
 
   useEffect(() => {
@@ -1424,7 +1449,7 @@ function Computers() {
 
   useEffect(() => {
     if (!canViewAllComputers) return;
-    localStorage.setItem('computers_scope_all', showAllComputers ? '1' : '0');
+    writeLocalStorageItem('computers_scope_all', showAllComputers ? '1' : '0');
   }, [canViewAllComputers, showAllComputers]);
 
   useEffect(() => {
@@ -1452,7 +1477,7 @@ function Computers() {
   }, [open]);
 
   useEffect(() => {
-    localStorage.setItem(SEEN_CHANGES_STORAGE_KEY, JSON.stringify(seenChangesByPc));
+    writeLocalStorageItem(SEEN_CHANGES_STORAGE_KEY, JSON.stringify(seenChangesByPc));
   }, [seenChangesByPc]);
 
   const hasUnseenChanges = useCallback((pc) => {
@@ -1586,6 +1611,9 @@ function Computers() {
       return hasUnseenChanges(pc);
     });
   }, [computers, seenChangesByPc]);
+  const unseenChangedNames = useMemo(() => (
+    [...new Set(unseenChangedPcs.map((pc) => String(pc?.hostname || '').trim() || 'Неизвестный ПК'))]
+  ), [unseenChangedPcs]);
   const selectedRuntime = useMemo(() => resolveRuntimeMetrics(selected), [selected]);
   const selectedStorageStats = useMemo(() => getStorageHealthStats(selected), [selected]);
   const selectedOutlook = useMemo(() => resolveOutlookMeta(selected), [selected]);
@@ -1659,8 +1687,8 @@ function Computers() {
                 Новые изменения оборудования на ПК: {unseenChangedPcs.length}
               </Typography>
               <Typography variant="body2">
-                {unseenChangedPcs.slice(0, 8).map((pc) => pc.hostname || 'Неизвестный ПК').join(', ')}
-                {unseenChangedPcs.length > 8 ? ` и еще ${unseenChangedPcs.length - 8}` : ''}
+                {unseenChangedNames.slice(0, 8).join(', ')}
+                {unseenChangedNames.length > 8 ? ` и еще ${unseenChangedNames.length - 8}` : ''}
               </Typography>
               <Box>
                 <Button size="small" variant="outlined" color="warning" onClick={markAllChangesSeen}>
