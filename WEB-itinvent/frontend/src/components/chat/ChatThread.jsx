@@ -1,4 +1,4 @@
-import { Suspense, lazy, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Avatar,
   Badge,
@@ -29,6 +29,8 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { emitAgentDebugLog } from '../../lib/debugClientLog';
 import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import ChatComposer from './ChatComposer';
+import { ChatPerfProbe } from './ChatPerfProbe';
+import ChatDesktopEmojiPopover from './ChatDesktopEmojiPopover';
 import ChatFileDropOverlay from './ChatFileDropOverlay';
 import ChatMessageList from './ChatMessageList';
 import ChatSelectionActionDock from './ChatSelectionActionDock';
@@ -53,16 +55,11 @@ import {
   CHAT_FONT_FAMILY,
 } from './chatUiTokens';
 
-const LazyChatEmojiPanel = lazy(() => import('./ChatEmojiPanel'));
-
 const COMPOSER_STICK_DISTANCE_PX = CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX;
 // Д3/Д5: центрированная колонка ленты — 728px в чатах, 768px в AI-пространстве.
 const THREAD_CONTENT_MAX_WIDTH = 728;
 const SUGGESTIONS_STRIP_RESERVE_PX = 52;
 const AI_THREAD_CONTENT_MAX_WIDTH = 768;
-// Панель эмодзи/стикеров — всегда поповер над полем ввода, без сжатия ленты.
-const DESKTOP_EMOJI_POPOVER_WIDTH = 'min(384px, calc(100% - 24px))';
-const DESKTOP_EMOJI_POPOVER_HEIGHT = 'min(460px, 68%)';
 const BLUR_SCROLL_DELTA_PX = 12;
 const BACK_SWIPE_EDGE_PX = 28;
 const BACK_SWIPE_START_PX = 14;
@@ -429,8 +426,6 @@ function ChatThread({
   onMessageTextChange,
   onComposerKeyDown,
   onComposerSelectionSync,
-  onOpenEmojiPicker,
-  onCloseEmojiPicker,
   onSendMessage,
   onComposerPaste,
   onComposerDrop,
@@ -472,9 +467,6 @@ function ChatThread({
   onPollVote,
   onScrollToMessage,
   currentUserId,
-  mobileEmojiPickerOpen = false,
-  desktopEmojiPickerOpen = false,
-  onInsertEmoji,
   onSendSticker,
   voiceRecording = false,
   voiceRecordingDuration = 0,
@@ -1495,13 +1487,6 @@ function ChatThread({
     <Box
       data-testid="chat-thread-root"
       ref={threadRootRef}
-      onKeyDown={(event) => {
-        if (event.key !== 'Escape' || !desktopEmojiPickerOpen || compactMobile) return;
-        event.preventDefault();
-        event.stopPropagation();
-        onCloseEmojiPicker?.();
-        composerRef?.current?.focus?.();
-      }}
       className="chat-native-shell"
       onTouchStart={handleThreadTouchStart}
       onTouchMove={handleThreadTouchMove}
@@ -1634,6 +1619,7 @@ function ChatThread({
           }}
         >
           <Box sx={{ maxWidth: { xs: '100%', md: feedFullWidth ? '100%' : `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
+            <ChatPerfProbe id="chat-message-list">
             <ChatMessageList
               theme={theme}
               ui={conversationUi}
@@ -1680,6 +1666,7 @@ function ChatThread({
               onRetryAiRun={onRetryAiRun}
               onStopAiRun={onStopAiRun}
             />
+            </ChatPerfProbe>
           </Box>
         </Box>
 
@@ -1923,8 +1910,6 @@ function ChatThread({
             onClearEditing,
             onOpenComposerMenu,
             composerRef,
-            onOpenEmojiPicker,
-            onCloseEmojiPicker,
             onSendMessage,
             onComposerPaste,
             onComposerDrop,
@@ -1935,9 +1920,6 @@ function ChatThread({
             onSearchMentionPeople,
             composerDockRef: composerDockCallbackRef,
             keyboardInset,
-            mobileEmojiPickerOpen,
-            emojiPickerOpen: desktopEmojiPickerOpen,
-            onInsertEmoji,
             onSendSticker,
             currentUserId,
             voiceRecording,
@@ -1953,6 +1935,7 @@ function ChatThread({
           }}
         />
       ) : (
+        <ChatPerfProbe id="chat-composer">
         <ChatComposer
           theme={theme}
           ui={conversationUi}
@@ -1977,8 +1960,6 @@ function ChatThread({
           onMessageTextChange={onMessageTextChange}
           onComposerKeyDown={onComposerKeyDown}
           onComposerSelectionSync={onComposerSelectionSync}
-          onOpenEmojiPicker={onOpenEmojiPicker}
-          onCloseEmojiPicker={onCloseEmojiPicker}
           onSendMessage={onSendMessage}
           onComposerPaste={onComposerPaste}
           onComposerDrop={onComposerDrop}
@@ -1989,9 +1970,6 @@ function ChatThread({
           onSearchMentionPeople={onSearchMentionPeople}
           composerDockRef={composerDockCallbackRef}
           keyboardInset={keyboardInset}
-          mobileEmojiPickerOpen={mobileEmojiPickerOpen}
-          emojiPickerOpen={desktopEmojiPickerOpen}
-          onInsertEmoji={onInsertEmoji}
           onSendSticker={onSendSticker}
           currentUserId={currentUserId}
           voiceRecording={voiceRecording}
@@ -2005,58 +1983,19 @@ function ChatThread({
           onStopAiRun={onStopAiRun}
           scheduled={scheduledMessages}
         />
+        </ChatPerfProbe>
       )}
 
-      {desktopEmojiPickerOpen && !compactMobile ? (
-        // Д5/Д6: панель эмодзи и стикеров — поповер над полем ввода,
-        // не сжимает ленту и не сдвигает шапку.
-        <Box
-          data-testid="chat-desktop-emoji-panel"
-          data-layout="popover"
-          role="dialog"
-          aria-label="Эмодзи и стикеры"
-          sx={{
-            position: 'absolute',
-            right: { xs: 12, md: feedFullWidth ? 14 : `max(14px, calc(50% - ${Math.round(contentMaxWidth / 2)}px))` },
-            bottom: `${Math.max(72, composerHeight) + 10}px`,
-            zIndex: 20,
-            width: DESKTOP_EMOJI_POPOVER_WIDTH,
-            height: DESKTOP_EMOJI_POPOVER_HEIGHT,
-            minWidth: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-            borderRadius: '16px',
-            bgcolor: ui.composerBg || ui.panelBg || theme.palette.background.paper,
-            border: `1px solid ${ui.borderSoft || theme.palette.divider}`,
-            boxShadow: `0 14px 38px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.42 : 0.2)}`,
-          }}
-        >
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, pl: 1.5, pr: 0.5, flexShrink: 0 }}>
-            <Typography variant="caption" sx={{ flex: 1, minWidth: 0 }}>Эмодзи и стикеры</Typography>
-            <IconButton aria-label="Закрыть панель эмодзи" onClick={() => {
-              onCloseEmojiPicker?.();
-              composerRef?.current?.focus?.();
-            }} size="small" sx={{ width: 36, height: 36 }}>
-              <CloseRoundedIcon fontSize="small" />
-            </IconButton>
-          </Box>
-          <Box sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          <Suspense fallback={null}>
-            <LazyChatEmojiPanel
-              open
-              desktopDocked
-              theme={theme}
-              ui={ui}
-              onInsertEmoji={onInsertEmoji}
-              onSendSticker={onSendSticker}
-              currentUserId={currentUserId}
-              onClose={onCloseEmojiPicker}
-            />
-          </Suspense>
-          </Box>
-        </Box>
-      ) : null}
+      <ChatDesktopEmojiPopover
+        theme={theme}
+        ui={ui}
+        compactMobile={compactMobile}
+        feedFullWidth={feedFullWidth}
+        contentMaxWidth={contentMaxWidth}
+        composerHeight={composerHeight}
+        composerRef={composerRef}
+        currentUserId={currentUserId}
+      />
     </Box>
   );
 }

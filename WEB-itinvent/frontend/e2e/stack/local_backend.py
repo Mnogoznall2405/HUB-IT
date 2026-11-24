@@ -28,6 +28,73 @@ STATE_DIR = STACK_DIR / STATE_NAME
 APP_DB = STATE_DIR / "app.sqlite3"
 CHAT_DB = STATE_DIR / "chat.sqlite3"
 
+# Работающая копия может лежать глубоко в дереве каталогов (worktree,
+# .codex_tmp) — тогда путь вложения стикера упирается в MAX_PATH=260 и
+# backend не может скопировать файл в чат. Для таких запусков каталог
+# данных выносится наружу через E2E_HUB_DATA_DIR (например C:\Temp\...).
+# E2E_HUB_DATA_DIR — это *корневой* каталог, выделенный под тестовые
+# данные: реальные файлы живут в уникальной поддиректории вида
+# ``hub_data-<state>`` с маркером владения, сам корень никогда не удаляется.
+HUB_DATA_MARKER = ".hub-it-e2e-owned"
+
+
+def _resolve_hub_data_dir() -> Path:
+    raw = os.environ.get("E2E_HUB_DATA_DIR")
+    if not raw:
+        return STATE_DIR / "hub_data"
+    root = Path(raw).expanduser()
+    if not root.is_dir():
+        raise RuntimeError(
+            "E2E_HUB_DATA_DIR must be an existing directory designated for "
+            f"test data; got: {root}"
+        )
+    resolved_root = root.resolve()
+    state_dir = STATE_DIR.resolve()
+    if resolved_root == state_dir or state_dir in resolved_root.parents:
+        raise RuntimeError(
+            f"E2E_HUB_DATA_DIR must not point inside the E2E state dir: {resolved_root}"
+        )
+    if resolved_root.parent == resolved_root:
+        raise RuntimeError(
+            f"E2E_HUB_DATA_DIR must not be a filesystem root: {resolved_root}"
+        )
+    child = (resolved_root / f"hub_data-{STATE_NAME.lstrip('.')}").resolve()
+    if child.parent != resolved_root:
+        raise RuntimeError(f"E2E data dir escaped its designated root: {child}")
+    return child
+
+
+def _reset_hub_data_dir(target: Path) -> None:
+    """Пересоздать каталог данных — только если он явно принадлежит E2E.
+
+    Вне .state удаляется исключительно директория ``hub_data-state*`` с
+    маркером ``HUB_DATA_MARKER`` и ожидаемым содержимым. Любая другая цель
+    завершает запуск ошибкой, ничего не изменив на диске.
+    """
+    resolved = target.resolve()
+    if resolved == (STATE_DIR / "hub_data").resolve():
+        return  # внутри .state — удаляется вместе с ним
+    if not resolved.name.startswith("hub_data-state"):
+        raise RuntimeError(
+            f"E2E refuses to manage an unmanaged data path: {resolved}"
+        )
+    if resolved.exists():
+        marker = resolved / HUB_DATA_MARKER
+        expected = f"hub-it-e2e {STATE_NAME}"
+        actual = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
+        if actual != expected:
+            raise RuntimeError(
+                "E2E refuses to delete an unmarked directory "
+                f"{resolved}: expected {HUB_DATA_MARKER} containing {expected!r}; "
+                "remove it manually if the directory is disposable"
+            )
+        shutil.rmtree(resolved)
+    resolved.mkdir(parents=True, exist_ok=True)
+    (resolved / HUB_DATA_MARKER).write_text(f"hub-it-e2e {STATE_NAME}", encoding="utf-8")
+
+
+HUB_DATA_DIR = _resolve_hub_data_dir()
+
 BACKEND_PORT = int(os.environ.get("E2E_BACKEND_PORT", "18001"))
 
 # Environment must be set before any backend import — config and services
@@ -76,7 +143,7 @@ os.environ.update(
         "CORS_ORIGINS": f"http://127.0.0.1:{os.environ.get('E2E_FRONTEND_PORT', '5174')},http://localhost:{os.environ.get('E2E_FRONTEND_PORT', '5174')}",
         # File writes must stay inside .state — otherwise uploads and chat
         # attachments land in the developer's real data/ directory.
-        "HUB_DATA_DIR": str(STATE_DIR / "hub_data"),
+        "HUB_DATA_DIR": str(HUB_DATA_DIR),
         "MY_FILES_STORAGE_DIR": str(STATE_DIR / "my_files"),
         "MY_FILES_SPOOL_DIR": str(STATE_DIR / "my_files_spool"),
         "MY_FILES_PREVIEWS_DIR": str(STATE_DIR / "my_files_previews"),
@@ -92,6 +159,12 @@ os.environ.update(
         "AUTH_NEW_LOGIN_EMAIL_ENABLED": "0",
         "REDIS_URL": "",
         "REDIS_PASSWORD": "",
+        # Telegram-import в тестовом стеке недоступен (нет bot token) — вместо
+        # него сидится локальный набор; short_name попадает в список
+        # «дефолтных», поэтому _ensure_default_packs авто-устанавливает его
+        # любому пользователю при первом list_packs.
+        "CHAT_DEFAULT_STICKER_PACKS": "e2e_test_pack,e2e_big_pack",
+        "TELEGRAM_BOT_TOKEN": "",
     }
 )
 
@@ -109,6 +182,9 @@ if str(WEB_ROOT) not in sys.path:
 
 def _seed() -> None:
     """Fresh schema + deterministic fixtures for the browser flows."""
+    # Внешний каталог проверяется и пересоздаётся до .state — при ошибке
+    # владения запуск падает до любого удаления.
+    _reset_hub_data_dir(HUB_DATA_DIR)
     shutil.rmtree(STATE_DIR, ignore_errors=True)
     if APP_DB.exists() or CHAT_DB.exists():
         raise RuntimeError("E2E SQLite files are busy; choose an unused E2E_STATE_NAME")
@@ -193,8 +269,74 @@ def _seed() -> None:
             )
 
 
+def _seed_sticker_pack() -> None:
+    """Локальный набор из 3 статичных WebP-стикеров.
+
+    Файлы лежат там же, где их кладёт реальный импорт
+    (``HUB_DATA_DIR/chat_sticker_packs/<pack_id>/``), а маркер превью-кэша
+    включает авто-установку набора пользователям. Доставка и рендер идут
+    через настоящие эндпоинты — тестируется полный контур без Telegram.
+    """
+    import base64
+    from uuid import uuid4
+
+    from backend.chat.db import chat_write_session
+    from backend.chat.models import ChatSticker, ChatStickerPack
+    from backend.chat.telegram_sticker_service import (
+        _PREVIEW_CACHE_MARKER,
+        telegram_sticker_service,
+    )
+
+    # 1x1 прозрачный WebP — минимальный валидный файл, /file и /preview
+    # отдают его как настоящий стикер.
+    webp = base64.b64decode("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA")
+
+    def _write_pack(short_name: str, title: str, count: int) -> None:
+        pack_id = str(uuid4())
+        sticker_ids = [str(uuid4()) for _ in range(count)]
+        pack_dir = telegram_sticker_service._storage_root / pack_id
+        pack_dir.mkdir(parents=True, exist_ok=True)
+        for sticker_id in sticker_ids:
+            (pack_dir / f"{sticker_id}.webp").write_bytes(webp)
+            (pack_dir / f"{sticker_id}.preview").write_bytes(webp)
+        (pack_dir / _PREVIEW_CACHE_MARKER).write_text("e2e", encoding="utf-8")
+
+        with chat_write_session() as session:
+            session.add(
+                ChatStickerPack(
+                    id=pack_id,
+                    short_name=short_name,
+                    title=title,
+                    sticker_type="regular",
+                )
+            )
+            for index, sticker_id in enumerate(sticker_ids):
+                session.add(
+                    ChatSticker(
+                        id=sticker_id,
+                        pack_id=pack_id,
+                        telegram_file_id=f"e2e-file-{index}",
+                        telegram_file_unique_id=f"e2e-unique-{index}",
+                        emoji="\U0001f9ea",
+                        format="static",
+                        mime_type="image/webp",
+                        storage_name=f"{sticker_id}.webp",
+                        file_size=len(webp),
+                        width=512,
+                        height=512,
+                        sort_order=index,
+                    )
+                )
+
+    _write_pack("e2e_test_pack", "E2E Test Pack", 3)
+    # Большой набор — замеры монтирования/прокрутки длинного списка
+    # (реалистичный пользовательский пак, ~90 стикеров).
+    _write_pack("e2e_big_pack", "E2E Big Pack", 90)
+
+
 def main() -> None:
     _seed()
+    _seed_sticker_pack()
     if os.environ.get("E2E_AI_RELIABILITY") == "1":
         from ai_reliability_seed import seed_ai_reliability
         seed_ai_reliability(STATE_DIR)
