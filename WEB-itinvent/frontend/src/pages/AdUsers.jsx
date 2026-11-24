@@ -148,6 +148,12 @@ const AdUsers = ({ embedded = false }) => {
   const fetchInitialData = useCallback(async () => {
     setLoading(true);
     setError('');
+    if (!isAdmin) {
+      // Все эндпоинты раздела требуют роль admin — не шлём гарантированный 403.
+      setUsers([]);
+      setLoading(false);
+      return;
+    }
     try {
       const [usersData] = await Promise.all([
         adUsersAPI.getImportCandidates(),
@@ -165,7 +171,7 @@ const AdUsers = ({ embedded = false }) => {
     } finally {
       setLoading(false);
     }
-  }, [loadSyncStatus]);
+  }, [isAdmin, loadSyncStatus]);
 
   useEffect(() => {
     void fetchInitialData();

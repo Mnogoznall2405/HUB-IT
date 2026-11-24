@@ -60,6 +60,7 @@ export default function useTaskDetails({
   const mobileChecklistHistoryPushedRef = useRef(false);
   const loadTaskDetailsRequestRef = useRef(0);
   const checklistMutationRef = useRef(new Map());
+  const [checklistPending, setChecklistPending] = useState(null);
   const loadedActivityRef = useRef({ taskId: '', comments: false, history: false });
   const discussionConversationRef = useRef({ taskId: '', conversationId: '' });
   const discussionProvisioningTaskRef = useRef('');
@@ -740,14 +741,23 @@ export default function useTaskDetails({
     const runAfter = existing?.chain || Promise.resolve();
     const chain = runAfter.catch(() => {}).then(() => hubTasksAPI.updateTask(taskId, { checklist_items: nextItems }));
     mutations.set(taskId, { items: nextItems, chain });
+    // Оптимистичный отклик: чекбокс переключается сразу, ответ сервера
+    // подтверждает; при ошибке — откат к исходному списку.
+    setChecklistPending({ taskId, itemId: String(itemId) });
+    applyTaskUpdate(taskId, { id: taskId, checklist_items: nextItems });
     try {
       const updatedTask = await chain;
       if (mutations.get(taskId)?.chain === chain) {
         mutations.delete(taskId);
+        setChecklistPending(null);
         applyTaskUpdate(taskId, updatedTask || { id: taskId, checklist_total: nextItems.length, checklist_done: nextItems.filter((i) => i.done).length });
       }
     } catch (err) {
-      if (mutations.get(taskId)?.chain === chain) mutations.delete(taskId);
+      if (mutations.get(taskId)?.chain === chain) {
+        mutations.delete(taskId);
+        setChecklistPending(null);
+        applyTaskUpdate(taskId, { id: taskId, checklist_items: sourceItems });
+      }
       setError(err?.response?.data?.detail || err?.message || 'Ошибка обновления чек-листа');
     }
   }, [applyTaskUpdate, setError]);
@@ -770,10 +780,11 @@ export default function useTaskDetails({
     <TaskDetailChecklist
       task={task}
       canUpdate={canUpdateTaskChecklist(task)}
+      updatingItemId={checklistPending?.taskId === String(task?.id || '') ? checklistPending.itemId : ''}
       onToggle={(itemId, done) => void handleToggleTaskChecklistItem(task, itemId, done)}
       ui={ui}
     />
-  ), [canUpdateTaskChecklist, handleToggleTaskChecklistItem, ui]);
+  ), [canUpdateTaskChecklist, checklistPending, handleToggleTaskChecklistItem, ui]);
 
   return {
     detailsOpen,

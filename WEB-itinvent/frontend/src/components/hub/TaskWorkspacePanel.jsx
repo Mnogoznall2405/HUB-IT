@@ -166,6 +166,7 @@ function TaskWorkspacePanel({
   const attachmentPreview = useTaskAttachmentPreview();
   const loadRequestIdRef = useRef(0);
   const onTaskUpdatedRef = useRef(onTaskUpdated);
+  const editReferencesPromiseRef = useRef(null);
 
   useEffect(() => {
     onTaskUpdatedRef.current = onTaskUpdated;
@@ -220,45 +221,52 @@ function TaskWorkspacePanel({
     }
   }, [busyAction, loadTask, task?.id]);
 
+  // Два триггера (меню и кнопка «Изменить») успевали оба запустить справочники —
+  // общий in-flight promise дедупит иначе идентичный GET /hub/users/controllers.
   const loadEditReferences = useCallback(async () => {
-    if (referencesLoading) return;
+    if (editReferencesPromiseRef.current) return editReferencesPromiseRef.current;
     setReferencesLoading(true);
     setError('');
-    try {
-      const assigneeIds = (Array.isArray(task?.assignee_user_ids) && task.assignee_user_ids.length
-        ? task.assignee_user_ids
-        : [task?.assignee_user_id])
-        .map((value) => String(value || '').trim())
-        .filter(Boolean);
-      const results = await Promise.allSettled([
-        assigneeIds.length ? hubAPI.getAssignees({ ids: assigneeIds.join(',') }) : Promise.resolve({ items: [] }),
-        hubAPI.getControllers(),
-        departmentsAPI.list(),
-        hubAPI.getTaskProjects({ include_inactive: true }),
-        hubAPI.getTaskObjects({ include_inactive: true }),
-      ]);
-      if (results.every((result) => result.status === 'rejected')) {
-        throw results[0].reason || new Error('Reference data is unavailable');
+    const promise = (async () => {
+      try {
+        const assigneeIds = (Array.isArray(task?.assignee_user_ids) && task.assignee_user_ids.length
+          ? task.assignee_user_ids
+          : [task?.assignee_user_id])
+          .map((value) => String(value || '').trim())
+          .filter(Boolean);
+        const results = await Promise.allSettled([
+          assigneeIds.length ? hubAPI.getAssignees({ ids: assigneeIds.join(',') }) : Promise.resolve({ items: [] }),
+          hubAPI.getControllers(),
+          departmentsAPI.list(),
+          hubAPI.getTaskProjects({ include_inactive: true }),
+          hubAPI.getTaskObjects({ include_inactive: true }),
+        ]);
+        if (results.every((result) => result.status === 'rejected')) {
+          throw results[0].reason || new Error('Reference data is unavailable');
+        }
+        const items = (index) => (
+          results[index].status === 'fulfilled' && Array.isArray(results[index].value?.items)
+            ? results[index].value.items
+            : []
+        );
+        setReferences({
+          assignees: items(0),
+          controllers: items(1),
+          departments: items(2),
+          projects: items(3),
+          objects: items(4),
+        });
+        setEditOpen(true);
+      } catch (requestError) {
+        setError(requestError?.message || 'Не удалось загрузить данные для редактирования.');
+      } finally {
+        editReferencesPromiseRef.current = null;
+        setReferencesLoading(false);
       }
-      const items = (index) => (
-        results[index].status === 'fulfilled' && Array.isArray(results[index].value?.items)
-          ? results[index].value.items
-          : []
-      );
-      setReferences({
-        assignees: items(0),
-        controllers: items(1),
-        departments: items(2),
-        projects: items(3),
-        objects: items(4),
-      });
-      setEditOpen(true);
-    } catch (requestError) {
-      setError(requestError?.message || 'Не удалось загрузить данные для редактирования.');
-    } finally {
-      setReferencesLoading(false);
-    }
-  }, [referencesLoading, task?.assignee_user_id, task?.assignee_user_ids]);
+    })();
+    editReferencesPromiseRef.current = promise;
+    return promise;
+  }, [task?.assignee_user_id, task?.assignee_user_ids]);
 
   const handleToggleChecklist = useCallback(async (itemId, done) => {
     if (!task?.id || !itemId || updatingChecklistItemId) return;

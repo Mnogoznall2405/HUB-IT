@@ -1295,7 +1295,7 @@ function Mfu() {
           );
         })}
       <Drawer anchor="right" open={drawerOpen} onClose={() => setDrawerOpen(false)}>
-        <Box sx={{ width: { xs: 360, sm: 480 }, p: 2 }}>
+        <Box sx={{ width: { xs: 'min(360px, 100vw)', sm: 480 }, p: 2 }}>
           {selectedDevice ? (
             <>
               <Typography variant="h6" sx={{ fontWeight: 700, mb: 1 }}>{selectedDevice?.model_name || '-'}</Typography>
