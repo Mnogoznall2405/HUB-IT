@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -34,6 +34,13 @@ export default function DepartmentsTab({ canManageDepartments }) {
   const [selectedDepartmentId, setSelectedDepartmentId] = useState('');
   const [memberships, setMemberships] = useState([]);
   const [draftManagerIds, setDraftManagerIds] = useState([]);
+  // Отдел, чьи участники/черновик реально показаны — защита от записи чужих данных.
+  const [membersDeptId, setMembersDeptId] = useState('');
+  const membersSeqRef = useRef(0);
+  // Зеркало выбора: post-save перезагрузка должна грузить актуальный отдел,
+  // а не тот, что был выбран в момент старта сохранения.
+  const selectedDeptRef = useRef('');
+  selectedDeptRef.current = String(selectedDepartmentId || '');
   const [loading, setLoading] = useState(false);
   const [membersLoading, setMembersLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -57,26 +64,32 @@ export default function DepartmentsTab({ canManageDepartments }) {
 
   const loadMembers = useCallback(async (departmentId) => {
     const normalizedId = String(departmentId || '').trim();
+    const seq = ++membersSeqRef.current;
     if (!normalizedId) {
       setMemberships([]);
       setDraftManagerIds([]);
+      setMembersDeptId('');
+      setMembersLoading(false);
       return;
     }
     setMembersLoading(true);
     setError('');
     try {
       const payload = await departmentsAPI.getMembers(normalizedId);
+      if (seq !== membersSeqRef.current) return;
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setMemberships(items);
       setDraftManagerIds(items
         .filter((item) => String(item?.role || '') === 'manager' && item?.is_active !== false)
         .map((item) => Number(item?.user_id || 0))
         .filter((item) => Number.isInteger(item) && item > 0));
+      setMembersDeptId(normalizedId);
     } catch (loadError) {
+      if (seq !== membersSeqRef.current) return;
       console.error(loadError);
       setError('Не удалось загрузить участников отдела.');
     } finally {
-      setMembersLoading(false);
+      if (seq === membersSeqRef.current) setMembersLoading(false);
     }
   }, []);
 
@@ -128,18 +141,23 @@ export default function DepartmentsTab({ canManageDepartments }) {
 
   const handleSaveManagers = useCallback(async () => {
     if (!selectedDepartmentId || !canManageDepartments) return;
+    if (String(membersDeptId) !== String(selectedDepartmentId)) {
+      void loadMembers(selectedDepartmentId);
+      setError('Состав отдела ещё загружается. Дождитесь обновления списка и повторите сохранение.');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
       await departmentsAPI.setManagers(selectedDepartmentId, draftManagerIds);
-      await Promise.all([loadDepartments(), loadMembers(selectedDepartmentId)]);
+      await Promise.all([loadDepartments(), loadMembers(selectedDeptRef.current || selectedDepartmentId)]);
     } catch (saveError) {
       console.error(saveError);
       setError('Не удалось сохранить начальников отдела.');
     } finally {
       setSaving(false);
     }
-  }, [canManageDepartments, draftManagerIds, loadDepartments, loadMembers, selectedDepartmentId]);
+  }, [canManageDepartments, draftManagerIds, loadDepartments, loadMembers, membersDeptId, selectedDepartmentId]);
 
   const handleSyncDepartments = useCallback(async () => {
     if (!canManageDepartments) return;
@@ -190,7 +208,7 @@ export default function DepartmentsTab({ canManageDepartments }) {
                 </Button>
               ) : null}
               {canManageDepartments ? (
-                <Button variant="contained" startIcon={<SaveOutlinedIcon />} onClick={() => void handleSaveManagers()} disabled={saving || !selectedDepartmentId}>
+                <Button variant="contained" startIcon={<SaveOutlinedIcon />} onClick={() => void handleSaveManagers()} disabled={saving || !selectedDepartmentId || membersLoading || String(membersDeptId) !== String(selectedDepartmentId)}>
                   Сохранить начальников
                 </Button>
               ) : null}
