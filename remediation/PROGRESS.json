@@ -20,10 +20,10 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 229,
+    "OPEN": 224,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
-    "FIXED": 39,
+    "FIXED": 44,
     "IN_PROGRESS": 2
   },
   "issues": [
@@ -4146,7 +4146,7 @@
       "id": "FE-0238",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4154,10 +4154,11 @@
       "lines": "133-151 (reload бампает requestRef),157-173 (finally сбрасывает loadingMore только при совпадении requestId)",
       "title": "Аккаунт: loadingMore навсегда застревает при гонке loadMore↔reload — пагинация ломается",
       "related": [],
-      "pr": null,
+      "pr": 39,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | seq/request-guard cluster, stacked on PR#38",
+      "commit": "c2c358e5"
     },
     {
       "id": "FE-0239",
@@ -4183,7 +4184,7 @@
       "id": "FE-0240",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4191,16 +4192,17 @@
       "lines": "349-364 (нет loadSeq в отличие от loadRows 328-345)",
       "title": "Аккаунт: loadLookups без seq-защиты → устаревшие справочники под новой базой",
       "related": [],
-      "pr": null,
+      "pr": 39,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | seq/request-guard cluster, stacked on PR#38",
+      "commit": "c2c358e5"
     },
     {
       "id": "FE-0241",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4208,10 +4210,11 @@
       "lines": "452-464 (openDelete без seq),220,252 (disabled по usage)",
       "title": "Аккаунт: гонка openDelete — usage другой записи в диалоге удаления",
       "related": [],
-      "pr": null,
+      "pr": 39,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | seq/request-guard cluster, stacked on PR#38",
+      "commit": "c2c358e5"
     },
     {
       "id": "FE-0242",
@@ -4303,7 +4306,7 @@
       "id": "FE-0247",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4311,16 +4314,17 @@
       "lines": "202-217,283-302,304-317,319-332,334-361,363-376 (защищены только beginUsers/beginSessions 219-281)",
       "title": "Аккаунт: шесть загрузчиков хука без seq/unmount-защиты (databases/env/appSettings/passwordGroups/aiBots/security)",
       "related": [],
-      "pr": null,
+      "pr": 39,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | seq/request-guard cluster, stacked on PR#38",
+      "commit": "c2c358e5"
     },
     {
       "id": "FE-0248",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4328,10 +4332,11 @@
       "lines": "111-125,129-132,140,204",
       "title": "Аккаунт: MyFilesStats.load без seq-защиты → старый поиск перезаписывает новый",
       "related": [],
-      "pr": null,
+      "pr": 39,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | seq/request-guard cluster, stacked on PR#38",
+      "commit": "c2c358e5"
     },
     {
       "id": "FE-0249",
