@@ -35,6 +35,7 @@ _parser.add_argument("--env", default=str(ROOT.parent / "HUB-IT-main" / ".env"))
 _parser.add_argument("--limit", type=int, default=0)
 _parser.add_argument("--ids", default="")
 _parser.add_argument("--corpus", default="")
+_parser.add_argument("--provider", choices=("routerai", "openrouter"), default="routerai")
 _parser.add_argument("--out", default="")
 _args = _parser.parse_args()
 LABEL = _args.label
@@ -69,6 +70,12 @@ if _env_file.exists():
         if _k not in os.environ or not os.environ.get(_k):
             os.environ[_k] = str(_v)
             _env_loaded.append(_k)
+
+if _args.provider == "openrouter":
+    # RouterAI balance exhausted mid-run — fall back to the OpenRouter key
+    # (same gateway code path: key/base_url resolve dynamically per call).
+    for _k in ("ROUTERAI_API_KEY", "ROUTERAI_BASE_URL", "ROUTERAI_MODEL"):
+        os.environ.pop(_k, None)
 
 import conftest  # tests/conftest.py helpers  # noqa: E402
 import backend.config as backend_config  # noqa: E402
