@@ -1341,6 +1341,9 @@ function Networks() {
   }, [notifyError, notifySuccess, refreshBranchContextParts]);
 
   const applySocketPointDraft = useCallback((socketLike) => {
+    // Read-only пользователь не должен попадать в режим размещения точки —
+    // иначе commit потом ловит серию 403.
+    if (!canEdit) return;
     const socketCode = String(socketLike?.socket_code || socketLike?.patch_panel_port || '').trim();
     clearPendingPointDraft();
     setPlacingMarker(true);
@@ -1352,7 +1355,7 @@ function Networks() {
     if (isMobile) {
       setMobileMapPanelOpen(true);
     }
-  }, [clearPendingPointDraft, isMobile]);
+  }, [canEdit, clearPendingPointDraft, isMobile]);
 
   const commitPendingPoint = async () => {
     if (pointBusy) return;
@@ -1465,6 +1468,7 @@ function Networks() {
   };
 
   const startSocketPointCreation = (socketLike) => {
+    if (!canEdit) return;
     const socketCode = String(socketLike?.socket_code || socketLike?.patch_panel_port || '').trim();
     const mapIdCandidate = Number(socketLike?.map_id || selectedMapId || maps?.[0]?.id || 0) || null;
     setTab('maps');
@@ -1752,7 +1756,12 @@ function Networks() {
     }
   };
 
+  const branchEditMappingRequestRef = useRef(0);
   const openEditBranchDialog = async (branch) => {
+    // Быстрое переоткрытие диалога на другом филиале: старый ответ не должен
+    // перезаписать уже открытый диалог чужим db_id.
+    const requestId = branchEditMappingRequestRef.current + 1;
+    branchEditMappingRequestRef.current = requestId;
     setBranchEditId(branch.id);
     setBranchEditName(String(branch.name || ''));
     setBranchDefaultSiteCode(branch.default_site_code || '');
@@ -1761,12 +1770,13 @@ function Networks() {
     try {
       setBranchEditLoading(true);
       const mapping = await networksAPI.getBranchDbMapping(branch.id);
+      if (requestId !== branchEditMappingRequestRef.current) return;
       setBranchEditDbId(String(mapping?.db_id || ''));
     } catch (err) {
       console.error('Failed to load branch DB mapping for edit:', err);
-      setBranchEditDbId('');
+      if (requestId === branchEditMappingRequestRef.current) setBranchEditDbId('');
     } finally {
-      setBranchEditLoading(false);
+      if (requestId === branchEditMappingRequestRef.current) setBranchEditLoading(false);
     }
   };
 
@@ -2067,28 +2077,36 @@ function Networks() {
     }
   };
 
-  const portHotkeysRef = useRef(null);
-  portHotkeysRef.current = { editingPortId, displayedPorts, cancelEditPort, savePortEdit };
+
+  // Рефы — чтобы глобальный слушатель висел один раз, а не перевешивался на
+  // каждый новый массив displayedPorts / пересозданные колбэки.
+  const editingPortIdRef = useRef(editingPortId);
+  editingPortIdRef.current = editingPortId;
+  const displayedPortsRef = useRef(displayedPorts);
+  displayedPortsRef.current = displayedPorts;
+  const cancelEditPortRef = useRef(cancelEditPort);
+  cancelEditPortRef.current = cancelEditPort;
+  const savePortEditRef = useRef(savePortEdit);
+  savePortEditRef.current = savePortEdit;
 
   useEffect(() => {
     const handleKeyDown = (e) => {
-      const {
-        editingPortId: editId,
-        displayedPorts: ports,
-        cancelEditPort: cancelEdit,
-        savePortEdit: saveEdit,
-      } = portHotkeysRef.current || {};
+      // Открытый диалог/дровер сам обрабатывает Escape и Ctrl+S — не трогаем.
+      if (document.querySelector('.MuiModal-root')) return;
+      const portId = editingPortIdRef.current;
 
       // Escape key
-      if (e.key === 'Escape' && editId) {
-        cancelEdit(e);
+      if (e.key === 'Escape') {
+        if (portId) cancelEditPortRef.current(e);
       }
 
       // Ctrl + S or Meta + S
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && editId) {
-        e.preventDefault();
-        const portObj = ports.find(p => Number(p.id) === Number(editId)) || { id: editId };
-        saveEdit(portObj, e);
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        if (portId) {
+          e.preventDefault();
+          const portObj = displayedPortsRef.current.find(p => Number(p.id) === Number(portId)) || { id: portId };
+          savePortEditRef.current(portObj, e);
+        }
       }
     };
 
