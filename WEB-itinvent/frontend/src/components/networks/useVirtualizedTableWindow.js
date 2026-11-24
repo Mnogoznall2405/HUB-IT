@@ -35,6 +35,7 @@ export function useVirtualizedTableWindow({
   const [containerNode, setContainerNode] = useState(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
+  const [containerWidth, setContainerWidth] = useState(0);
 
   const containerRef = useCallback((node) => {
     setContainerNode(node);
@@ -64,6 +65,7 @@ export function useVirtualizedTableWindow({
 
     const updateViewport = () => {
       setViewportHeight(node.clientHeight || 0);
+      setContainerWidth(node.clientWidth || 0);
       if (!enabled) return;
       setScrollTop(node.scrollTop || 0);
     };
@@ -87,6 +89,7 @@ export function useVirtualizedTableWindow({
         handleScroll,
         scrollTop,
         viewportHeight,
+        containerWidth,
         startIndex: 0,
         endIndex: itemCount,
         topSpacerHeight: 0,
@@ -105,6 +108,7 @@ export function useVirtualizedTableWindow({
       handleScroll,
       scrollTop,
       viewportHeight,
+      containerWidth,
       startIndex,
       endIndex,
       topSpacerHeight: offsets[startIndex] || 0,
@@ -121,5 +125,6 @@ export function useVirtualizedTableWindow({
     totalHeight,
     viewportFallback,
     viewportHeight,
+    containerWidth,
   ]);
 }

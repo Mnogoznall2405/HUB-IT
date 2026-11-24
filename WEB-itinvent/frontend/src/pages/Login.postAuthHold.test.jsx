@@ -222,7 +222,9 @@ describe('Login post-auth UI hold (FE-0197/FE-0198/FE-0199)', () => {
     await waitFor(() => {
       expect(holdCalls()).toContain(false);
     });
-    expect(locationAssignMock).toHaveBeenCalled();
+    // Navigation is owned by LoginRoute/PostAuthNavigate (SPA) — a forced
+    // location.assign here would reload the app and race the router (FE-0061).
+    expect(locationAssignMock).not.toHaveBeenCalled();
   });
 
   it('keeps the required trusted-device prompt visible after 2FA login until the user dismisses it (FE-0198/FE-0199)', async () => {
@@ -279,7 +281,8 @@ describe('Login post-auth UI hold (FE-0197/FE-0198/FE-0199)', () => {
       expect(screen.queryByTestId('login-remember-device-dialog')).not.toBeInTheDocument();
     });
     expect(holdCalls()).toContain(false);
-    expect(locationAssignMock).toHaveBeenCalled();
+    // SPA navigation (PostAuthNavigate) handles the transition — no reload.
+    expect(locationAssignMock).not.toHaveBeenCalled();
     expect(document.querySelector('[inert]')).toBeNull();
   });
 

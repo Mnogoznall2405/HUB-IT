@@ -65,7 +65,7 @@ describe('Telegram-style composer interactions', () => {
   });
   it('exposes expanded state on the emoji toggle and the mention listbox', () => {
     render(<Fixture emojiPickerOpen />);
-    expect(screen.getByRole('button', { name: 'Закрыть панель эмодзи' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('chat-composer-emoji-button')).toHaveAttribute('aria-expanded', 'true');
     fireEvent.change(input(), { target: { value: '@' } });
     expect(input()).toHaveAttribute('aria-expanded', 'true');
     fireEvent.keyDown(input(), { key: 'Escape' });

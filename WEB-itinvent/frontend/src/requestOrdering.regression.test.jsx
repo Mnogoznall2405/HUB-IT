@@ -41,6 +41,7 @@ describe('request ordering in page loaders', () => {
       canManageUsers: true, canManageSessions: true,
       authAPI: { getUsers: api, getSessions: api, getTaskDelegatesBulk: async () => ({ items: [] }) },
       setUsersLoading: noop, setUsers: set, setBlockingError: noop, setSessionsLoading: noop, setSessions: set,
+      setTaskDelegatesLoadFailed: noop,
       normalizePermissions: (value) => value, mergeTaskDelegatesIntoUsers: (value) => value,
       myFilesAPI: { listFiles: async () => ({ items: await api() }), getQuota: async () => ({}), listFolders: async () => ({ items: [] }) },
       setLoading: noop, setRefreshing: noop, setItems: set, setQuota: noop, notifyApiError: noop,

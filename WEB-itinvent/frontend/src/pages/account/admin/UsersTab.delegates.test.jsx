@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 // preservation fix the next save writes [] over real delegate links.
 
 vi.mock('./UserDraftFields', () => ({ default: () => null }));
+vi.mock('../../../contexts/NotificationContext', () => ({ useNotification: () => ({ notifyWarning: vi.fn() }) }));
 
 import UsersTab from './UsersTab';
 
