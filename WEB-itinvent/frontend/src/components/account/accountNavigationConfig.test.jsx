@@ -47,7 +47,9 @@ describe('account navigation configuration', () => {
       hasPermission: (permission) => ['departments.manage', 'ad_users.read'].includes(permission),
     });
 
-    expect(sections.map((section) => section.key)).toEqual(['departments', 'ad-users']);
+    // ad-users раздел admin-only: все его эндпоинты требуют роль admin,
+    // ad_users.read не даёт рабочих вызовов (FE-0246).
+    expect(sections.map((section) => section.key)).toEqual(['departments']);
   });
 
   it.each([

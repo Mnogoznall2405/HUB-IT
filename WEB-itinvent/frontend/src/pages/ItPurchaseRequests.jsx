@@ -669,6 +669,7 @@ function RequestDetail({ request, loading, error, onBack, showBack }) {
   if (!request) {
     return (
       <Paper variant="outlined" sx={{ p: 3, textAlign: 'center' }}>
+        {error ? <Alert severity="warning" sx={{ mb: 1.5, textAlign: 'left' }}>{error}</Alert> : null}
         {showBack ? (
           <Button startIcon={<ArrowBackRoundedIcon />} onClick={onBack} sx={{ minHeight: 44, mb: 1 }}>
             К списку заявок
@@ -1067,13 +1068,19 @@ export default function ItPurchaseRequests() {
                 InputLabelProps={{ shrink: true }}
                 SelectProps={{
                   displayEmpty: true,
-                  renderValue: (selected) => (
-                    warehouseFacets.find((item) => item.ref === selected)?.name || 'Все склады'
-                  ),
+                  renderValue: (selected) => {
+                    if (!selected) return 'Все склады';
+                    return warehouseFacets.find((item) => item.ref === selected)?.name || 'Склад вне текущего списка';
+                  },
                 }}
                 sx={{ '& .MuiInputBase-root': { minHeight: 44, borderRadius: 2 } }}
               >
                 <MenuItem value="">Все склады</MenuItem>
+                {/* Сохранённый фильтр склада может отсутствовать в текущих фасетах —
+                    показываем его честно, а не подменяем на «Все склады». */}
+                {warehouseRef && !warehouseFacets.some((warehouse) => warehouse.ref === warehouseRef) ? (
+                  <MenuItem value={warehouseRef}>Склад вне текущего списка</MenuItem>
+                ) : null}
                 {warehouseFacets.map((warehouse) => (
                   <MenuItem key={warehouse.ref} value={warehouse.ref}>
                     {warehouse.name} · {view === 'active'

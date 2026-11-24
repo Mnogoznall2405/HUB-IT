@@ -57,9 +57,11 @@ function readShownNotificationIds() {
 }
 
 function persistShownNotificationIds(ids) {
+  // Union при записи: read-then-write из двух вкладок иначе терял чужие маркеры.
+  const merged = [...new Set([...readShownNotificationIds(), ...ids])];
   writeStorage(
     WINDOWS_NOTIFICATIONS_SHOWN_KEY,
-    JSON.stringify(ids.slice(-MAX_SHOWN_NOTIFICATION_IDS)),
+    JSON.stringify(merged.slice(-MAX_SHOWN_NOTIFICATION_IDS)),
   );
 }
 
