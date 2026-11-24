@@ -1078,6 +1078,7 @@ function ComposerContent({
             canDownload={false}
             onClose={() => setAttachmentMenu({ item: null, anchorEl: null })}
             onDelete={attachmentMenu.item?.onDelete}
+            deleteLabel="Удалить вложение"
           />
 
           {attachmentCount > 0 ? (

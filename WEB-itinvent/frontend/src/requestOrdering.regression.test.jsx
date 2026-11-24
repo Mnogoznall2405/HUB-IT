@@ -49,7 +49,12 @@ describe('request ordering in page loaders', () => {
       libraryId: null, myFilesLibrariesAPI: { list: async () => null },
       setLibraries: noop, setCanManageLibraries: noop, setLibraryInfo: noop,
       isTrashView: false, listView: 'all', currentFolderId: null, debouncedSearchQuery: '',
+      isSharedView: false,
       activeLoadsRef: { current: 0 },
+      latestIsCurrentRef: { current: null }, loadAbortRef: { current: null },
+      listingsCacheRef: { current: new Map() },
+      LISTINGS_CACHE_TTL_MS: 20_000, LISTINGS_CACHE_MAX: 30, authUserKey: 'u7',
+      applyListingsPayload: ({ filesPayload }) => { if (filesPayload) set(filesPayload.items || []); },
     };
     const file = ['users', 'sessions'].includes(kind) ? './pages/account/hooks/useAccountSectionData.js'
       : kind === 'files' ? './pages/MyFiles.jsx' : './pages/Warehouse1C.jsx';
@@ -62,5 +67,266 @@ describe('request ordering in page loaders', () => {
     pending[0]([{ id: 'old' }]);
     await older;
     expect(selected.map((item) => item.id)).toEqual(['new']);
+  });
+});
+
+// MyFiles-specific loadData internals: the SWR cache, the active-load counter
+// and the access-denied cleanup. Executing the real callback keeps these tied
+// to the shipped implementation, not a re-implementation.
+function bindMyFilesLoader(overrides = {}) {
+  const context = {
+    beginLoad: overrides.beginLoad,
+    latestIsCurrentRef: { current: null },
+    loadAbortRef: { current: null },
+    activeLoadsRef: { current: 0 },
+    listingsCacheRef: { current: new Map() },
+    LISTINGS_CACHE_TTL_MS: 20_000, LISTINGS_CACHE_MAX: 30,
+    authUserKey: 'u7',
+    isTrashView: false, isSharedView: false, listView: 'all', libraryId: null,
+    currentFolderId: null, debouncedSearchQuery: '',
+    myFilesAPI: {
+      listFiles: overrides.listFiles || (async () => ({ items: [] })),
+      getQuota: async () => ({}),
+      listFolders: async () => ({ items: [] }),
+    },
+    applyListingsPayload: overrides.applyListingsPayload || (() => {}),
+    setLoading: () => {}, setRefreshing: () => {},
+    notifyApiError: overrides.notifyApiError || (() => {}),
+    ...overrides.extra,
+  };
+  const loader = bindLoader('./pages/MyFiles.jsx', 'loadData', context);
+  return { loader, context };
+}
+
+describe('my-files loadData counter and cache', () => {
+  it('decrements the active-loads counter when superseded during a cache-hit revalidation', async () => {
+    const { result } = renderHook(() => useRequestGuard());
+    const rafQueue = [];
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    });
+    try {
+      const pending = [];
+      const { loader, context } = bindMyFilesLoader({
+        beginLoad: result.current,
+        listFiles: () => new Promise((resolve) => pending.push(resolve)),
+      });
+      // First load populates the cache.
+      const first = loader();
+      pending[0]({ items: [{ id: 'f1' }] });
+      await first;
+      expect(context.activeLoadsRef.current).toBe(0);
+
+      // Cache-hit revalidation is superseded by a fresh navigation while it
+      // waits for the paint frame — the old body bailed via `return` BEFORE
+      // the try/finally, leaking +1 forever.
+      const stale = loader();
+      const newest = loader();
+      while (rafQueue.length) rafQueue.splice(0).forEach((cb) => cb());
+      // Let the post-rAF continuations reach the fetch call.
+      await Promise.resolve();
+      pending[1]({ items: [{ id: 'f2' }] });
+      await Promise.all([stale, newest]);
+      expect(context.activeLoadsRef.current).toBe(0);
+    } finally {
+      rafSpy.mockRestore();
+    }
+  });
+
+  it('clears screen data and evicts the cache entry on 403', async () => {
+    const { result } = renderHook(() => useRequestGuard());
+    const payloads = [];
+    const { loader, context } = bindMyFilesLoader({
+      beginLoad: result.current,
+      listFiles: async () => { const e = new Error('denied'); e.response = { status: 403 }; throw e; },
+      applyListingsPayload: (p) => payloads.push(p),
+    });
+    context.listingsCacheRef.current.set('u7|all|||', { t: Date.now(), payload: { filesPayload: { items: [{ id: 'stale' }] } } });
+    await loader();
+    expect(payloads.at(-1).filesPayload.items).toEqual([]);
+    expect(context.listingsCacheRef.current.has('u7|all|||')).toBe(false);
+    expect(context.activeLoadsRef.current).toBe(0);
+  });
+
+  it('binds cache entries to the auth identity', async () => {
+    const { result } = renderHook(() => useRequestGuard());
+    const shared = { current: new Map() };
+    const calls = [];
+    const makeLoader = (authUserKey) => {
+      const { loader } = bindMyFilesLoader({
+        beginLoad: result.current,
+        authUserKey,
+        listFiles: async () => { calls.push(authUserKey); return { items: [] }; },
+        extra: { listingsCacheRef: shared },
+      });
+      return loader;
+    };
+    await makeLoader('u7')();
+    expect(calls).toEqual(['u7']);
+    // Same view, same cache map, different identity — must NOT reuse u7's entry.
+    await makeLoader('u9')();
+    expect(calls).toEqual(['u7', 'u9']);
+  });
+
+  it('never paints a cached payload in a shared scope before server validation', async () => {
+    const { result } = renderHook(() => useRequestGuard());
+    const applied = [];
+    const sharedCache = { current: new Map([
+      ['u7|all|lib-1||', { t: Date.now(), payload: { filesPayload: { items: [{ id: 'cached-secret' }] } } }],
+    ]) };
+    let release;
+    const { loader } = bindMyFilesLoader({
+      beginLoad: result.current,
+      applyListingsPayload: (p) => applied.push(p),
+      listFiles: () => new Promise((resolve) => { release = resolve; }),
+      extra: { listingsCacheRef: sharedCache, libraryId: 'lib-1' },
+    });
+    const pending = loader();
+    await Promise.resolve();
+    // A stale cached payload exists for this exact key — it must NOT be applied.
+    expect(applied).toEqual([]);
+    release({ items: [] });
+    await pending;
+    expect(applied).toHaveLength(1);
+    expect(applied[0].filesPayload.items).toEqual([]);
+  });
+
+  it('never paints a cached payload in the trash view before server validation', async () => {
+    const { result } = renderHook(() => useRequestGuard());
+    const applied = [];
+    const sharedCache = { current: new Map([
+      ['u7|trash|||', { t: Date.now(), payload: { filesPayload: { items: [{ id: 'cached-deleted' }] } } }],
+    ]) };
+    let release;
+    const { loader } = bindMyFilesLoader({
+      beginLoad: result.current,
+      applyListingsPayload: (p) => applied.push(p),
+      listFiles: () => new Promise((resolve) => { release = resolve; }),
+      extra: { listingsCacheRef: sharedCache, isTrashView: true },
+    });
+    const pending = loader();
+    await Promise.resolve();
+    expect(applied).toEqual([]);
+    release({ items: [] });
+    await pending;
+    expect(applied).toHaveLength(1);
+    expect(applied[0].filesPayload.items).toEqual([]);
+  });
+});
+
+// Folder-share handlers now run under the same staleness guard as the file
+// ones: a response resolved after the identity switch must not write the old
+// user's link to the clipboard nor reopen the dialog.
+describe('my-files folder share staleness guard', () => {
+  const makeContext = (isCurrent) => {
+    const seen = { clipboardWrites: [], dialogStates: [], changed: [], notices: [] };
+    const context = {
+      isCurrent,
+      myFilesAPI: {
+        createFolderShare: async () => ({ token: 'tok-folder' }),
+        buildPublicFolderUrl: () => 'http://x/f/tok-folder',
+        revokeFolderShare: async () => ({}),
+      },
+      navigator: { clipboard: { writeText: async (v) => seen.clipboardWrites.push(v) } },
+      setFolderShareDialog: (v) => seen.dialogStates.push(v),
+      setShareDialog: () => {},
+      onFolderShareChanged: (id, flag) => seen.changed.push([id, flag]),
+      notifySuccess: (m) => seen.notices.push(['ok', m]),
+      notifyWarning: () => {},
+      notifyApiError: (e, m) => seen.notices.push(['err', m]),
+    };
+    return { context, seen };
+  };
+
+  it('shareFolder writes no clipboard and opens no dialog when stale', async () => {
+    const { context, seen } = makeContext(() => false);
+    const handler = bindLoader('./pages/myFiles/useMyFilesShares.js', 'shareFolder', context);
+    await handler({ id: 'd1', name: 'Проект' });
+    expect(seen.clipboardWrites).toEqual([]);
+    expect(seen.dialogStates).toEqual([]);
+    expect(seen.changed).toEqual([]);
+  });
+
+  it('revokeFolderShare applies no state updates when stale', async () => {
+    const { context, seen } = makeContext(() => false);
+    const handler = bindLoader('./pages/myFiles/useMyFilesShares.js', 'revokeFolderShare', context);
+    await handler('d1');
+    expect(seen.dialogStates).toEqual([]);
+    expect(seen.changed).toEqual([]);
+    expect(seen.notices).toEqual([]);
+  });
+
+  it('a stale error does not surface an error notification', async () => {
+    const { context, seen } = makeContext(() => false);
+    context.myFilesAPI.createFolderShare = async () => { throw new Error('boom'); };
+    const handler = bindLoader('./pages/myFiles/useMyFilesShares.js', 'shareFolder', context);
+    await handler({ id: 'd1', name: 'Проект' });
+    expect(seen.notices).toEqual([]);
+  });
+});
+
+describe('my-files loadLibraries identity guard', () => {
+  it('discards a response that started under the previous auth identity', async () => {
+    const authUserKeyRef = { current: 'u7' };
+    const applied = [];
+    const release = [];
+    const list = () => new Promise((resolve) => release.push(resolve));
+    const make = (authUserKey) => bindLoader('./pages/MyFiles.jsx', 'loadLibraries', {
+      authUserKey,
+      authUserKeyRef,
+      myFilesLibrariesAPI: { list },
+      setLibraries: (v) => applied.push(v),
+      setCanManageLibraries: () => {},
+    });
+    const callA = make('u7')();
+    authUserKeyRef.current = 'u9'; // identity switched while A was in flight
+    const callB = make('u9')();
+    release[0]({ items: [{ id: 'lib-A' }] });
+    await callA;
+    release[1]({ items: [{ id: 'lib-B' }] });
+    await callB;
+    expect(applied).toEqual([[{ id: 'lib-B' }]]);
+  });
+});
+
+// A mutation succeeds but only patches local state: every OTHER cached
+// listing (other folders/views holding the same entry) is now stale and must
+// be dropped. These run the real handler bodies against a seeded cache map.
+describe('my-files mutation cache invalidation', () => {
+  const seededCache = () => ({ current: new Map([['u7|all|||', { t: Date.now(), payload: {} }]]) });
+
+  it('handleToggleFavorite clears the cache after a successful update', async () => {
+    const listingsCacheRef = seededCache();
+    const handler = bindLoader('./pages/MyFiles.jsx', 'handleToggleFavorite', {
+      setItems: () => {}, setFolders: () => {}, isFavoritesView: false,
+      myFilesAPI: { updateFile: async () => ({}), updateFolder: async () => ({}) },
+      listingsCacheRef, loadData: async () => {}, notifyApiError: () => {},
+    });
+    await handler({ id: 'f1', is_favorite: false }, 'file');
+    expect(listingsCacheRef.current.size).toBe(0);
+  });
+
+  it('handleMoveFileToFolder clears the cache after a successful move', async () => {
+    const listingsCacheRef = seededCache();
+    const handler = bindLoader('./pages/MyFiles.jsx', 'handleMoveFileToFolder', {
+      myFilesAPI: { updateFile: async () => ({}) }, listingsCacheRef,
+      isSpecialView: false, currentFolderId: null,
+      setItems: () => {}, notifySuccess: () => {}, notifyApiError: () => {},
+    });
+    await handler('f1', 'folder-9');
+    expect(listingsCacheRef.current.size).toBe(0);
+  });
+
+  it('handleMoveFolderToFolder clears the cache after a successful move', async () => {
+    const listingsCacheRef = seededCache();
+    const handler = bindLoader('./pages/MyFiles.jsx', 'handleMoveFolderToFolder', {
+      myFilesAPI: { updateFolder: async () => ({}) }, listingsCacheRef,
+      currentFolderId: null,
+      setAllFolders: () => {}, setFolders: () => {},
+      notifySuccess: () => {}, notifyApiError: () => {},
+    });
+    await handler('d1', 'd2');
+    expect(listingsCacheRef.current.size).toBe(0);
   });
 });

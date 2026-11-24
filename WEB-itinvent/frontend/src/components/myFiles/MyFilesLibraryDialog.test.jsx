@@ -140,6 +140,30 @@ describe('MyFilesLibraryDialog', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('does not flag unsaved changes when the typed limit rounds to the stored bytes', async () => {
+    mockListMembers.mockResolvedValue({ items: [] });
+    const onClose = vi.fn();
+
+    render(<MyFilesLibraryDialog open library={{ id: 'lib-4b', name: 'Отчёты', quota_bytes: 10 * GIB }} onClose={onClose} />);
+
+    await screen.findByRole('dialog');
+    const quota = screen.getByTestId('my-files-library-quota');
+    expect(quota).toHaveValue('10');
+    // «10.0000000001» округляется ровно в те же 10737418240 байт, что и
+    // хранимый лимит: это повтор значения, а не правка — dirty и PATCH быть не должно.
+    fireEvent.change(quota, { target: { value: '10.0000000001' } });
+
+    expect(screen.queryByTestId('my-files-library-unsaved')).not.toBeInTheDocument();
+    expect(screen.getByTestId('my-files-library-save')).toBeDisabled();
+
+    // Отличающееся значение, которое тоже отображается как «10», — уже правка.
+    fireEvent.change(quota, { target: { value: '10.5' } });
+    expect(screen.getByTestId('my-files-library-unsaved')).toHaveTextContent('1');
+    expect(screen.getByTestId('my-files-library-save')).toBeEnabled();
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockSetMembers).not.toHaveBeenCalled();
+  });
+
   it('sends only the settings update when just the name changed', async () => {
     mockListMembers.mockResolvedValue({
       items: [{ principal_type: 'user', principal_id: '1', name: 'Админ', role: 'manage', members_count: 0 }],

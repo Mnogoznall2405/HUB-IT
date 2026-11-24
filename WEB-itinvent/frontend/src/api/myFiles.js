@@ -388,8 +388,8 @@ export const myFilesAPI = {
     if (typeof window === 'undefined') return publicPath;
     return new URL(publicPath, window.location.origin).href;
   },
-  getQuota: async () => {
-    const response = await apiClient.get('/my-files/quota');
+  getQuota: async ({ signal } = {}) => {
+    const response = await apiClient.get('/my-files/quota', { signal });
     return response.data;
   },
   createUploadSession: async ({ file, retentionDays = 1, folderId = null, libraryId = null, signal } = {}) => {
