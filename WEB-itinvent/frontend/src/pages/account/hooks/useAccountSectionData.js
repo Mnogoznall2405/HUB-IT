@@ -199,30 +199,40 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     if (legacyTarget) navigate(legacyTarget, { replace: true });
   }, [area, location.hash, location.search, navigate]);
 
+  const beginUsers = useRequestGuard(JSON.stringify([user?.id, canManageUsers]));
+  const beginSessions = useRequestGuard(JSON.stringify([user?.id, canManageSessions]));
+  const beginDatabases = useRequestGuard(JSON.stringify([user?.id]));
+  const beginEnv = useRequestGuard(JSON.stringify([user?.id, isAdmin, 'env']));
+  const beginAppSettings = useRequestGuard(JSON.stringify([user?.id, isAdmin, 'appSettings']));
+  const beginPasswordGroups = useRequestGuard(JSON.stringify([user?.id, isAdmin, 'passwordGroups']));
+  const beginAiBots = useRequestGuard(JSON.stringify([user?.id, canManageAiBots]));
+  const beginSecurity = useRequestGuard(JSON.stringify([user?.id, 'security']));
+
   const dbOptions = useMemo(
     () => databases.map((db) => ({ id: String(db.id), name: db.name })),
     [databases],
   );
 
   const loadDatabases = useCallback(async () => {
+    const isCurrent = beginDatabases();
     setDatabasesAttempted(true);
     setDatabasesLoading(true);
     setDatabasesError('');
     try {
       const data = await databaseAPI.getAvailableDatabases();
+      if (!isCurrent()) return;
       setDatabases(Array.isArray(data) ? data : []);
       setDatabasesLoaded(true);
     } catch (error) {
+      if (!isCurrent()) return;
       console.error(error);
       setDatabasesLoaded(false);
       setDatabasesError('Не удалось загрузить список баз данных.');
     } finally {
-      setDatabasesLoading(false);
+      if (isCurrent()) setDatabasesLoading(false);
     }
-  }, []);
+  }, [beginDatabases]);
 
-  const beginUsers = useRequestGuard(JSON.stringify([user?.id, canManageUsers]));
-  const beginSessions = useRequestGuard(JSON.stringify([user?.id, canManageSessions]));
   const loadUsers = useCallback(async () => {
     const isCurrent = beginUsers();
     if (!canManageUsers) return;
@@ -286,10 +296,12 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   }, [beginSessions, canManageSessions]);
 
   const loadEnv = useCallback(async () => {
+    const isCurrent = beginEnv();
     if (!isAdmin) return;
     setEnvLoading(true);
     try {
       const data = await settingsAPI.getEnvSettings();
+      if (!isCurrent()) return;
       setEnvState({
         items: Array.isArray(data?.items) ? data.items : [],
         deployment_targets: Array.isArray(data?.deployment_targets) ? data.deployment_targets : [],
@@ -299,49 +311,58 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
       });
       setBlockingError('');
     } catch (error) {
+      if (!isCurrent()) return;
       console.error(error);
       setBlockingError('Не удалось загрузить переменные окружения.');
     } finally {
-      setEnvLoading(false);
+      if (isCurrent()) setEnvLoading(false);
     }
-  }, [isAdmin]);
+  }, [beginEnv, isAdmin]);
 
   const loadAppSettings = useCallback(async () => {
+    const isCurrent = beginAppSettings();
     if (!isAdmin) return;
     setAppSettingsLoading(true);
     try {
       const data = await settingsAPI.getAppSettings();
+      if (!isCurrent()) return;
       setAppSettingsState(normalizeAppSettingsState(data));
       setBlockingError('');
     } catch (error) {
+      if (!isCurrent()) return;
       console.error(error);
       setBlockingError('Не удалось загрузить web-настройки reminder-задач.');
     } finally {
-      setAppSettingsLoading(false);
+      if (isCurrent()) setAppSettingsLoading(false);
     }
-  }, [isAdmin]);
+  }, [beginAppSettings, isAdmin]);
 
   const loadPasswordGroups = useCallback(async () => {
+    const isCurrent = beginPasswordGroups();
     if (!isAdmin) return;
     setPasswordGroupsLoading(true);
     try {
       const data = await passwordsAPI.getGroups({ include_inactive: true });
+      if (!isCurrent()) return;
       setPasswordGroups(Array.isArray(data?.items) ? data.items : []);
       setBlockingError('');
     } catch (error) {
+      if (!isCurrent()) return;
       console.error(error);
       setBlockingError('Не удалось загрузить группы хранилища паролей.');
     } finally {
-      setPasswordGroupsLoading(false);
+      if (isCurrent()) setPasswordGroupsLoading(false);
     }
-  }, [isAdmin]);
+  }, [beginPasswordGroups, isAdmin]);
 
   const loadAiBotsAdmin = useCallback(async () => {
-    if (!canManageAiBots) return;
+    const isCurrent = beginAiBots();
+    if (!canManageAiBots) return [];
     setAiBotsLoading(true);
     try {
       const data = await settingsAPI.getAiBots();
       const items = Array.isArray(data) ? data : [];
+      if (!isCurrent()) return items;
       setAiBotsState(items);
       const runsEntries = await Promise.all(
         items.map(async (item) => {
@@ -353,32 +374,37 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
           }
         }),
       );
+      if (!isCurrent()) return items;
       setAiBotRunsById(Object.fromEntries(runsEntries));
       setBlockingError('');
       return items;
     } catch (error) {
+      if (!isCurrent()) return [];
       console.error(error);
       setBlockingError('Не удалось загрузить настройки AI-ботов.');
       return [];
     } finally {
-      setAiBotsLoading(false);
+      if (isCurrent()) setAiBotsLoading(false);
     }
-  }, [canManageAiBots]);
+  }, [beginAiBots, canManageAiBots]);
 
   const loadSecurity = useCallback(async () => {
+    const isCurrent = beginSecurity();
     if (!user?.id) return;
     setSecurityLoading(true);
     try {
       const devices = await authAPI.getTrustedDevices();
+      if (!isCurrent()) return;
       setTrustedDevices(Array.isArray(devices) ? devices : []);
       setBlockingError('');
     } catch (error) {
+      if (!isCurrent()) return;
       console.error(error);
       setBlockingError('Не удалось загрузить данные по безопасности входа.');
     } finally {
-      setSecurityLoading(false);
+      if (isCurrent()) setSecurityLoading(false);
     }
-  }, [user?.id]);
+  }, [beginSecurity, user?.id]);
 
   useEffect(() => {
     const needsDatabases = tab === 'profile'
