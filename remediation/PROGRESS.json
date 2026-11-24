@@ -165,7 +165,7 @@
       "id": "FE-0008",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "computers",
       "page": "/computers",
@@ -173,10 +173,11 @@
       "lines": "84",
       "title": "Computers: поиск scope=all 3.2 c на загрузке; дубли имён в алерте изменений",
       "related": [],
-      "pr": null,
+      "pr": 58,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "1e8e982a"
     },
     {
       "id": "FE-0009",
@@ -891,7 +892,7 @@
       "id": "FE-0049",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "computers",
       "page": null,
@@ -899,10 +900,11 @@
       "lines": "950-960",
       "title": "Computers: loadChangesDeferred без abort/cancelled (setState после unmount)",
       "related": [],
-      "pr": null,
+      "pr": 58,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "1e8e982a"
     },
     {
       "id": "FE-0050",
@@ -5029,7 +5031,7 @@
       "id": "FE-0281",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "computers",
       "page": null,
@@ -5037,16 +5039,17 @@
       "lines": "883,884,887,888,889; EmployeeHistoryPanel.jsx:155 — useState(()=>localStorage.getItem()) без try",
       "title": "Computers: незащищённые localStorage.getItem в инициализаторах useState → крах страницы при заблокированном storage",
       "related": [],
-      "pr": null,
+      "pr": 58,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "1e8e982a"
     },
     {
       "id": "FE-0282",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "computers",
       "page": null,
@@ -5054,10 +5057,11 @@
       "lines": "1405,1409,1413,1417,1427,1455; EmployeeHistoryPanel.jsx:157",
       "title": "Computers: незащищённые localStorage.setItem в эффектах (флаги/seen-карта до 500 записей)",
       "related": [],
-      "pr": null,
+      "pr": 58,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "1e8e982a"
     },
     {
       "id": "FE-0283",
