@@ -515,6 +515,15 @@ function InteractiveMapCanvas({
                     >
                       <Box
                         data-map-point="1"
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Точка ${point.patch_panel_port || point.device_code || point.port_name || pointId}`}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            onPointSelect?.(point);
+                          }
+                        }}
                         onPointerDown={(event) => {
                           isPointPointerDownRef.current = true;
                           if (disabled) return;
@@ -642,6 +651,15 @@ function InteractiveMapCanvas({
                       leaveDelay={100}
                     >
                       <Box
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Кластер: ${cluster.points.length} точек`}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            onPointSelect?.(lastPoint);
+                          }
+                        }}
                         onPointerDown={(event) => {
                           isPointPointerDownRef.current = true;
                           if (disabled) return;

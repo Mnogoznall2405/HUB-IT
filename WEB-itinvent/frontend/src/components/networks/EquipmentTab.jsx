@@ -246,7 +246,7 @@ export default function EquipmentTab({
               Устройства: {devices.length}
             </Typography>
             {canEdit && (
-              <IconButton size="small" onClick={openCreateDeviceDialog} color="primary">
+              <IconButton size="small" aria-label="Добавить устройство" onClick={openCreateDeviceDialog} color="primary">
                 <AddIcon fontSize="small" />
               </IconButton>
             )}
@@ -373,12 +373,13 @@ export default function EquipmentTab({
                           transition: 'border-color 0.15s',
                         }}
                       >
-                        <CardActionArea
-                          onClick={(event) => handlePortRowClick(port, event)}
-                          sx={{ p: 1.2 }}
-                        >
-                          <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1}>
-                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                        {/* Кнопка правки — sibling, не внутри <button> CardActionArea. */}
+                        <Stack direction="row" alignItems="stretch">
+                          <CardActionArea
+                            onClick={(event) => handlePortRowClick(port, event)}
+                            sx={{ p: 1.2, flex: 1, minWidth: 0 }}
+                          >
+                            <Box sx={{ minWidth: 0 }}>
                               <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.3 }}>
                                 <Typography variant="body2" sx={{ fontWeight: 700, color: 'primary.main', fontFamily: 'monospace', fontSize: '0.9rem' }}>
                                   {port.patch_panel_port || '—'}
@@ -413,21 +414,22 @@ export default function EquipmentTab({
                                 </Stack>
                               )}
                             </Box>
-                            {canEdit && (
-                              <IconButton
-                                size="small"
-                                color="primary"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  startEditPort(port, event);
-                                }}
-                                sx={{ mt: -0.5, flexShrink: 0, minWidth: 36, minHeight: 36 }}
-                              >
-                                <EditIcon sx={{ fontSize: 18 }} />
-                              </IconButton>
-                            )}
-                          </Stack>
-                        </CardActionArea>
+                          </CardActionArea>
+                          {canEdit && (
+                            <IconButton
+                              size="small"
+                              color="primary"
+                              aria-label={`Изменить порт ${port.port_name || port.patch_panel_port || port.id}`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                startEditPort(port, event);
+                              }}
+                              sx={{ alignSelf: 'center', mr: 0.5, flexShrink: 0, minWidth: 36, minHeight: 36 }}
+                            >
+                              <EditIcon sx={{ fontSize: 18 }} />
+                            </IconButton>
+                          )}
+                        </Stack>
                       </Card>
                     );
                   })}

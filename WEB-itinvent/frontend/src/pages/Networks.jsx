@@ -2129,7 +2129,7 @@ function Networks() {
       {isMobile && (
         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.4 }}>
           <Typography variant="subtitle2">Панель карты</Typography>
-          <IconButton size="small" onClick={() => setMobileMapPanelOpen(false)}>
+          <IconButton size="small" aria-label="Закрыть панель карты" onClick={() => setMobileMapPanelOpen(false)}>
             <CloseIcon fontSize="small" />
           </IconButton>
         </Stack>
@@ -2211,7 +2211,7 @@ function Networks() {
                     >
                       Создать точку
                     </Button>
-                    <IconButton size="small" onClick={() => setCreatePointHint(null)}>
+                    <IconButton size="small" aria-label="Скрыть подсказку" onClick={() => setCreatePointHint(null)}>
                       <CloseIcon fontSize="inherit" />
                     </IconButton>
                   </Stack>
@@ -2244,7 +2244,15 @@ function Networks() {
                       key={point.id}
                       hover
                       selected={Number(point.id) === Number(selectedPointId)}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => onPointRowSelect(point)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          onPointRowSelect(point);
+                        }
+                      }}
                       sx={{
                         cursor: 'pointer',
                         '& td': {
@@ -2701,7 +2709,7 @@ function Networks() {
               <Box sx={{ mb: 1, flexShrink: 0 }}>
                 {/* Компактная строка: назад + название + кнопка разворота */}
                 <Stack direction="row" alignItems="center" spacing={0.5}>
-                  <IconButton size="small" onClick={() => navigate('/networks')} sx={{ flexShrink: 0 }}>
+                  <IconButton size="small" aria-label="К списку филиалов" onClick={() => navigate('/networks')} sx={{ flexShrink: 0 }}>
                     <ArrowBackIcon fontSize="small" />
                   </IconButton>
                   <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -2711,6 +2719,8 @@ function Networks() {
                   </Box>
                   <IconButton
                     size="small"
+                    aria-label={mobileHeaderCollapsed ? 'Развернуть сведения о филиале' : 'Свернуть сведения о филиале'}
+                    aria-expanded={!mobileHeaderCollapsed}
                     onClick={() => setMobileHeaderCollapsed((v) => !v)}
                     sx={{ flexShrink: 0, transition: 'transform 0.2s', transform: mobileHeaderCollapsed ? 'rotate(0deg)' : 'rotate(180deg)' }}
                   >
@@ -2745,7 +2755,7 @@ function Networks() {
             ) : (
               <Stack direction="row" justifyContent="space-between" spacing={1.2} sx={{ mb: 1.5, flexShrink: 0 }}>
                 <Stack direction="row" spacing={1} alignItems="center">
-                  <IconButton onClick={() => navigate('/networks')}><ArrowBackIcon /></IconButton>
+                  <IconButton aria-label="К списку филиалов" onClick={() => navigate('/networks')}><ArrowBackIcon /></IconButton>
                   <Box>
                     <Typography variant="h6">{selectedBranch?.name || overview?.branch?.name || 'Филиал'}</Typography>
                     <Typography variant="body2" color="text.secondary">{selectedBranch?.branch_code || overview?.branch?.branch_code || '-'}</Typography>
@@ -3003,7 +3013,7 @@ function Networks() {
             </Box>
             <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 2, pb: 1, flexShrink: 0 }}>
               <Typography variant="subtitle1" fontWeight={700}>Детали точки</Typography>
-              <IconButton size="small" onClick={() => { setPointDetailsOpen(false); setPointEditMode(false); }}>
+              <IconButton size="small" aria-label="Закрыть детали точки" onClick={() => { setPointDetailsOpen(false); setPointEditMode(false); }}>
                 <CloseIcon fontSize="small" />
               </IconButton>
             </Stack>
