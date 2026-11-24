@@ -346,7 +346,9 @@ HEAD. Коммиты прохода: `daa8ba7c` (versioned recents + uniform ACL
 `2810b2c4` (единый scoped store), `7c2bfff5` (focused send-benchmark),
 `6079818f` (race-матрица стора + поисковый perf-smoke), `7777bdf5`
 (pickerOpen-гейтинг полосы), `db20042c` (перенумерация миграций после
-A8) и финальный `test(chat): sticker V2 stabilization gate + report`.
+A8), `test(chat): sticker V2 stabilization gate + report`, затем
+`dfd73112` (op-based versioned recents — протокол в разделе l) и
+финальный приёмочный проход с чистым A/B по send_echo (m).
 
 ### a) Перебазирование контроля
 
@@ -377,8 +379,10 @@ conv_switch ~730/970. Все дельты в этом разделе счита�
   принятая ещё в «Отклонённых альтернативах». Хвост ~270–300 мс в
   полном гейте на общей машине (в фоне крутился чужой e2e/перф-стек,
   процессы backend дважды убивались во время прогонов — см. логи) —
-  шум нагруженного хоста, а не систематика send-пути; итоговый флаг
-  оставлен к перезамеру на чистой машине.
+  шум нагруженного хоста, а не систематика send-пути.
+- РЕШЕНО (финальный проход): чистый A/B на идентичном харнесе против
+  merge-base `926dd9f5` — флаг снят, регрессия не подтверждена,
+  подробности и таблицы в разделе (m).
 
 ### c) Единый scoped store
 
@@ -475,11 +479,11 @@ prod-билд, контролируемый GC, общая машина (фон�
 | cold open | — | 1551 / 1797 | — | 1287 / 1746 | — |
 | memory 3×50 | ~0 | mean Δ 0 MB | ✓ | mean Δ 0 MB | ✓ |
 
-¹ send_echo: помеченный хвост не подтверждается систематикой —
-фокусный прогон с тем же dock-порядком даёт p95 183.1 и ноль
-стикерных запросов (b); p50 гейта совпадает с фокусным (168.6 vs
-167.8), расходится только хвост на нагруженном хосте. Оставлено
-к перезамеру на чистой машине — статус не изменился с первого гейта.
+¹ send_echo: помеченный хвост не подтверждён систематикой и СНЯТ
+финальным чистым A/B против merge-base `926dd9f5` (раздел m):
+p95 кандидата в пределах +10 % от baseline во всех 6 ячейках;
+фокусный прогон с тем же dock-порядком давал p95 183.1 и ноль
+стикерных запросов (b). Хвост первого гейта — шум общего хоста.
 
 `emoji_pinned` закрыт: после единого стора (c) и pickerOpen-гейта (g)
 открытие закреплённого дока на 28–40 % быстрее контроля без стикеров,
@@ -496,3 +500,101 @@ commits p50 5–6 против 12 до рефактора — флаг (1) из 
 | Дублирование ревизии 0177 | alembic heads | A8 заняла 0177 на main | перенумерация 0178/0179 (`db20042c`) | sqlite + PG | 30/30, 16/16 |
 | Жёсткое число ревизий в тесте | `test_chat_migrations_scope_independent` FAIL | `CHAT_REVISIONS == 22` устарело после A8+стикеров | == 23 | тот же тест | PASS |
 | Устаревший aria-label в unit-тесте | `ChatComposer.behavior.test.jsx` FAIL | pinned-режим меняет подпись на «Закрепить панель эмодзи» | ожидание обновлено (`7777bdf5`) | тот же тест | PASS |
+| Recents: воскрешение записей stale-списком | разбор merge-sync (e): устройство со старым rail присылало полный список → стертые другим устройством id возвращались | snapshot-семантика PUT не различала «мои изменения» и «полное состояние» | op-протокол `dfd73112`: PUT принимает `{base_version, ops:[bump|remove|clear]}`; merge `{items, version}` в ответе авторитетен | 9 backend-кейсов (`test_recents_ops_*`) + 7 frontend-кейсов (session-guard flush) | PASS: stale-list не воскрешает, повторная реальная отправка легально возвращает стикер |
+| Бенч-спек `send focus` падал на 988px при открытом доке | `composer.click()` timeout: overlay-док перехватывает pointer events над полем ввода | layout-факт: на узком viewport док — overlay поверх composer | в режиме `dock=open` замер использует `focus()` вместо `click()` (hit-check не нужен для focus) | rerun open@988 на обеих сторонах | PASS, 40/40 на обеих сторонах |
+| Baseline-worktree: login 400 `MAIL_CREDENTIALS_KEY is not configured` | smoke-прогон A на `926dd9f5` | `.env` не tracked → не копируется в worktree | `.env` скопирован в baseline-worktree (локально, не коммитится) | повторный smoke + полный прогон A | PASS |
+
+### l) Op-based recents sync (`dfd73112`)
+
+`PUT /api/v1/chat/stickers/recent` принимает дельты вместо снапшота
+rail'а. Это закрывает дефект merge-sync семантики (e): устройство с
+устаревшим локальным списком больше не может «воскресить» записи,
+которые другое устройство удалили или очистили.
+
+Запрос: `{base_version?, ops:[{op, sticker_id?}, …] (≤500), clear?, sticker_ids? (legacy)}`
+Ответ: `{items, version}` — смерженное состояние, авторитетное для
+клиента (клиент реплеит поверх него неподтверждённые ops).
+
+| Элемент | Семантика |
+|---|---|
+| `ops[i].op = bump` | переместить `sticker_id` в голову rail — пользователь реально отправил стикер |
+| `ops[i].op = remove` | удалить `sticker_id` из rail |
+| `ops[i].op = clear` | обрезать rail (`sticker_id` игнорируется); топ-левел `clear:true` = неявный leading `clear` |
+| `sticker_ids` (legacy) | bump-head merge: список устройства становится головой, серверный хвост сохраняется; используется только v0→v2 миграцией localStorage; игнорируется при непустых `ops` |
+| `base_version` | advisory, монотонный; mismatch логируется, запись НЕ отклоняется (ops идемпотентны и применяются последовательно) |
+
+Ключевое свойство: **stale-list resurrect невозможен by design** —
+устройство со старым `base_version` шлёт только дельты по стикерам,
+на которые оно реально действовало; у него нет механизма вернуть
+записи, удалённые другим устройством. Легальное «воскрешение»
+остаётся и это корректно: повторная реальная отправка стикера на
+stale-устройстве — `bump`-оп — возвращает его в голову (это действие
+пользователя, а не побочка синка).
+
+Клиент (`src/api/chatStickers.js`): op-journal на scope, debounce для
+bump'ов, реплей неподтверждённых ops поверх ответов GET/PUT;
+session-guard — очередь при flush перепроверяет user+DB scope и
+отменяется при `invalidate`/`cancelRecentStickersSync`; localStorage
+переехал на `hubit.chat.recent-stickers.v2:{userId}:{selectedDb}`
+с одноразовой миграцией v1 (вверх только при version=0).
+
+Регрессионные тесты: backend `test_recents_ops_*` (9 кейсов:
+bump-ordering, remove/clear, stale-device no-resurrect, interleave
+двух устройств, drop unknown/inaccessible, ordering clear+ops,
+пустой ops, идемпотентность реплея) + frontend `chatStickers.test.js`
+(7 кейсов session-guard: flush при той же сессии, drop при смене
+пользователя/БД/пропаже сессии, cancel по своему/чужому scope,
+замена stale pending).
+
+### m) Чистый A/B send_echo: кандидат vs merge-base `926dd9f5`
+
+Финальная проверка гипотезы «+40 % p95 = шум машины» на идентичном
+харнесе. Baseline — git-worktree `send-ab-baseline` на sha
+`926dd9f5` (tip main, merge-base ветки, без Sticker V2); в него
+скопирован ТОТ ЖЕ спек `chat-send-focus-perf.spec.js` (src-изменения
+не копировались). Обе стороны: prod-билд + `vite preview`,
+backend через decoy-обёртку (`stab_backend.py`), порты
+18411/5484, `E2E_FOCUS_RUNS=40`, viewport'ы 1440×900 и 988×838,
+чередование A/B по сценариям (A-plain→B-plain→B-warm→A-warm→
+A-open→B-open). На машине параллельно работал чужой e2e-стек —
+шум разделён между сторонами поровну, это и проверялось.
+
+| Сценарий | Viewport | Baseline p50/p95, мс | Candidate p50/p95, мс | Δ p95 |
+|---|---|---|---|---|
+| plain send | 1440×900 | 79.6 / 112.5 | 80.0 / 107.9 | **−4.1 %** |
+| plain send | 988×838 | 89.8 / 106.0 | 90.4 / 112.3 | **+5.9 %** |
+| send после open+close дока | 1440×900 | 156.1 / 175.0 | 166.0 / 190.5 | **+8.9 %** |
+| send после open+close дока | 988×838 | 159.5 / 171.5 | 170.2 / 186.4 | **+8.7 %** |
+| send при открытом доке | 1440×900 | 173.0 / 192.0 | 187.9 / 211.1 | **+9.9 %** |
+| send при открытом доке | 988×838 | 174.7 / 194.5 | 175.2 / 202.7 | **+4.2 %** |
+
+Во всех окнах на обеих сторонах: `stickerRequests = 0`,
+`timeouts = 0`, `longTasks = 0`; commits p50 6→6 (plain),
+12→13 (warm), 12→11 (open). Отправка идёт через WS-кадр —
+HTTP-рекордер видит только идентичный post-send GET-refresh
+(thread-bootstrap/hydrate/messages ~35–45 мс) на обеих сторонах,
+т.е. серверный вклад симметричен.
+
+ВЕРДИКТ: регрессия send_echo НЕ подтверждена — дельта p95 кандидата
+в пределах +10 % во всех шести ячейках (критерий «+10 %»). Флаг
++40 % первого гейта — шум нагруженного хоста (чужой e2e/перф-стек +
+убийства backend'ов sweep'ом). Остаточная систематическая дельта
++4–9 % на dock-сценариях (~+15 мс p95) — цена единой keep-alive
+поверхности дока с монтируемой вкладкой стикеров (commits 12→13 в
+warm), зафиксирована в «Отклонённых альтернативах»; блокером не
+является. Артефакты: `e2e-artifacts/send-ab/{baseline,candidate}-*.json`
+(12 файлов, включая сырые сэмплы и трассы запросов).
+
+### n) Финальная тест-матрица приёмки (24.11, HEAD `dfd73112`)
+
+| Проверка | Результат |
+|---|---|
+| `pytest tests/test_chat_sticker_favorites.py WEB-itinvent/backend/tests/test_chat_sticker_favorites.py tests/test_chat_telegram_stickers.py` | **65/65 PASS** (37 с, sqlite, вкл. upgrade/downgrade миграций 0178/0179 + single-head-descendant) |
+| `pytest tests/test_chat_migrations_scope_independent.py` | **53/53 PASS** (`CHAT_REVISIONS == 23`) |
+| Цепочка alembic 0176→0177→0178→0179 | один head `20261124_0179` (`alembic heads`), down_revision-цепь целая, дублей нет, всего 182 ревизии |
+| Реальный PG-гейт (16/16 ранее на PG 17.6) | НЕ перезапущен: на этом хосте доступен только живой `hubit_chat` (PG 16.15, без scratch-схем) — DDL на нём без designate запрещён; временная 17.6 предыдущего прохода недоступна. Покрытие: статическая цепь + sqlite upgrade/downgrade + scope-тесты |
+| `npm run test:run` по затронутым сьютам (TelegramStickersTab, chatStickerStore, chatStickers api, ChatStickerSuggestions, stickerSearchIndex.perf, ChatThread, ChatEmojiDock, ChatEmoji, ChatComposer.behavior) | **212/212 PASS** (9 файлов) |
+| `E2E_LOCAL=1 E2E_BUILD=1` chat-stickers-v2 + chat-emoji-picker + chat-stickers-v2-visual | **26/26 PASS** (6+15+5) |
+| eslint изменённых файлов | файлы под env-scope (`components/chat`): **0 ошибок**; `src/api`/`src/lib` — тот же класс `no-undef` на browser-globals, что и у 807 существующих файлов baseline (конфиг покрывает globals только chat-дерево/mail) — известный gap конфигурации, не дефект кода |
+| `vite build --outDir ../../output/vite-trial` | **OK** (63 с, только стандартные chunk-size предупреждения) |
+| send_echo чистый A/B | флаг снят, таблицы в (m) |

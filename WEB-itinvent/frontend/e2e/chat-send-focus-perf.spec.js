@@ -8,9 +8,12 @@
 //   * E2E_FOCUS_DOCK=1 — reproduces gate ordering (emoji dock opened,
 //     stickers tab mounted once via warmHiddenTabs, dock closed) before
 //     the send loop, to catch deferred decode/render work;
+//   * E2E_FOCUS_DOCK_MODE=off|warm|open — same as DOCK=1 for 'warm';
+//     'open' keeps the emoji dock OPEN during the send loop;
 //   * E2E_FOCUS_EMOJI_TEXT=1 — sends "<base> 🙂" to force the
 //     ChatStickerSuggestions path (suspect a).
 //   * E2E_FOCUS_RUNS — sample count (default 40).
+//   * E2E_FOCUS_VIEWPORTS — comma list, e.g. "1440x900,988x838".
 // Run: E2E_LOCAL=1 E2E_BUILD=1 npx playwright test e2e/chat-send-focus-perf.spec.js
 import { test, expect } from '@playwright/test';
 import crypto from 'node:crypto';
@@ -22,8 +25,17 @@ const U1 = process.env.E2E_USERNAME || 'e2e_admin';
 const P1 = process.env.E2E_PASSWORD || 'e2e_admin_pass';
 const U2 = process.env.E2E_USERNAME2;
 const RUNS = Number(process.env.E2E_FOCUS_RUNS || 40);
-const DOCK_WARM = process.env.E2E_FOCUS_DOCK === '1';
+const DOCK_MODE = process.env.E2E_FOCUS_DOCK_MODE || (process.env.E2E_FOCUS_DOCK === '1' ? 'warm' : 'off');
+const DOCK_WARM = DOCK_MODE === 'warm';
+const DOCK_OPEN = DOCK_MODE === 'open';
 const EMOJI_TEXT = process.env.E2E_FOCUS_EMOJI_TEXT === '1';
+const VIEWPORTS = (process.env.E2E_FOCUS_VIEWPORTS || '1440x900')
+  .split(',')
+  .map((s) => {
+    const [w, h] = s.trim().toLowerCase().split('x').map(Number);
+    return { width: w, height: h };
+  })
+  .filter((v) => Number.isFinite(v.width) && v.width > 0 && Number.isFinite(v.height) && v.height > 0);
 const SHOTS = 'e2e-artifacts/emoji-picker';
 
 test.skip(process.env.E2E_LOCAL !== '1', 'focused bench needs the local stack: run with E2E_LOCAL=1 E2E_BUILD=1');
@@ -78,18 +90,26 @@ const installHook = () => {
   // с временем — видно, стреляют ли sticker-эндпоинты в send-окно.
   const xhrOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function open(method, url) {
-    try { window.__perf.requests.push({ kind: 'xhr', method: String(method), url: String(url), t: performance.now() }); } catch { /* noop */ }
+    try {
+      const rec = { kind: 'xhr', method: String(method), url: String(url), t: performance.now(), dur: null };
+      window.__perf.requests.push(rec);
+      this.addEventListener('loadend', () => { try { rec.dur = performance.now() - rec.t; } catch { /* noop */ } });
+    } catch { /* noop */ }
     return xhrOpen.apply(this, arguments);
   };
   const origFetch = window.fetch;
   if (typeof origFetch === 'function') {
     window.fetch = function wrappedFetch(input, init) {
+      let rec = null;
       try {
         const url = typeof input === 'string' ? input : input?.url;
         const method = init?.method || (typeof input === 'object' ? input?.method : '') || 'GET';
-        window.__perf.requests.push({ kind: 'fetch', method: String(method), url: String(url), t: performance.now() });
+        rec = { kind: 'fetch', method: String(method), url: String(url), t: performance.now(), dur: null };
+        window.__perf.requests.push(rec);
       } catch { /* noop */ }
-      return origFetch.apply(this, arguments);
+      const p = origFetch.apply(this, arguments);
+      if (rec) Promise.resolve(p).finally(() => { try { rec.dur = performance.now() - rec.t; } catch { /* noop */ } }).catch(() => {});
+      return p;
     };
   }
 };
@@ -109,7 +129,7 @@ const windowStats = (page, t0) => page.evaluate((t) => {
     rendered: cs.reduce((s, c) => s + Math.max(0, c.rendered), 0),
     threadRendered: cs.reduce((s, c) => s + Math.max(0, c.threadRendered || 0), 0),
     longTasks: window.__perf.longTasks.filter((lt) => lt.start >= t - 2 && lt.start <= t + 4000).length,
-    requests: reqs.map((r) => `${r.method} ${r.url}`),
+    requests: reqs.map((r) => ({ m: `${r.method} ${r.url}`, dur: r.dur == null ? null : Math.round(r.dur * 10) / 10 })),
   };
 }, t0);
 
@@ -143,10 +163,10 @@ const closeDock = async (page) => {
   await page.getByTestId('chat-emoji-dock-close').click({ timeout: 5000 }).catch(() => {});
 };
 
-for (const vp of [{ width: 1440, height: 900 }]) {
-  test(`send focus ${vp.width}x${vp.height} dock=${DOCK_WARM} emoji=${EMOJI_TEXT}`, async ({ browser }) => {
+for (const vp of VIEWPORTS) {
+  test(`send focus ${vp.width}x${vp.height} dock=${DOCK_MODE} emoji=${EMOJI_TEXT}`, async ({ browser }) => {
     test.setTimeout(600_000);
-    const res = { viewport: vp, measuredAt: new Date().toISOString(), dock: DOCK_WARM, emojiText: EMOJI_TEXT, scenarios: {} };
+    const res = { viewport: vp, measuredAt: new Date().toISOString(), dock: DOCK_MODE, emojiText: EMOJI_TEXT, scenarios: {} };
 
     const ctx = await browser.newContext({ viewport: vp });
     await ctx.addInitScript(installHook);
@@ -175,7 +195,9 @@ for (const vp of [{ width: 1440, height: 900 }]) {
     // Прогрев дока как в гейте: открыть, перейти на «Стикеры» (монтирует
     // вкладку + сетку + 3 fetch), вернуться, закрыть — дальше замер идёт
     // по «загрязнённой» странице, ровно как после emoji-сценариев гейта.
-    if (DOCK_WARM) {
+    // DOCK_MODE=open — та же последовательность, но док остаётся ОТКРЫТЫМ
+    // на время send-цикла.
+    if (DOCK_WARM || DOCK_OPEN) {
       const emojiButton = page.getByTestId('chat-composer-emoji-button');
       const dock = page.getByTestId('chat-emoji-dock');
       await emojiButton.click();
@@ -183,8 +205,12 @@ for (const vp of [{ width: 1440, height: 900 }]) {
       await dock.getByRole('tab', { name: 'Стикеры' }).click();
       await waitMark(page, `() => { const d = document.querySelector('[data-testid="chat-emoji-dock"]'); if (!d) return false; const s = d.querySelector('[data-sticker-section]') || d.querySelector('.MuiAlert-root'); return s && s.getBoundingClientRect().width > 0; }`, 15000);
       await dock.getByRole('tab', { name: 'Эмодзи' }).click().catch(() => {});
-      await closeDock(page);
-      await expect(dock).toBeHidden({ timeout: 10000 });
+      if (DOCK_WARM) {
+        await closeDock(page);
+        await expect(dock).toBeHidden({ timeout: 10000 });
+      } else {
+        await expect(dock).toBeVisible({ timeout: 10000 });
+      }
       const settle = Number(process.env.E2E_FOCUS_SETTLE_MS ?? 400);
       if (settle > 0) await page.waitForTimeout(settle);
       await page.evaluate(() => { window.__perf.requests.length = 0; window.__perf.commits.length = 0; window.__perf.longTasks.length = 0; });
@@ -194,7 +220,9 @@ for (const vp of [{ width: 1440, height: 900 }]) {
     {
       const samples = [];
       for (let i = 0; i < Math.min(RUNS, 25); i += 1) {
-        await composer.click();
+        // При открытом доке (overlay) composer может быть перекрыт — focus()
+        // без hit-проверки; клик оставлен для закрытых режимов.
+        if (DOCK_OPEN) await composer.focus(); else await composer.click();
         await page.evaluate(() => { window.__perf.keyT0 = null;
           document.addEventListener('keydown', (e) => { if (window.__perf.keyT0 === null) window.__perf.keyT0 = performance.now(); }, { capture: true, once: true }); });
         await page.keyboard.type('x', { delay: 0 });
@@ -224,7 +252,7 @@ for (const vp of [{ width: 1440, height: 900 }]) {
         samples.push({ ms: ready < 0 ? bound : ready - t0, ...w });
         if (ready < 0) sendTimeouts += 1;
       }
-      const stickerReqs = samples.reduce((acc, s) => acc + s.requests.filter((u) => /sticker/i.test(u)).length, 0);
+      const stickerReqs = samples.reduce((acc, s) => acc + s.requests.filter((r) => /sticker/i.test(r.m)).length, 0);
       const allReqs = samples.reduce((acc, s) => acc + s.requests.length, 0);
       res.scenarios.send_echo_ms = {
         ...stats(samples.map((s) => s.ms)),
@@ -249,7 +277,7 @@ for (const vp of [{ width: 1440, height: 900 }]) {
       console.log(`[focus] send samples: ${samples.map((s) => Math.round(s.ms)).join(',')}`);
     }
 
-    const suffix = `${DOCK_WARM ? '-dock' : ''}${EMOJI_TEXT ? '-emoji' : ''}`;
+    const suffix = `${DOCK_MODE === 'warm' ? '-dock' : ''}${DOCK_OPEN ? '-dockopen' : ''}${EMOJI_TEXT ? '-emoji' : ''}`;
     writeFileSync(`${SHOTS}/perf-send-focus-${vp.width}x${vp.height}${suffix}.json`, JSON.stringify(res, null, 2));
     console.log('send-focus:', JSON.stringify(res.scenarios.send_echo_ms));
     await ctx.close();
