@@ -168,7 +168,8 @@ test('recents: send persists server-side across reload; menu removal works', asy
   await apiLogin(page);
   const convId = await ensureDirectConversation(page, USERNAME2);
   expect(convId).toBeTruthy();
-  await page.request.put('/api/v1/chat/stickers/recent', { data: { sticker_ids: [] } });
+  // clear:true — иначе merge-семантика PUT оставила бы остатки прошлых прогонов.
+  await page.request.put('/api/v1/chat/stickers/recent', { data: { sticker_ids: [], clear: true } });
   await openConversationDirect(page, convId);
   const dock = await openStickersTab(page);
 

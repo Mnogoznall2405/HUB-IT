@@ -191,9 +191,11 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   // поверхностей отправки (api/chatStickers), scope — ключ хранилища.
   useEffect(() => () => cancelRecentStickersSync(recentStorageKey), [recentStorageKey]);
 
-  // Серверные «недавние» выигрывают у локального кэша; если сервер пуст,
-  // а локальная копия есть — поднимаем её наверх один раз (миграция с
-  // localStorage-only версии и офлайн-периоды).
+  // Серверные «недавние» выигрывают у локального кэша. Локальную копию
+  // поднимаем наверх только когда сервер ещё не синхронизировался
+  // (version === 0 — миграция с localStorage-only версии). Пустой список
+  // при version > 0 — сознательная очистка на этом или другом устройстве:
+  // merge-синк иначе воскрешал бы удалённые стикеры при каждом открытии.
   useEffect(() => {
     let cancelled = false;
     chatStickersAPI.listRecentStickers()
@@ -209,8 +211,19 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
           notifyStickerRecentsChanged(recentStorageKey);
           return;
         }
-        const localIds = readRecentStickerIds(recentStorageKey);
-        if (localIds.length > 0) scheduleRecentStickersSync(localIds, recentStorageKey);
+        const serverVersion = Number(payload?.version) || 0;
+        if (serverVersion === 0) {
+          const localIds = readRecentStickerIds(recentStorageKey);
+          if (localIds.length > 0) scheduleRecentStickersSync(localIds, recentStorageKey);
+          return;
+        }
+        // Серверный rail явно пуст — локальный кэш тоже чистим, иначе
+        // старые id показывались бы до следующего удачного GET.
+        if (readRecentStickerIds(recentStorageKey).length > 0) {
+          setRecentStickerIds([]);
+          writeRecentStickerIds(recentStorageKey, []);
+          notifyStickerRecentsChanged(recentStorageKey);
+        }
       })
       .catch(() => {
         // Офлайн/старый backend — остаёмся на localStorage-копии.
@@ -511,13 +524,19 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   const forgetRecentSticker = useCallback((stickerId) => {
     const normalizedStickerId = String(stickerId || '').trim();
     if (!normalizedStickerId) return;
-    setRecentStickerIds((current) => {
-      if (!current.includes(normalizedStickerId)) return current;
-      const next = current.filter((item) => item !== normalizedStickerId);
-      writeRecentStickerIds(recentStorageKey, next);
-      scheduleRecentStickersSync(next, recentStorageKey);
-      notifyStickerRecentsChanged(recentStorageKey);
-      return next;
+    // Явное удаление — полная замена (clear:true) без дебаунса: merge-синк
+    // сохранил бы отсутствующий в payload стикер хвостом серверного списка.
+    // Очередь дебаунса отменяем до PUT — иначе устаревший список вернул бы
+    // удалённый стикер обратно уже после замены.
+    const next = readRecentStickerIds(recentStorageKey)
+      .filter((item) => item !== normalizedStickerId);
+    setRecentStickerIds(next);
+    writeRecentStickerIds(recentStorageKey, next);
+    notifyStickerRecentsChanged(recentStorageKey);
+    cancelRecentStickersSync(recentStorageKey);
+    chatStickersAPI.pushRecentStickers(next, { clear: true }).catch(() => {
+      // Локальная копия уже актуальна — сервер догонит при следующей записи.
+      setStatusText('Не удалось обновить список недавних стикеров.');
     });
   }, [recentStorageKey]);
 
@@ -531,7 +550,9 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
       notifyStickerRecentsChanged(recentStorageKey);
       return [];
     });
-    chatStickersAPI.pushRecentStickers([]).catch(() => {
+    // clear:true — полная замена: без него merge-семантика сервера оставила бы
+    // хвост из записей, которых нет в локальном (пустом) списке.
+    chatStickersAPI.pushRecentStickers([], { clear: true }).catch(() => {
       // Локальный список уже пуст — серверный догонит при следующей
       // успешной записи, пользователю показываем только статус.
       setStatusText('Не удалось очистить список недавних стикеров.');

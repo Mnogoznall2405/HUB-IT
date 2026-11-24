@@ -492,6 +492,11 @@ describe('TelegramStickersTab', () => {
     fireEvent.contextMenu(recentButton, { clientX: 24, clientY: 24 });
     fireEvent.click(screen.getByRole('menuitem', { name: 'Убрать из недавних' }));
 
+    // Удаление одного стикера — явная замена: без clear:true merge-синк
+    // сервера оставил бы удалённый id хвостом списка.
+    await waitFor(() => {
+      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith([], { clear: true });
+    });
     await waitFor(() => {
       expect(screen.queryByRole('tabpanel', { name: 'Недавние' })).not.toBeInTheDocument();
     });
@@ -553,6 +558,29 @@ describe('TelegramStickersTab', () => {
       await act(async () => {});
       await act(async () => { vi.advanceTimersByTime(2000); });
       expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith(['sticker-1']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not resurrect local recents when the server list was cleared elsewhere', async () => {
+    // version > 0 + пустой список — rail сознательно очищен (clear:true на
+    // этом или другом устройстве); merge-пуш локальной копии отменял бы очистку.
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [], version: 3 });
+    window.localStorage.setItem(
+      'hubit.chat.recent-stickers.v1:device',
+      JSON.stringify(['sticker-1']),
+    );
+    vi.useFakeTimers();
+    try {
+      renderTab();
+      await act(async () => {});
+      await act(async () => { vi.advanceTimersByTime(2000); });
+      expect(chatStickersAPI.pushRecentStickers).not.toHaveBeenCalled();
+      expect(
+        JSON.parse(window.localStorage.getItem('hubit.chat.recent-stickers.v1:device')),
+      ).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
@@ -812,9 +840,10 @@ describe('TelegramStickersTab', () => {
     fireEvent.contextMenu(recentButton, { clientX: 24, clientY: 24 });
     fireEvent.click(screen.getByRole('menuitem', { name: 'Очистить недавние' }));
 
-    // Немедленный PUT пустого массива — дебаунс-путь здесь не используется.
+    // Немедленный PUT с clear:true — дебаунс-путь здесь не используется,
+    // а без clear merge-семантика сервера не очистила бы rail.
     await waitFor(() => {
-      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith([]);
+      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith([], { clear: true });
     });
     await waitFor(() => {
       expect(screen.queryByRole('tabpanel', { name: 'Недавние' })).not.toBeInTheDocument();

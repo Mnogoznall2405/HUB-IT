@@ -160,7 +160,8 @@ test('01 populate: favorites, recents, received sticker + context menu shot', as
   for (const item of (await apiFavorites(page)).items || []) {
     await page.request.delete(`/api/v1/chat/stickers/favorites/${item.id}`);
   }
-  await page.request.put('/api/v1/chat/stickers/recent', { data: { sticker_ids: [] } });
+  // clear:true — иначе merge-семантика PUT оставила бы остатки прошлых прогонов.
+  await page.request.put('/api/v1/chat/stickers/recent', { data: { sticker_ids: [], clear: true } });
 
   await openConversationDirect(page, convId);
   const dock = await openDockStickers(page);

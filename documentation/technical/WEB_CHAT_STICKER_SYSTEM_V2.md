@@ -9,7 +9,8 @@
 
 Содержание: parity-матрица с Telegram Desktop, находки аудита,
 изменения API/БД, архитектурные решения, найденные и исправленные
-дефекты, результаты тестов, перф-гейт против `c6d110e3`, визуальная
+дефекты, результаты тестов, перф-гейт против baseline `78106494`
+(pre-Phase-2 ревизия PR #17), визуальная
 приёмка (ЭТАП 12) со скриншотами, ограничения, отклонённые альтернативы.
 
 ## Telegram-parity матрица
@@ -69,8 +70,8 @@
 | `GET /chat/stickers/favorites` | Список избранного | `ChatStickerListResponse` (items + `pack_short_name`) |
 | `PUT /chat/stickers/favorites/{sticker_id}` | Добавить в избранное (идемпотентно) | Актуальный список |
 | `DELETE /chat/stickers/favorites/{sticker_id}` | Убрать из избранного | Актуальный список |
-| `GET /chat/stickers/recent` | Список недавних | `ChatStickerListResponse` |
-| `PUT /chat/stickers/recent` | Полная замена списка (дедуп + обрезка до 50) | Актуальный список |
+| `GET /chat/stickers/recent` | Список недавних + счётчик синхронизации | `ChatStickerRecentListResponse` (items + `version`) |
+| `PUT /chat/stickers/recent` | Версионный merge-sync: payload-ids в начало, серверные хвост сохраняется (дедуп + обрезка до 50); `clear=true` — точная замена; `base_version` — advisory, конфликты не отклоняются | `ChatStickerRecentListResponse` с инкрементированным `version` |
 
 Без изменений, но в контуре: `POST /conversations/{id}/messages/sticker`
 (отправка), `GET /sticker-packs/preview/{short_name}` (карточка набора),
@@ -79,7 +80,8 @@
 
 Схемы (`backend/chat/schemas.py`): `ChatStickerListItemResponse`
 (+`pack_short_name`), `ChatStickerListResponse`,
-`ChatStickerRecentUpdateRequest`, `ChatStickerPackOrderRequest`.
+`ChatStickerRecentListResponse`, `ChatStickerRecentUpdateRequest`
+(+`base_version`, `clear`), `ChatStickerPackOrderRequest`.
 
 ## Изменения БД
 
@@ -97,6 +99,15 @@
   пользовательский порядок наборов в пикере; равенство позиций
   разрешается по `added_at`.
 
+Миграция `20261124_0178_chat_recent_sticker_sync_state` (down_revision
+`20261124_0177`):
+
+- `chat_user_recent_sticker_state` — `user_id` (PK),
+  `version Integer NOT NULL DEFAULT 0`, `updated_at`. Счётчик
+  успешных PUT `/chat/stickers/recent`: клиенты отличают «ещё ни разу
+  не синкалось» (`version = 0`) от «явно очищено», и видят, что
+  другой девайс обновил рейку.
+
 SQLite-путь (`initialize_chat_schema`) создаёт те же таблицы через
 `metadata.create_all` + `_ensure_chat_message_columns` — e2e-стек живёт
 без alembic.
@@ -110,8 +121,17 @@ SQLite-путь (`initialize_chat_schema`) создаёт те же таблиц
 - **Дебаунс-синк недавних.** Общая trailing-очередь
   (`scheduleRecentStickersSync`, 1500 мс) схлопывает серию отправок в
   один PUT; scope-маркер `userId` не даёт списку ушедшего пользователя
-  улететь под чужой сессией. localStorage — только офлайн-кэш: непустой
-  серверный ответ выигрывает у локальной версии.
+  улететь под чужой сессией. localStorage — только офлайн-кэш,
+  поднимается на сервер при `version === 0` (ещё ни разу не синкалось);
+  `version > 0` с пустым списком — осознанная очистка, локальный кэш не
+  воскрешается.
+- **Единое право ссылки на стикер.** PUT избранного/недавних, раздача
+  файлов и превью и отправка стикера делят одно правило: пакет
+  установлен у пользователя, ИЛИ стикер в его избранном, ИЛИ копия
+  лежит вложением (`sticker-<id>--*`) в диалоге, где пользователь —
+  активный участник. Массовые записи молча отбрасывают чужие id,
+  одиночные отдают 404; GET недавних фильтрует утратившие право строки
+  (в БД они остаются и «возвращаются» при восстановлении доступа).
 - **Ленивый поисковый индекс.** `buildStickerSearchIndex` вызывается
   только при непустом запросе; раньше пересобирался до 4× на каждый
   холодный маунт дока внутри render. Индекс — нормализованные
@@ -166,16 +186,27 @@ SQLite-путь (`initialize_chat_schema`) создаёт те же таблиц
 - **Воспроизведение:**
   `E2E_LOCAL=1 E2E_BUILD=1 npx playwright test e2e/chat-stickers-v2-visual.spec.js`.
 
-## Перф-гейт против `c6d110e3`
+## Перф-гейт против baseline `78106494`
 
 Методика как в `chat-regression-perf.spec.js`: prod-билд, локальный
 стек, n=40 (receive 10, cold 30), контролируемый GC; baseline —
-`perf-chat-regression-baseline-*.json` (`c6d110e3`), HEAD —
+`perf-chat-regression-baseline-*.json` (ревизия `78106494`,
+A/B-baseline из гейта PR #17 — НЕ итоговый HEAD `c6d110e3`), HEAD —
 `perf-chat-regression-*.json`. Без профилирующего alias.
+
+Контрольные значения итогового PR #17 (`c6d110e3` = `c8a1d057` на main),
+снятые тем же харнессом n=40: pinned open @1440 p50 196.6 / p95 313.4;
+pinned open @988 p50 194.6 / p95 328.2; send echo p95 214.7 @1440 /
+217.0 @988. Сравнение HEAD-V2 с этими значениями: pinned @1440
+302.5/398.0 vs 196.6/313.4 = **+27 % p95**; pinned @988 202.9/394.9 vs
+194.6/328.2 = **+20 % p95**; send echo 300.7/311.6 vs 214.7/217.0 =
+**+40–44 % p95**. Оба подтверждённых расхождения расследуются в разделе
+Stabilization (см. ниже); таблица `78106494` ниже сохранена как
+исторический слепок первого гейта.
 
 ### 1440×900 (p50 / p95 мс)
 
-| Сценарий | `c6d110e3` | HEAD | Δ p95 | Флаг |
+| Сценарий | `78106494` | HEAD | Δ p95 | Флаг |
 |---|---|---|---|---|
 | conv switch | 740.2 / 969.5 | 732.6 / 971.2 | +0.2 % | — |
 | history load | 743.2 / 970.4 | 736.3 / 979.1 | +0.9 % | — |
@@ -192,7 +223,7 @@ SQLite-путь (`initialize_chat_schema`) создаёт те же таблиц
 
 ### 988×838 (p50 / p95 мс)
 
-| Сценарий | `c6d110e3` | HEAD | Δ p95 | Флаг |
+| Сценарий | `78106494` | HEAD | Δ p95 | Флаг |
 |---|---|---|---|---|
 | conv switch | 713.0 / 965.6 | 733.6 / 989.1 | +2 % | — |
 | history load | 714.8 / 968.8 | 721.0 / 972.6 | +0.4 % | — |

@@ -193,13 +193,20 @@ export const chatStickersAPI = {
     return response.data;
   },
 
-  // Полная замена списка: сервер дедуплицирует и обрезает до 50.
-  pushRecentStickers: async (stickerIds) => {
-    const response = await apiClient.put('/chat/stickers/recent', {
+  // Версионированный merge-синк: клиентский список встаёт в начало
+  // серверного, а записи других устройств сохраняются хвостом — поэтому
+  // пустой sticker_ids ничего не удаляет. Полная замена — только через
+  // clear:true (пустой список реально очищает rail). Ответ содержит
+  // монотонный version, который можно вернуть как baseVersion следующего PUT.
+  pushRecentStickers: async (stickerIds, options = {}) => {
+    const body = {
       sticker_ids: (Array.isArray(stickerIds) ? stickerIds : [])
         .map((stickerId) => String(stickerId || '').trim())
         .filter(Boolean),
-    });
+    };
+    if (options?.clear === true) body.clear = true;
+    if (Number.isFinite(options?.baseVersion)) body.base_version = options.baseVersion;
+    const response = await apiClient.put('/chat/stickers/recent', body);
     return response.data;
   },
 
