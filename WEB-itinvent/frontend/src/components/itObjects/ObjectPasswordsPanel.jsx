@@ -24,7 +24,7 @@ export default function ObjectPasswordsPanel({ objectRef, level, onActivity = nu
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const vault = usePasswordVaultAccess({ onActivity });
-  const [state, setState] = useState({ loading: true, entries: [], error: '' });
+  const [state, setState] = useState({ loading: true, entries: [], total: 0, error: '' });
   const [selectedEntryId, setSelectedEntryId] = useState('');
   const [sheetOpen, setSheetOpen] = useState(false);
   const gridRef = useRef(null);
@@ -48,12 +48,12 @@ export default function ObjectPasswordsPanel({ objectRef, level, onActivity = nu
 
   useEffect(() => {
     let cancelled = false;
-    setState({ loading: true, entries: [], error: '' });
+    setState({ loading: true, entries: [], total: 0, error: '' });
     passwordsAPI.getEntries({ object_ref: objectRef, limit: ENTRIES_LIMIT })
       .then((payload) => {
         if (cancelled) return;
         const entries = (Array.isArray(payload?.items) ? payload.items : []).map(normalizeEntry);
-        setState({ loading: false, entries, error: '' });
+        setState({ loading: false, entries, total: Number(payload?.total) || entries.length, error: '' });
         setSelectedEntryId((current) => (entries.some((entry) => entry.id === current) ? current : (entries[0]?.id || '')));
       })
       .catch((requestError) => {
@@ -105,6 +105,11 @@ export default function ObjectPasswordsPanel({ objectRef, level, onActivity = nu
           compact
         />
         {state.error ? <Alert severity="warning" sx={{ mt: 1.5 }}>{state.error}</Alert> : null}
+        {!state.error && !state.loading && state.total > state.entries.length ? (
+          <Alert severity="info" sx={{ mt: 1.5 }}>
+            Показано {state.entries.length} из {state.total} записей. Полный список — в разделе «Пароли».
+          </Alert>
+        ) : null}
         {!state.error ? (
           <Box
             ref={gridRef}

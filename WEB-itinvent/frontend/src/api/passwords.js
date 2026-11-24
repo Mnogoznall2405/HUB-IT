@@ -3,8 +3,8 @@ import apiClient from './http';
 const encodeId = (value) => encodeURIComponent(String(value || '').trim());
 
 export const passwordsAPI = {
-  getEntries: async (params = {}) => {
-    const response = await apiClient.get('/passwords', { params });
+  getEntries: async (params = {}, options = {}) => {
+    const response = await apiClient.get('/passwords', { params, signal: options?.signal });
     return response.data;
   },
 
