@@ -47,7 +47,7 @@ import FeedbackDialog from '../components/feedback/FeedbackDialog';
 import PageShell from '../components/layout/PageShell';
 import PageTopBar from '../components/layout/PageTopBar';
 import AboutHubPromoCard from '../components/about/AboutHubPromoCard';
-import { hubAPI } from '../api/client';
+import { hubDashboardAPI } from '../api/hubDashboard';
 import { chatNotificationsAPI } from '../api/chatNotifications';
 import { mailNotificationsAPI } from '../api/mailNotifications';
 import { docflowAPI } from '../api/docflow';
@@ -509,7 +509,7 @@ function EmptySection({ title, text }) {
   );
 }
 
-function DashboardCustomizeDialog({ open, sections, saving, onClose, onSave }) {
+function DashboardCustomizeDialog({ open, sections, saving, error, onClose, onSave }) {
   const [draft, setDraft] = useState(() => normalizeDashboardLayoutSections(sections));
 
   useEffect(() => {
@@ -550,6 +550,7 @@ function DashboardCustomizeDialog({ open, sections, saving, onClose, onSave }) {
       <DialogTitle>Настроить главную</DialogTitle>
       <DialogContent dividers>
         <Stack spacing={1}>
+          {error ? <Alert severity="error">{error}</Alert> : null}
           <Paper variant="outlined" sx={{ p: 1, borderRadius: '12px' }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center">
               <Box>
@@ -668,6 +669,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [customizeOpen, setCustomizeOpen] = useState(false);
+  const [customizeError, setCustomizeError] = useState('');
   const [customizeSaving, setCustomizeSaving] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
@@ -720,7 +722,7 @@ export default function Dashboard() {
       if (!silent) setLoading(true);
       if (!silent) setError('');
       const [dashboardResult, chatResult, mailResult] = await Promise.allSettled([
-        hubAPI.getDashboard({
+        hubDashboardAPI.getDashboard({
           announcements_limit: DASHBOARD_ANNOUNCEMENTS_LIMIT,
           tasks_limit: DASHBOARD_TASKS_LIMIT,
         }),
@@ -735,7 +737,8 @@ export default function Dashboard() {
         setPayload(dashboardResult.value || EMPTY_DASHBOARD);
       } else {
         if (!silent) {
-          setPayload(EMPTY_DASHBOARD);
+          // Ошибка ручного обновления не должна стирать уже показанные карточки.
+          setPayload((current) => current || EMPTY_DASHBOARD);
           setError(
             dashboardResult.reason?.response?.data?.detail
             || dashboardResult.reason?.message
@@ -997,11 +1000,13 @@ export default function Dashboard() {
 
   const handleSaveSections = async (nextSections) => {
     setCustomizeSaving(true);
+    setCustomizeError('');
     try {
       await savePreferences({ dashboard_sections: nextSections });
       setCustomizeOpen(false);
     } catch (saveError) {
-      setError(saveError?.message || 'Не удалось сохранить настройку главной страницы.');
+      // Ошибка показывается внутри открытого диалога — страничный Alert был бы скрыт.
+      setCustomizeError(saveError?.message || 'Не удалось сохранить настройку главной страницы.');
     } finally {
       setCustomizeSaving(false);
     }
@@ -1036,16 +1041,9 @@ export default function Dashboard() {
       );
     }
 
-    if (error) {
-      return (
-        <Paper
-          data-testid="dashboard-section-attention"
-          data-state="error"
-          sx={{ p: 1.5, borderRadius: { xs: '13px', sm: '16px' }, boxShadow: 'none' }}
-        >
-          <Alert severity="warning">Не удалось проверить события, требующие внимания. Повторите загрузку главной страницы.</Alert>
-        </Paper>
-      );
+    if (error && payload === EMPTY_DASHBOARD) {
+      // Верхний Alert уже показывает детали ошибки — секцию не дублируем.
+      return null;
     }
 
     if (!attentionItems.length) {
@@ -1479,7 +1477,7 @@ export default function Dashboard() {
                   </IconButton>
                   <IconButton
                     aria-label="Настроить главную"
-                    onClick={() => setCustomizeOpen(true)}
+                    onClick={() => { setCustomizeError(''); setCustomizeOpen(true); }}
                     sx={{ width: 48, height: 48 }}
                   >
                     <TuneRoundedIcon />
@@ -1574,7 +1572,8 @@ export default function Dashboard() {
             preferences?.dashboard_mobile_sections,
           )}
           saving={customizeSaving}
-          onClose={() => setCustomizeOpen(false)}
+          error={customizeError}
+          onClose={() => { setCustomizeOpen(false); setCustomizeError(''); }}
           onSave={(next) => { void handleSaveSections(next); }}
         />
         <FeedbackDialog open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
