@@ -35,6 +35,7 @@ function InteractiveMapCanvas({
   const dragRef = useRef({ startX: 0, startY: 0, offsetX: 0, offsetY: 0, moved: false });
   const pointDragRef = useRef({ active: false, pointId: null, pointerId: null, moved: false });
   const activePointersRef = useRef(new Map());
+  const viewRef = useRef(null);
   const pinchRef = useRef({
     active: false,
     startDistance: 0,
@@ -134,6 +135,22 @@ function InteractiveMapCanvas({
     pinchRef.current.active = false;
   }, [imageUrl]);
 
+  viewRef.current = { offset, scale, baseSize };
+
+  // Pan clamp: keep at least PAN_MARGIN px of the map inside the viewport
+  // on each axis so the map cannot be dragged fully off-screen (FE-0151).
+  const PAN_MARGIN = 80;
+  const clampOffset = useCallback((x, y, s = scale) => {
+    const container = containerRef.current;
+    if (!container || !baseSize.width || !baseSize.height) return { x, y };
+    const contentW = baseSize.width * s;
+    const contentH = baseSize.height * s;
+    return {
+      x: clamp(x, PAN_MARGIN - contentW, container.clientWidth - PAN_MARGIN),
+      y: clamp(y, PAN_MARGIN - contentH, container.clientHeight - PAN_MARGIN),
+    };
+  }, [baseSize.height, baseSize.width, scale]);
+
   const centerOnPoint = useCallback(
     (pointId) => {
       if (!pointId) return;
@@ -144,9 +161,9 @@ function InteractiveMapCanvas({
       const targetY = Number(point.y_ratio || 0) * baseSize.height;
       const cx = container.clientWidth / 2;
       const cy = container.clientHeight / 2;
-      setOffset({ x: cx - targetX * scale, y: cy - targetY * scale });
+      setOffset(clampOffset(cx - targetX * scale, cy - targetY * scale));
     },
-    [baseSize.height, baseSize.width, points, scale]
+    [baseSize.height, baseSize.width, clampOffset, points, scale]
   );
 
   useEffect(() => {
@@ -172,13 +189,10 @@ function InteractiveMapCanvas({
     setOffset((prev) => {
       const worldX = (ox - prev.x) / scale;
       const worldY = (oy - prev.y) / scale;
-      return {
-        x: ox - worldX * nextScale,
-        y: oy - worldY * nextScale,
-      };
+      return clampOffset(ox - worldX * nextScale, oy - worldY * nextScale, nextScale);
     });
     setScale(nextScale);
-  }, [scale]);
+  }, [clampOffset, scale]);
 
   const handleWheel = useCallback((event) => {
     event.preventDefault();
@@ -202,6 +216,12 @@ function InteractiveMapCanvas({
 
   const handlePointerDown = (event) => {
     if (disabled) return;
+    // The marker flag can go stale: marker pointerup/cancel may never reach
+    // us (disabled press sets it without activating pointDragRef, or the
+    // browser drops capture). Only trust it while a point drag is live.
+    if (isPointPointerDownRef.current && !pointDragRef.current.active) {
+      isPointPointerDownRef.current = false;
+    }
     if (event.target?.closest?.('[data-map-point="1"]') || isPointPointerDownRef.current) {
       return;
     }
@@ -255,10 +275,11 @@ function InteractiveMapCanvas({
         const rect = containerRef.current?.getBoundingClientRect();
         const ox = mid.x - (rect?.left || 0);
         const oy = mid.y - (rect?.top || 0);
-        setOffset({
-          x: ox - pinchRef.current.worldX * nextScale,
-          y: oy - pinchRef.current.worldY * nextScale,
-        });
+        setOffset(clampOffset(
+          ox - pinchRef.current.worldX * nextScale,
+          oy - pinchRef.current.worldY * nextScale,
+          nextScale,
+        ));
         setScale(nextScale);
         dragRef.current.moved = true;
       }
@@ -271,10 +292,10 @@ function InteractiveMapCanvas({
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
       dragRef.current.moved = true;
     }
-    setOffset({
-      x: dragRef.current.offsetX + dx,
-      y: dragRef.current.offsetY + dy,
-    });
+    setOffset(clampOffset(
+      dragRef.current.offsetX + dx,
+      dragRef.current.offsetY + dy,
+    ));
   };
 
   const handlePointerUp = (event) => {
@@ -386,98 +407,10 @@ function InteractiveMapCanvas({
     </svg>
   ), []);
 
-  return (
-    <Box sx={{ position: 'relative' }}>
-      {/* ─── Zoom controls ─── */}
-      <Stack
-        direction="row"
-        spacing={0.5}
-        sx={{
-          position: 'absolute',
-          right: 8,
-          top: 8,
-          zIndex: 3,
-          bgcolor: ui.isDark ? 'rgba(23,26,31,0.82)' : 'rgba(255,255,255,0.88)',
-          border: '1px solid',
-          borderColor: ui.borderSoft,
-          borderRadius: 2,
-          p: 0.3,
-          backdropFilter: 'blur(6px)',
-        }}
-      >
-        <Tooltip title="Увеличить">
-          <IconButton size="small" sx={{ color: ui.iconPrimary }} onClick={() => zoomBy(0.1)}>
-            <AddIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="Уменьшить">
-          <IconButton size="small" sx={{ color: ui.iconPrimary }} onClick={() => zoomBy(-0.1)}>
-            <RemoveIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="Сбросить">
-          <IconButton
-            size="small"
-            sx={{ color: ui.iconPrimary }}
-            onClick={() => {
-              setScale(1);
-              setOffset({ x: 0, y: 0 });
-            }}
-          >
-            <RestartAltIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-      </Stack>
-
-      <Box
-        ref={containerRef}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerLeave={handlePointerUp}
-        onClick={handleCanvasClick}
-        sx={{
-          width: '100%',
-          minHeight: mobile ? 0 : 420,
-          height,
-          overflow: 'hidden',
-          borderRadius: mobile ? 0 : 2,
-          border: mobile ? 'none' : '1px solid',
-          borderColor: ui.borderSoft,
-          position: 'relative',
-          bgcolor: ui.panelBg,
-          cursor: isDragging ? 'grabbing' : 'grab',
-          userSelect: 'none',
-          touchAction: 'none',
-          overscrollBehavior: 'contain',
-        }}
-      >
-        {imageUrl ? (
-          <Box
-            sx={{
-              position: 'absolute',
-              left: 0,
-              top: 0,
-              width: `${baseSize.width}px`,
-              height: `${baseSize.height}px`,
-              transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
-              transformOrigin: 'top left',
-              transition: isDragging ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0, 0, 1)',
-            }}
-          >
-            <img
-              src={imageUrl}
-              alt="Карта филиала"
-              draggable={false}
-              onLoad={(event) => {
-                const target = event.currentTarget;
-                setNaturalSize({ width: target.naturalWidth, height: target.naturalHeight });
-              }}
-              style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none' }}
-            />
-
-            {clusteredPoints.map((cluster) => {
-              // Если в кластере только одна точка
+  // Memoized marker layer: pan/zoom writes offset/scale state on every
+  // pointermove — keep the marker subtree stable across renders (FE-0031).
+  const markersLayer = useMemo(
+    () => clusteredPoints.map((cluster) => {
               if (cluster.points.length === 1) {
                 const point = cluster.points[0];
                 const pointId = Number(point.id || 0);
@@ -541,19 +474,21 @@ function InteractiveMapCanvas({
                           if (!onPointDrop) return;
                           pointDragRef.current.moved = true;
                           const container = containerRef.current;
-                          if (!container || !baseSize.width || !baseSize.height) return;
+                          const view = viewRef.current;
+                          if (!container || !view?.baseSize.width || !view?.baseSize.height) return;
                           const rect = container.getBoundingClientRect();
-                          const x = (event.clientX - rect.left - offset.x) / scale;
-                          const y = (event.clientY - rect.top - offset.y) / scale;
+                          const x = (event.clientX - rect.left - view.offset.x) / view.scale;
+                          const y = (event.clientY - rect.top - view.offset.y) / view.scale;
                           setDraggedPoint({
                             id: pointId,
-                            xRatio: clamp(x / baseSize.width, 0, 1),
-                            yRatio: clamp(y / baseSize.height, 0, 1)
+                            xRatio: clamp(x / view.baseSize.width, 0, 1),
+                            yRatio: clamp(y / view.baseSize.height, 0, 1)
                           });
                         }}
                         onPointerUp={(event) => {
                           if (!pointDragRef.current.active || pointDragRef.current.pointerId !== event.pointerId) return;
                           event.stopPropagation();
+                          isPointPointerDownRef.current = false;
                           pointDragRef.current.active = false;
                           if (event.currentTarget.releasePointerCapture) {
                             try { event.currentTarget.releasePointerCapture(event.pointerId); } catch (e) { }
@@ -564,6 +499,11 @@ function InteractiveMapCanvas({
                           }
                           setDraggedPoint(null);
                           pointDragRef.current.active = false;
+                        }}
+                        onPointerCancel={() => {
+                          isPointPointerDownRef.current = false;
+                          pointDragRef.current.active = false;
+                          setDraggedPoint(null);
                         }}
                         onClick={(event) => {
                           event.stopPropagation();
@@ -679,20 +619,22 @@ function InteractiveMapCanvas({
                           if (!onPointDrop) return;
                           pointDragRef.current.moved = true;
                           const container = containerRef.current;
-                          if (!container || !baseSize.width || !baseSize.height) return;
+                          const view = viewRef.current;
+                          if (!container || !view?.baseSize.width || !view?.baseSize.height) return;
                           const rect = container.getBoundingClientRect();
-                          const x = (event.clientX - rect.left - offset.x) / scale;
-                          const y = (event.clientY - rect.top - offset.y) / scale;
+                          const x = (event.clientX - rect.left - view.offset.x) / view.scale;
+                          const y = (event.clientY - rect.top - view.offset.y) / view.scale;
                           setDraggedPoint({
                             clusterId: cluster.id,
                             ids: cluster.points.map(p => p.id),
-                            xRatio: clamp(x / baseSize.width, 0, 1),
-                            yRatio: clamp(y / baseSize.height, 0, 1)
+                            xRatio: clamp(x / view.baseSize.width, 0, 1),
+                            yRatio: clamp(y / view.baseSize.height, 0, 1)
                           });
                         }}
                         onPointerUp={(event) => {
                           if (!pointDragRef.current.active || pointDragRef.current.pointerId !== event.pointerId) return;
                           event.stopPropagation();
+                          isPointPointerDownRef.current = false;
                           pointDragRef.current.active = false;
                           if (event.currentTarget.releasePointerCapture) {
                             try { event.currentTarget.releasePointerCapture(event.pointerId); } catch (e) { }
@@ -703,6 +645,11 @@ function InteractiveMapCanvas({
                           }
                           setDraggedPoint(null);
                           pointDragRef.current.active = false;
+                        }}
+                        onPointerCancel={() => {
+                          isPointPointerDownRef.current = false;
+                          pointDragRef.current.active = false;
+                          setDraggedPoint(null);
                         }}
                         onClick={(event) => {
                           event.stopPropagation();
@@ -759,7 +706,101 @@ function InteractiveMapCanvas({
                   </Box>
                 );
               }
-            })}
+            }),
+    [clusteredPoints, selectedPointId, focusPointId, draggedPoint, mobile, disabled, onPointDrop, onPointSelect, buildPointTooltip, getPointLabel, PinMarker, ui, theme],
+  );
+
+  return (
+    <Box sx={{ position: 'relative' }}>
+      {/* ─── Zoom controls ─── */}
+      <Stack
+        direction="row"
+        spacing={0.5}
+        sx={{
+          position: 'absolute',
+          right: 8,
+          top: 8,
+          zIndex: 3,
+          bgcolor: ui.isDark ? 'rgba(23,26,31,0.82)' : 'rgba(255,255,255,0.88)',
+          border: '1px solid',
+          borderColor: ui.borderSoft,
+          borderRadius: 2,
+          p: 0.3,
+          backdropFilter: 'blur(6px)',
+        }}
+      >
+        <Tooltip title="Увеличить">
+          <IconButton size="small" sx={{ color: ui.iconPrimary }} onClick={() => zoomBy(0.1)}>
+            <AddIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Уменьшить">
+          <IconButton size="small" sx={{ color: ui.iconPrimary }} onClick={() => zoomBy(-0.1)}>
+            <RemoveIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Сбросить">
+          <IconButton
+            size="small"
+            sx={{ color: ui.iconPrimary }}
+            onClick={() => {
+              setScale(1);
+              setOffset({ x: 0, y: 0 });
+            }}
+          >
+            <RestartAltIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Stack>
+
+      <Box
+        ref={containerRef}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerUp}
+        onClick={handleCanvasClick}
+        sx={{
+          width: '100%',
+          minHeight: mobile ? 0 : 420,
+          height,
+          overflow: 'hidden',
+          borderRadius: mobile ? 0 : 2,
+          border: mobile ? 'none' : '1px solid',
+          borderColor: ui.borderSoft,
+          position: 'relative',
+          bgcolor: ui.panelBg,
+          cursor: isDragging ? 'grabbing' : 'grab',
+          userSelect: 'none',
+          touchAction: 'none',
+          overscrollBehavior: 'contain',
+        }}
+      >
+        {imageUrl ? (
+          <Box
+            sx={{
+              position: 'absolute',
+              left: 0,
+              top: 0,
+              width: `${baseSize.width}px`,
+              height: `${baseSize.height}px`,
+              transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+              transformOrigin: 'top left',
+              transition: isDragging ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0, 0, 1)',
+            }}
+          >
+            <img
+              src={imageUrl}
+              alt="Карта филиала"
+              draggable={false}
+              onLoad={(event) => {
+                const target = event.currentTarget;
+                setNaturalSize({ width: target.naturalWidth, height: target.naturalHeight });
+              }}
+              style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none' }}
+            />
+
+            {markersLayer}
           </Box>
         ) : (
           <Box sx={{ p: 2 }}>

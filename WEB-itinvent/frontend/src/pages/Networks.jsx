@@ -489,6 +489,22 @@ function Networks() {
     [mapPoints, selectedPointId]
   );
 
+  // Point edit draft lives inside mapPoints — snapshot it on edit start so
+  // "Отмена" can roll back every field the user touched (FE-0140).
+  const pointEditSnapshotRef = useRef(null);
+  const startPointEdit = useCallback(() => {
+    pointEditSnapshotRef.current = selectedPoint ? { ...selectedPoint } : null;
+    setPointEditMode(true);
+  }, [selectedPoint]);
+  const cancelPointEdit = useCallback(() => {
+    const snapshot = pointEditSnapshotRef.current;
+    if (snapshot) {
+      setMapPoints((prev) => prev.map((p) => (p.id === snapshot.id ? { ...p, ...snapshot } : p)));
+      pointEditSnapshotRef.current = null;
+    }
+    setPointEditMode(false);
+  }, []);
+
   const selectedCluster = useMemo(() => {
     if (!selectedPoint || !selectedMapId || !mapPoints.length) return null;
     const sameCoords = mapPoints.filter((p) =>
@@ -1382,7 +1398,7 @@ function Networks() {
 
   const selectPoint = (point) => {
     setSelectedPointId(point.id);
-    setPointEditMode(false);
+    cancelPointEdit();
     setCreatePointHint(null);
     if (point.device_id) {
       setSelectedDeviceId(point.device_id);
@@ -1417,6 +1433,7 @@ function Networks() {
         color: selectedPoint.color || null,
       });
       await refreshBranchContext();
+      pointEditSnapshotRef.current = null;
       setPointEditMode(false);
       notifySuccess('Точка обновлена.');
     } catch (requestError) {
@@ -1435,6 +1452,7 @@ function Networks() {
     try {
       await networksAPI.deleteMapPoint(selectedPoint.id);
       setSelectedPointId(null);
+      pointEditSnapshotRef.current = null;
       setPointEditMode(false);
       await refreshBranchContext();
       notifySuccess('Точка удалена.');
@@ -2616,13 +2634,13 @@ function Networks() {
                   <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
                   <Stack direction="row" spacing={1}>
                     <Button size="small" variant="contained" onClick={() => void saveSelectedPoint()} disabled={pointBusy}>Сохранить</Button>
-                    <Button size="small" onClick={() => setPointEditMode(false)}>Отмена</Button>
+                    <Button size="small" onClick={() => cancelPointEdit()}>Отмена</Button>
                     <Button size="small" color="error" onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                   </Stack>
                 </>
               ) : (
                 <Stack direction="row" spacing={1}>
-                  <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
+                  <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => startPointEdit()}>Изменить</Button>
                   <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                 </Stack>
               )}
@@ -2884,7 +2902,7 @@ function Networks() {
                               focusPointId={focusMapPointId}
                               onPointSelect={onMapPointSelect}
                               onPointDrop={mobileMapEditMode ? onMapPointDrop : undefined}
-                              onCanvasClick={mobileMapEditMode ? onMapClickAddPoint : undefined}
+                              onCanvasClick={mobileMapEditMode || placingMarker ? onMapClickAddPoint : undefined}
                               disabled={!selectedMapId}
                               mobile={true}
                               height={{ xs: 'calc(100dvh - 148px)' }}
@@ -3000,7 +3018,7 @@ function Networks() {
           <Drawer
             anchor="bottom"
             open={pointDetailsOpen}
-            onClose={() => { setPointDetailsOpen(false); setPointEditMode(false); }}
+            onClose={() => { setPointDetailsOpen(false); cancelPointEdit(); }}
             PaperProps={{
               sx: getOfficeDrawerPaperSx(ui, {
                 borderLeft: 'none',
@@ -3017,7 +3035,7 @@ function Networks() {
             </Box>
             <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 2, pb: 1, flexShrink: 0 }}>
               <Typography variant="subtitle1" fontWeight={700}>Детали точки</Typography>
-              <IconButton size="small" aria-label="Закрыть детали точки" onClick={() => { setPointDetailsOpen(false); setPointEditMode(false); }}>
+              <IconButton size="small" aria-label="Закрыть детали точки" onClick={() => { setPointDetailsOpen(false); cancelPointEdit(); }}>
                 <CloseIcon fontSize="small" />
               </IconButton>
             </Stack>
@@ -3122,13 +3140,13 @@ function Networks() {
                       <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
                       <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
                         <Button size="large" variant="contained" fullWidth onClick={() => void saveSelectedPoint()} disabled={pointBusy}>Сохранить</Button>
-                        <Button size="large" variant="outlined" fullWidth onClick={() => setPointEditMode(false)}>Отмена</Button>
+                        <Button size="large" variant="outlined" fullWidth onClick={() => cancelPointEdit()}>Отмена</Button>
                       </Stack>
                       <Button size="large" color="error" variant="outlined" fullWidth onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить точку</Button>
                     </>
                   ) : (
                     <Stack spacing={1} sx={{ mt: 0.5 }}>
-                      <Button size="large" variant="outlined" fullWidth startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
+                      <Button size="large" variant="outlined" fullWidth startIcon={<EditIcon />} onClick={() => startPointEdit()}>Изменить</Button>
                       <Button size="large" color="error" variant="outlined" fullWidth startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                     </Stack>
                   )}
@@ -3242,13 +3260,13 @@ function Networks() {
                     <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
                     <Stack direction="row" spacing={1}>
                       <Button size="small" variant="contained" onClick={() => void saveSelectedPoint()} disabled={pointBusy}>Сохранить</Button>
-                      <Button size="small" onClick={() => setPointEditMode(false)}>Отмена</Button>
+                      <Button size="small" onClick={() => cancelPointEdit()}>Отмена</Button>
                       <Button size="small" color="error" onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                     </Stack>
                   </>
                 ) : (
                   <Stack direction="row" spacing={1}>
-                    <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
+                    <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => startPointEdit()}>Изменить</Button>
                     <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                   </Stack>
                 )}
