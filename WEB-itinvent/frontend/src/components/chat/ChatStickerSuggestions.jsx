@@ -44,6 +44,10 @@ const ChatStickerSuggestions = memo(forwardRef(function ChatStickerSuggestions({
   onSendSticker,
   currentUserId = null,
   onStickerSent,
+  // Открытый поповер/док эмодзи — сам полная поверхность стикеров:
+  // полоса подсказок тогда не показывается, каталог не грузится и Escape
+  // не перехватывается (он закрывает панель).
+  pickerOpen = false,
 }, ref) {
   const stickerScope = useMemo(() => ({ userId: currentUserId }), [currentUserId]);
   // Узкая подписка: dv растёт только при смене массивов данных — статусные
@@ -69,11 +73,12 @@ const ChatStickerSuggestions = memo(forwardRef(function ChatStickerSuggestions({
 
   // Ленивая загрузка каталога: запрос идёт только при включённой
   // настройке и появившемся первом эмодзи-токене. Каталог привязан к
-  // scope — смена аккаунта перечитывает его через новый ключ.
+  // scope — смена аккаунта перечитывает его через новый ключ. Открытая
+  // панель эмодзи/стикеров подавляет и запрос, и полосу.
   useEffect(() => {
-    if (!enabled || !emojiToken) return;
+    if (!enabled || !emojiToken || pickerOpen) return;
     ensureChatStickerData(stickerScope);
-  }, [enabled, emojiToken, stickerScope]);
+  }, [enabled, emojiToken, pickerOpen, stickerScope]);
 
   useEffect(() => {
     setDismissedToken('');
@@ -82,11 +87,10 @@ const ChatStickerSuggestions = memo(forwardRef(function ChatStickerSuggestions({
 
   // Стабильный индекс из store: строится один раз на поколение данных и
   // разделяется с вкладкой. Работа на каждый токен — только дешёвый
-  // lookup по готовому индексу.
+  // lookup по готовому индексу. stickerDataVersion — триггер пересчёта
+  // при смене данных scope.
   const searchIndex = useMemo(
     () => (emojiToken ? getStickerSearchIndex(scopeKey) : EMPTY_SEARCH_INDEX),
-    // stickerDataVersion — триггер пересчёта при смене данных scope.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [emojiToken, scopeKey, stickerDataVersion],
   );
   const suggestions = useMemo(
@@ -95,6 +99,7 @@ const ChatStickerSuggestions = memo(forwardRef(function ChatStickerSuggestions({
   );
 
   const visible = enabled
+    && !pickerOpen
     && Boolean(emojiToken)
     && typeof onSendSticker === 'function'
     && suggestions.length > 0

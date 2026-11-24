@@ -993,6 +993,7 @@ const ChatComposer = memo(function ChatComposer({
           onSendSticker={onSendSticker}
           currentUserId={currentUserId}
           onStickerSent={handleStickerSuggestionSent}
+          pickerOpen={emojiPickerOpen || mobileEmojiPickerOpen}
         />
       </Box>
 
