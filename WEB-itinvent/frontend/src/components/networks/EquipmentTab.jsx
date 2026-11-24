@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Autocomplete,
   Box,
@@ -57,6 +57,9 @@ const COL = {
 const TOTAL_W = Object.values(COL).reduce((sum, col) => sum + col.w, 0);
 const TABLE_VIRTUALIZE_THRESHOLD = 120;
 const TABLE_OVERSCAN_PX = 360;
+// Mobile cards are much heavier than table rows; render them in chunks with a
+// "Показать ещё" footer instead of mounting thousands of Card nodes at once.
+const MOBILE_CARD_RENDER_CHUNK = 100;
 const LINE_H = 24;
 const ROW_PAD = 20;
 const MIN_ROW_H = 48;
@@ -219,6 +222,12 @@ export default function EquipmentTab({
     [displayedPorts, endIndex, startIndex, useVirtualization],
   );
 
+  const [mobilePortLimit, setMobilePortLimit] = useState(MOBILE_CARD_RENDER_CHUNK);
+  useEffect(() => { setMobilePortLimit(MOBILE_CARD_RENDER_CHUNK); }, [displayedPorts]);
+  const mobilePorts = displayedPorts.length > mobilePortLimit
+    ? displayedPorts.slice(0, mobilePortLimit)
+    : displayedPorts;
+
   const baseHeadCellSx = {
     py: 1,
     fontWeight: 700,
@@ -356,7 +365,7 @@ export default function EquipmentTab({
                 }}
               >
                 <Stack spacing={0.8}>
-                  {displayedPorts.map((port) => {
+                  {mobilePorts.map((port) => {
                     const isEditing = Number(editingPortId) === Number(port.id);
                     const ips = splitBySpace(port.endpoint_ip_raw);
                     const macs = splitBySpace(port.endpoint_mac_raw);
@@ -432,6 +441,15 @@ export default function EquipmentTab({
                     );
                   })}
                 </Stack>
+                {displayedPorts.length > mobilePorts.length ? (
+                  <Button
+                    size="small"
+                    onClick={() => setMobilePortLimit((limit) => limit + MOBILE_CARD_RENDER_CHUNK)}
+                    sx={{ mt: 1, alignSelf: 'center', textTransform: 'none' }}
+                  >
+                    {`Показать ещё ${Math.min(MOBILE_CARD_RENDER_CHUNK, displayedPorts.length - mobilePorts.length)} из ${displayedPorts.length - mobilePorts.length}`}
+                  </Button>
+                ) : null}
               </Box>
             ) : (
               <TableContainer
