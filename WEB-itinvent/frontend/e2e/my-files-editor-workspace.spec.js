@@ -9,7 +9,7 @@ const text = (page, id) => frame(page, id).getByRole('textbox', { name: 'Сод�
 async function setup(page, state = {}) {
   state.configs = [];
   await page.route('**/e2e/fixtures/office-sdk/web-apps/apps/api/documents/api.js', route => route.fulfill({ path: sdk, contentType: 'text/javascript' }));
-  await page.route(/\/api\/v1\/my-files\/file-[abc]\/office\/config$/, async route => {
+  await page.route(/\/api\/v1\/my-files\/file-[abc]\/office\/config/, async route => {
     const id = route.request().url().match(/(file-[abc])/)[1];
     state.configs.push(id);
     const config = { role: 'owner', can_rename: true, can_manage_access: true, can_view_history: true, public_path: '/e2e/fixtures/office-sdk', config: {
@@ -56,7 +56,7 @@ test('opening an existing document activates it without another frame or config 
 
 test('the visible history button opens the selected document and keeps both live editors', async ({ page }) => {
   const calls = [];
-  await page.route(/\/api\/v1\/my-files\/file-[abc]\/office\/history(?:\/.*)?$/, route => {
+  await page.route(/\/api\/v1\/my-files\/file-[abc]\/office\/history/, route => {
     const path = new URL(route.request().url()).pathname;
     calls.push(path);
     if (path.endsWith('/config')) return route.fulfill({ json: { public_path: '/e2e/fixtures/office-sdk', config: {
@@ -124,7 +124,7 @@ test('a hidden document still protects the whole workspace from an unsaved page 
 
 test('a rename error arriving in a background document never covers the active document', async ({ page }) => {
   let release;
-  await page.route('**/api/v1/my-files/file-a/office/rename', async route => {
+  await page.route('**/api/v1/my-files/file-a/office/rename*', async route => {
     await new Promise(resolve => { release = resolve; });
     await route.fulfill({ status: 400, json: { detail: 'Не удалось изменить имя A' } });
   });
@@ -143,7 +143,7 @@ test('a rename error arriving in a background document never covers the active d
 });
 
 test('closing a document from its history checks its unsent live edits', async ({ page }) => {
-  await page.route('**/api/v1/my-files/file-a/office/history/config', route => route.fulfill({ status: 503, json: { detail: 'История временно недоступна' } }));
+  await page.route('**/api/v1/my-files/file-a/office/history/config*', route => route.fulfill({ status: 503, json: { detail: 'История временно недоступна' } }));
   await setup(page);
   await text(page, 'file-a').fill('Сначала проверить эти правки');
   await page.getByRole('button', { name: 'Открыть B', exact: true }).click();

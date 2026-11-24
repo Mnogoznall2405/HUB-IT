@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 const INITIAL_ROWS = 40;
 // Window edges snap to QUANT-row boundaries: a small scroll (a few rows) never
@@ -11,35 +11,64 @@ const QUANT = 16;
 // instead we render only the visible slice between two spacer boxes whose
 // heights preserve the overall document scroll height. Requires a constant
 // row height — enforced by the row components themselves.
-export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8 }) {
+export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8, trackWidth = true }) {
   const containerNodeRef = useRef(null);
   const frameRef = useRef(0);
   const resizeObserverRef = useRef(null);
   const [range, setRange] = useState({ start: 0, end: Math.min(itemCount, INITIAL_ROWS) });
+  // Width tracking is opt-in (grid column math): the document settles for a
+  // few frames after mount and every sub-pixel width shift would otherwise
+  // re-render a list that never reads the value.
   const [containerWidth, setContainerWidth] = useState(0);
   // Parameters via ref: keeps update() identity stable, so itemCount changes do
   // not re-fire layout effects / reattach the container ref mid-commit — the
   // recompute is deferred to rAF instead.
-  const paramsRef = useRef({ itemCount, rowHeight, overscan });
-  paramsRef.current = { itemCount, rowHeight, overscan };
+  const paramsRef = useRef({ itemCount, rowHeight, overscan, trackWidth });
+  paramsRef.current = { itemCount, rowHeight, overscan, trackWidth };
+  // Mirrors of committed vs. last-requested state. A bailout inside setState
+  // still costs a full render pass, and ResizeObserver on the document fires
+  // on every page layout shift — comparing BEFORE scheduling makes a no-op
+  // update free. Two refs are needed because a dropped transition render
+  // leaves "requested" ahead of "committed": skipping on the requested value
+  // alone could strand a stale window forever.
+  const committedRef = useRef({ start: range.start, end: range.end, width: containerWidth });
+  const pendingRef = useRef(committedRef.current);
+  useLayoutEffect(() => {
+    committedRef.current = { start: range.start, end: range.end, width: containerWidth };
+  }, [range, containerWidth]);
+  const applyRange = useCallback((transition, nextStart, nextEnd, nextWidth) => {
+    const committed = committedRef.current;
+    const pending = pendingRef.current;
+    const sameAsCommitted = committed.start === nextStart && committed.end === nextEnd
+      && (!paramsRef.current.trackWidth || Math.abs(committed.width - nextWidth) < 0.5);
+    const sameAsPending = pending.start === nextStart && pending.end === nextEnd
+      && (!paramsRef.current.trackWidth || Math.abs(pending.width - nextWidth) < 0.5);
+    if (sameAsCommitted && sameAsPending) return;
+    pendingRef.current = { start: nextStart, end: nextEnd, width: nextWidth };
+    const fn = () => {
+      if (paramsRef.current.trackWidth) {
+        setContainerWidth((prev) => (Math.abs(prev - nextWidth) < 0.5 ? prev : nextWidth));
+      }
+      setRange((prev) => (prev.start === nextStart && prev.end === nextEnd ? prev : { start: nextStart, end: nextEnd }));
+    };
+    if (transition) startTransition(fn);
+    else fn();
+  }, []);
 
-  const update = useCallback(() => {
+  // transition=true marks the range update non-urgent: while the user keeps
+  // scrolling, React may discard an in-flight render of a stale window and go
+  // straight to the latest one — without it every QUANT boundary commits
+  // synchronously and fast scroll stutters on the mount burst.
+  const update = useCallback((transition = false) => {
     const { itemCount: count, rowHeight: rh, overscan: oc } = paramsRef.current;
     const el = containerNodeRef.current;
     if (!el || count <= 0) {
-      setRange((prev) => (prev.start === 0 && prev.end === Math.min(count, INITIAL_ROWS)
-        ? prev
-        : { start: 0, end: Math.min(count, INITIAL_ROWS) }));
-      if (el) {
-        const w = el.getBoundingClientRect().width;
-        setContainerWidth((prev) => (Math.abs(prev - w) < 0.5 ? prev : w));
-      }
+      applyRange(transition, 0, Math.min(count, INITIAL_ROWS), el ? el.getBoundingClientRect().width : widthRef.current);
       return;
     }
     const rect = el.getBoundingClientRect();
     const docTop = rect.top + window.scrollY;
     const w = rect.width;
-    setContainerWidth((prev) => (Math.abs(prev - w) < 0.5 ? prev : w));
     const firstVisible = Math.max(0, Math.floor((window.scrollY - docTop) / rh));
     const lastVisible = Math.max(
       firstVisible,
@@ -47,8 +76,8 @@ export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8 }) {
     );
     const start = Math.max(0, Math.floor(firstVisible / QUANT) * QUANT - oc);
     const end = Math.min(count, Math.ceil((lastVisible + 1) / QUANT) * QUANT + oc);
-    setRange((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
-  }, []);
+    applyRange(transition, start, end, w);
+  }, [applyRange]);
 
   // Stable ref to the latest update(): the callback ref below must keep a
   // constant identity, otherwise React detaches/reattaches it on every
@@ -60,7 +89,7 @@ export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8 }) {
     if (frameRef.current) return;
     frameRef.current = window.requestAnimationFrame(() => {
       frameRef.current = 0;
-      updateRef.current();
+      updateRef.current(true);
     });
   }, []);
 
@@ -122,6 +151,7 @@ export function useWindowVirtualRows({ itemCount, rowHeight, overscan = 8 }) {
 // a mount-time effect would never see it.
 export function useElementWidth() {
   const observerRef = useRef(null);
+  const widthRef = useRef(0);
   const [width, setWidth] = useState(0);
   const ref = useCallback((node) => {
     observerRef.current?.disconnect();
@@ -129,7 +159,10 @@ export function useElementWidth() {
     if (!node) return;
     const measure = () => {
       const w = node.getBoundingClientRect().width;
-      setWidth((prev) => (Math.abs(prev - w) < 0.5 ? prev : w));
+      // Compare before setState: a bail inside the updater still renders.
+      if (Math.abs(widthRef.current - w) < 0.5) return;
+      widthRef.current = w;
+      setWidth(w);
     };
     measure();
     const observer = new ResizeObserver(measure);

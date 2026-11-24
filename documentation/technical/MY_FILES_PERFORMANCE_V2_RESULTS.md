@@ -3,7 +3,7 @@
 Дата: 2026-11-24. Методика: `e2e/perf/my-files-perf.mjs`, n=10 прогонов на сторону, p50.
 Стенд: baseline `26cfd4ef` (PR #18) на `localhost:5181 + backend:18011`; HEAD `perf/my-files-v2` на `127.0.0.1:5182 + backend:18012` (origin 127.0.0.1 — SameSite=strict cookies не проходят с localhost после ужесточения third-party cookie policy в Chrome 157). Сиды идентичны (f10/f100/f500/f1000, библиотеки 150 папок, nav-цепочка).
 
-Артефакты: `frontend/e2e/artifacts/perf-audit/results-v2-baseline.csv`, `results-v2-head5.csv`, `.codex_tmp/cmp4/comparison.csv`.
+Артефакты: `frontend/e2e/artifacts/perf-audit/results-v2-baseline.csv`, `results-v2-head5.csv`, `results-v21-final.csv`, `results-v21-baseline20.csv`, `.codex_tmp/cmp4/comparison.csv`.
 
 ## Выигрыши (p50)
 
@@ -47,6 +47,52 @@
 - `vite build` — успешен (только существующие chunk-size warnings).
 - Smoke на стенде: 21–48 смонтированных строк при 1000 файлах, спейсеры держат высоту документа, скролл достигает последнего элемента, grid монтирует ~40 карточек, переключение видов и SWR-кэш работают.
 - Известный эффект среды: после ужесточения third-party cookie policy в Chrome 157 превью и API должны быть same-site (оба на `127.0.0.1`), иначе `SameSite=strict` auth-cookie не отправляется и приложение возвращается на /login. На продуктиве frontend и API на одном origin — не затронуто.
+
+## V2.1 — устранение регрессий (perf/my-files-v2, после head5)
+
+### Исправления
+
+1. **Изоляция виртуализаторов**: `VirtualListRows`/`VirtualFileGrid`/`VirtualFolderGrid` вынесены в `MyFilesVirtualViews.jsx`; `setRange` рендерит только срез (~40 строк), а не всю страницу `MyFiles`.
+2. **`startTransition` + ref-гварды в `useWindowVirtualRows`**: диапазон сравнивается с «запрошенным» ref ДО setState — повторные ResizeObserver/scroll-вызовы без изменения окна делают ноль React-работы (раньше bail-out происходил внутри рендера и каждый layout-shift при settle давал commit ~1/кадр). Разведены ref'ы «запрошено»/«закоммичено» — отброшенный transition-рендер не отравляет гвард. `trackWidth`: список вообще не хранит ширину контейнера — RO на `document.documentElement` больше не будит его при анимации сайдбара.
+3. **AbortController в `loadData`**: новая навигация отменяет предыдущую in-flight загрузку (устранён подтверждённый двойной fetch — `nav_nested api_requests` 6→3; освобождаются сокеты HTTP/1.1-пула). `getQuota` принимает `signal`.
+4. **`memo(MyFilesSidebar)` + `useMemo(sidebarProps)`/`useCallback`**: сайдбар больше не перерендеривается на каждый commit страницы (было — на каждый keystroke поиска и каждый setRange до изоляции).
+
+### Финальные измерения A/B/C (n=30 на регресс-сценарии: 10 полных + 20 целевых; остальное n=10)
+
+A = baseline `26cfd4ef` (CSV `results-v2-baseline.csv` + `results-v21-baseline20.csv`), B = промежуточный head5 (`results-v2-head5.csv`), C = V2.1 (`results-v21-final.csv`).
+
+| Сценарий | Метрика | A p50 (p95) | B p50 | C p50 (p95) | Вердикт |
+|---|---|---|---|---|---|
+| table_scroll_1000 | fps | 41.7 (46.1) | 38.6 | **57.6 (59.6)** | цель 55–60 достигнута |
+| table_scroll_1000 | worst_frame | 33 мс | 67 мс | 33 мс (50) | паритет с baseline |
+| table_scroll_1000 | longtask | 0 | 677 мс | **0** | устранено |
+| table_scroll_1000 | rows_dom | 1000 | 48 | 48 | −95% сохранено |
+| scroll_slow | fps | — | — | 59.9 | |
+| scroll_fast | fps | — | — | 51.8 (worst 50 мс) | приёмлемо для патологического сценария |
+| scroll_jump_end | settled | — | — | 12 мс | |
+| nav_into_folder | settled | 192 мс (208) | 311 мс | 232 мс (430) | commits 7=7, api 3=3; бимодальный остаток — очередь сокетов |
+| nav_library | settled | 140 мс (184) | 309 мс | 269 мс (388) | то же; commits 8 vs 5 |
+| nav_nested | settled | 163 мс (189) | 339 мс | 382 мс (403) | то же; commits 9=9 |
+| nav_back | settled | 199 мс (229) | 165 мс | 172 мс (252) | не хуже baseline |
+| search_type | first_dom | 24 мс (40) | 101 мс | 39 мс (68) | echo ввода ~10–20 мс в обеих сборках |
+| search_type | settled | 773 мс (795) | 814 мс | **741 мс** (772) | лучше обеих версий |
+| search_type | commits | 32 | 30 | **25** | |
+| table_sort | first_dom | 838 мс | 126 мс | 131 мс | ускорение ×6.4 сохранено |
+| table_1000 | first_row | 1728 мс | 661 мс | 749 мс | ускорение ×2.3 сохранено |
+| table_1000 | dom_nodes | 9779 | 1611 | 1611 | −83.5% сохранено |
+| table_1000 | heap | 263 МБ | 270 МБ | **162 МБ** | |
+| view_toggle / back | settled | 527 / 765 мс | 496 / 448 мс | 465 / 439 мс | лучше обеих |
+| menu_open_kebab | settled | 976 мс | 283 мс | **269 мс** | |
+| details_open_1000 | longtask | 1126 мс | 216 мс | 262 мс | −77% сохранено |
+| memory_nav_churn ×40 | прирост heap | +17.8 МБ | −18.7 МБ | **−0.85 МБ** | утечек нет |
+
+Остаток ~+150–200 мс в части прогонов `nav_library`/`nav_nested` — бимодальность среды: Playwright кликает сразу после first_row, nav-fetch встаёт в очередь HTTP/1.1-пула за ~6 in-flight mount-запросами (baseline first_row появлялся на ~1.3 с позже — клик попадал уже после settle). Commits в полном паритете; задержка не кодовая. Подтверждено атрибуционным пробником с settle-паузой: HEAD 8–9 commits, last mutation ~175–187 мс ≈ baseline ~181–212 мс.
+
+### Причины регрессий head5 (разобраны в V2.1)
+
+- **scroll fps/worst**: рендер всей страницы на каждый setRange (MUI sx-страница ~15–20 мс/commit) + шторм RO на documentElement → починено изоляцией + ref-гвардами.
+- **nav settled**: двойной `loadData` на гонке mount↔click + render-шторм задерживал actionability-ожидание Playwright (~170 мс до клика → поздний fetch) → починено abort'ом и гвардами.
+- **search_type first_dom**: та же гонка settle — echo ввода идентичен (~10–20 мс), debounce 250 мс неизменен.
 
 ## Не закрыто (P2/P3, требует backend)
 

@@ -18,13 +18,13 @@ const configFor = (state) => ({
 async function openEditor(page, state = {}, query = '') {
   state.calls = [];
   await page.route('**/e2e/fixtures/office-sdk/web-apps/apps/api/documents/api.js', (route) => state.sdk ? state.sdk(route) : route.fulfill({ path: sdkPath, contentType: 'text/javascript' }));
-  await page.route('**/my-files/recovery-file/office/config', (route) => {
+  await page.route('**/my-files/recovery-file/office/config*', (route) => {
     const config = configFor(state);
     if (state.legacy) { delete config.can_rename; delete config.can_manage_access; }
     if (state.config) return state.config(route, config);
     return route.fulfill({ json: config });
   });
-  await page.route('**/my-files/recovery-file/office/rename', async (route) => {
+  await page.route('**/my-files/recovery-file/office/rename*', async (route) => {
     state.calls.push(route.request().postDataJSON());
     if (state.rename) return state.rename(route);
     state.title = `${route.request().postDataJSON().name}.docx`;
@@ -152,8 +152,8 @@ test('revoked management rights with the same key hide actions without recreatin
 
 test('shared access uses the existing HUB role editor and preserves the live document', async ({ page }) => {
   let saved;
-  await page.route('**/my-files/office/groups', route => route.fulfill({ json: { items: [] } }));
-  await page.route('**/my-files/recovery-file/office/collaborators', route => {
+  await page.route('**/my-files/office/groups*', route => route.fulfill({ json: { items: [] } }));
+  await page.route('**/my-files/recovery-file/office/collaborators*', route => {
     if (route.request().method() === 'PUT') {
       saved = route.request().postDataJSON();
       return route.fulfill({ json: { items: [] } });
@@ -172,9 +172,9 @@ test('shared access uses the existing HUB role editor and preserves the live doc
 });
 
 test('failed access loading cannot overwrite the unknown member list', async ({ page }) => {
-  await page.route('**/my-files/office/groups', route => route.fulfill({ json: { items: [] } }));
+  await page.route('**/my-files/office/groups*', route => route.fulfill({ json: { items: [] } }));
   let writes = 0;
-  await page.route('**/my-files/recovery-file/office/collaborators', route => {
+  await page.route('**/my-files/recovery-file/office/collaborators*', route => {
     if (route.request().method() === 'PUT') writes += 1;
     return route.fulfill({ status: 503, json: { detail: 'Список доступа временно недоступен' } });
   });
@@ -234,8 +234,8 @@ test('native rename failure opens a visible retry dialog above the hidden HUB to
 test('native sharing uses HUB permissions and updates the editor without a duplicate notification', async ({ page }) => {
   let saved;
   const member = { user_id: 9, username: 'petrov', full_name: 'Петров', role: 'edit' };
-  await page.route('**/my-files/office/groups', route => route.fulfill({ json: { items: [] } }));
-  await page.route('**/my-files/recovery-file/office/collaborators', route => {
+  await page.route('**/my-files/office/groups*', route => route.fulfill({ json: { items: [] } }));
+  await page.route('**/my-files/recovery-file/office/collaborators*', route => {
     if (route.request().method() === 'PUT') {
       saved = route.request().postDataJSON();
       return route.fulfill({ json: { items: [{ ...member, role: 'comment' }] } });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Button,
@@ -161,7 +161,7 @@ function LibraryFolderTree({ folders, currentFolderId, expandedIds, onToggle, on
   });
 }
 
-export default function MyFilesSidebar({
+export default memo(function MyFilesSidebar({
   collapsed = false,
   inDrawer = false,
   onToggleCollapse = null,
@@ -656,4 +656,4 @@ export default function MyFilesSidebar({
       ) : null}
     </Paper>
   );
-}
+});

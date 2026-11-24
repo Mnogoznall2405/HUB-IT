@@ -100,7 +100,7 @@ const EMPTY_ENTRIES = [];
 import { useMyFilesPreviewController } from './myFiles/useMyFilesPreviewController';
 import { useMyFilesShares } from './myFiles/useMyFilesShares';
 import { useMyFilesUpload } from './myFiles/useMyFilesUpload';
-import { useElementWidth, useWindowVirtualRows } from './myFiles/useWindowVirtualRows';
+import { MeasuredBox, VirtualFileGrid, VirtualFolderGrid, VirtualListRows } from './myFiles/MyFilesVirtualViews';
 import { collectDataTransferFiles } from '../lib/myFilesFolderZip';
 import { folderIsInsideSubtree } from '../lib/myFilesFolderTree';
 import {
@@ -131,8 +131,6 @@ import {
   formatDateTime,
   getFileVisualColors,
   getFileVisualMeta,
-  MY_FILES_FILE_CARD_HEIGHT,
-  MY_FILES_FOLDER_CARD_HEIGHT,
   MY_FILES_ROW_HEIGHT,
   READY_STATUSES,
 } from '../components/myFiles/myFilesVisual';
@@ -351,9 +349,17 @@ export default function MyFiles() {
       });
     }
   }, [libraryId]);
+  // A new navigation supersedes the in-flight listing: without aborting it,
+  // the stale requests still occupy the browser's per-origin connection pool,
+  // so a quick click after mount queues the real fetch behind dead traffic.
+  const loadAbortRef = useRef(null);
   const loadData = useCallback(async ({ silent = false } = {}) => {
     const isCurrent = beginLoad();
     latestIsCurrentRef.current = isCurrent;
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+    const { signal } = controller;
     activeLoadsRef.current += 1;
     const cacheKey = `${isTrashView ? 'trash' : listView}|${libraryId || ''}|${currentFolderId || ''}|${debouncedSearchQuery}`;
     const cached = listingsCacheRef.current.get(cacheKey);
@@ -373,10 +379,10 @@ export default function MyFiles() {
       // здесь он дублировал GET /my-files/libraries на каждый переход по папкам.
       const [filesPayload, quotaPayload, foldersPayload] = await Promise.all([
         isTrashView && myFilesAPI.listTrash
-          ? myFilesAPI.listTrash({ libraryId })
-          : myFilesAPI.listFiles({ folderId: currentFolderId, view: listView, q: debouncedSearchQuery, libraryId }),
-        libraryId ? Promise.resolve(null) : myFilesAPI.getQuota(),
-        myFilesAPI.listFolders ? myFilesAPI.listFolders({ libraryId }) : Promise.resolve({ items: [] }),
+          ? myFilesAPI.listTrash({ libraryId, signal })
+          : myFilesAPI.listFiles({ folderId: currentFolderId, view: listView, q: debouncedSearchQuery, libraryId, signal }),
+        libraryId ? Promise.resolve(null) : myFilesAPI.getQuota({ signal }),
+        myFilesAPI.listFolders ? myFilesAPI.listFolders({ libraryId, signal }) : Promise.resolve({ items: [] }),
       ]);
       if (!isCurrent()) return;
       applyListingsPayload({ filesPayload, quotaPayload, foldersPayload });
@@ -674,6 +680,10 @@ export default function MyFiles() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  // Leaving the page must release the in-flight listing fetch — its results
+  // can no longer be applied anyway, and a held socket slows the next screen.
+  useEffect(() => () => loadAbortRef.current?.abort(), []);
 
   useEffect(() => {
     const input = folderInputRef.current;
@@ -1279,27 +1289,6 @@ export default function MyFiles() {
     ],
     [visibleFolders, visibleItems],
   );
-  const listVirtual = useWindowVirtualRows({
-    itemCount: virtualRows.length,
-    rowHeight: MY_FILES_ROW_HEIGHT,
-  });
-
-  // Grid view: virtualize by grid ROWS. Column counts mirror the CSS
-  // repeat(auto-fill, minmax(N,1fr)) rule — floor((width+gap)/(N+gap)).
-  const [gridWidthRef, gridWidth] = useElementWidth();
-  const folderGridCols = Math.max(1, Math.floor((gridWidth + 8) / (220 + 8)) || 1);
-  const fileGridCols = Math.max(1, Math.floor((gridWidth + 12) / (190 + 12)) || 1);
-  const foldersVirtual = useWindowVirtualRows({
-    itemCount: Math.ceil(visibleFolders.length / folderGridCols),
-    rowHeight: MY_FILES_FOLDER_CARD_HEIGHT + 8,
-    overscan: 4,
-  });
-  const filesVirtual = useWindowVirtualRows({
-    itemCount: Math.ceil(visibleItems.length / fileGridCols),
-    rowHeight: MY_FILES_FILE_CARD_HEIGHT + 12,
-    overscan: 4,
-  });
-
   const toggleSort = useCallback((field) => {
     if (sortField === field) {
       setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
@@ -1700,16 +1689,32 @@ export default function MyFiles() {
     ...detailsActions,
   };
 
-  const sidebarProps = {
+  const handleSidebarCreateFolder = useCallback(() => {
+    setFolderNameInput('');
+    setCreateFolderOpen(true);
+  }, []);
+  const handleSidebarUploadFiles = useCallback(() => fileInputRef.current?.click(), []);
+  const handleSidebarUploadFolder = useCallback(() => folderInputRef.current?.click(), []);
+  const handleSidebarLibraryOpen = useCallback((library) => {
+    // An administrator who is not a member can only configure the library, not browse it.
+    if (!library.my_role && canManageLibraries) setLibraryDialog({ open: true, library });
+    else navigateToLibrary(library.id);
+  }, [canManageLibraries, navigateToLibrary]);
+  const handleSidebarLibraryCreate = useCallback(() => setLibraryDialog({ open: true, library: null }), []);
+  const handleSidebarLibraryFolderOpen = useCallback(
+    (folder) => navigateToFolder(folder.id, libraryId),
+    [libraryId, navigateToFolder],
+  );
+  // Memoized props + memo()'d sidebar: search keystrokes and intermediate
+  // commits (loading flips, virtualizer corrections) re-render the page often —
+  // the folder tree must not pay for each of them.
+  const sidebarProps = useMemo(() => ({
     officeEnabled: officeStatus.enabled,
     createDisabled: !canWrite || uploading || readingDrop || creatingDocument || isSpecialView,
-    onCreateFolder: () => {
-      setFolderNameInput('');
-      setCreateFolderOpen(true);
-    },
+    onCreateFolder: handleSidebarCreateFolder,
     onCreateDocument: handleCreateDocument,
-    onUploadFiles: () => fileInputRef.current?.click(),
-    onUploadFolder: () => folderInputRef.current?.click(),
+    onUploadFiles: handleSidebarUploadFiles,
+    onUploadFolder: handleSidebarUploadFolder,
     isDriveActive: !currentFolderId && !isSpecialView && !isLibraryView,
     isRecentView,
     isFavoritesView,
@@ -1720,20 +1725,23 @@ export default function MyFiles() {
     libraries,
     canManageLibraries,
     activeLibraryId: isLibraryView ? libraryId : null,
-    onLibraryOpen: (library) => {
-      // An administrator who is not a member can only configure the library, not browse it.
-      if (!library.my_role && canManageLibraries) setLibraryDialog({ open: true, library });
-      else navigateToLibrary(library.id);
-    },
-    onLibraryCreate: () => setLibraryDialog({ open: true, library: null }),
+    onLibraryOpen: handleSidebarLibraryOpen,
+    onLibraryCreate: handleSidebarLibraryCreate,
     // Дерево показываем только под открытой библиотекой из уже загруженного списка папок.
     libraryFolders: isLibraryView ? allFolders : EMPTY_ENTRIES,
     currentFolderId: isLibraryView ? currentFolderId : null,
-    onLibraryFolderOpen: (folder) => navigateToFolder(folder.id, libraryId),
+    onLibraryFolderOpen: handleSidebarLibraryFolderOpen,
     quota: activeQuota,
     quotaLoading: loading,
     isLibraryView,
-  };
+  }), [
+    officeStatus.enabled, canWrite, uploading, readingDrop, creatingDocument, isSpecialView,
+    handleSidebarCreateFolder, handleCreateDocument, handleSidebarUploadFiles, handleSidebarUploadFolder,
+    currentFolderId, isLibraryView, isRecentView, isFavoritesView, isTrashView, isSharedView,
+    navigateToView, navigateToTrash, libraries, canManageLibraries, libraryId,
+    handleSidebarLibraryOpen, handleSidebarLibraryCreate, allFolders, handleSidebarLibraryFolderOpen,
+    activeQuota, loading,
+  ]);
 
   const folderMenuRun = (fn) => () => {
     const folder = folderActionsMenu.folder;
@@ -2482,11 +2490,10 @@ export default function MyFiles() {
               ) : null}
 
               {!loading && virtualRows.length > 0 ? (
-                <Box ref={listVirtual.containerRef} data-testid="my-files-rows">
-                  {listVirtual.topSpacerHeight > 0 ? (
-                    <Box aria-hidden="true" data-testid="my-files-rows-spacer-top" sx={{ height: listVirtual.topSpacerHeight }} />
-                  ) : null}
-                  {virtualRows.slice(listVirtual.start, listVirtual.end).map((row) => (
+                <VirtualListRows
+                  rows={virtualRows}
+                  rowHeight={MY_FILES_ROW_HEIGHT}
+                  renderRow={(row) => (
                     row.kind === 'folder' ? (
                       <FolderRow
                         key={`folder-${row.entry.id}`}
@@ -2536,15 +2543,13 @@ export default function MyFiles() {
                         toggleSelected={toggleSelected}
                       />
                     )
-                  ))}
-                  {listVirtual.bottomSpacerHeight > 0 ? (
-                    <Box aria-hidden="true" data-testid="my-files-rows-spacer-bottom" sx={{ height: listVirtual.bottomSpacerHeight }} />
-                  ) : null}
-                </Box>
+                  )}
+                />
               ) : null}
             </Paper>
             ) : (
-            <Box data-testid="my-files-grid" ref={gridWidthRef}>
+            <MeasuredBox data-testid="my-files-grid">
+              {(gridWidth) => (<>
               {!loading && visibleItems.length === 0 && visibleFolders.length === 0 ? (
                 <Stack spacing={1.5} alignItems="center" sx={{ py: 6 }}>
                   {isTrashView
@@ -2575,18 +2580,11 @@ export default function MyFiles() {
                   >
                     Папки
                   </Typography>
-                  <Box ref={foldersVirtual.containerRef} sx={{ mb: visibleItems.length > 0 ? 2 : 0 }}>
-                    {foldersVirtual.topSpacerHeight > 0 ? (
-                      <Box aria-hidden="true" data-testid="my-files-grid-spacer-folders-top" sx={{ height: foldersVirtual.topSpacerHeight }} />
-                    ) : null}
-                    <Box
-                      sx={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-                        gap: 1,
-                      }}
-                    >
-                      {visibleFolders.slice(foldersVirtual.start * folderGridCols, foldersVirtual.end * folderGridCols).map((folder) => (
+                  <VirtualFolderGrid
+                    items={visibleFolders}
+                    width={gridWidth}
+                    sx={{ mb: visibleItems.length > 0 ? 2 : 0 }}
+                    renderItem={(folder) => (
                         <FolderCard
                           key={`folder-${folder.id}`}
                           folder={folder}
@@ -2604,12 +2602,8 @@ export default function MyFiles() {
                           onOpenSharedFile={openSharedFile}
                           toggleSelected={toggleSelected}
                         />
-                      ))}
-                    </Box>
-                    {foldersVirtual.bottomSpacerHeight > 0 ? (
-                      <Box aria-hidden="true" data-testid="my-files-grid-spacer-folders-bottom" sx={{ height: foldersVirtual.bottomSpacerHeight }} />
-                    ) : null}
-                  </Box>
+                    )}
+                  />
                 </>
               ) : null}
               {visibleItems.length > 0 ? (
@@ -2624,18 +2618,10 @@ export default function MyFiles() {
                       Файлы
                     </Typography>
                   ) : null}
-                  <Box ref={filesVirtual.containerRef}>
-                    {filesVirtual.topSpacerHeight > 0 ? (
-                      <Box aria-hidden="true" data-testid="my-files-grid-spacer-files-top" sx={{ height: filesVirtual.topSpacerHeight }} />
-                    ) : null}
-                    <Box
-                      sx={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))',
-                        gap: 1.5,
-                      }}
-                    >
-                      {visibleItems.slice(filesVirtual.start * fileGridCols, filesVirtual.end * fileGridCols).map((item) => (
+                  <VirtualFileGrid
+                    items={visibleItems}
+                    width={gridWidth}
+                    renderItem={(item) => (
                         <FileCard
                           key={item.id}
                           item={item}
@@ -2654,15 +2640,12 @@ export default function MyFiles() {
                           opensInEditor={opensInEditor(item)}
                           toggleSelected={toggleSelected}
                         />
-                      ))}
-                    </Box>
-                    {filesVirtual.bottomSpacerHeight > 0 ? (
-                      <Box aria-hidden="true" data-testid="my-files-grid-spacer-files-bottom" sx={{ height: filesVirtual.bottomSpacerHeight }} />
-                    ) : null}
-                  </Box>
+                    )}
+                  />
                 </>
               ) : null}
-            </Box>
+              </>)}
+            </MeasuredBox>
             )}
 
             {isTrashView ? (

@@ -22,7 +22,7 @@ async function openEditor(page, state = {}, waitForDocument = true) {
   await page.route('**/e2e/fixtures/office-sdk/web-apps/apps/api/documents/api.js', (route) => route.fulfill({
     ...(state.sdkSource ? { body: state.sdkSource } : { path: sdkPath }), contentType: 'text/javascript',
   }));
-  await page.route('**/my-files/recovery-file/office/config', async (route) => {
+  await page.route('**/my-files/recovery-file/office/config*', async (route) => {
     state.calls += 1;
     if (state.handler) return state.handler(route, state);
     if (state.status) return route.fulfill({ status: state.status, json: { detail: 'Доступ изменён' } });

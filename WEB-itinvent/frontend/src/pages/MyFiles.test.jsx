@@ -499,7 +499,7 @@ describe('MyFiles page', () => {
 
     await screen.findByText('balance.xlsx');
     expect(mockListFiles).toHaveBeenLastCalledWith(expect.objectContaining({ libraryId: 'lib-1' }));
-    expect(mockListFolders).toHaveBeenLastCalledWith({ libraryId: 'lib-1' });
+    expect(mockListFolders).toHaveBeenLastCalledWith(expect.objectContaining({ libraryId: 'lib-1' }));
     expect(screen.getByRole('heading', { name: 'Бухгалтерия' })).toBeInTheDocument();
     expect(screen.getByTestId('my-files-library-role')).toHaveTextContent('Правка');
     expect(screen.getByTestId('my-files-quota')).toHaveTextContent('Общая папка');
@@ -570,7 +570,7 @@ describe('MyFiles page', () => {
     fireEvent.click(await screen.findByTestId('my-files-library-trash'));
 
     await screen.findByText('old.xlsx');
-    expect(mockListTrash).toHaveBeenLastCalledWith({ libraryId: 'lib-1' });
+    expect(mockListTrash).toHaveBeenLastCalledWith(expect.objectContaining({ libraryId: 'lib-1' }));
     expect(screen.getByRole('heading', { name: 'Корзина — Бухгалтерия' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('my-files-empty-trash'));
