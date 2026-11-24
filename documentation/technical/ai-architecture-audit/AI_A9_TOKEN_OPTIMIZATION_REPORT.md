@@ -73,6 +73,21 @@ After-candidate (тот же харнес): chat 1921 (−13.8%), itinvent-read 
 
 Качественная семантика сохранена: untrusted-обёртки, хвост «CURRENT USER REQUEST (authoritative)», правила памяти (`memory_status` блок оставлен — он несёт поведенческие правила), все routing-инструкции и серверные проверки на месте. Подавляются только блоки, чей payload = плейсхолдер отсутствия.
 
+## 5b. Cycle 2 — specs compaction, result projection, block-aware budget (`2a07a567`)
+
+Like-for-like при **JEV=0** (baseline-условия): act_all_tools 6730 → **6065** (−10%), 60-msg 7716 → **7094**, followup-run 13907 → **12484**.
+При **JEV=1** (prod-флаг): act_all_tools **2880**, 60-msg **4423**, 2-round run **6114** (2860+3254).
+
+| Изменение | Эффект |
+|---|---|
+| Spec descriptions: сняты quoted example-листы и «(no arguments)» (дублируют routing guides), tier 400→280 | specs 2744→2386 (−13%) при JEV=0; self 726→535; все tool_id/required/enum сохранены |
+| Tool results → LLM projection: list>10 → 10+`_omitted_items` (total/truncated сохранены), str>800 → маркер, drop raw/html/debug | payload-зависимый; исполнение работает на исходных dict |
+| `_fit_prompt_pair` → block-aware: приоритеты, protected-блоки (request/tool_results/summary/task_state) не сжимаются, низкоприоритетные — head+tail | устранён слепой срез хвоста при >32k |
+| Телеметрия: per-attempt outcome ok/failed, `usage:null` = unknown | разделение logical call / provider attempts |
+| Харнес: fixed root discovery, `--jev`, outcome+real tool-execution asserts | воспроизводимость исправлена |
+
+Routing guides (2139 est.) сознательно **не урезаны**: содержат правила draft/confirm/disambiguation (A3/A5) — сокращение рискует угадкой аргументов. Дальнейший выигрыш specs+guides → через JEV-routing (JEV=1 уже даёт −52%).
+
 ## 6. Prompt caching — анализ
 
 - Модель бота — OpenRouter (`openai/gpt-4o-mini`-класс): OpenAI-семейство кэширует префикс ≥1024 tok автоматически (дисконт ~50%), Anthropic через `cache_control` (transport пока не проставляет — см. остатки).
