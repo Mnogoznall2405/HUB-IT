@@ -8,3 +8,10 @@
 - Итоговый отчёт: `REMEDIATION_FINAL_REPORT.md`.
 - Известные baseline-падения тестов на origin/main (не регрессы программы): `MyFiles` files-test, `TaskWorkspacePanel.test.jsx` "opens the task canvas" (ожидает URL без `&task_tab=comments`), 5 тестов chat-модуля (Chat.test.jsx AI helpers ×3, ChatPageContent.smoke, useChatComposePrefillBootstrap) — все зелёные в `HUB-IT-main` (локальные коммиты впереди origin/main).
 - Дальнейшие действия: мерж открытых PR (#47..#67) в main — решение владельца; rejected-записи с design/backend/decision-тегами — на стороне владельца.
+
+## Merge-заметка: PR #59 (swr-batch) x PR #67 (evidence-batch)
+Единственный межбатчевый конфликт — `Networks.jsx` (`loadBranchContext`). Мержить так:
+- Оставить структуру из swr-batch: `applyBranchContext` + `getOrFetchSWR(..., { onRevalidated: applyBranchContext })`.
+- В fetcher оставить поле `socketsTruncated: ... >= 10000` из evidence-batch.
+- Внутри `applyBranchContext` оставить `if (data?.socketsTruncated) pushWarningToast(...)`.
+- deps `applyBranchContext`: `[notifyError, pushWarningToast]`; deps `loadBranchContext`: `[applyBranchContext]`.
