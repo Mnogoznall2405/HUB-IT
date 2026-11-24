@@ -805,7 +805,7 @@
       "id": "FE-0045",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "tasks",
       "page": "/tasks",
@@ -813,10 +813,11 @@
       "lines": "169 (focus_mode; перезапрос при смене режима)",
       "title": "Tasks: каждая вкладка перезабирает список (rapid-switch: 7 кликов -> 10 запросов, 3x sort_by=due_at)",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "SWR dedupe for task list (15s window); explicit reloads invalidate prefix",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0046",
@@ -943,7 +944,7 @@
       "id": "FE-0053",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "tasks",
       "page": null,
@@ -951,10 +952,11 @@
       "lines": "n/a (DialogTitle отсутствует/пуст)",
       "title": "Диалог создания задачи: пустой заголовок (ZWSP), доступное имя — дефолтное «Dialog»",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "aria-label on create/edit dialog",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0054",
@@ -1011,7 +1013,7 @@
       "id": "FE-0058",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "tasks",
       "page": "/tasks и др.",
@@ -1019,10 +1021,11 @@
       "lines": "356",
       "title": "Нативные window.confirm для удалений (задачи и др.) vs MUI-диалоги в других местах — непоследовательный паттерн",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "useConfirmDialog for task deletes (panel + workflow hook)",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0059",
@@ -2210,7 +2213,7 @@
       "id": "FE-0127",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "tasks",
       "page": null,
@@ -2218,10 +2221,11 @@
       "lines": "729-767",
       "title": "Tasks: добавление пункта чек-листа идёт в обход очереди мутаций → гонка toggle/add теряет обновления",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "checklist add routed through shared mutation queue",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0128",
@@ -2244,7 +2248,7 @@
       "id": "FE-0129",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "tasks",
       "page": null,
@@ -2252,16 +2256,17 @@
       "lines": "483-495",
       "title": "Tasks: ensureTaskDiscussion с устаревшим completion → переход к ранее активной задаче",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "seq-guard on discussion provisioning + supersede on openTaskDetails",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0130",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "tasks",
       "page": null,
@@ -2269,16 +2274,17 @@
       "lines": "161-163,462",
       "title": "Tasks: устаревший ответ getTaskComments затирает только что добавленный комментарий",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "getTaskComments merges with locally-added comments",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0131",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "tasks",
       "page": null,
@@ -2286,10 +2292,11 @@
       "lines": "329,353",
       "title": "Tasks: openTaskDetails без зависимости visibleTaskItems → открывает устаревшую позицию списка",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "visibleTaskItems in openTaskDetails deps",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0132",
@@ -2312,7 +2319,7 @@
       "id": "FE-0133",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "tasks",
       "page": null,
@@ -2320,16 +2327,17 @@
       "lines": "158-176",
       "title": "Tasks: handleDeleteTask без busy-guard → двойной confirm даёт ложный тост ошибки; ref мутируется в render",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "busy-guard on handleDeleteTask",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0134",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "tasks",
       "page": null,
@@ -2337,10 +2345,11 @@
       "lines": "373-378",
       "title": "Tasks: переключение вкладок деталей задачи пушит записи в history — Back циклит по вкладкам",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "task_tab switches replace history",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0135",
@@ -4610,7 +4619,7 @@
       "id": "FE-0262",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "tasks",
       "page": null,
@@ -4618,10 +4627,11 @@
       "lines": "343-357 (Escape/backdrop/X чистит createFiles/createChecklistItems); useTaskEditForm.js:90-91 (pending-файлы чистятся на editOpen)",
       "title": "Tasks: закрытие диалога создания молча стирает выбранные файлы и чек-лист (несогласованно с createData)",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "file/checklist drafts survive dialog close",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0263",
@@ -4644,7 +4654,7 @@
       "id": "FE-0264",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "tasks",
       "page": null,
@@ -4652,10 +4662,11 @@
       "lines": "180-181: catch{} без индикации",
       "title": "Tasks: loadTaskActivity глотает ошибку пустым catch — лента активности молча пуста",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "loadTaskActivity surfaces errors",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0265",
@@ -4865,7 +4876,7 @@
       "id": "FE-0277",
       "severity": "Info",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "tasks",
       "page": null,
@@ -4873,16 +4884,17 @@
       "lines": "764: disabled={!pendingSceneRef.current} — работает лишь из-за парного setSaveState",
       "title": "TaskCanvas: disabled читает pendingSceneRef.current в рендере — нереактивный ref",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "save button derives from saveState not ref",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0278",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "tasks",
       "page": null,
@@ -4890,10 +4902,11 @@
       "lines": "545-549",
       "title": "TaskCanvas: forbidden/error выставляет can_edit=false, но pendingSceneRef не чистится → вечный dirty",
       "related": [],
-      "pr": null,
+      "pr": 46,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "forbidden event drops pending scene",
+      "commit": "46add41e"
     },
     {
       "id": "FE-0279",
