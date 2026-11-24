@@ -63,6 +63,15 @@ const MIN_ROW_H = 48;
 const CELL_PAD_X = 24;
 const MONO_CHAR_W = 7.5;
 const TEXT_CHAR_W = 8;
+// Spreadsheet formula injection: a cell beginning with = + - @ (or tab/CR)
+// is evaluated by Excel/Calc. Neutralize with a leading apostrophe; quote
+// every field so embedded delimiters/newlines cannot shift columns.
+const csvCell = (value) => {
+  let text = String(value ?? '');
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+};
+
 const TABLE_CONTAINER_MAX_HEIGHT = {
   xs: 'min(60vh, 520px)',
   md: 'calc(100vh - 320px)',
@@ -191,7 +200,7 @@ export default function EquipmentTab({
       port.endpoint_mac_raw || '',
       port.fio || '',
     ]);
-    const csv = `data:text/csv;charset=utf-8,\uFEFF${[headers.join(';'), ...rows.map((row) => row.join(';'))].join('\n')}`;
+    const csv = `data:text/csv;charset=utf-8,\uFEFF${[headers, ...rows].map((row) => row.map(csvCell).join(';')).join('\n')}`;
     const link = document.createElement('a');
     link.setAttribute('href', encodeURI(csv));
     link.setAttribute('download', `Порты_${new Date().toISOString().slice(0, 10)}.csv`);
