@@ -69,6 +69,10 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
   const [expandedRoots, setExpandedRoots] = useState(new Set());
   const [loadingReplyRoots, setLoadingReplyRoots] = useState(() => new Set());
   const [busyReaction, setBusyReaction] = useState('');
+  const replyCountsRef = useRef({});
+  const itemsRef = useRef(items);
+  const hashLookupAttemptedRef = useRef('');
+  const [hashTick, setHashTick] = useState(0);
 
   const focusComposer = useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -76,8 +80,12 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
     });
   }, [composerInputRef]);
 
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
   const loadComments = useCallback(async ({ background = false, append = false } = {}) => {
-    if (!post?.id) return;
+    if (!post?.id) return null;
     if (!background && !append) {
       setLoading(true);
       setLoadError('');
@@ -90,12 +98,14 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
       setTotal(Number(payload?.total ?? nextItems.length));
       setNextOffset(payload?.next_offset ?? null);
       onCountChange?.(post.id, Number(payload?.comments_total ?? post?.comments_count ?? payload?.total ?? 0));
+      return payload;
     } catch (error) {
       if (!background && !append) {
         setLoadError(error?.response?.data?.detail || error?.message || 'Не удалось загрузить комментарии.');
       } else if (!background) {
         notifyError?.(error, 'Не удалось загрузить комментарии.');
       }
+      return null;
     } finally {
       if (!background && !append) setLoading(false);
     }
@@ -108,6 +118,7 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
         root_comment_id: rootId, limit: 100, sort: 'oldest',
       });
       const next = Array.isArray(payload?.items) ? payload.items : [];
+      replyCountsRef.current[String(rootId)] = Number(payload?.total ?? next.length);
       setReplies((current) => ({
         ...current,
         [rootId]: background ? mergeById(current[rootId] || [], next) : next,
@@ -129,28 +140,48 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
 
   useEffect(() => {
     if (!post?.id) return undefined;
-    const intervalId = window.setInterval(() => {
+    const intervalId = window.setInterval(async () => {
       if (document.visibilityState !== 'visible') return;
-      void loadComments({ background: true });
-      expandedRoots.forEach((rootId) => void loadReplies(rootId, { background: true }));
+      const payload = await loadComments({ background: true });
+      const freshItems = Array.isArray(payload?.items) ? payload.items : [];
+      expandedRoots.forEach((rootId) => {
+        const freshRoot = freshItems.find((item) => String(item.id) === String(rootId));
+        if (!freshRoot) return;
+        const freshCount = Number(freshRoot.reply_count || 0);
+        if (freshCount !== replyCountsRef.current[String(rootId)]) {
+          void loadReplies(rootId, { background: true });
+        }
+      });
     }, 15000);
     return () => window.clearInterval(intervalId);
   }, [expandedRoots, loadComments, loadReplies, post?.id]);
 
   useEffect(() => {
-    if (loading || !window.location.hash.startsWith('#feed-comment-')) return;
+    const onHashChange = () => setHashTick((tick) => tick + 1);
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  useEffect(() => {
+    if (loading || !window.location.hash.startsWith('#feed-comment-')) return undefined;
     const targetId = decodeURIComponent(window.location.hash.replace('#feed-comment-', ''));
+    const attemptKey = `${post?.id}:${targetId}`;
     const direct = document.getElementById(`feed-comment-${targetId}`);
     if (direct) {
+      hashLookupAttemptedRef.current = attemptKey;
       direct.scrollIntoView({ block: 'center', behavior: 'auto' });
       direct.focus({ preventScroll: true });
-      return;
+      return undefined;
     }
-    const rootsWithReplies = items.filter((item) => Number(item.reply_count || 0) > 0);
+    if (hashLookupAttemptedRef.current === attemptKey || !post?.id) return undefined;
+    hashLookupAttemptedRef.current = attemptKey;
+    let cancelled = false;
+    const rootsWithReplies = itemsRef.current.filter((item) => Number(item.reply_count || 0) > 0);
     Promise.all(rootsWithReplies.map((root) => hubAnnouncementsAPI.getComments(post.id, {
       root_comment_id: root.id, limit: 100, sort: 'oldest',
     }).then((payload) => [root.id, payload?.items || []])))
       .then((entries) => {
+        if (cancelled) return;
         const targetEntry = entries.find(([, children]) => children.some((child) => String(child.id) === targetId));
         if (!targetEntry) return;
         const [rootId, children] = targetEntry;
@@ -163,7 +194,8 @@ export default function FeedCommentsPanel({ post, user, composerInputRef, onCoun
         });
       })
       .catch(() => undefined);
-  }, [items, loading, post?.id]);
+    return () => { cancelled = true; };
+  }, [hashTick, loading, post?.id]);
 
   const cancelReply = () => {
     setReplyingTo(null);
