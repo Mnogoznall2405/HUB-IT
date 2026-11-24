@@ -247,12 +247,13 @@ export default function SocketsTab({
                       transition: 'opacity 0.15s',
                     }}
                   >
-                    <CardActionArea
-                      onClick={(event) => handleSocketRowClick(socket, event)}
-                      sx={{ p: 1.2 }}
-                    >
-                      <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1}>
-                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                    {/* Кнопка удаления — sibling, не внутри <button> CardActionArea. */}
+                    <Stack direction="row" alignItems="stretch">
+                      <CardActionArea
+                        onClick={(event) => handleSocketRowClick(socket, event)}
+                        sx={{ p: 1.2, flex: 1, minWidth: 0 }}
+                      >
+                        <Box sx={{ minWidth: 0 }}>
                           <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.3 }}>
                             <Typography variant="body2" sx={{ fontWeight: 700, color: 'primary.main', fontFamily: 'monospace', fontSize: '0.9rem' }}>
                               {socket.socket_code || '—'}
@@ -288,26 +289,27 @@ export default function SocketsTab({
                             </Stack>
                           )}
                         </Box>
-                        {canEdit && (
-                          <Tooltip title="Удалить розетку">
-                            <span>
-                              <IconButton
-                                size="small"
-                                color="error"
-                                disabled={isDeleting}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  onDeleteSocket?.(socket, event);
-                                }}
-                                sx={{ mt: -0.5, flexShrink: 0, minWidth: 36, minHeight: 36 }}
-                              >
-                                <DeleteOutlineIcon sx={{ fontSize: 18 }} />
-                              </IconButton>
-                            </span>
-                          </Tooltip>
-                        )}
-                      </Stack>
-                    </CardActionArea>
+                      </CardActionArea>
+                      {canEdit && (
+                        <Tooltip title="Удалить розетку">
+                          <span>
+                            <IconButton
+                              size="small"
+                              color="error"
+                              aria-label={`Удалить розетку ${socket.socket_code || socket.id}`}
+                              disabled={isDeleting}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onDeleteSocket?.(socket, event);
+                              }}
+                              sx={{ alignSelf: 'center', mr: 0.5, flexShrink: 0, minWidth: 36, minHeight: 36 }}
+                            >
+                              <DeleteOutlineIcon sx={{ fontSize: 18 }} />
+                            </IconButton>
+                          </span>
+                        </Tooltip>
+                      )}
+                    </Stack>
                   </Card>
                 );
               })}
