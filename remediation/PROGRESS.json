@@ -20,10 +20,10 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 239,
+    "OPEN": 231,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
-    "FIXED": 29,
+    "FIXED": 37,
     "IN_PROGRESS": 2
   },
   "issues": [
@@ -603,7 +603,7 @@
       "id": "FE-0034",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -611,10 +611,11 @@
       "lines": "321",
       "title": "IconButton без доступного имени: UsersTab, Mfu, MailTemplatesDialog, SocketsTab/EquipmentTab (Tooltip→span)",
       "related": [],
-      "pr": null,
+      "pr": 38,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | account guards/a11y/draft-loss cluster PR#38",
+      "commit": "72b5179d"
     },
     {
       "id": "FE-0035",
@@ -4072,7 +4073,7 @@
       "id": "FE-0234",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4080,16 +4081,17 @@
       "lines": "592-618 (кнопка не disabled) + useAccountSectionData.js:672-686 (нет deleting-state)",
       "title": "Аккаунт: удаление пользователя без busy-guard → повторный DELETE и ложная 404-ошибка",
       "related": [],
-      "pr": null,
+      "pr": 38,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | account guards/a11y/draft-loss cluster PR#38",
+      "commit": "72b5179d"
     },
     {
       "id": "FE-0235",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4097,16 +4099,17 @@
       "lines": "208-210: username<3, нецелый telegram_id, невалидная квота → return без подсветки",
       "title": "Аккаунт: тихие отказы валидации в handleSaveDraft — «Сохранить» ничего не делает без объяснения",
       "related": [],
-      "pr": null,
+      "pr": 38,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | account guards/a11y/draft-loss cluster PR#38",
+      "commit": "72b5179d"
     },
     {
       "id": "FE-0236",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4114,16 +4117,17 @@
       "lines": "149-156: onTerminate из меню строки, без диалога и маркировки текущей сессии",
       "title": "Аккаунт: завершение сессии без подтверждения, включая собственную сессию админа",
       "related": [],
-      "pr": null,
+      "pr": 38,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | account guards/a11y/draft-loss cluster PR#38",
+      "commit": "72b5179d"
     },
     {
       "id": "FE-0237",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4131,10 +4135,11 @@
       "lines": "44-60 (Очистить устаревшие/Удалить неактивные без confirm) vs useAccountSectionData.js:749-753 (normalize с confirm)",
       "title": "Аккаунт: массовые операции над сессиями без подтверждения (несогласованно с normalize+confirm)",
       "related": [],
-      "pr": null,
+      "pr": 38,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | account guards/a11y/draft-loss cluster PR#38",
+      "commit": "72b5179d"
     },
     {
       "id": "FE-0238",
@@ -4211,7 +4216,7 @@
       "id": "FE-0242",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4219,10 +4224,11 @@
       "lines": "158-170,293-299: иконка сразу вызывает reset→deleteSchedule",
       "title": "Аккаунт: сброс графика работы филиала без подтверждения",
       "related": [],
-      "pr": null,
+      "pr": 38,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | account guards/a11y/draft-loss cluster PR#38",
+      "commit": "72b5179d"
     },
     {
       "id": "FE-0243",
@@ -4330,7 +4336,7 @@
       "id": "FE-0249",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "account",
       "page": null,
@@ -4338,10 +4344,11 @@
       "lines": "311-314: текст «Отключить», а deleteMailbox удаляет",
       "title": "Аккаунт: confirm «Отключить ящик…» при фактическом удалении ящика",
       "related": [],
-      "pr": null,
+      "pr": 38,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | account guards/a11y/draft-loss cluster PR#38",
+      "commit": "72b5179d"
     },
     {
       "id": "FE-0250",
@@ -4364,7 +4371,7 @@
       "id": "FE-0251",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "account",
       "page": null,
@@ -4372,10 +4379,11 @@
       "lines": "150,282-307; AiBalanceCard.jsx:42-45,95; MyFilesAdminTab.jsx:58-60,88-95; DepartmentsTab.jsx:144-159; BotSettingsWorkspace.jsx:48+useAccountSectionData.js:925,955; AppearanceTab.jsx:63+useAccountSectionData.js:113",
       "title": "Аккаунт: пакет пропусков подтверждений/гардов (avatar delete, mailbox busy, AiBalance threshold wipe, Enter-during-saving, syncFromAD, shared savingBotId, NaN fontScale)",
       "related": [],
-      "pr": null,
+      "pr": 38,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | account guards/a11y/draft-loss cluster PR#38",
+      "commit": "72b5179d"
     },
     {
       "id": "FE-0252",
