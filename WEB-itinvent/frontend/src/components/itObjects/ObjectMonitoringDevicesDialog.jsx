@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Autocomplete,
@@ -21,11 +21,24 @@ export default function ObjectMonitoringDevicesDialog({ open, objectRef, attache
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
+  const mountedRef = useRef(true);
+  const abortRef = useRef(null);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+    abortRef.current?.abort();
+  }, []);
+
   const loadFree = useCallback(async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const payload = await itObjectsAPI.monitoringFreeDevices(objectRef);
+      const payload = await itObjectsAPI.monitoringFreeDevices(objectRef, { signal: controller.signal });
+      if (!mountedRef.current || controller.signal.aborted) return;
       setFree(Array.isArray(payload?.items) ? payload.items : []);
     } catch (requestError) {
+      if (!mountedRef.current || controller.signal.aborted || requestError?.name === 'CanceledError' || requestError?.code === 'ERR_CANCELED') return;
       setError(getItObjectsErrorMessage(requestError, 'Не удалось загрузить свободные устройства'));
     }
   }, [objectRef]);
@@ -42,12 +55,13 @@ export default function ObjectMonitoringDevicesDialog({ open, objectRef, attache
     setError('');
     try {
       await action();
+      if (!mountedRef.current) return;
       setPicked(null);
       await Promise.all([loadFree(), onChanged()]);
     } catch (requestError) {
-      setError(getItObjectsErrorMessage(requestError, fallback));
+      if (mountedRef.current) setError(getItObjectsErrorMessage(requestError, fallback));
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 
