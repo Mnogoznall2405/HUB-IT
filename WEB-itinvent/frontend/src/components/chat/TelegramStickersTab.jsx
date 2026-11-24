@@ -5,6 +5,10 @@ import {
   Button,
   CircularProgress,
   IconButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
   Portal,
   TextField,
   Tooltip,
@@ -13,7 +17,12 @@ import {
 import { alpha } from '@mui/material/styles';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
+import SendRoundedIcon from '@mui/icons-material/SendRounded';
+import StarOutlineRoundedIcon from '@mui/icons-material/StarOutlineRounded';
+import StarRoundedIcon from '@mui/icons-material/StarRounded';
+import StickyNote2RoundedIcon from '@mui/icons-material/StickyNote2Rounded';
 import TelegramIcon from '@mui/icons-material/Telegram';
 
 import {
@@ -25,10 +34,17 @@ import {
 } from '../../api/chatStickers';
 import ChatStickerMedia from './ChatStickerMedia';
 import ChatStickerThumbnail from './ChatStickerThumbnail';
+import {
+  getFileActionsAnchorPosition,
+  isFileActionsKeyboardShortcut,
+} from '../fileActions/FileActionsContextMenu';
 
 const STICKER_PREVIEW_HOLD_MS = 420;
 const STICKER_PREVIEW_MOVE_TOLERANCE_PX = 12;
 const RECENT_STICKERS_LIMIT = 20;
+// Локальное обновление «недавних» мгновенное, а PUT на сервер уходит
+// trailing-debounce — серия отправок схлопывается в один запрос.
+const RECENT_SYNC_DEBOUNCE_MS = 1500;
 
 // Позиция прокрутки списка стикеров переживает закрытие панели —
 // Telegram Desktop возвращает пользователя туда, где он остановился.
@@ -71,6 +87,13 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   });
   const [activeSectionId, setActiveSectionId] = useState('recent');
   const [recentStickerIds, setRecentStickerIds] = useState(() => readRecentStickerIds(recentStorageKey));
+  // Избранное приходит с сервера полными объектами — у стикера может
+  // не быть установленного набора, поэтому резолв через stickersById
+  // здесь невозможен, в отличие от «недавних».
+  const [favoriteStickers, setFavoriteStickers] = useState([]);
+  // { sticker, left, top } — меню привязывается к курсору (anchorPosition),
+  // а не к кнопке, как в Telegram Desktop.
+  const [stickerMenu, setStickerMenu] = useState(null);
   const [loading, setLoading] = useState(() => !Array.isArray(peekStickerPacksCache(cacheScope)?.items));
   const [loadError, setLoadError] = useState('');
   const [importOpen, setImportOpen] = useState(false);
@@ -93,6 +116,8 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   const keyboardPressRef = useRef(false);
   const holdTriggeredRef = useRef(false);
   const suppressClickRef = useRef(false);
+  const recentSyncTimerRef = useRef(null);
+  const pendingRecentIdsRef = useRef(null);
 
   const clearHoldTimer = useCallback(() => {
     if (holdTimerRef.current !== null) {
@@ -156,6 +181,77 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     setRecentStickerIds(readRecentStickerIds(recentStorageKey));
   }, [recentStorageKey]);
 
+  const flushRecentSync = useCallback(() => {
+    recentSyncTimerRef.current = null;
+    const stickerIds = pendingRecentIdsRef.current || [];
+    pendingRecentIdsRef.current = null;
+    chatStickersAPI.pushRecentStickers(stickerIds).catch(() => {
+      // Синхронизация не критична: локальная копия уже лежит в localStorage
+      // и следующая успешная запись привезёт список целиком.
+    });
+  }, []);
+
+  const scheduleRecentSync = useCallback((stickerIds) => {
+    pendingRecentIdsRef.current = Array.isArray(stickerIds) ? [...stickerIds] : [];
+    if (recentSyncTimerRef.current !== null) window.clearTimeout(recentSyncTimerRef.current);
+    recentSyncTimerRef.current = window.setTimeout(flushRecentSync, RECENT_SYNC_DEBOUNCE_MS);
+  }, [flushRecentSync]);
+
+  // Отмена без flush при размонтировании и смене аккаунта: в очереди список
+  // прежнего пользователя — слать его под чужой сессией нельзя, а локальная
+  // копия уже сохранена в его localStorage-ключ.
+  useEffect(() => () => {
+    if (recentSyncTimerRef.current !== null) {
+      window.clearTimeout(recentSyncTimerRef.current);
+      recentSyncTimerRef.current = null;
+      pendingRecentIdsRef.current = null;
+    }
+  }, [recentStorageKey]);
+
+  // Серверные «недавние» выигрывают у локального кэша; если сервер пуст,
+  // а локальная копия есть — поднимаем её наверх один раз (миграция с
+  // localStorage-only версии и офлайн-периоды).
+  useEffect(() => {
+    let cancelled = false;
+    chatStickersAPI.listRecentStickers()
+      .then((payload) => {
+        if (cancelled) return;
+        const serverIds = (Array.isArray(payload?.items) ? payload.items : [])
+          .map((item) => String(item?.id || '').trim())
+          .filter(Boolean)
+          .slice(0, RECENT_STICKERS_LIMIT);
+        if (serverIds.length > 0) {
+          setRecentStickerIds(serverIds);
+          try {
+            window.localStorage.setItem(recentStorageKey, JSON.stringify(serverIds));
+          } catch {
+            // localStorage — только офлайн-кэш, picker работает и без него.
+          }
+          return;
+        }
+        const localIds = readRecentStickerIds(recentStorageKey);
+        if (localIds.length > 0) scheduleRecentSync(localIds);
+      })
+      .catch(() => {
+        // Офлайн/старый backend — остаёмся на localStorage-копии.
+      });
+    return () => { cancelled = true; };
+  }, [recentStorageKey, scheduleRecentSync]);
+
+  // Избранное грузится параллельно наборам: секция рендерится сразу,
+  // стикеры появляются по готовности.
+  useEffect(() => {
+    let cancelled = false;
+    chatStickersAPI.listFavorites(cacheScope)
+      .then((payload) => {
+        if (!cancelled) setFavoriteStickers(Array.isArray(payload?.items) ? payload.items : []);
+      })
+      .catch(() => {
+        // Избранное недоступно (офлайн/старый backend) — секция остаётся пустой.
+      });
+    return () => { cancelled = true; };
+  }, [cacheScope]);
+
   useEffect(() => {
     let cancelled = false;
     const requestEpoch = getStickerPacksEpoch();
@@ -193,22 +289,32 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     return () => window.cancelAnimationFrame(frame);
   }, [importOpen]);
 
+  // Избранное идёт первым источником, наборы перезаписывают совпадения —
+  // так «недавние» резолвятся даже для стикеров из удалённых наборов.
   const stickersById = useMemo(
     () => new Map(
-      packs.flatMap((pack) => (pack.stickers || []).map((sticker) => [
-        String(sticker.id),
-        sticker.pack_short_name ? sticker : { ...sticker, pack_short_name: pack.short_name },
-      ])),
+      [
+        ...favoriteStickers.map((sticker) => [String(sticker.id), sticker]),
+        ...packs.flatMap((pack) => (pack.stickers || []).map((sticker) => [
+          String(sticker.id),
+          sticker.pack_short_name ? sticker : { ...sticker, pack_short_name: pack.short_name },
+        ])),
+      ],
     ),
-    [packs],
+    [packs, favoriteStickers],
   );
   const recentStickers = useMemo(
     () => recentStickerIds.map((stickerId) => stickersById.get(stickerId)).filter(Boolean),
     [recentStickerIds, stickersById],
   );
+  const favoriteStickerIds = useMemo(
+    () => new Set(favoriteStickers.map((item) => String(item?.id || ''))),
+    [favoriteStickers],
+  );
   const stickerSections = useMemo(
     () => [
       { id: 'recent', title: 'Недавние', stickers: recentStickers, recent: true },
+      { id: 'favorites', title: 'Избранные', stickers: favoriteStickers, favorites: true },
       ...packs.map((pack) => ({
         ...pack,
         stickers: (pack.stickers || []).map((sticker) => (
@@ -217,7 +323,7 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
         recent: false,
       })),
     ],
-    [packs, recentStickers],
+    [packs, recentStickers, favoriteStickers],
   );
 
   useEffect(() => {
@@ -351,9 +457,26 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
       } catch {
         // The picker still works when browser storage is unavailable.
       }
+      scheduleRecentSync(next);
       return next;
     });
-  }, [recentStorageKey]);
+  }, [recentStorageKey, scheduleRecentSync]);
+
+  const forgetRecentSticker = useCallback((stickerId) => {
+    const normalizedStickerId = String(stickerId || '').trim();
+    if (!normalizedStickerId) return;
+    setRecentStickerIds((current) => {
+      if (!current.includes(normalizedStickerId)) return current;
+      const next = current.filter((item) => item !== normalizedStickerId);
+      try {
+        window.localStorage.setItem(recentStorageKey, JSON.stringify(next));
+      } catch {
+        // The picker still works when browser storage is unavailable.
+      }
+      scheduleRecentSync(next);
+      return next;
+    });
+  }, [recentStorageKey, scheduleRecentSync]);
 
   const handleImportSubmit = useCallback(async (event) => {
     event.preventDefault();
@@ -458,12 +581,36 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     void handleStickerClick(sticker);
   }, [handleStickerClick]);
 
+  const closeStickerMenu = useCallback(() => setStickerMenu(null), []);
+
+  // ПКМ и клавиша Menu/Shift+F10 ведут в одно меню. Меню рендерится порталом
+  // в body, поэтому работает и в поповере, и в закреплённом доке — даже если
+  // сама панель скрылась, пока меню открыто.
+  const openStickerMenu = useCallback((event, sticker) => {
+    event.preventDefault();
+    event.stopPropagation();
+    // Отменяем hold-preview: меню и превью не должны висеть одновременно.
+    pointerPressRef.current = null;
+    keyboardPressRef.current = false;
+    clearHoldTimer();
+    closeHoldPreview();
+    // Клик после contextmenu (touch/pen) не должен отправлять стикер —
+    // флаг снимается следующим pointerdown, обычную отправку не ломает.
+    suppressClickRef.current = true;
+    const { left, top } = getFileActionsAnchorPosition(event);
+    setStickerMenu({ sticker, left, top });
+  }, [clearHoldTimer, closeHoldPreview]);
+
   const handleStickerKeyDown = useCallback((event, sticker) => {
+    if (isFileActionsKeyboardShortcut(event)) {
+      openStickerMenu(event, sticker);
+      return;
+    }
     if (event.key !== ' ' || event.repeat || keyboardPressRef.current || sendingStickerIds[String(sticker?.id || '')]) return;
     event.preventDefault();
     keyboardPressRef.current = true;
     scheduleHoldPreview(sticker);
-  }, [scheduleHoldPreview, sendingStickerIds]);
+  }, [openStickerMenu, scheduleHoldPreview, sendingStickerIds]);
 
   const handleStickerKeyUp = useCallback((event, sticker) => {
     if (event.key !== ' ' || !keyboardPressRef.current) return;
@@ -479,6 +626,67 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     }
     void handleStickerClick(sticker);
   }, [clearHoldTimer, closeHoldPreview, handleStickerClick]);
+
+  // Избранное обновляется оптимистично; при ошибке — точечный откат,
+  // чтобы не затирать параллельные изменения, и сообщение в статус-строку.
+  const toggleFavoriteSticker = useCallback(async (sticker) => {
+    const stickerId = String(sticker?.id || '').trim();
+    if (!stickerId) return;
+    setStatusText('');
+    if (favoriteStickerIds.has(stickerId)) {
+      setFavoriteStickers((current) => current.filter((item) => String(item?.id) !== stickerId));
+      try {
+        const payload = await chatStickersAPI.removeFavoriteSticker(stickerId);
+        if (Array.isArray(payload?.items)) setFavoriteStickers(payload.items);
+      } catch (error) {
+        setFavoriteStickers((current) => (
+          current.some((item) => String(item?.id) === stickerId) ? current : [...current, sticker]
+        ));
+        setStatusText(getApiError(error, 'Не удалось убрать стикер из избранных.'));
+      }
+      return;
+    }
+    setFavoriteStickers((current) => (
+      current.some((item) => String(item?.id) === stickerId) ? current : [...current, sticker]
+    ));
+    try {
+      const payload = await chatStickersAPI.addFavoriteSticker(stickerId);
+      if (Array.isArray(payload?.items)) setFavoriteStickers(payload.items);
+    } catch (error) {
+      setFavoriteStickers((current) => current.filter((item) => String(item?.id) !== stickerId));
+      setStatusText(getApiError(error, 'Не удалось добавить стикер в избранное.'));
+    }
+  }, [favoriteStickerIds]);
+
+  const menuStickerId = String(stickerMenu?.sticker?.id || '').trim();
+  const menuStickerIsFavorite = Boolean(menuStickerId) && favoriteStickerIds.has(menuStickerId);
+  const menuStickerIsRecent = Boolean(menuStickerId) && recentStickerIds.includes(menuStickerId);
+  const menuStickerPack = stickerMenu?.sticker?.pack_short_name
+    ? packs.find((pack) => String(pack.short_name) === String(stickerMenu.sticker.pack_short_name)) || null
+    : null;
+
+  const handleMenuSend = useCallback(() => {
+    const sticker = stickerMenu?.sticker;
+    closeStickerMenu();
+    if (sticker) void handleStickerClick(sticker);
+  }, [closeStickerMenu, handleStickerClick, stickerMenu]);
+
+  const handleMenuToggleFavorite = useCallback(() => {
+    const sticker = stickerMenu?.sticker;
+    closeStickerMenu();
+    if (sticker) void toggleFavoriteSticker(sticker);
+  }, [closeStickerMenu, stickerMenu, toggleFavoriteSticker]);
+
+  const handleMenuOpenPack = useCallback(() => {
+    const packId = menuStickerPack?.id;
+    closeStickerMenu();
+    if (packId) scrollToSection(packId);
+  }, [closeStickerMenu, menuStickerPack, scrollToSection]);
+
+  const handleMenuRemoveRecent = useCallback(() => {
+    closeStickerMenu();
+    forgetRecentSticker(menuStickerId);
+  }, [closeStickerMenu, forgetRecentSticker, menuStickerId]);
 
   const accent = ui.accentText || theme.palette.primary.main;
   const border = ui.borderSoft || theme.palette.divider;
@@ -549,6 +757,36 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
               }}
             >
               <HistoryRoundedIcon sx={{ fontSize: dense ? 23 : 25 }} aria-hidden="true" />
+            </Box>
+          </Tooltip>
+          <Tooltip title="Избранные" placement="top">
+            <Box
+              ref={(node) => registerPackTabRef('favorites', node)}
+              component="button"
+              type="button"
+              role="tab"
+              aria-selected={activeSectionId === 'favorites'}
+              aria-label="Избранные"
+              onClick={() => scrollToSection('favorites')}
+              sx={{
+                width: dense ? 38 : 42,
+                height: dense ? 38 : 42,
+                flexShrink: 0,
+                display: 'grid',
+                placeItems: 'center',
+                p: 0.35,
+                border: 'none',
+                borderRadius: 2,
+                color: activeSectionId === 'favorites' ? accent : (ui.textSecondary || theme.palette.text.secondary),
+                bgcolor: activeSectionId === 'favorites' ? alpha(accent, 0.14) : 'transparent',
+                cursor: 'pointer',
+                transition: 'background-color 120ms ease, color 120ms ease, transform 100ms ease',
+                '&:hover': { bgcolor: alpha(accent, 0.1) },
+                '&:active': { transform: 'scale(0.96)' },
+                '&:focus-visible': { outline: `2px solid ${accent}`, outlineOffset: 1 },
+              }}
+            >
+              <StarRoundedIcon sx={{ fontSize: dense ? 23 : 25 }} aria-hidden="true" />
             </Box>
           </Tooltip>
           {packs.map((pack) => {
@@ -659,7 +897,7 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
 
       {loadError ? (
         <Alert severity="error" sx={{ m: 1 }}>{loadError}</Alert>
-      ) : packs.length === 0 ? (
+      ) : packs.length === 0 && favoriteStickers.length === 0 ? (
         <Box sx={{ flex: 1, display: 'grid', placeItems: 'center', p: 2, textAlign: 'center' }}>
           <Box>
             <TelegramIcon sx={{ fontSize: 38, color: accent, mb: 0.6 }} aria-hidden="true" />
@@ -712,6 +950,18 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
                 >
                   Отправленные стикеры появятся здесь
                 </Typography>
+              ) : section.favorites && section.stickers.length === 0 ? (
+                <Typography
+                  sx={{
+                    px: 0.5,
+                    py: 1,
+                    fontSize: 12.5,
+                    lineHeight: 1.35,
+                    color: alpha(ui.textSecondary || theme.palette.text.secondary, 0.78),
+                  }}
+                >
+                  Избранные стикеры появятся здесь — добавьте их через контекстное меню
+                </Typography>
               ) : (
                 <Box
                   role="tabpanel"
@@ -737,7 +987,7 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
                 onPointerCancel={handleStickerPointerCancel}
                 onKeyDown={(event) => handleStickerKeyDown(event, sticker)}
                 onKeyUp={(event) => handleStickerKeyUp(event, sticker)}
-                onContextMenu={(event) => event.preventDefault()}
+                onContextMenu={(event) => openStickerMenu(event, sticker)}
                 sx={{
                   position: 'relative',
                   aspectRatio: '1 / 1',
@@ -774,6 +1024,48 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
           ))}
         </Box>
       )}
+
+      <Menu
+        open={Boolean(stickerMenu)}
+        onClose={closeStickerMenu}
+        anchorReference="anchorPosition"
+        anchorPosition={stickerMenu ? { left: stickerMenu.left, top: stickerMenu.top } : undefined}
+        MenuListProps={{ 'aria-label': 'Действия со стикером' }}
+        PaperProps={{
+          sx: {
+            minWidth: 220,
+            borderRadius: '10px',
+            boxShadow: '0 14px 36px rgba(2, 6, 23, 0.24)',
+          },
+        }}
+      >
+        <MenuItem onClick={handleMenuSend} sx={{ minHeight: 40 }}>
+          <ListItemIcon><SendRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Отправить</ListItemText>
+        </MenuItem>
+        <MenuItem onClick={handleMenuToggleFavorite} sx={{ minHeight: 40 }}>
+          <ListItemIcon>
+            {menuStickerIsFavorite
+              ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
+              : <StarOutlineRoundedIcon fontSize="small" />}
+          </ListItemIcon>
+          <ListItemText>
+            {menuStickerIsFavorite ? 'Удалить из избранных' : 'Добавить в избранное'}
+          </ListItemText>
+        </MenuItem>
+        {menuStickerPack ? (
+          <MenuItem onClick={handleMenuOpenPack} sx={{ minHeight: 40 }}>
+            <ListItemIcon><StickyNote2RoundedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>Открыть набор</ListItemText>
+          </MenuItem>
+        ) : null}
+        {menuStickerIsRecent ? (
+          <MenuItem onClick={handleMenuRemoveRecent} sx={{ minHeight: 40 }}>
+            <ListItemIcon><DeleteOutlineRoundedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>Убрать из недавних</ListItemText>
+          </MenuItem>
+        ) : null}
+      </Menu>
 
       {previewSticker ? (
         <Portal>

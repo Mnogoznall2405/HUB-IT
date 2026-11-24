@@ -111,6 +111,59 @@ export const chatStickersAPI = {
     );
     return response.data;
   },
+
+  // Избранное живёт на сервере и может включать стикеры из неустановленных
+  // наборов — без локального кэша, чтобы панель всегда показывала свежий список.
+  listFavorites: async (options = {}) => {
+    const response = await apiClient.get('/chat/stickers/favorites', {
+      signal: options?.signal,
+    });
+    return response.data;
+  },
+
+  // Идемпотентно: PUT/DELETE возвращают актуальный список избранного.
+  addFavoriteSticker: async (stickerId) => {
+    const response = await apiClient.put(
+      `/chat/stickers/favorites/${encodeURIComponent(String(stickerId || '').trim())}`,
+    );
+    return response.data;
+  },
+
+  removeFavoriteSticker: async (stickerId) => {
+    const response = await apiClient.delete(
+      `/chat/stickers/favorites/${encodeURIComponent(String(stickerId || '').trim())}`,
+    );
+    return response.data;
+  },
+
+  // Недавние синхронизируются с сервером; localStorage — только офлайн-кэш.
+  listRecentStickers: async (options = {}) => {
+    const response = await apiClient.get('/chat/stickers/recent', {
+      signal: options?.signal,
+    });
+    return response.data;
+  },
+
+  // Полная замена списка: сервер дедуплицирует и обрезает до 50.
+  pushRecentStickers: async (stickerIds) => {
+    const response = await apiClient.put('/chat/stickers/recent', {
+      sticker_ids: (Array.isArray(stickerIds) ? stickerIds : [])
+        .map((stickerId) => String(stickerId || '').trim())
+        .filter(Boolean),
+    });
+    return response.data;
+  },
+
+  // Порядок наборов персистентен — после перестановки кэш списка устаревает.
+  setPackOrder: async (packIds) => {
+    const response = await apiClient.post('/chat/sticker-packs/order', {
+      pack_ids: (Array.isArray(packIds) ? packIds : [])
+        .map((packId) => String(packId || '').trim())
+        .filter(Boolean),
+    });
+    invalidateStickerPacksCache();
+    return response.data;
+  },
 };
 
 export default chatStickersAPI;

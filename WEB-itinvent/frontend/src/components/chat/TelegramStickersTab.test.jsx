@@ -11,6 +11,12 @@ vi.mock('../../api/chatStickers', () => ({
   chatStickersAPI: {
     listPacks: vi.fn(),
     importPack: vi.fn(),
+    listFavorites: vi.fn(),
+    addFavoriteSticker: vi.fn(),
+    removeFavoriteSticker: vi.fn(),
+    listRecentStickers: vi.fn(),
+    pushRecentStickers: vi.fn(),
+    setPackOrder: vi.fn(),
   },
   getStickerPacksEpoch: vi.fn(() => stickerEpochRef.value),
   peekStickerPacksCache: vi.fn(() => null),
@@ -70,6 +76,12 @@ describe('TelegramStickersTab', () => {
     stickerEpochRef.value = 0;
     window.localStorage.clear();
     chatStickersAPI.listPacks.mockResolvedValue({ items: [] });
+    chatStickersAPI.listFavorites.mockResolvedValue({ items: [] });
+    chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [] });
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [] });
+    chatStickersAPI.addFavoriteSticker.mockResolvedValue({ items: [] });
+    chatStickersAPI.removeFavoriteSticker.mockResolvedValue({ items: [] });
+    chatStickersAPI.setPackOrder.mockResolvedValue({ items: [] });
   });
 
   it('imports a Telegram pack from the sticker picker', async () => {
@@ -142,7 +154,7 @@ describe('TelegramStickersTab', () => {
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 
-  it('renders recent stickers and all installed packs as consecutive sections', async () => {
+  it('renders recent, favorites and all installed packs as consecutive sections', async () => {
     chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack, secondStickerPack] });
     const { container } = renderTab();
 
@@ -152,8 +164,26 @@ describe('TelegramStickersTab', () => {
       Array.from(container.querySelectorAll('[data-sticker-section]')).map(
         (section) => section.getAttribute('data-sticker-section'),
       ),
-    ).toEqual(['recent', 'pack-1', 'pack-2']);
+    ).toEqual(['recent', 'favorites', 'pack-1', 'pack-2']);
     expect(screen.getByRole('tab', { name: 'Недавние' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Избранные' })).toBeInTheDocument();
+  });
+
+  it('scrolls to the favorites section from the star tab in the pack strip', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    renderTab();
+
+    expect(await screen.findByRole('tabpanel', { name: 'Офисные звери' })).toBeInTheDocument();
+    const scrollRoot = screen.getByTestId('chat-sticker-sections-scroll');
+    scrollRoot.scrollTo = vi.fn();
+    const favoritesTab = screen.getByRole('tab', { name: 'Избранные' });
+
+    fireEvent.click(favoritesTab);
+
+    expect(favoritesTab).toHaveAttribute('aria-selected', 'true');
+    expect(scrollRoot.scrollTo).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: 'smooth' }),
+    );
   });
 
   it('scrolls an overflowing pack strip horizontally with the mouse wheel', async () => {
@@ -317,5 +347,188 @@ describe('TelegramStickersTab', () => {
     expect(grid.querySelector('[data-testid="chat-sticker-preview-image"]')).toHaveStyle({
       width: '76px',
     });
+  });
+
+  it('opens the sticker context menu on right-click with context-aware items', async () => {
+    const onSendSticker = vi.fn().mockResolvedValue(true);
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    renderTab(onSendSticker);
+    const button = await screen.findByRole('button', { name: 'Отправить стикер 🐈' });
+
+    // Стикер не в избранном и не в недавних: базовый набор действий.
+    fireEvent.contextMenu(button, { clientX: 24, clientY: 24 });
+    expect(screen.getByRole('menuitem', { name: 'Отправить' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Добавить в избранное' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Открыть набор' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Убрать из недавних' })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByRole('menuitem', { name: 'Отправить' })).not.toBeInTheDocument();
+    });
+
+    // После отправки стикер попадает в «недавние» — пункт удаления появляется.
+    // Полный pointerdown/up + click: openStickerMenu выставил suppressClick,
+    // его снимает именно pointerdown, как в браузере.
+    fireEvent.pointerDown(button, { pointerId: 1, pointerType: 'mouse', button: 0, clientX: 20, clientY: 20 });
+    fireEvent.pointerUp(button, { pointerId: 1, pointerType: 'mouse' });
+    fireEvent.click(button);
+    await screen.findByRole('tabpanel', { name: 'Недавние' });
+    fireEvent.contextMenu(button, { clientX: 24, clientY: 24 });
+    expect(screen.getByRole('menuitem', { name: 'Убрать из недавних' })).toBeInTheDocument();
+    expect(onSendSticker).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the sticker context menu from the keyboard Menu key', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    renderTab();
+    const button = await screen.findByRole('button', { name: 'Отправить стикер 🐈' });
+
+    fireEvent.keyDown(button, { key: 'ContextMenu' });
+
+    expect(screen.getByRole('menuitem', { name: 'Отправить' })).toBeInTheDocument();
+  });
+
+  it('offers removal for a favorite sticker and hides pack action without an installed pack', async () => {
+    const favoriteSticker = {
+      ...stickerPack.stickers[0],
+      pack_short_name: 'NoSuchPackInstalled',
+    };
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    chatStickersAPI.listFavorites.mockResolvedValue({ items: [favoriteSticker] });
+    renderTab();
+
+    const favoritesGrid = await screen.findByRole('tabpanel', { name: 'Избранные' });
+    const favoriteButton = within(favoritesGrid).getByRole('button', { name: 'Отправить стикер 🐈' });
+    fireEvent.contextMenu(favoriteButton, { clientX: 24, clientY: 24 });
+
+    expect(screen.getByRole('menuitem', { name: 'Удалить из избранных' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Добавить в избранное' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Открыть набор' })).not.toBeInTheDocument();
+  });
+
+  it('adds a favorite optimistically and keeps it after the API resolves', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    let resolveAdd;
+    chatStickersAPI.addFavoriteSticker.mockImplementation(
+      () => new Promise((resolve) => { resolveAdd = resolve; }),
+    );
+    renderTab();
+    const button = await screen.findByRole('button', { name: 'Отправить стикер 🐈' });
+
+    fireEvent.contextMenu(button, { clientX: 24, clientY: 24 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Добавить в избранное' }));
+
+    // Оптимистичное обновление: стикер уже в секции, ответ API ещё в пути.
+    const favoritesGrid = await screen.findByRole('tabpanel', { name: 'Избранные' });
+    expect(
+      within(favoritesGrid).getByRole('button', { name: 'Отправить стикер 🐈' }),
+    ).toBeInTheDocument();
+    expect(chatStickersAPI.addFavoriteSticker).toHaveBeenCalledWith('sticker-1');
+
+    await act(async () => {
+      resolveAdd({ items: [{ ...stickerPack.stickers[0], pack_short_name: stickerPack.short_name }] });
+    });
+    expect(
+      within(screen.getByRole('tabpanel', { name: 'Избранные' }))
+        .getByRole('button', { name: 'Отправить стикер 🐈' }),
+    ).toBeInTheDocument();
+  });
+
+  it('rolls back an optimistic favorite add when the API fails', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    chatStickersAPI.addFavoriteSticker.mockRejectedValue({});
+    renderTab();
+    const button = await screen.findByRole('button', { name: 'Отправить стикер 🐈' });
+
+    fireEvent.contextMenu(button, { clientX: 24, clientY: 24 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Добавить в избранное' }));
+
+    // Оптимистично появился, после ошибки — откат и сообщение об ошибке.
+    await screen.findByRole('tabpanel', { name: 'Избранные' });
+    await waitFor(() => {
+      expect(screen.queryByRole('tabpanel', { name: 'Избранные' })).not.toBeInTheDocument();
+    });
+    expect(
+      screen.getByText('Избранные стикеры появятся здесь — добавьте их через контекстное меню'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Не удалось добавить стикер в избранное.');
+  });
+
+  it('removes a sticker from recents through the context menu', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    chatStickersAPI.listRecentStickers.mockResolvedValue({
+      items: [{ ...stickerPack.stickers[0], pack_short_name: stickerPack.short_name }],
+    });
+    renderTab();
+
+    const recentGrid = await screen.findByRole('tabpanel', { name: 'Недавние' });
+    const recentButton = within(recentGrid).getByRole('button', { name: 'Отправить стикер 🐈' });
+    fireEvent.contextMenu(recentButton, { clientX: 24, clientY: 24 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Убрать из недавних' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('tabpanel', { name: 'Недавние' })).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('Отправленные стикеры появятся здесь')).toBeInTheDocument();
+    expect(
+      JSON.parse(window.localStorage.getItem('hubit.chat.recent-stickers.v1:device')),
+    ).toEqual([]);
+  });
+
+  it('uses the server recent list when the request succeeds', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack, secondStickerPack] });
+    window.localStorage.setItem(
+      'hubit.chat.recent-stickers.v1:device',
+      JSON.stringify(['sticker-1']),
+    );
+    chatStickersAPI.listRecentStickers.mockResolvedValue({
+      items: [{ ...secondStickerPack.stickers[0], pack_short_name: secondStickerPack.short_name }],
+    });
+    renderTab();
+
+    const recentGrid = await screen.findByRole('tabpanel', { name: 'Недавние' });
+    await waitFor(() => {
+      expect(
+        within(recentGrid).getByRole('button', { name: 'Отправить стикер 🦆' }),
+      ).toBeInTheDocument();
+    });
+    expect(
+      within(recentGrid).queryByRole('button', { name: 'Отправить стикер 🐈' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('falls back to the localStorage recent list when the request fails', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    window.localStorage.setItem(
+      'hubit.chat.recent-stickers.v1:device',
+      JSON.stringify(['sticker-1']),
+    );
+    chatStickersAPI.listRecentStickers.mockRejectedValue(new Error('offline'));
+    renderTab();
+
+    const recentGrid = await screen.findByRole('tabpanel', { name: 'Недавние' });
+    expect(
+      within(recentGrid).getByRole('button', { name: 'Отправить стикер 🐈' }),
+    ).toBeInTheDocument();
+  });
+
+  it('pushes the localStorage recent list up when the server list is empty', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [] });
+    window.localStorage.setItem(
+      'hubit.chat.recent-stickers.v1:device',
+      JSON.stringify(['sticker-1']),
+    );
+    // Таймеры фейканы до рендера: sync-запрос планируется внутри .then
+    // монтировочного эффекта и должен попасть под фейковый таймер.
+    vi.useFakeTimers();
+    try {
+      renderTab();
+      await act(async () => {});
+      await act(async () => { vi.advanceTimersByTime(2000); });
+      expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledWith(['sticker-1']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
