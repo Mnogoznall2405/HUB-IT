@@ -418,6 +418,7 @@ apiClient.interceptors.response.use(
     if (
       responsePath.endsWith('/auth/login')
       || responsePath.endsWith('/auth/verify-2fa')
+      || responsePath.endsWith('/auth/verify-2fa-login')
       || responsePath.endsWith('/auth/passkey-login/verify')
       || responsePath.endsWith('/auth/trusted-devices/auth/verify')
     ) {

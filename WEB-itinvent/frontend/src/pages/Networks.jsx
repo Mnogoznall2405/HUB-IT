@@ -894,6 +894,9 @@ function Networks() {
         onRevalidated: (fresh) => {
           if (requestSeq === branchPortsRequestSeq.current) {
             setAllBranchPorts(Array.isArray(fresh) ? fresh : []);
+            if (Array.isArray(fresh) && fresh.length >= 10000) {
+              pushWarningToast('Список портов филиала достиг лимита 10000 — показаны не все записи.');
+            }
           }
         },
       }

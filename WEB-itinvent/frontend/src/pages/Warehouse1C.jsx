@@ -2043,7 +2043,6 @@ function Warehouse1C() {
                         onOpenHubMatch={handleOpenHubMatch}
                       />
                     ))}
-                    <ShowMoreRowsButton hidden={hiddenBalancesCount} onClick={showMoreBalances} />
                   </Paper>
                   {balancesTotals ? (
                     <Paper variant="outlined" sx={{ px: 1.25, py: 1 }}>
@@ -2233,7 +2232,6 @@ function Warehouse1C() {
                       onOpenDetail={handleOpenMovementDetail}
                     />
                   ))}
-                  <ShowMoreRowsButton hidden={hiddenMovementsCount} onClick={showMoreMovements} />
                 </Paper>
               ) : (
               <TableContainer component={Paper} sx={{ overflowX: 'auto' }}>
