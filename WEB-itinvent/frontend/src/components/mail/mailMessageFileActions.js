@@ -356,7 +356,11 @@ export const downloadBlobFile = (blob, filename, { preferOpenFallback = false } 
   link.download = String(filename || 'attachment.bin');
   document.body.appendChild(link);
   link.click();
-  window.URL.revokeObjectURL(url);
+  // Отложенный revoke: iOS Safari ещё не успевает забрать blob при
+  // синхронном revoke сразу после click() — скачивание обрывалось (FE-0115).
+  window.setTimeout(() => {
+    window.URL.revokeObjectURL(url);
+  }, 30_000);
   document.body.removeChild(link);
 };
 

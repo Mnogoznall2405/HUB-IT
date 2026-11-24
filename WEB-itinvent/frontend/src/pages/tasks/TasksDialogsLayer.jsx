@@ -24,10 +24,14 @@ export default function TasksDialogsLayer() {
   const filters = useTasksFiltersSlice();
   const create = useTasksCreateSlice();
 
+  // Каждый lazy-диалог — в собственном Suspense: общий boundary с
+  // fallback={null} размонтировал бы все открытые диалоги, suspend'нись
+  // любой из них (FE-0265).
   return (
-    <Suspense fallback={null}>
+    <>
       <>
         {create.createOpen ? (
+          <Suspense fallback={null}>
           <TasksCreateDialog
             open={create.createOpen}
             onClose={create.handleCloseCreateDialog}
@@ -80,6 +84,7 @@ export default function TasksDialogsLayer() {
             taskUsersLoadError={list.taskUsersLoadError}
             taskEmailDeadlineDefaultHours={list.taskEmailDeadlineDefaultHours}
           />
+          </Suspense>
         ) : null}
 
         <Popover
@@ -159,6 +164,7 @@ export default function TasksDialogsLayer() {
           </Box>
         </Drawer>
 
+        <Suspense fallback={null}>
         <TasksCreateMobileSheet
           open={Boolean(ui.isMobile && create.createMobileSheet)}
           sheet={create.createMobileSheet}
@@ -210,8 +216,10 @@ export default function TasksDialogsLayer() {
             selectedCreateDepartment: create.selectedCreateDepartment,
           }}
         />
+        </Suspense>
 
         {create.editOpen ? (
+          <Suspense fallback={null}>
           <TasksCreateDialog
             mode="edit"
             open={create.editOpen}
@@ -255,8 +263,10 @@ export default function TasksDialogsLayer() {
             renderTaskUserTags={ui.renderTaskUserTags}
             taskEmailDeadlineDefaultHours={list.taskEmailDeadlineDefaultHours}
           />
+          </Suspense>
         ) : null}
 
+        <Suspense fallback={null}>
         <TasksTaxonomyDialog
           open={create.taxonomyOpen}
           onClose={() => create.setTaxonomyOpen(false)}
@@ -279,8 +289,10 @@ export default function TasksDialogsLayer() {
           taskObjects={list.activeTaskObjects}
           activeTaskProjects={list.activeTaskProjects}
         />
+        </Suspense>
 
         {create.subtaskParent ? (
+          <Suspense fallback={null}>
           <TaskSubtaskDialog
             open
             parent={create.subtaskParent}
@@ -300,8 +312,10 @@ export default function TasksDialogsLayer() {
             onClose={create.closeSubtaskDialog}
             onSubmit={() => void create.handleCreateSubtask()}
           />
+          </Suspense>
         ) : null}
 
+        <Suspense fallback={null}>
         <TaskReviewDialog
           open={Boolean(create.reviewTask)}
           task={create.reviewTask}
@@ -310,7 +324,9 @@ export default function TasksDialogsLayer() {
           onSubmit={(decision, comment) => void create.handleReviewTask(decision, comment)}
           ui={ui.ui}
         />
+        </Suspense>
 
+        <Suspense fallback={null}>
         <TaskReopenDialog
           open={Boolean(create.reopenTargetTask)}
           task={create.reopenTargetTask}
@@ -319,7 +335,9 @@ export default function TasksDialogsLayer() {
           onSubmit={(payload) => void create.handleConfirmReopenTask(payload)}
           ui={ui.ui}
         />
+        </Suspense>
 
+        <Suspense fallback={null}>
         <TaskCloseDialog
           open={Boolean(create.closeTask)}
           task={create.closeTask}
@@ -328,7 +346,9 @@ export default function TasksDialogsLayer() {
           onSubmit={(payload) => void create.handleCloseTask(payload)}
           ui={ui.ui}
         />
+        </Suspense>
 
+        <Suspense fallback={null}>
         <TaskSubmitDialog
           open={Boolean(create.submitTask)}
           task={create.submitTask}
@@ -337,7 +357,8 @@ export default function TasksDialogsLayer() {
           onSubmit={(payload) => void create.handleSubmitTask(payload)}
           ui={ui.ui}
         />
+        </Suspense>
       </>
-    </Suspense>
+    </>
   );
 }
