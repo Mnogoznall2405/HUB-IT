@@ -4,6 +4,7 @@ import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { chatStickersAPI, primeStickerPacksCache } from '../../api/chatStickers';
+import { invalidateChatStickerStore } from '../../lib/chatStickerStore';
 import TelegramStickersTab from './TelegramStickersTab';
 
 const stickerEpochRef = { value: 0 };
@@ -46,6 +47,10 @@ vi.mock('../../api/chatStickers', () => {
     peekStickerPacksCache: vi.fn(() => null),
     primeStickerPacksCache: vi.fn((scope, payload) => payload),
     invalidateStickerPacksCache: vi.fn(() => { stickerEpochRef.value += 1; }),
+    // Та же scope-формула, что в реальном модуле: userId + выбранная БД.
+    resolveStickerScope: vi.fn((options) => (
+      `${String(options?.userId || 'anon')}::${String(window.localStorage.getItem('selected_database') || 'default')}`
+    )),
   };
 });
 
@@ -100,6 +105,9 @@ describe('TelegramStickersTab', () => {
     vi.clearAllMocks();
     stickerEpochRef.value = 0;
     window.localStorage.clear();
+    // Модульный store живёт между тестами — без инвалидации запись scope
+    // сохраняла бы статусы/данные предыдущего теста и запросы бы не шли.
+    invalidateChatStickerStore();
     chatStickersAPI.listPacks.mockResolvedValue({ items: [] });
     chatStickersAPI.listFavorites.mockResolvedValue({ items: [] });
     chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [] });
@@ -132,17 +140,31 @@ describe('TelegramStickersTab', () => {
 
   it('drops a pack response that resolves after cache invalidation', async () => {
     let resolveStale;
-    chatStickersAPI.listPacks.mockImplementationOnce(
-      () => new Promise((resolve) => { resolveStale = resolve; }),
-    );
+    chatStickersAPI.listPacks
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveStale = resolve; }))
+      .mockResolvedValue({ items: [] });
     renderTab();
+    // Store вызывает listPacks в микротаске — ждём факта вызова.
+    await waitFor(() => {
+      expect(chatStickersAPI.listPacks).toHaveBeenCalledTimes(1);
+    });
 
     // Инвалидация между запросом и ответом (logout / импорт в другом табе) —
-    // устаревший payload не должен ни попасть в кэш, ни отрисоваться.
+    // устаревший payload не должен ни попасть в кэш, ни отрисоваться. Store
+    // самовосстанавливается честным перезапросом (idle → новый listPacks).
     stickerEpochRef.value += 1;
     await act(async () => { resolveStale({ items: [stickerPack] }); });
+    await act(async () => {});
 
-    expect(primeStickerPacksCache).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(chatStickersAPI.listPacks).toHaveBeenCalledTimes(2);
+    });
+    // Праймится только свежий ответ — устаревший payload кэш не видел.
+    expect(primeStickerPacksCache).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ items: [stickerPack] }),
+      expect.anything(),
+    );
     expect(screen.queryByText('Офисные звери')).not.toBeInTheDocument();
     await waitFor(() => {
       expect(screen.queryByLabelText('Загрузка наборов стикеров')).not.toBeInTheDocument();
@@ -155,6 +177,9 @@ describe('TelegramStickersTab', () => {
       () => new Promise((resolve) => { resolveFresh = resolve; }),
     );
     renderTab();
+    await waitFor(() => {
+      expect(chatStickersAPI.listPacks).toHaveBeenCalledTimes(1);
+    });
 
     await act(async () => { resolveFresh({ items: [stickerPack] }); });
 
@@ -730,8 +755,8 @@ describe('TelegramStickersTab', () => {
   });
 
   it('removes a pack through the manage dialog after inline confirmation', async () => {
-    // После DELETE вкладка диспатчит packs-changed и рефетчит список —
-    // второй ответ уже без удалённого набора, как вернул бы сервер.
+    // После DELETE вкладка коммитит список без набора прямо в store —
+    // общий стейт обновляет все поверхности без рефетча.
     chatStickersAPI.listPacks
       .mockResolvedValueOnce({ items: [stickerPack, secondStickerPack] })
       .mockResolvedValue({ items: [secondStickerPack] });

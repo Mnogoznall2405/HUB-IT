@@ -25,6 +25,11 @@ const resolveStickerPacksScope = (options) => (
   `${String(options?.userId || 'anon')}::${getSelectedDatabaseScopePart() || 'default'}`
 );
 
+// Та же scope-формула для единого sticker store (lib/chatStickerStore):
+// ключ склеивает пользователя и выбранную БД — чужой scope никогда не
+// получает данные другого контекста.
+export const resolveStickerScope = (options) => resolveStickerPacksScope(options);
+
 export const peekStickerPacksCache = (options) => (
   stickerPacksCacheByScope.get(resolveStickerPacksScope(options)) || null
 );

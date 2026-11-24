@@ -4,6 +4,7 @@ import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { chatStickersAPI } from '../../api/chatStickers';
+import { invalidateChatStickerStore } from '../../lib/chatStickerStore';
 import ChatStickerSuggestions from './ChatStickerSuggestions';
 
 const stickerEpochRef = { value: 0 };
@@ -26,6 +27,9 @@ vi.mock('../../api/chatStickers', () => {
     peekStickerPacksCache: vi.fn(() => null),
     primeStickerPacksCache: vi.fn((scope, payload) => payload),
     invalidateStickerPacksCache: vi.fn(() => { stickerEpochRef.value += 1; }),
+    resolveStickerScope: vi.fn((options) => (
+      `${String(options?.userId || 'anon')}::${String(window.localStorage.getItem('selected_database') || 'default')}`
+    )),
   };
 });
 
@@ -91,6 +95,7 @@ describe('ChatStickerSuggestions', () => {
     vi.clearAllMocks();
     stickerEpochRef.value = 0;
     window.localStorage.clear();
+    invalidateChatStickerStore();
     chatStickersAPI.listPacks.mockResolvedValue({ items: [packA, packB] });
     chatStickersAPI.listFavorites.mockResolvedValue({ items: [] });
     chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [] });
@@ -255,6 +260,8 @@ describe('ChatStickerSuggestions', () => {
 
     await act(async () => {});
     expect(screen.queryByTestId('chat-sticker-suggestions')).not.toBeInTheDocument();
-    expect(chatStickersAPI.listPacks).toHaveBeenCalled();
+    // Выключенная фича не должна будить каталог — запросов нет вообще.
+    expect(chatStickersAPI.listPacks).not.toHaveBeenCalled();
+    expect(chatStickersAPI.listFavorites).not.toHaveBeenCalled();
   });
 });

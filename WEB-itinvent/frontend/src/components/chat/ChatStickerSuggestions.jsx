@@ -1,7 +1,8 @@
 // Полоса подсказок стикеров над композером (Telegram Desktop parity):
 // пока последний токен ввода — эмодзи, предлагает подходящие стикеры
-// из «недавних», «избранных» и наборов. Каталог грузится лениво по
-// первому эмодзи-токену и дальше живёт на кэше listPacks.
+// из «недавних», «избранных» и наборов. Данные и поисковый индекс —
+// из единого scoped store (lib/chatStickerStore): каталог грузится
+// лениво по первому эмодзи-токену и разделяется с вкладкой стикеров.
 import {
   forwardRef,
   memo,
@@ -11,37 +12,29 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import { Box } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 
-import { chatStickersAPI, scheduleRecentStickersSync } from '../../api/chatStickers';
+import {
+  ensureChatStickerData,
+  getStickerSearchIndex,
+  peekStickerScopeRecord,
+  rememberRecentSticker,
+  subscribeChatStickerStore,
+} from '../../lib/chatStickerStore';
 import ChatStickerThumbnail from './ChatStickerThumbnail';
 import {
-  buildRecentStorageKey,
-  buildStickerSearchIndex,
-  CHAT_STICKER_RECENTS_EVENT,
   collectStickerSuggestions,
-  notifyStickerRecentsChanged,
-  readRecentStickerIds,
   readStickerSuggestionsEnabled,
-  rememberRecentStickerId,
   STICKER_SUGGESTIONS_EVENT,
 } from './stickerSearchIndex';
 
 const SUGGESTION_LIMIT = 12;
 const THUMB_SIZE = 40;
 const BUTTON_SIZE = 46;
-
-// Частичные моки API в тестах могут не иметь метода — падение промиса
-// просто означает «нет данных», полоса тогда не показывается.
-const safeApiCall = (call) => {
-  try {
-    return Promise.resolve(call()).catch(() => null);
-  } catch {
-    return Promise.resolve(null);
-  }
-};
+const EMPTY_SEARCH_INDEX = [];
 
 const ChatStickerSuggestions = memo(forwardRef(function ChatStickerSuggestions({
   theme,
@@ -52,10 +45,15 @@ const ChatStickerSuggestions = memo(forwardRef(function ChatStickerSuggestions({
   currentUserId = null,
   onStickerSent,
 }, ref) {
-  const recentStorageKey = useMemo(() => buildRecentStorageKey(currentUserId), [currentUserId]);
+  const stickerScope = useMemo(() => ({ userId: currentUserId }), [currentUserId]);
+  // Узкая подписка: dv растёт только при смене массивов данных — статусные
+  // флипы загрузки (loading/error) полосу не перерендеривают.
+  const stickerDataVersion = useSyncExternalStore(
+    subscribeChatStickerStore,
+    useCallback(() => peekStickerScopeRecord(stickerScope).dv, [stickerScope]),
+  );
+  const scopeKey = peekStickerScopeRecord(stickerScope).key;
   const [enabled, setEnabled] = useState(() => readStickerSuggestionsEnabled());
-  const [catalog, setCatalog] = useState(null);
-  const [recentStickerIds, setRecentStickerIds] = useState(() => readRecentStickerIds(recentStorageKey));
   // Dismissed-токен: Esc прячет полосу, пока токен не исчез/не сменился.
   const [dismissedToken, setDismissedToken] = useState('');
   // -1 — фокус в тексте; ↑ переносит выбор на полосу (как в TDesktop).
@@ -69,73 +67,32 @@ const ChatStickerSuggestions = memo(forwardRef(function ChatStickerSuggestions({
     return () => window.removeEventListener(STICKER_SUGGESTIONS_EVENT, syncSetting);
   }, []);
 
-  // Ленивая загрузка каталога: запрос идёт только когда появился первый
-  // эмодзи-токен. Каталог привязан к пользователю — смена аккаунта его
-  // перечитывает.
+  // Ленивая загрузка каталога: запрос идёт только при включённой
+  // настройке и появившемся первом эмодзи-токене. Каталог привязан к
+  // scope — смена аккаунта перечитывает его через новый ключ.
   useEffect(() => {
-    if (!emojiToken || (catalog && catalog.userId === (currentUserId ?? null))) return undefined;
-    let cancelled = false;
-    const scope = { userId: currentUserId };
-    Promise.all([
-      safeApiCall(() => chatStickersAPI.listPacks(scope)),
-      safeApiCall(() => chatStickersAPI.listFavorites(scope)),
-    ]).then(([packsPayload, favoritesPayload]) => {
-      if (cancelled) return;
-      setCatalog({
-        userId: currentUserId ?? null,
-        packs: Array.isArray(packsPayload?.items) ? packsPayload.items : [],
-        favorites: Array.isArray(favoritesPayload?.items) ? favoritesPayload.items : [],
-      });
-    });
-    return () => { cancelled = true; };
-  }, [emojiToken, catalog, currentUserId]);
-
-  // Импорт/удаление наборов инвалидирует каталог — следующий токен
-  // подтянет свежий список.
-  useEffect(() => {
-    const invalidate = () => setCatalog(null);
-    window.addEventListener('chat-sticker-packs-changed', invalidate);
-    return () => window.removeEventListener('chat-sticker-packs-changed', invalidate);
-  }, []);
-
-  useEffect(() => {
-    setRecentStickerIds(readRecentStickerIds(recentStorageKey));
-  }, [recentStorageKey]);
-
-  useEffect(() => {
-    const syncRecents = (event) => {
-      const detailKey = String(event?.detail?.storageKey || '');
-      if (detailKey && detailKey !== recentStorageKey) return;
-      setRecentStickerIds(readRecentStickerIds(recentStorageKey));
-    };
-    window.addEventListener(CHAT_STICKER_RECENTS_EVENT, syncRecents);
-    return () => window.removeEventListener(CHAT_STICKER_RECENTS_EVENT, syncRecents);
-  }, [recentStorageKey]);
+    if (!enabled || !emojiToken) return;
+    ensureChatStickerData(stickerScope);
+  }, [enabled, emojiToken, stickerScope]);
 
   useEffect(() => {
     setDismissedToken('');
     setActiveIndex(-1);
   }, [emojiToken]);
 
-  const suggestions = useMemo(() => {
-    if (!emojiToken || !catalog) return [];
-    const stickersById = new Map([
-      ...catalog.favorites.map((sticker) => [String(sticker?.id || ''), sticker]),
-      ...catalog.packs.flatMap((pack) => (pack?.stickers || []).map((sticker) => [
-        String(sticker?.id || ''),
-        sticker?.pack_short_name ? sticker : { ...sticker, pack_short_name: pack.short_name },
-      ])),
-    ]);
-    const recentStickers = recentStickerIds
-      .map((stickerId) => stickersById.get(stickerId))
-      .filter(Boolean);
-    const sections = [
-      { id: 'recent', title: 'Недавние', stickers: recentStickers, recent: true },
-      { id: 'favorites', title: 'Избранные', stickers: catalog.favorites, favorites: true },
-      ...catalog.packs,
-    ];
-    return collectStickerSuggestions(buildStickerSearchIndex(sections), emojiToken, SUGGESTION_LIMIT);
-  }, [emojiToken, catalog, recentStickerIds]);
+  // Стабильный индекс из store: строится один раз на поколение данных и
+  // разделяется с вкладкой. Работа на каждый токен — только дешёвый
+  // lookup по готовому индексу.
+  const searchIndex = useMemo(
+    () => (emojiToken ? getStickerSearchIndex(scopeKey) : EMPTY_SEARCH_INDEX),
+    // stickerDataVersion — триггер пересчёта при смене данных scope.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [emojiToken, scopeKey, stickerDataVersion],
+  );
+  const suggestions = useMemo(
+    () => collectStickerSuggestions(searchIndex, emojiToken, SUGGESTION_LIMIT),
+    [searchIndex, emojiToken],
+  );
 
   const visible = enabled
     && Boolean(emojiToken)
@@ -150,16 +107,15 @@ const ChatStickerSuggestions = memo(forwardRef(function ChatStickerSuggestions({
     try {
       const sent = await onSendSticker?.(sticker);
       if (sent === false) return;
-      const nextIds = rememberRecentStickerId(recentStorageKey, stickerId);
-      scheduleRecentStickersSync(nextIds, recentStorageKey);
-      setRecentStickerIds(nextIds);
-      notifyStickerRecentsChanged(recentStorageKey);
+      // «Недавние» — через store: вкладка стикеров (и поповер, и док)
+      // видит обновление без событий и повторных чтений localStorage.
+      rememberRecentSticker(scopeKey, stickerId);
       setActiveIndex(-1);
       onStickerSent?.();
     } finally {
       sendingRef.current.delete(stickerId);
     }
-  }, [onSendSticker, recentStorageKey, onStickerSent]);
+  }, [onSendSticker, scopeKey, onStickerSent]);
 
   // Клавиатура идёт из композера: ↑ входит в полосу, ←/→ ходят по
   // стикерам, Enter/Tab отправляют выбранный, ↓ возвращает фокус в текст,

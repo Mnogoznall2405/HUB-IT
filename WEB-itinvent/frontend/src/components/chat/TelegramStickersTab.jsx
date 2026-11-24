@@ -1,4 +1,4 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   Alert,
   Box,
@@ -34,25 +34,28 @@ import {
   cancelRecentStickersSync,
   chatStickersAPI,
   getStickerPacksEpoch,
-  invalidateStickerPacksCache,
-  peekStickerPacksCache,
-  primeStickerPacksCache,
-  scheduleRecentStickersSync,
 } from '../../api/chatStickers';
+import {
+  applyStickerPacks,
+  clearRecentStickers,
+  ensureChatStickerData,
+  getStickerScopeDerived,
+  getStickerSearchIndex,
+  peekStickerScopeRecord,
+  rememberRecentSticker as rememberRecentStickerInStore,
+  removeRecentSticker,
+  setStickerPackItems,
+  subscribeChatStickerStore,
+  toggleFavoriteSticker as toggleFavoriteStickerInStore,
+} from '../../lib/chatStickerStore';
 import ChatStickerManageDialog from './ChatStickerManageDialog';
 import ChatStickerMedia from './ChatStickerMedia';
 import ChatStickerThumbnail from './ChatStickerThumbnail';
 import {
-  buildRecentStorageKey,
-  buildStickerSearchIndex,
   normalizeStickerSearchQuery,
-  notifyStickerRecentsChanged,
-  readRecentStickerIds,
   readStickerSuggestionsEnabled,
-  RECENT_STICKERS_LIMIT,
   searchStickerIndex,
   STICKER_SUGGESTIONS_EVENT,
-  writeRecentStickerIds,
   writeStickerSuggestionsEnabled,
 } from './stickerSearchIndex';
 import {
@@ -82,24 +85,31 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   onSendSticker,
   dense = false,
   currentUserId = null,
+  // Видимость — сигнал для ленивой загрузки: keep-alive монтирует вкладку
+  // скрытой (display:none), и сетевых запросов до первого показа быть не
+  // должно. Прямое использование без пропа считается видимым.
+  visible = true,
 }) {
-  const recentStorageKey = useMemo(() => buildRecentStorageKey(currentUserId), [currentUserId]);
-  const cacheScope = useMemo(() => ({ userId: currentUserId }), [currentUserId]);
-  const [packs, setPacks] = useState(() => {
-    const cached = peekStickerPacksCache(cacheScope);
-    return Array.isArray(cached?.items) ? cached.items : [];
-  });
-  const [activeSectionId, setActiveSectionId] = useState('recent');
-  const [recentStickerIds, setRecentStickerIds] = useState(() => readRecentStickerIds(recentStorageKey));
+  // Все данные стикеров — из единого scoped store: поповер и док
+  // разделяют наборы/избранное/недавние, мутации видны всем мгновенно.
+  const stickerScope = useMemo(() => ({ userId: currentUserId }), [currentUserId]);
+  const stickerRecord = useSyncExternalStore(
+    subscribeChatStickerStore,
+    useCallback(() => peekStickerScopeRecord(stickerScope), [stickerScope]),
+  );
+  const scopeKey = stickerRecord.key;
+  const recentStorageKey = stickerRecord.storageKey;
+  const packs = stickerRecord.packs.items;
+  const packsStatus = stickerRecord.packs.status;
   // Избранное приходит с сервера полными объектами — у стикера может
   // не быть установленного набора, поэтому резолв через stickersById
   // здесь невозможен, в отличие от «недавних».
-  const [favoriteStickers, setFavoriteStickers] = useState([]);
+  const favoriteStickers = stickerRecord.favorites.items;
+  const recentStickerIds = stickerRecord.recents.ids;
+  const [activeSectionId, setActiveSectionId] = useState('recent');
   // { sticker, left, top } — меню привязывается к курсору (anchorPosition),
   // а не к кнопке, как в Telegram Desktop.
   const [stickerMenu, setStickerMenu] = useState(null);
-  const [loading, setLoading] = useState(() => !Array.isArray(peekStickerPacksCache(cacheScope)?.items));
-  const [loadError, setLoadError] = useState('');
   const [importOpen, setImportOpen] = useState(false);
   // «Управление наборами» — диалог со списком, удалением и DnD-порядком.
   const [manageOpen, setManageOpen] = useState(false);
@@ -167,23 +177,27 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   }, [closeHoldPreview, previewSticker]);
 
   const applyPackPayload = useCallback((payload, preferredPackId = '', requestEpoch) => {
-    // requestEpoch — эпоха кэша на момент старта запроса. Если за время
-    // запроса кэш инвалидировали (logout, смена аккаунта, импорт), ответ
-    // устарел: ни кэш, ни состояние трогать нельзя.
-    if (requestEpoch !== undefined && requestEpoch !== getStickerPacksEpoch()) return;
+    // requestEpoch — эпоха API-кэша на момент старта запроса. Если за
+    // время запроса кэш инвалидировали (logout, смена аккаунта, импорт),
+    // payload устарел: store его отбрасывает и состояние не трогаем.
+    if (!applyStickerPacks(scopeKey, payload, requestEpoch)) return;
     const nextPacks = Array.isArray(payload?.items) ? payload.items : [];
-    primeStickerPacksCache(cacheScope, payload, requestEpoch);
-    setPacks(nextPacks);
     const preferred = String(preferredPackId || '').trim();
     if (preferred && nextPacks.some((item) => item.id === preferred)) {
       setActiveSectionId(preferred);
       pendingScrollSectionRef.current = preferred;
     }
-  }, [cacheScope]);
+  }, [scopeKey]);
 
+  // Ленивая загрузка: сетевые запросы идут только когда вкладка реально
+  // видима (активная вкладка «Стикеры» в показанной панели/доке) либо
+  // когда данные уже запросила полоса подсказок — прогретая скрытая
+  // вкладка сети не касается. Повторный вызов — дешёвый no-op: store
+  // дедуплицирует по статусу и in-flight.
   useEffect(() => {
-    setRecentStickerIds(readRecentStickerIds(recentStorageKey));
-  }, [recentStorageKey]);
+    if (!visible) return;
+    ensureChatStickerData(stickerScope);
+  }, [visible, stickerScope]);
 
   // Отмена без flush при размонтировании и смене аккаунта: в очереди список
   // прежнего пользователя — слать его под чужой сессией нельзя, а локальная
@@ -191,146 +205,28 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   // поверхностей отправки (api/chatStickers), scope — ключ хранилища.
   useEffect(() => () => cancelRecentStickersSync(recentStorageKey), [recentStorageKey]);
 
-  // Серверные «недавние» выигрывают у локального кэша. Локальную копию
-  // поднимаем наверх только когда сервер ещё не синхронизировался
-  // (version === 0 — миграция с localStorage-only версии). Пустой список
-  // при version > 0 — сознательная очистка на этом или другом устройстве:
-  // merge-синк иначе воскрешал бы удалённые стикеры при каждом открытии.
-  useEffect(() => {
-    let cancelled = false;
-    chatStickersAPI.listRecentStickers()
-      .then((payload) => {
-        if (cancelled) return;
-        const serverIds = (Array.isArray(payload?.items) ? payload.items : [])
-          .map((item) => String(item?.id || '').trim())
-          .filter(Boolean)
-          .slice(0, RECENT_STICKERS_LIMIT);
-        if (serverIds.length > 0) {
-          setRecentStickerIds(serverIds);
-          writeRecentStickerIds(recentStorageKey, serverIds);
-          notifyStickerRecentsChanged(recentStorageKey);
-          return;
-        }
-        const serverVersion = Number(payload?.version) || 0;
-        if (serverVersion === 0) {
-          const localIds = readRecentStickerIds(recentStorageKey);
-          if (localIds.length > 0) scheduleRecentStickersSync(localIds, recentStorageKey);
-          return;
-        }
-        // Серверный rail явно пуст — локальный кэш тоже чистим, иначе
-        // старые id показывались бы до следующего удачного GET.
-        if (readRecentStickerIds(recentStorageKey).length > 0) {
-          setRecentStickerIds([]);
-          writeRecentStickerIds(recentStorageKey, []);
-          notifyStickerRecentsChanged(recentStorageKey);
-        }
-      })
-      .catch(() => {
-        // Офлайн/старый backend — остаёмся на localStorage-копии.
-      });
-    return () => { cancelled = true; };
-  }, [recentStorageKey]);
-
-  // Избранное грузится параллельно наборам: секция рендерится сразу,
-  // стикеры появляются по готовности.
-  useEffect(() => {
-    let cancelled = false;
-    chatStickersAPI.listFavorites(cacheScope)
-      .then((payload) => {
-        if (!cancelled) setFavoriteStickers(Array.isArray(payload?.items) ? payload.items : []);
-      })
-      .catch(() => {
-        // Избранное недоступно (офлайн/старый backend) — секция остаётся пустой.
-      });
-    return () => { cancelled = true; };
-  }, [cacheScope]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const requestEpoch = getStickerPacksEpoch();
-    // При тёплом кэше спиннер не показываем — список уже отрисован.
-    if (!Array.isArray(peekStickerPacksCache(cacheScope)?.items)) setLoading(true);
-    setLoadError('');
-    chatStickersAPI.listPacks(cacheScope)
-      .then((payload) => {
-        if (!cancelled) applyPackPayload(payload, '', requestEpoch);
-      })
-      .catch((error) => {
-        if (!cancelled) setLoadError(getApiError(error, 'Не удалось загрузить наборы стикеров.'));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [applyPackPayload]);
-
-  useEffect(() => {
-    const refreshPacks = () => {
-      invalidateStickerPacksCache();
-      const requestEpoch = getStickerPacksEpoch();
-      chatStickersAPI.listPacks({ ...cacheScope, force: true })
-        .then((payload) => applyPackPayload(payload, '', requestEpoch))
-        .catch(() => {});
-    };
-    window.addEventListener('chat-sticker-packs-changed', refreshPacks);
-    return () => window.removeEventListener('chat-sticker-packs-changed', refreshPacks);
-  }, [applyPackPayload]);
-
   useEffect(() => {
     if (!importOpen) return;
     const frame = window.requestAnimationFrame(() => sourceInputRef.current?.focus?.());
     return () => window.cancelAnimationFrame(frame);
   }, [importOpen]);
 
-  // Избранное идёт первым источником, наборы перезаписывают совпадения —
-  // так «недавние» резолвятся даже для стикеров из удалённых наборов.
-  const stickersById = useMemo(
-    () => new Map(
-      [
-        ...favoriteStickers.map((sticker) => [String(sticker.id), sticker]),
-        ...packs.flatMap((pack) => (pack.stickers || []).map((sticker) => [
-          String(sticker.id),
-          sticker.pack_short_name ? sticker : { ...sticker, pack_short_name: pack.short_name },
-        ])),
-      ],
-    ),
-    [packs, favoriteStickers],
-  );
-  const recentStickers = useMemo(
-    () => recentStickerIds.map((stickerId) => stickersById.get(stickerId)).filter(Boolean),
-    [recentStickerIds, stickersById],
-  );
+  // Секции и резолв «недавних» — общая производная store (один проход на
+  // смену данных, разделяемый вкладкой и подсказками).
+  const { stickerSections } = getStickerScopeDerived(scopeKey);
   const favoriteStickerIds = useMemo(
     () => new Set(favoriteStickers.map((item) => String(item?.id || ''))),
     [favoriteStickers],
   );
-  const stickerSections = useMemo(
-    () => [
-      { id: 'recent', title: 'Недавние', stickers: recentStickers, recent: true },
-      { id: 'favorites', title: 'Избранные', stickers: favoriteStickers, favorites: true },
-      ...packs.map((pack) => ({
-        ...pack,
-        stickers: (pack.stickers || []).map((sticker) => (
-          sticker.pack_short_name ? sticker : { ...sticker, pack_short_name: pack.short_name }
-        )),
-        recent: false,
-      })),
-    ],
-    [packs, recentStickers, favoriteStickers],
-  );
 
   // Поиск по уже загруженным секциям: deferred-запрос не блокирует ввод.
-  // Индекс строится лениво — только при непустом запросе: на монтировании
-  // скрытой вкладки (прогрев дока) он раньше пересчитывался до четырёх раз
-  // подряд (packs/favorites/recents приходят по отдельности) и каждый проход
-  // гонял ~113 стикеров по словарю ключевых слов внутри render'а.
+  // Индекс строится лениво в store — один раз на смену данных и общий для
+  // вкладки и подсказок (раньше каждая поверхность гоняла свою копию по
+  // словарю ключевых слов внутри render'а).
   const [searchQuery, setSearchQuery] = useState(() => persistedStickerSearchQuery);
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const isSearching = Boolean(normalizeStickerSearchQuery(deferredSearchQuery));
-  const stickerSearchIndex = useMemo(
-    () => (isSearching ? buildStickerSearchIndex(stickerSections) : null),
-    [isSearching, stickerSections],
-  );
+  const stickerSearchIndex = isSearching ? getStickerSearchIndex(scopeKey) : null;
   const searchResults = useMemo(
     () => searchStickerIndex(stickerSearchIndex, deferredSearchQuery),
     [stickerSearchIndex, deferredSearchQuery],
@@ -509,55 +405,31 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   }, [stickerSections.length]);
 
   const rememberRecentSticker = useCallback((stickerId) => {
-    const normalizedStickerId = String(stickerId || '').trim();
-    if (!normalizedStickerId) return;
-    setRecentStickerIds((current) => {
-      const next = [normalizedStickerId, ...current.filter((item) => item !== normalizedStickerId)]
-        .slice(0, RECENT_STICKERS_LIMIT);
-      writeRecentStickerIds(recentStorageKey, next);
-      scheduleRecentStickersSync(next, recentStorageKey);
-      notifyStickerRecentsChanged(recentStorageKey);
-      return next;
-    });
-  }, [recentStorageKey]);
+    rememberRecentStickerInStore(scopeKey, stickerId);
+  }, [scopeKey]);
 
   const forgetRecentSticker = useCallback((stickerId) => {
     const normalizedStickerId = String(stickerId || '').trim();
     if (!normalizedStickerId) return;
     // Явное удаление — полная замена (clear:true) без дебаунса: merge-синк
     // сохранил бы отсутствующий в payload стикер хвостом серверного списка.
-    // Очередь дебаунса отменяем до PUT — иначе устаревший список вернул бы
-    // удалённый стикер обратно уже после замены.
-    const next = readRecentStickerIds(recentStorageKey)
-      .filter((item) => item !== normalizedStickerId);
-    setRecentStickerIds(next);
-    writeRecentStickerIds(recentStorageKey, next);
-    notifyStickerRecentsChanged(recentStorageKey);
-    cancelRecentStickersSync(recentStorageKey);
-    chatStickersAPI.pushRecentStickers(next, { clear: true }).catch(() => {
+    // Очередь дебаунса store отменяет до PUT — иначе устаревший список
+    // вернул бы удалённый стикер обратно уже после замены.
+    void removeRecentSticker(scopeKey, normalizedStickerId).then((result) => {
       // Локальная копия уже актуальна — сервер догонит при следующей записи.
-      setStatusText('Не удалось обновить список недавних стикеров.');
+      if (result?.ok === false) setStatusText('Не удалось обновить список недавних стикеров.');
     });
-  }, [recentStorageKey]);
+  }, [scopeKey]);
 
-  const clearRecentStickers = useCallback(() => {
-    // Отложенный дебаунс-синк отменяем до немедленного PUT — иначе
-    // устаревший список улетел бы на сервер уже после очистки.
-    cancelRecentStickersSync(recentStorageKey);
-    setRecentStickerIds((current) => {
-      if (current.length === 0) return current;
-      writeRecentStickerIds(recentStorageKey, []);
-      notifyStickerRecentsChanged(recentStorageKey);
-      return [];
-    });
-    // clear:true — полная замена: без него merge-семантика сервера оставила бы
-    // хвост из записей, которых нет в локальном (пустом) списке.
-    chatStickersAPI.pushRecentStickers([], { clear: true }).catch(() => {
+  const clearRecentStickersAction = useCallback(() => {
+    // clear:true — полная замена: без неё merge-семантика сервера оставила
+    // бы хвост из записей, которых нет в локальном (пустом) списке.
+    void clearRecentStickers(scopeKey).then((result) => {
       // Локальный список уже пуст — серверный догонит при следующей
       // успешной записи, пользователю показываем только статус.
-      setStatusText('Не удалось очистить список недавних стикеров.');
+      if (result?.ok === false) setStatusText('Не удалось очистить список недавних стикеров.');
     });
-  }, [recentStorageKey]);
+  }, [scopeKey]);
 
   const handleImportSubmit = useCallback(async (event) => {
     event.preventDefault();
@@ -711,36 +583,21 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     void handleStickerClick(sticker);
   }, [clearHoldTimer, closeHoldPreview, handleStickerClick]);
 
-  // Избранное обновляется оптимистично; при ошибке — точечный откат,
-  // чтобы не затирать параллельные изменения, и сообщение в статус-строку.
+  // Избранное обновляется оптимистично через store — обе смонтированные
+  // вкладки и подсказки видят его мгновенно; при ошибке store делает
+  // точечный откат только провалившейся операции, здесь — статус-строка.
   const toggleFavoriteSticker = useCallback(async (sticker) => {
     const stickerId = String(sticker?.id || '').trim();
     if (!stickerId) return;
     setStatusText('');
-    if (favoriteStickerIds.has(stickerId)) {
-      setFavoriteStickers((current) => current.filter((item) => String(item?.id) !== stickerId));
-      try {
-        const payload = await chatStickersAPI.removeFavoriteSticker(stickerId);
-        if (Array.isArray(payload?.items)) setFavoriteStickers(payload.items);
-      } catch (error) {
-        setFavoriteStickers((current) => (
-          current.some((item) => String(item?.id) === stickerId) ? current : [...current, sticker]
-        ));
-        setStatusText(getApiError(error, 'Не удалось убрать стикер из избранных.'));
-      }
-      return;
+    const wasFavorite = favoriteStickerIds.has(stickerId);
+    const result = await toggleFavoriteStickerInStore(scopeKey, sticker);
+    if (!result?.ok && !result?.dropped) {
+      setStatusText(getApiError(result?.error, wasFavorite
+        ? 'Не удалось убрать стикер из избранных.'
+        : 'Не удалось добавить стикер в избранное.'));
     }
-    setFavoriteStickers((current) => (
-      current.some((item) => String(item?.id) === stickerId) ? current : [...current, sticker]
-    ));
-    try {
-      const payload = await chatStickersAPI.addFavoriteSticker(stickerId);
-      if (Array.isArray(payload?.items)) setFavoriteStickers(payload.items);
-    } catch (error) {
-      setFavoriteStickers((current) => current.filter((item) => String(item?.id) !== stickerId));
-      setStatusText(getApiError(error, 'Не удалось добавить стикер в избранное.'));
-    }
-  }, [favoriteStickerIds]);
+  }, [favoriteStickerIds, scopeKey]);
 
   const menuStickerId = String(stickerMenu?.sticker?.id || '').trim();
   const menuStickerIsFavorite = Boolean(menuStickerId) && favoriteStickerIds.has(menuStickerId);
@@ -774,8 +631,8 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
 
   const handleMenuClearRecents = useCallback(() => {
     closeStickerMenu();
-    clearRecentStickers();
-  }, [closeStickerMenu, clearRecentStickers]);
+    clearRecentStickersAction();
+  }, [closeStickerMenu, clearRecentStickersAction]);
 
   const handleManageOpenPack = useCallback((pack) => {
     const packId = String(pack?.id || '').trim();
@@ -792,7 +649,8 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
 
   // Удаление набора: исключение уходит в диалог (он показывает ошибку),
   // поэтому здесь без catch. Ответ {ok} списка не содержит — локальный
-  // фильтр + прайм кэша дешевле повторного GET.
+  // фильтр + прайм кэша дешевле повторного GET. Параллельно смонтированные
+  // вкладки и подсказки получают список через store без событий и рефетча.
   const handleRemovePack = useCallback(async (pack) => {
     const packId = String(pack?.id || '').trim();
     if (!packId) return;
@@ -801,8 +659,6 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     const nextPacks = packs.filter((item) => String(item?.id) !== packId);
     applyPackPayload({ items: nextPacks }, '', requestEpoch);
     setStatusText(`Набор «${pack?.title || 'стикеров'}» удалён.`);
-    // Параллельно смонтированные вкладки (поповер + док) подтянут список.
-    window.dispatchEvent(new CustomEvent('chat-sticker-packs-changed'));
   }, [applyPackPayload, packs]);
 
   // Порядок из диалога применяем оптимистично; ответ сервера (полный
@@ -814,22 +670,21 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     if (nextIds.length === 0) return;
     const previousPacks = packs;
     const packsById = new Map(previousPacks.map((item) => [String(item?.id), item]));
-    setPacks([
+    setStickerPackItems(scopeKey, [
       ...nextIds.map((id) => packsById.get(id)).filter(Boolean),
       ...previousPacks.filter((item) => !nextIds.includes(String(item?.id))),
     ]);
     try {
       const payload = await chatStickersAPI.setPackOrder(nextIds);
       applyPackPayload(payload, '', getStickerPacksEpoch());
-      window.dispatchEvent(new CustomEvent('chat-sticker-packs-changed'));
     } catch (error) {
       // setPackOrder инвалидирует кэш только после успеха — при отказе
       // серверный порядок не менялся, локальный откат безопасен.
-      setPacks(previousPacks);
+      setStickerPackItems(scopeKey, previousPacks);
       setStatusText(getApiError(error, 'Не удалось изменить порядок наборов.'));
       throw error;
     }
-  }, [applyPackPayload, packs]);
+  }, [applyPackPayload, packs, scopeKey]);
 
   // Одна и та же ячейка используется и в обычных секциях, и в результатах
   // поиска — обработчики (клик, hold-preview, контекстное меню) общие.
@@ -897,6 +752,13 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   const accent = ui.accentText || theme.palette.primary.main;
   const border = ui.borderSoft || theme.palette.divider;
   const panelBg = ui.composerBg || ui.panelBg || theme.palette.background.paper;
+
+  // Спиннер — пока срез наборов не загружен ни разу. При тёплом кэше
+  // запись стартует уже в 'ready' и повторное открытие идёт без спиннера.
+  const loading = packsStatus === 'idle' || packsStatus === 'loading';
+  const loadError = packsStatus === 'error'
+    ? getApiError(stickerRecord.packs.error, 'Не удалось загрузить наборы стикеров.')
+    : '';
 
   if (loading) {
     return (

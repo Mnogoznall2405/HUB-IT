@@ -47,9 +47,13 @@ vi.mock('../../api/chatStickers', () => ({
   },
   scheduleRecentStickersSync: vi.fn(),
   cancelRecentStickersSync: vi.fn(),
+  getStickerPacksEpoch: vi.fn(() => 0),
   peekStickerPacksCache: vi.fn(() => null),
   primeStickerPacksCache: vi.fn((scope, payload) => payload),
   invalidateStickerPacksCache: vi.fn(),
+  resolveStickerScope: vi.fn((options) => (
+    `${String(options?.userId || 'anon')}::${String(window.localStorage.getItem('selected_database') || 'default')}`
+  )),
 }));
 
 vi.mock('./useAiAgentAccess', () => ({
