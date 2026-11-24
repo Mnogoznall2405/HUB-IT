@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
@@ -9,6 +9,8 @@ import FileCopyOutlinedIcon from '@mui/icons-material/FileCopyOutlined';
 import GroupAddOutlinedIcon from '@mui/icons-material/GroupAddOutlined';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
+import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
 import RestoreRoundedIcon from '@mui/icons-material/RestoreRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded';
@@ -20,6 +22,7 @@ import StarRoundedIcon from '@mui/icons-material/StarRounded';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { Divider, ListItemIcon, ListItemText, ListSubheader, Menu, MenuItem } from '@mui/material';
 
+import NestedMenuItem, { SUBMENU_SWITCH_DELAY_MS } from './NestedMenuItem';
 import {
   isDesktopCapabilityAvailable,
   requestDesktopDownloadedFileAction,
@@ -79,6 +82,7 @@ export default function FileActionsContextMenu({
   onMove,
   onCopyTo,
   onDelete,
+  deleteLabel = 'Удалить',
   onSelectAll,
   onToggleFavorite,
   isFavorite = false,
@@ -89,6 +93,8 @@ export default function FileActionsContextMenu({
 }) {
   const [requestingAction, setRequestingAction] = useState('');
   const [openIntentMessage, setOpenIntentMessage] = useState('');
+  const [openSubmenu, setOpenSubmenu] = useState('');
+  const submenuCloseTimer = useRef(null);
   const nativeShell = isNativeShellRuntime();
   const nativeFileActions = nativeShell && isDesktopCapabilityAvailable('file-actions-v2');
   const canOpenInApplication = Boolean(
@@ -103,8 +109,25 @@ export default function FileActionsContextMenu({
     if (!open) {
       setRequestingAction('');
       setOpenIntentMessage('');
+      setOpenSubmenu('');
+      clearTimeout(submenuCloseTimer.current);
+      submenuCloseTimer.current = null;
     }
   }, [fileName, open]);
+
+  // Hovering a plain (leaf) row while a flyout is open closes it — with the
+  // same intent delay, so a diagonal pointer path into the flyout survives.
+  const cancelSubmenuClose = useCallback(() => {
+    clearTimeout(submenuCloseTimer.current);
+    submenuCloseTimer.current = null;
+  }, []);
+  const scheduleSubmenuClose = useCallback(() => {
+    cancelSubmenuClose();
+    submenuCloseTimer.current = setTimeout(() => {
+      submenuCloseTimer.current = null;
+      setOpenSubmenu('');
+    }, SUBMENU_SWITCH_DELAY_MS);
+  }, [cancelSubmenuClose]);
 
   const runDownload = async (action = '') => {
     if (action) {
@@ -133,6 +156,115 @@ export default function FileActionsContextMenu({
 
   const actionBusy = Boolean(busy || requestingAction);
 
+  // `topLevel` marks rows of the parent menu: hovering one schedules the open
+  // flyout's close. Rows inside a flyout keep it (and its parent) alone.
+  const leaf = (key, testId, disabled, onClick, icon, text, sx = null, topLevel = false) => (
+    <MenuItem
+      key={key}
+      data-testid={testId}
+      disabled={disabled}
+      onClick={onClick}
+      onMouseEnter={topLevel ? scheduleSubmenuClose : undefined}
+      onMouseLeave={topLevel ? cancelSubmenuClose : undefined}
+      sx={{ minHeight: 40, ...(sx || {}) }}
+    >
+      <ListItemIcon>{icon}</ListItemIcon>
+      <ListItemText>{text}</ListItemText>
+    </MenuItem>
+  );
+
+  const shareItems = [
+    typeof onCollaborators === 'function'
+      ? leaf('collaborators', 'file-action-collaborators', actionBusy, () => runDirectAction(onCollaborators),
+        <GroupAddOutlinedIcon fontSize="small" />, 'Совместный доступ')
+      : null,
+    typeof onShare === 'function'
+      ? leaf('share', 'file-action-share', actionBusy, () => runDirectAction(onShare),
+        <ShareOutlinedIcon fontSize="small" />, isShared ? 'Копировать ссылку' : 'Поделиться ссылкой')
+      : null,
+    typeof onRevokeShare === 'function'
+      ? leaf('revoke-share', 'file-action-revoke-share', actionBusy, () => runDirectAction(onRevokeShare),
+        <LinkOutlinedIcon fontSize="small" />, 'Отключить ссылку')
+      : null,
+  ].filter(Boolean);
+
+  const organizeItems = [
+    typeof onToggleFavorite === 'function'
+      ? leaf('favorite', 'file-action-favorite', actionBusy, () => runDirectAction(onToggleFavorite),
+        isFavorite
+          ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
+          : <StarOutlineRoundedIcon fontSize="small" />,
+        isFavorite ? 'Убрать из избранного' : 'В избранное')
+      : null,
+    typeof onRename === 'function'
+      ? leaf('rename', 'file-action-rename', actionBusy, () => runDirectAction(onRename),
+        <DriveFileRenameOutlineRoundedIcon fontSize="small" />, 'Переименовать')
+      : null,
+    typeof onMove === 'function'
+      ? leaf('move', 'file-action-move', actionBusy, () => runDirectAction(onMove),
+        <DriveFileMoveOutlinedIcon fontSize="small" />, 'Переместить')
+      : null,
+    typeof onCopyTo === 'function'
+      ? leaf('copy-to', 'file-action-copy-to', actionBusy, () => runDirectAction(onCopyTo),
+        <FileCopyOutlinedIcon fontSize="small" />, 'Копировать в…')
+      : null,
+    canCopyFile
+      ? leaf('copy', 'file-action-copy', actionBusy, () => runDownload('copy'),
+        <ContentCopyRoundedIcon fontSize="small" />, 'Копировать')
+      : null,
+    typeof onSelectAll === 'function'
+      ? leaf('select-all', 'file-action-select-all', actionBusy, () => runDirectAction(onSelectAll),
+        <SelectAllRoundedIcon fontSize="small" />, 'Выделить все')
+      : null,
+  ].filter(Boolean);
+
+  const moreItems = [
+    typeof onDetails === 'function'
+      ? leaf('details', 'file-action-details', actionBusy, () => runDirectAction(onDetails),
+        <InfoOutlinedIcon fontSize="small" />, 'Сведения')
+      : null,
+    typeof onVersions === 'function'
+      ? leaf('versions', 'file-action-versions', actionBusy, () => runDirectAction(onVersions),
+        <RestoreRoundedIcon fontSize="small" />, 'Предыдущие версии')
+      : null,
+    typeof onAudit === 'function'
+      ? leaf('audit', 'file-action-audit', actionBusy, () => runDirectAction(onAudit),
+        <HistoryRoundedIcon fontSize="small" />, 'Журнал')
+      : null,
+    canPrintInApplication
+      ? leaf('quick-print', 'file-action-quick-print', actionBusy, () => runDownload('print'),
+        <PrintRoundedIcon fontSize="small" />, 'Быстрая печать')
+      : null,
+    typeof onExportPdf === 'function'
+      ? leaf('export-pdf', 'file-action-export-pdf', actionBusy, () => runDirectAction(onExportPdf),
+        <PictureAsPdfRoundedIcon fontSize="small" />, 'Скачать как PDF')
+      : null,
+    typeof onSaveAll === 'function'
+      ? leaf('save-all', 'file-action-save-all', actionBusy, () => runDirectAction(onSaveAll),
+        <DownloadRoundedIcon fontSize="small" />, 'Сохранить все вложения…')
+      : null,
+  ].filter(Boolean);
+
+  const group = (id, label, icon, items) => {
+    if (items.length === 0) return null;
+    if (items.length === 1) return items[0];
+    return (
+      <NestedMenuItem
+        key={id}
+        id={id}
+        openSubmenu={openSubmenu}
+        onOpenSubmenu={setOpenSubmenu}
+        onSubmenuEnter={cancelSubmenuClose}
+        label={label}
+        icon={icon}
+        disabled={actionBusy}
+        testId={`file-action-group-${id}`}
+      >
+        {items}
+      </NestedMenuItem>
+    );
+  };
+
   return (
     <Menu
       open={Boolean(open)}
@@ -150,83 +282,18 @@ export default function FileActionsContextMenu({
         },
       }}
     >
-      {typeof onDetails === 'function' ? (
-        <MenuItem
-          data-testid="file-action-details"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onDetails)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><InfoOutlinedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Сведения</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onPreview === 'function' ? (
-        <MenuItem
-          data-testid="file-action-preview"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onPreview)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><VisibilityOutlinedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Просмотр</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onEditOnline === 'function' ? (
-        <MenuItem
-          data-testid="file-action-edit-online"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onEditOnline)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><EditNoteRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>{editOnlineLabel}</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onCollaborators === 'function' ? (
-        <MenuItem
-          data-testid="file-action-collaborators"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onCollaborators)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><GroupAddOutlinedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Совместный доступ</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onVersions === 'function' ? (
-        <MenuItem
-          data-testid="file-action-versions"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onVersions)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><RestoreRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Предыдущие версии</ListItemText>
-        </MenuItem>
-      ) : null}
-      {canOpenInApplication ? (
-        <MenuItem
-          data-testid="file-action-open-in-application"
-          disabled={actionBusy}
-          onClick={() => runDownload('open')}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><OpenInNewRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Открыть</ListItemText>
-        </MenuItem>
-      ) : null}
-      {canPrintInApplication ? (
-        <MenuItem
-          data-testid="file-action-quick-print"
-          disabled={actionBusy}
-          onClick={() => runDownload('print')}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><PrintRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Быстрая печать</ListItemText>
-        </MenuItem>
-      ) : null}
+      {typeof onPreview === 'function' ? leaf('preview', 'file-action-preview', actionBusy,
+        () => runDirectAction(onPreview), <VisibilityOutlinedIcon fontSize="small" />, 'Просмотр', null, true) : null}
+      {canOpenInApplication ? leaf('open-in-application', 'file-action-open-in-application', actionBusy,
+        () => runDownload('open'), <OpenInNewRoundedIcon fontSize="small" />, 'Открыть', null, true) : null}
+      {typeof onEditOnline === 'function' ? leaf('edit-online', 'file-action-edit-online', actionBusy,
+        () => runDirectAction(onEditOnline), <EditNoteRoundedIcon fontSize="small" />, editOnlineLabel, null, true) : null}
+      {typeof onDownload === 'function' ? leaf('download', 'file-action-download', !canDownload || actionBusy,
+        () => runDownload(nativeFileActions ? 'saveAs' : ''),
+        <DownloadRoundedIcon fontSize="small" />, nativeFileActions ? 'Сохранить как' : 'Скачать', null, true) : null}
+      {group('share', 'Поделиться', <ShareOutlinedIcon fontSize="small" />, shareItems)}
+      {group('organize', 'Организовать', <DriveFileMoveOutlinedIcon fontSize="small" />, organizeItems)}
+      {group('more', 'Дополнительно', <MoreHorizRoundedIcon fontSize="small" />, moreItems)}
       {openIntentMessage ? (
         <ListSubheader
           role="status"
@@ -236,150 +303,18 @@ export default function FileActionsContextMenu({
           {openIntentMessage}
         </ListSubheader>
       ) : null}
-      {typeof onDownload === 'function' ? (
-        <MenuItem
-          data-testid="file-action-download"
-          disabled={!canDownload || actionBusy}
-          onClick={() => runDownload(nativeFileActions ? 'saveAs' : '')}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>{nativeFileActions ? 'Сохранить как' : 'Скачать'}</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onExportPdf === 'function' ? (
-        <MenuItem
-          data-testid="file-action-export-pdf"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onExportPdf)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><PictureAsPdfRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Скачать как PDF</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onSaveAll === 'function' ? (
-        <MenuItem
-          data-testid="file-action-save-all"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onSaveAll)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Сохранить все вложения…</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onShare === 'function' ? (
-        <MenuItem
-          data-testid="file-action-share"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onShare)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><ShareOutlinedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>{isShared ? 'Скопировать ссылку' : 'Поделиться'}</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onRevokeShare === 'function' ? (
-        <MenuItem
-          data-testid="file-action-revoke-share"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onRevokeShare)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><DeleteOutlineRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Отключить ссылку</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onAudit === 'function' ? (
-        <MenuItem
-          data-testid="file-action-audit"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onAudit)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><HistoryRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Журнал</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onToggleFavorite === 'function' ? (
-        <MenuItem
-          data-testid="file-action-favorite"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onToggleFavorite)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon>
-            {isFavorite ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} /> : <StarOutlineRoundedIcon fontSize="small" />}
-          </ListItemIcon>
-          <ListItemText>{isFavorite ? 'Убрать из избранного' : 'В избранное'}</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onRename === 'function' ? (
-        <MenuItem
-          data-testid="file-action-rename"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onRename)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><DriveFileRenameOutlineRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Переименовать</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onMove === 'function' ? (
-        <MenuItem
-          data-testid="file-action-move"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onMove)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><DriveFileMoveOutlinedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Переместить</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onCopyTo === 'function' ? (
-        <MenuItem
-          data-testid="file-action-copy-to"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onCopyTo)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><FileCopyOutlinedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Копировать в…</ListItemText>
-        </MenuItem>
-      ) : null}
-      {canCopyFile || typeof onDelete === 'function' || typeof onSelectAll === 'function' ? <Divider /> : null}
-      {canCopyFile ? (
-        <MenuItem
-          data-testid="file-action-copy"
-          disabled={actionBusy}
-          onClick={() => runDownload('copy')}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><ContentCopyRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Копировать</ListItemText>
-        </MenuItem>
-      ) : null}
+      {typeof onDelete === 'function' ? <Divider /> : null}
       {typeof onDelete === 'function' ? (
         <MenuItem
           data-testid="file-action-delete"
           disabled={actionBusy}
           onClick={() => runDirectAction(onDelete)}
+          onMouseEnter={scheduleSubmenuClose}
+          onMouseLeave={cancelSubmenuClose}
           sx={{ minHeight: 40, color: 'error.main' }}
         >
           <ListItemIcon sx={{ color: 'inherit' }}><DeleteOutlineRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Удалить вложение</ListItemText>
-        </MenuItem>
-      ) : null}
-      {typeof onSelectAll === 'function' ? (
-        <MenuItem
-          data-testid="file-action-select-all"
-          disabled={actionBusy}
-          onClick={() => runDirectAction(onSelectAll)}
-          sx={{ minHeight: 40 }}
-        >
-          <ListItemIcon><SelectAllRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Выделить все</ListItemText>
+          <ListItemText>{deleteLabel}</ListItemText>
         </MenuItem>
       ) : null}
     </Menu>

@@ -84,6 +84,7 @@ test('statistics permission alone exposes no cross-user file operations', async 
 
 test('admin access settings identify the real author and preserve inherited access explanation', async ({ page }) => {
   const state = await setup(page); await openFiles(page); await actions(page, 'Бюджет.xlsx');
+  await page.getByTestId('file-action-group-share').click();
   await page.getByRole('menuitem', { name: 'Совместный доступ', exact: true }).click();
   await expect(page.getByText('Анна (anna)', { exact: true })).toBeVisible();
   await expect(page.getByText('Автор файла', { exact: true })).toBeVisible();
@@ -152,7 +153,12 @@ for (const operation of ['share', 'download']) test(`a pending ${operation} cann
     await new Promise(resolve => { release = resolve; });
     return route.fulfill({ json: operation === 'share' ? { token: 'old-account-secret' } : { download_path: '/my-files/download-grants/old-account-secret' } });
   } }); await openFiles(page); await actions(page, 'План.docx');
-  await page.getByRole('menuitem', { name: operation === 'share' ? /Поделиться/ : 'Скачать', exact: operation !== 'share' }).click();
+  if (operation === 'share') {
+    await page.getByTestId('file-action-group-share').click();
+    await page.getByTestId('file-action-share').click();
+  } else {
+    await page.getByRole('menuitem', { name: 'Скачать', exact: true }).click();
+  }
   await expect.poll(() => Boolean(release)).toBe(true);
   await page.getByRole('button', { name: 'Сменить администратора' }).click();
   release();

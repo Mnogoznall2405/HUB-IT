@@ -939,6 +939,7 @@ describe('MyFiles page', () => {
     await screen.findByText('report.txt');
 
     fireEvent.contextMenu(screen.getByTestId('my-files-card-file-1'));
+    fireEvent.click(await screen.findByTestId('file-action-group-organize'));
     fireEvent.click(await screen.findByTestId('file-action-copy-to'));
     const dialog = await screen.findByRole('dialog');
     fireEvent.mouseDown(within(dialog).getAllByRole('combobox')[0]);

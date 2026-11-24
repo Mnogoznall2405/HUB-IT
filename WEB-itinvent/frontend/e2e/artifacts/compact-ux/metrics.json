@@ -1,0 +1,281 @@
+{
+  "seedLibraries": 2,
+  "widths": {
+    "390": {
+      "viewport": 390,
+      "docOverflow": 0,
+      "leaks": [
+        {
+          "id": "MuiAlert-action css-ki1hdl-MuiAlert-action",
+          "slack": 7
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
+          "slack": 47
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
+          "slack": 65
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        }
+      ]
+    },
+    "768": {
+      "viewport": 768,
+      "docOverflow": 0,
+      "leaks": [
+        {
+          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "slack": 10
+        },
+        {
+          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "slack": 10
+        },
+        {
+          "id": "main-layout-account-button-desktop",
+          "slack": 3
+        }
+      ]
+    },
+    "1024": {
+      "viewport": 1024,
+      "docOverflow": 0,
+      "leaks": [
+        {
+          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "slack": 10
+        },
+        {
+          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "slack": 10
+        },
+        {
+          "id": "main-layout-account-button-desktop",
+          "slack": 3
+        }
+      ]
+    },
+    "1280": {
+      "viewport": 1280,
+      "docOverflow": 0,
+      "leaks": [
+        {
+          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "slack": 10
+        },
+        {
+          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "slack": 10
+        },
+        {
+          "id": "main-layout-account-button-desktop",
+          "slack": 3
+        },
+        {
+          "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
+          "slack": 132
+        },
+        {
+          "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
+          "slack": 177
+        }
+      ]
+    },
+    "1600": {
+      "viewport": 1600,
+      "docOverflow": 0,
+      "leaks": [
+        {
+          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "slack": 10
+        },
+        {
+          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "slack": 10
+        },
+        {
+          "id": "main-layout-account-button-desktop",
+          "slack": 3
+        },
+        {
+          "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
+          "slack": 132
+        },
+        {
+          "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
+          "slack": 177
+        }
+      ]
+    }
+  },
+  "zooms": {
+    "2": {
+      "viewport": 512,
+      "docOverflow": 0,
+      "leaks": [
+        {
+          "id": "MuiAlert-action css-ki1hdl-MuiAlert-action",
+          "slack": 7
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        }
+      ],
+      "logicalWidth": 512
+    },
+    "1.25": {
+      "viewport": 819,
+      "docOverflow": 0,
+      "leaks": [
+        {
+          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "slack": 10
+        },
+        {
+          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "slack": 10
+        },
+        {
+          "id": "main-layout-account-button-desktop",
+          "slack": 3
+        }
+      ],
+      "logicalWidth": 819
+    },
+    "1.5": {
+      "viewport": 683,
+      "docOverflow": 0,
+      "leaks": [
+        {
+          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "slack": 10
+        },
+        {
+          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "slack": 10
+        },
+        {
+          "id": "main-layout-account-button-desktop",
+          "slack": 3
+        }
+      ],
+      "logicalWidth": 683
+    }
+  },
+  "menus": {
+    "fileTopLevel": [
+      "Скачать",
+      "Поделиться",
+      "Организовать",
+      "Дополнительно",
+      "Удалить"
+    ],
+    "moreItems": [
+      "Сведения",
+      "Журнал"
+    ],
+    "escapesClean": true,
+    "edgeFlyoutInside": true,
+    "folderTopLevel": [
+      "Открыть",
+      "Скачать папку (ZIP)",
+      "Поделиться",
+      "Организовать",
+      "Сведения",
+      "Удалить"
+    ]
+  },
+  "collapse": {
+    "sectionWorks": true,
+    "iconRail": {
+      "flyoutVisible": true,
+      "navDriveVisible": true
+    },
+    "works": true
+  },
+  "libraryTree": {
+    "rootVisible": true,
+    "deepChainAutoExpanded": true,
+    "manualCollapse": true,
+    "switchClearsTree": true
+  },
+  "darkOverflow": {
+    "viewport": 768,
+    "docOverflow": 0,
+    "leaks": [
+      {
+        "id": "MuiListItemIcon-root css-15bxwbv-MuiListItemIcon-root",
+        "slack": 10
+      },
+      {
+        "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+        "slack": 10
+      },
+      {
+        "id": "main-layout-account-button-desktop",
+        "slack": 3
+      }
+    ]
+  }
+}
