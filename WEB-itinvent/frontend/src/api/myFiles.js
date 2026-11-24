@@ -251,7 +251,10 @@ const createUploadSessionWithCapacityRetry = async ({ file, retentionDays, folde
 export const myFilesRetentionOptions = RETENTION_OPTIONS;
 
 export const myFilesAPI = {
-  listFiles: async ({ folderId = null, view = '', q = '', libraryId = null, include = '', ifNoneMatch = '', limit = 0, cursor = '', signal } = {}) => {
+  listFiles: async ({
+    folderId = null, view = '', q = '', libraryId = null, include = '', ifNoneMatch = '',
+    limit = 0, cursor = '', sort = '', order = '', typeFilter = '', dateFilter = '', tzOffset = null, signal,
+  } = {}) => {
     const params = {};
     if (folderId) params.folder_id = folderId;
     if (libraryId) params.library_id = libraryId;
@@ -260,6 +263,11 @@ export const myFilesAPI = {
     if (include) params.include = include;
     if (limit > 0) params.limit = limit;
     if (cursor) params.cursor = cursor;
+    if (sort) params.sort = sort;
+    if (order) params.order = order;
+    if (typeFilter) params.type_filter = typeFilter;
+    if (dateFilter) params.date_filter = dateFilter;
+    if (tzOffset !== null && tzOffset !== undefined) params.tz_offset_minutes = tzOffset;
     const response = await apiClient.get('/my-files', {
       params,
       signal,

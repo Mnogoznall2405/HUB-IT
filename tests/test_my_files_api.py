@@ -94,6 +94,11 @@ class FakeMyFilesService:
         if_none_match: str = "",
         limit: int = 0,
         cursor: str = "",
+        sort: str = "",
+        order: str = "",
+        type_filter: str = "",
+        date_filter: str = "",
+        tz_offset_minutes: int = 0,
     ):
         self.seen_user_id = user_id
         self.seen_folder_id = folder_id

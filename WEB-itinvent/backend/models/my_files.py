@@ -110,6 +110,9 @@ class MyFileListResponse(BaseModel):
     # Opt-in keyset pagination (limit>0): pass back as ?cursor= to fetch the
     # next page; null/absent keeps the legacy all-rows contract untouched.
     next_cursor: str | None = None
+    # Live-row total of the requested (filtered) set — populated together with
+    # pagination so the client can label "select all N" without a second call.
+    total: int | None = None
 
 
 class MyFileFolderListResponse(BaseModel):

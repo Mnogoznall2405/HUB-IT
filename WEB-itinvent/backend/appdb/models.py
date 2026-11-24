@@ -1238,6 +1238,7 @@ class AppMyFileCollaborator(AppBase):
     added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="edit", server_default="edit")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class AppMyFileFolderCollaborator(AppBase):
@@ -1254,6 +1255,7 @@ class AppMyFileFolderCollaborator(AppBase):
     added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="edit", server_default="edit")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class AppMyFileLibrary(AppBase):
@@ -1293,6 +1295,7 @@ class AppMyFileLibraryMember(AppBase):
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="edit", server_default="edit")
     added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class AppMyFileVersion(AppBase):

@@ -1864,3 +1864,147 @@ def test_list_files_search_merges_library_hits_in_one_pass(tmp_path):
     assert lib_hit["library_id"] == library["id"]
     assert lib_hit["library_name"] == "ПОДБОР"
     assert lib_hit["my_role"] == "manage"
+
+def _etag_pending(service: MyFilesService, name: str = "note.txt", actor: User | None = None, **kw):
+    spool = _stage_upload(service, name, name.encode("utf-8"))
+    created = service.create_pending_upload(
+        actor=actor or _user(),
+        original_file_name=name,
+        mime_type="text/plain",
+        spool_path=spool,
+        original_size_bytes=spool.stat().st_size,
+        retention_days=1,
+        **kw,
+    )
+    service.process_file(created["id"])
+    return created
+
+
+def test_listing_etag_revalidates_and_is_bound_to_request_context(tmp_path):
+    service = _new_service(tmp_path)
+    _etag_pending(service, "a.txt")
+    folder = service.create_folder(actor=_user(), name="Docs")
+
+    root = service.list_files(user_id=7)
+    assert root["etag"]
+    assert service.list_files(user_id=7, if_none_match=root["etag"]) == {
+        "not_modified": True,
+        "etag": root["etag"],
+    }
+
+    in_folder = service.list_files(user_id=7, folder_id=folder["id"])
+    assert in_folder["etag"] != root["etag"]
+    assert not service.list_files(user_id=7, folder_id=folder["id"], if_none_match=root["etag"]).get("not_modified")
+
+    with_quota = service.list_files(user_id=7, include="quota")
+    assert with_quota["etag"] != root["etag"]
+
+    paged = service.list_files(user_id=7, limit=1)
+    assert paged["etag"] != root["etag"]
+    if paged.get("next_cursor"):
+        second = service.list_files(user_id=7, limit=1, cursor=paged["next_cursor"])
+        assert second["etag"] != paged["etag"]
+
+
+def test_listing_etag_changes_on_write_and_expiry(tmp_path):
+    service = _new_service(tmp_path)
+    first = service.list_files(user_id=7)["etag"]
+    _etag_pending(service, "b.txt")
+    second = service.list_files(user_id=7)["etag"]
+    assert second != first
+    url = _sqlite_url(tmp_path / "app.db")
+    with app_session(url) as session:
+        for row in session.scalars(select(AppMyFile)).all():
+            row.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    assert service.list_files(user_id=7)["etag"] != second
+
+
+def test_listing_etag_covers_quota_limit_and_preview_readiness(tmp_path):
+    service = _new_service(tmp_path)
+    url = _sqlite_url(tmp_path / "app.db")
+    with app_session(url) as session:
+        session.add(AppUser(id=7, username="user-7", my_files_quota_bytes=1024))
+    created = _etag_pending(service, "quota.txt")
+    first = service.list_files(user_id=7, include="quota")["etag"]
+
+    with app_session(url) as session:
+        session.get(AppUser, 7).my_files_quota_bytes = 2048
+    second = service.list_files(user_id=7, include="quota")["etag"]
+    assert second != first
+
+    with app_session(url) as session:
+        blob_id = session.get(AppMyFile, created["id"]).blob_id
+        session.add(AppMyFilePreview(blob_id=blob_id, status="ready", preview_kind="image"))
+    assert service.list_files(user_id=7, include="quota")["etag"] != second
+
+
+def test_library_listing_etag_covers_member_and_role_changes(tmp_path):
+    service = _new_service(tmp_path)
+    url = _sqlite_url(tmp_path / "app.db")
+    with app_session(url) as session:
+        session.add(AppUser(id=7, username="user-7"))
+        session.add(AppUser(id=8, username="user-8"))
+    actor = _user()
+    libraries = MyFilesLibraryService(files=service)
+    library = libraries.create_library(actor=actor, name="LIB")
+    libraries.set_members(
+        library_id=library["id"],
+        actor=actor,
+        members=[("user", "7", "manage"), ("user", "8", "view")],
+    )
+
+    viewer_etag = service.list_files(user_id=8, library_id=library["id"])["etag"]
+    manager_etag = service.list_files(user_id=7, library_id=library["id"])["etag"]
+    assert viewer_etag != manager_etag
+
+    # In-place role edit — same members, same count — must still invalidate.
+    libraries.set_members(
+        library_id=library["id"],
+        actor=actor,
+        members=[("user", "7", "manage"), ("user", "8", "edit")],
+    )
+    assert service.list_files(user_id=8, library_id=library["id"])["etag"] != viewer_etag
+
+    # Member removal: the revoked viewer loses access entirely; other viewers'
+    # listings are unchanged, so their ETag stays valid (scoped invalidation).
+    libraries.set_members(
+        library_id=library["id"],
+        actor=actor,
+        members=[("user", "7", "manage")],
+    )
+    with pytest.raises(MyFilesNotFoundError):
+        service.list_files(user_id=8, library_id=library["id"])
+    assert service.list_files(user_id=7, library_id=library["id"])["etag"] == manager_etag
+
+def test_list_files_paginates_with_server_sort_filters_and_total(tmp_path):
+    service = _new_service(tmp_path)
+    for name in ("b.docx", "a.pdf", "c.zip", "d.txt"):
+        _etag_pending(service, name)
+
+    first = service.list_files(user_id=7, limit=2, sort="name", order="asc")
+    assert [item["original_file_name"] for item in first["items"]] == ["a.pdf", "b.docx"]
+    assert first["total"] == 4
+    assert first["next_cursor"]
+    second = service.list_files(user_id=7, limit=2, sort="name", order="asc", cursor=first["next_cursor"])
+    assert [item["original_file_name"] for item in second["items"]] == ["c.zip", "d.txt"]
+    assert second["next_cursor"] is None
+
+    # A cursor minted under another sort must not resume mid-set.
+    restarted = service.list_files(user_id=7, limit=2, sort="size", order="desc", cursor=first["next_cursor"])
+    assert len(restarted["items"]) == 2
+    assert restarted["total"] == 4
+
+    docs = service.list_files(user_id=7, limit=10, type_filter="document")
+    assert {item["original_file_name"] for item in docs["items"]} == {"b.docx", "d.txt"}
+    assert docs["total"] == 2
+    archives = service.list_files(user_id=7, limit=10, type_filter="archive")
+    assert [item["original_file_name"] for item in archives["items"]] == ["c.zip"]
+
+    url = _sqlite_url(tmp_path / "app.db")
+    with app_session(url) as session:
+        session.get(AppMyFile, service.list_files(user_id=7, query="a.pdf")["items"][0]["id"]).updated_at = (
+            datetime.now(timezone.utc) - timedelta(days=400)
+        )
+    recent = service.list_files(user_id=7, limit=10, date_filter="30d")
+    assert recent["total"] == 3
+    assert service.list_files(user_id=7, limit=10, date_filter="year")["total"] == 3

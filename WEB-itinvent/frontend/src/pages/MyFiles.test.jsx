@@ -762,6 +762,55 @@ describe('MyFiles page', () => {
     await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith('file-1', { folderId: 'folder-7' }));
   });
 
+  it('appends the next keyset page without duplicating the boundary row', async () => {
+    mockListFiles
+      .mockResolvedValueOnce({
+        items: [readyFile],
+        folders: [],
+        breadcrumbs: [],
+        folder: null,
+        next_cursor: 'cursor-1',
+        total: 2,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          readyFile,
+          { ...readyFile, id: 'file-2', original_file_name: 'second.txt', download_file_name: 'second.txt' },
+        ],
+        folders: [],
+        breadcrumbs: [],
+        folder: null,
+        next_cursor: null,
+        total: 2,
+      });
+    renderPage();
+    await screen.findByText('report.txt');
+    await screen.findByText('second.txt');
+    expect(screen.getAllByText('report.txt')).toHaveLength(1);
+    expect(mockListFiles).toHaveBeenCalledTimes(2);
+    expect(mockListFiles).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'cursor-1' }));
+  });
+
+  it('select-all-N covers files past the loaded pages so bulk delete reaches them', async () => {
+    const unloadedFile = { ...readyFile, id: 'file-9', original_file_name: 'unseen.bin', download_file_name: 'unseen.bin' };
+    mockListFiles
+      .mockResolvedValueOnce({ items: [readyFile], folders: [], breadcrumbs: [], folder: null, next_cursor: null, total: 2 })
+      .mockResolvedValue({ items: [readyFile, unloadedFile], folders: [], breadcrumbs: [], folder: null, total: 2 });
+    renderPage();
+    await screen.findByText('report.txt');
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    fireEvent.click(await screen.findByTestId('my-files-select-all-set'));
+    const bar = await screen.findByTestId('my-files-selection-bar');
+    await waitFor(() => expect(bar).toHaveTextContent('Выбрано: 2'));
+
+    fireEvent.click(screen.getByTestId('my-files-bulk-delete'));
+    fireEvent.click(await screen.findByTestId('my-files-confirm-action'));
+    await waitFor(() => {
+      expect(mockDeleteFile).toHaveBeenCalledWith('file-1');
+      expect(mockDeleteFile).toHaveBeenCalledWith('file-9');
+    });
+  });
+
   it('switches to grid view and shows folder file counts', async () => {
     mockListFiles.mockResolvedValue({
       items: [readyFile],

@@ -129,33 +129,112 @@ _LIBRARY_ROLE_RANK = {"view": 1, "comment": 2, "edit": 3, "manage": 4}
 LIBRARY_UNLIMITED_BYTES = 1 << 60
 
 
-def _encode_listing_cursor(created_at: Any, file_id: str) -> str:
-    """Opaque cursor for (created_at DESC, id DESC) keyset pagination."""
-    stamp = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
-    return base64.urlsafe_b64encode(f"{stamp}|{_normalize_text(file_id)}".encode("utf-8")).decode("ascii")
+def _encode_listing_cursor(sort: str, value: Any, file_id: str) -> str:
+    """Opaque cursor for ``(sort_column, id)`` keyset pagination.
+
+    The sort field travels inside the cursor so a client that changes the
+    ordering mid-scroll cannot resume a page boundary that no longer exists;
+    the value is serialized in the same form the keyset predicate binds back.
+    """
+    if hasattr(value, "isoformat"):
+        serialized = value.isoformat()
+    elif isinstance(value, bool):
+        serialized = "1" if value else "0"
+    elif value is None:
+        serialized = ""
+    else:
+        serialized = str(value)
+    raw = f"v2|{_normalize_text(sort)}|{serialized}|{_normalize_text(file_id)}"
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii")
 
 
-def _decode_listing_cursor(cursor: str) -> tuple[Any, str | None]:
-    """``(created_at, id)`` from a cursor produced by :func:`_encode_listing_cursor`.
+def _decode_listing_cursor(cursor: str, sort: str) -> tuple[Any, str | None]:
+    """``(sort_value, id)`` from a cursor produced by :func:`_encode_listing_cursor`.
 
-    The timestamp comes back as a real ``datetime`` — binding a raw string
-    would compare ``isoformat``'s ``T`` separator against the DB's stored
-    format and break the keyset filter. Returns ``(None, None)`` for
-    empty/malformed cursors: a bad cursor falls back to page one instead of
-    silently dropping rows.
+    ``sort`` is the caller's requested ordering — a cursor minted under a
+    different sort falls back to page one (the client resets pagination on
+    sort changes anyway, so this only guards stray replayed cursors).
+    Datetime columns come back as real ``datetime`` objects — binding a raw
+    string would compare ``isoformat``'s ``T`` separator against the DB's
+    stored format and break the keyset filter. Returns ``(None, None)`` for
+    empty/malformed/mismatched cursors.
     """
     raw = _normalize_text(cursor)
     if not raw:
         return None, None
     try:
         decoded = base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8")
-        stamp, _, file_id = decoded.rpartition("|")
-        if not stamp or not file_id:
+        parts = decoded.split("|")
+        # The serialized sort value may itself contain "|" (file names allow
+        # it); only the version, sort and trailing id have fixed positions.
+        if len(parts) < 4 or parts[0] != "v2" or parts[1] != _normalize_text(sort) or not parts[-1]:
             return None, None
-        created = datetime.fromisoformat(stamp)
-        return created, file_id
+        serialized = "|".join(parts[2:-1])
+        file_id = parts[-1]
+        if sort in _CURSOR_DATETIME_SORTS:
+            return datetime.fromisoformat(serialized), file_id
+        if sort in _CURSOR_NUMERIC_SORTS:
+            return int(serialized or 0), file_id
+        return serialized, file_id
     except Exception:
         return None, None
+
+
+# Sort keys whose cursor values deserialize back into typed bind parameters.
+_CURSOR_DATETIME_SORTS = {"created", "updated"}
+_CURSOR_NUMERIC_SORTS = {"size"}
+_LISTING_SORT_COLUMNS = {
+    "name": func.lower(AppMyFile.original_file_name),
+    "size": AppMyFile.original_size_bytes,
+    "updated": AppMyFile.updated_at,
+    "created": AppMyFile.created_at,
+}
+
+# Server-side type filter mirrors the client's getFileTypeKey precedence
+# exactly — mime checks first, then extension lists — so a filtered page
+# contains precisely the rows the chips would keep.
+def _my_file_type_key_expr():
+    # Client reads download_* first and falls back to original/mime — same here.
+    lname = func.lower(func.coalesce(func.nullif(AppMyFile.download_file_name, ""), AppMyFile.original_file_name))
+    lmime = func.lower(func.coalesce(func.nullif(AppMyFile.download_mime_type, ""), AppMyFile.mime_type))
+
+    def exts(*values: str):
+        return or_(*[lname.like(f"%.{value}") for value in values])
+
+    return case(
+        (lmime.like("image/%"), "image"),
+        (lmime.like("video/%"), "video"),
+        (lmime.like("audio/%"), "audio"),
+        (or_(lmime.like("%pdf%"), lname.like("%.pdf")), "pdf"),
+        (exts("doc", "docx", "rtf", "odt"), "document"),
+        (exts("xls", "xlsx", "csv", "ods"), "sheet"),
+        (exts("ppt", "pptx", "odp"), "slides"),
+        (exts("zip", "rar", "7z", "tar", "gz", "zst"), "archive"),
+        (exts("js", "jsx", "ts", "tsx", "py", "ps1", "sql", "json", "xml", "html", "css", "md"), "code"),
+        (or_(lmime.like("text/%"), exts("txt", "log")), "text"),
+        else_="file",
+    )
+
+
+_LISTING_TYPE_FILTERS = {"folder", "document", "sheet", "slides", "pdf", "image", "video", "archive"}
+_LISTING_DATE_FILTERS = {"today", "7d", "30d", "year"}
+
+
+def _date_filter_cutoff(filter_value: str, tz_offset_minutes: int) -> datetime | None:
+    """Day-boundary cutoff in the viewer's timezone (JS ``getTimezoneOffset``)."""
+    if filter_value not in _LISTING_DATE_FILTERS:
+        return None
+    local_now = _utc_now() - timedelta(minutes=int(tz_offset_minutes or 0))
+    local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if filter_value == "today":
+        cutoff = local_midnight
+    elif filter_value == "7d":
+        cutoff = local_midnight - timedelta(days=6)
+    elif filter_value == "30d":
+        cutoff = local_midnight - timedelta(days=29)
+    else:  # year
+        cutoff = local_midnight.replace(month=1, day=1)
+    return cutoff + timedelta(minutes=int(tz_offset_minutes or 0))
 
 
 class MyFilesError(RuntimeError):
@@ -756,42 +835,71 @@ class MyFilesService:
             )
         return used
 
-    def _listing_etag_locked(self, session, *, owner_user_id: int) -> str:
+    def _listing_etag_locked(
+        self,
+        session,
+        *,
+        owner_user_id: int,
+        user_id: int,
+        view: str,
+        folder_id: str | None,
+        include: str,
+        role: str = "",
+        limit: int = 0,
+        cursor: str = "",
+        merge_libraries: bool = False,
+        params_ctx: str = "",
+    ) -> str:
         """Weak-change fingerprint for conditional listing requests (If-None-Match).
 
-        Aggregates only — a handful of index-covered counters — so a revalidation
-        costs a few ms instead of rebuilding the whole listing. Anything that can
-        alter a serialized response bumps the fingerprint: file/folder writes and
-        soft-deletes (updated_at/deleted_at), rows crossing their expiry boundary
-        (the count of already-expired rows flips visibility), collaborator and
-        version churn (row counts + total version bytes, which feeds the quota),
-        and library membership. Grants from other owners ride on the global
-        collaborator counts, so shared-view entries invalidate too.
+        The fingerprint is bound to the request context — view, folder, include
+        set, page cursor and the viewer's identity/role — so an ETag minted for
+        one data view can never validate another. Coverage is per-owner scoped
+        aggregates only (no global table scans, no cross-table count joins):
+        file/folder writes and soft-deletes, expiry flips, version bytes (quota),
+        grant tables limited to the owner's rows, preview churn on the owner's
+        blobs, the quota limit value, and — for views that merge shared-library
+        content — library tables plus the viewer's own membership/department
+        state, so revocation and role edits re-run the access checks' inputs.
         """
         now = _utc_now()
+        owner = int(owner_user_id)
+        include_parts = {part.strip().lower() for part in str(include or "").split(",") if part.strip()}
         files = session.execute(
             select(
                 func.count(AppMyFile.id),
                 func.max(AppMyFile.updated_at),
                 func.max(AppMyFile.deleted_at),
                 func.coalesce(func.sum(case((AppMyFile.expires_at <= now, 1), else_=0)), 0),
-            ).where(AppMyFile.owner_user_id == int(owner_user_id))
+            ).where(AppMyFile.owner_user_id == owner)
         ).one()
         folders = session.execute(
             select(
                 func.count(AppMyFileFolder.id),
                 func.max(AppMyFileFolder.updated_at),
                 func.max(AppMyFileFolder.deleted_at),
-            ).where(AppMyFileFolder.owner_user_id == int(owner_user_id))
+            ).where(AppMyFileFolder.owner_user_id == owner)
         ).one()
         extras: list[Any] = []
         if self._collab_tables_present(session):
+            owner_files = select(AppMyFile.id).where(AppMyFile.owner_user_id == owner)
             extras.extend(
                 session.execute(
                     select(
                         func.count(AppMyFileCollaborator.file_id),
+                        func.max(AppMyFileCollaborator.created_at),
+                        func.max(AppMyFileCollaborator.updated_at),
+                    ).where(AppMyFileCollaborator.file_id.in_(owner_files))
+                ).one()
+            )
+            owner_folders = select(AppMyFileFolder.id).where(AppMyFileFolder.owner_user_id == owner)
+            extras.extend(
+                session.execute(
+                    select(
                         func.count(AppMyFileFolderCollaborator.folder_id),
-                    )
+                        func.max(AppMyFileFolderCollaborator.created_at),
+                        func.max(AppMyFileFolderCollaborator.updated_at),
+                    ).where(AppMyFileFolderCollaborator.folder_id.in_(owner_folders))
                 ).one()
             )
             extras.extend(
@@ -802,11 +910,43 @@ class MyFilesService:
                             func.sum(AppMyFileVersion.original_size_bytes + AppMyFileVersion.office_changes_size_bytes), 0
                         ),
                     )
+                    .join(AppMyFile, AppMyFile.id == AppMyFileVersion.file_id)
+                    .where(AppMyFile.owner_user_id == owner)
                 ).one()
             )
-        if self._libraries_present(session):
-            # Own-drive listings merge library hits (search/recent), so library
-            # content must bump the fingerprint too — not just the owner rows.
+        owner_blobs = select(AppMyFile.blob_id).where(
+            AppMyFile.owner_user_id == owner, AppMyFile.blob_id.is_not(None)
+        )
+        extras.extend(
+            session.execute(
+                select(
+                    func.count(AppMyFilePreview.blob_id),
+                    func.max(AppMyFilePreview.updated_at),
+                ).where(AppMyFilePreview.blob_id.in_(owner_blobs))
+            ).one()
+        )
+        if "quota" in include_parts:
+            if owner > 0:
+                extras.append(
+                    session.execute(
+                        select(func.coalesce(AppUser.my_files_quota_bytes, 0)).where(AppUser.id == owner)
+                    ).scalar()
+                    or 0
+                )
+            else:
+                extras.append(
+                    session.execute(
+                        select(func.coalesce(AppMyFileLibrary.quota_bytes, 0)).where(
+                            AppMyFileLibrary.owner_user_id == owner
+                        )
+                    ).scalar()
+                    or 0
+                )
+        if merge_libraries and self._libraries_present(session):
+            # Library hits merged into search/recent (or the library view itself):
+            # library content, library table churn and the viewer's own
+            # access inputs (member rows for their principals, department
+            # memberships, department state) all feed the response.
             extras.extend(
                 session.execute(
                     select(
@@ -825,14 +965,49 @@ class MyFilesService:
                     ).where(AppMyFileFolder.owner_user_id < 0)
                 ).one()
             )
-            row = session.execute(
-                select(func.count(AppMyFileLibrary.id), func.max(AppMyFileLibrary.updated_at))
-            ).one()
-            extras.extend(row)
-            extras.append(
-                session.execute(select(func.count(AppMyFileLibraryMember.library_id))).scalar() or 0
+            extras.extend(
+                session.execute(
+                    select(
+                        func.count(AppMyFileLibrary.id),
+                        func.max(AppMyFileLibrary.updated_at),
+                        func.max(AppMyFileLibrary.deleted_at),
+                    )
+                ).one()
             )
-        raw = "|".join(str(part) for part in (*files, *folders, *extras))
+            principals = [str(int(user_id))]
+            principals.extend(self._user_department_ids_locked(session, int(user_id)))
+            extras.extend(
+                session.execute(
+                    select(
+                        func.count(AppMyFileLibraryMember.library_id),
+                        func.max(AppMyFileLibraryMember.created_at),
+                        func.max(AppMyFileLibraryMember.updated_at),
+                    ).where(AppMyFileLibraryMember.principal_id.in_(principals))
+                ).one()
+            )
+            extras.extend(
+                session.execute(
+                    select(
+                        func.count(AppDepartmentMembership.id),
+                        func.max(AppDepartmentMembership.updated_at),
+                    ).where(AppDepartmentMembership.user_id == int(user_id))
+                ).one()
+            )
+            extras.extend(
+                session.execute(select(func.count(AppDepartment.id), func.max(AppDepartment.updated_at))).one()
+            )
+        context = (
+            f"o={owner}",
+            f"u={int(user_id)}",
+            f"v={_normalize_text(view).lower()}",
+            f"f={_normalize_text(folder_id)}",
+            f"i={','.join(sorted(include_parts))}",
+            f"r={_normalize_text(role)}",
+            f"l={int(limit or 0)}",
+            f"c={_normalize_text(cursor)}",
+            f"p={params_ctx}",
+        )
+        raw = "|".join(str(part) for part in (*context, *files, *folders, *extras))
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:32]
 
     def _collab_tables_present(self, session) -> bool:
@@ -846,7 +1021,10 @@ class MyFilesService:
         try:
             with session.begin_nested():
                 session.execute(select(AppMyFileVersion.id).limit(1))
-                session.execute(select(AppMyFileCollaborator.file_id, AppMyFileCollaborator.role).limit(1))
+                session.execute(
+                    select(AppMyFileCollaborator.file_id, AppMyFileCollaborator.role, AppMyFileCollaborator.updated_at).limit(1)
+                )
+                session.execute(select(AppMyFileFolderCollaborator.updated_at).limit(1))
         except SQLAlchemyError:
             return False
         self._collab_tables_ready = True
@@ -893,7 +1071,9 @@ class MyFilesService:
         try:
             with session.begin_nested():
                 session.execute(select(AppMyFileLibrary.id, AppMyFileLibrary.quota_bytes).limit(1))
-                session.execute(select(AppMyFileLibraryMember.library_id, AppMyFileLibraryMember.role).limit(1))
+                session.execute(
+                    select(AppMyFileLibraryMember.library_id, AppMyFileLibraryMember.role, AppMyFileLibraryMember.updated_at).limit(1)
+                )
                 session.execute(select(AppMyFile.uploaded_by_user_id).limit(1))
         except SQLAlchemyError:
             return False
@@ -2567,6 +2747,11 @@ class MyFilesService:
         if_none_match: str = "",
         limit: int = 0,
         cursor: str = "",
+        sort: str = "",
+        order: str = "",
+        type_filter: str = "",
+        date_filter: str = "",
+        tz_offset_minutes: int = 0,
     ) -> dict[str, Any]:
         normalized_view = _normalize_text(view).lower()
         include_set = {part.strip().lower() for part in str(include or "").split(",") if part.strip()}
@@ -2575,18 +2760,41 @@ class MyFilesService:
         # The "shared with me" view stays ETag-free: entries belong to other
         # owners, so revocation must re-run the access checks on every request.
         etag_eligible = normalized_view != "shared"
+        merges_libraries = normalized_view != "shared" and (normalized_view == "recent" or bool(_normalize_text(query)))
+        params_ctx = "|".join(
+            (
+                _normalize_text(sort).lower(),
+                _normalize_text(order).lower(),
+                _normalize_text(type_filter).lower(),
+                _normalize_text(date_filter).lower(),
+                str(int(tz_offset_minutes or 0)),
+            )
+        )
         if normalized_view != "library" and not _normalize_text(library_id):
             owner = int(user_id)
             etag = ""
             if etag_eligible:
                 with app_session(database_url) as session:
                     owner = self._read_owner_locked(session, user_id=user_id, folder_id=folder_id)
-                    etag = self._listing_etag_locked(session, owner_user_id=owner)
+                    etag = self._listing_etag_locked(
+                        session,
+                        owner_user_id=owner,
+                        user_id=user_id,
+                        view=normalized_view,
+                        folder_id=folder_id,
+                        include=include,
+                        limit=limit,
+                        cursor=cursor,
+                        merge_libraries=merges_libraries,
+                        params_ctx=params_ctx,
+                    )
                 if expected_etag and etag == expected_etag:
                     return {"not_modified": True, "etag": etag}
             result = self._list_files_impl(
                 user_id=user_id, folder_id=folder_id, view=view, query=query,
-                limit=limit, cursor=cursor,
+                limit=limit, cursor=cursor, sort=sort, order=order,
+                type_filter=type_filter, date_filter=date_filter,
+                tz_offset_minutes=tz_offset_minutes,
             )
             if normalized_view != "shared" and (normalized_view == "recent" or _normalize_text(query)):
                 self._merge_library_results(result, user_id=user_id, view=normalized_view, query=query)
@@ -2600,12 +2808,30 @@ class MyFilesService:
                 raise MyFilesNotFoundError("Library not found")
             role = self.library_role_locked(session, library, user_id)
             library_info = {"id": library.id, "name": _normalize_text(library.name), "my_role": role}
-            etag = self._listing_etag_locked(session, owner_user_id=owner) if etag_eligible else ""
+            etag = (
+                self._listing_etag_locked(
+                    session,
+                    owner_user_id=owner,
+                    user_id=user_id,
+                    view=normalized_view,
+                    folder_id=folder_id,
+                    include=include,
+                    role=role,
+                    limit=limit,
+                    cursor=cursor,
+                    merge_libraries=True,
+                    params_ctx=params_ctx,
+                )
+                if etag_eligible
+                else ""
+            )
         if expected_etag and etag and etag == expected_etag:
             return {"not_modified": True, "etag": etag}
         result = self._list_files_impl(
             user_id=owner, folder_id=folder_id, view="", query=query, viewer_user_id=user_id,
-            limit=limit, cursor=cursor,
+            limit=limit, cursor=cursor, sort=sort, order=order,
+            type_filter=type_filter, date_filter=date_filter,
+            tz_offset_minutes=tz_offset_minutes,
         )
         for entry in [*result.get("items", []), *result.get("folders", []), *result.get("breadcrumbs", [])]:
             entry["my_role"] = role
@@ -2760,6 +2986,11 @@ class MyFilesService:
         viewer_user_id: int | None = None,
         limit: int = 0,
         cursor: str = "",
+        sort: str = "",
+        order: str = "",
+        type_filter: str = "",
+        date_filter: str = "",
+        tz_offset_minutes: int = 0,
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
         now = _utc_now()
@@ -2882,23 +3113,53 @@ class MyFilesService:
                 }
 
             folder = self._folder_row_locked(session, owner_user_id=user_id, folder_id=folder_id)
-            file_select = select(AppMyFile).where(
+            file_predicates = [
                 AppMyFile.owner_user_id == int(user_id),
                 AppMyFile.deleted_at.is_(None),
                 AppMyFile.expires_at > now,
                 AppMyFile.folder_id.is_(None) if folder is None else AppMyFile.folder_id == folder.id,
-            )
-            cursor_created, cursor_id = _decode_listing_cursor(cursor)
+            ]
+            # Server-side filter chips for paginated clients: same semantics as
+            # the client-side row filter, but evaluated over the whole folder
+            # instead of just the loaded pages.
+            normalized_type = _normalize_text(type_filter).lower()
+            if normalized_type == "folder":
+                file_predicates.append(AppMyFile.id.is_(None))
+            elif normalized_type in _LISTING_TYPE_FILTERS:
+                type_keys = ("document", "text") if normalized_type == "document" else (normalized_type,)
+                file_predicates.append(_my_file_type_key_expr().in_(type_keys))
+            date_cutoff = _date_filter_cutoff(_normalize_text(date_filter).lower(), tz_offset_minutes)
+            if date_cutoff is not None:
+                file_predicates.append(AppMyFile.updated_at >= date_cutoff)
+            file_select = select(AppMyFile).where(*file_predicates)
+            sort_key = _normalize_text(sort).lower()
+            if sort_key == "owner":
+                # Single-owner listings have a constant owner column — sort by
+                # name instead of pretending there is anything to order.
+                sort_key = "name"
+            sort_col = _LISTING_SORT_COLUMNS.get(sort_key)
+            cursor_sort = sort_key if sort_col is not None else "created"
+            order_col = sort_col if sort_col is not None else AppMyFile.created_at
+            descending = _normalize_text(order).lower() == "desc" if sort_col is not None else True
+            cursor_value, cursor_id = _decode_listing_cursor(cursor, cursor_sort)
             paginating = limit > 0 or cursor_id is not None
             if cursor_id is not None:
-                file_select = file_select.where(
-                    (AppMyFile.created_at < cursor_created)
-                    | ((AppMyFile.created_at == cursor_created) & (AppMyFile.id < cursor_id))
+                if descending:
+                    file_select = file_select.where(
+                        (order_col < cursor_value) | ((order_col == cursor_value) & (AppMyFile.id < cursor_id))
+                    )
+                else:
+                    file_select = file_select.where(
+                        (order_col > cursor_value) | ((order_col == cursor_value) & (AppMyFile.id > cursor_id))
+                    )
+            if paginating or sort_col is not None:
+                # Deterministic tiebreak whenever a client paginates or asks
+                # for a named order — the bare default stays byte-for-byte
+                # what it was for legacy callers.
+                file_select = file_select.order_by(
+                    order_col.desc() if descending else order_col.asc(),
+                    AppMyFile.id.desc() if descending else AppMyFile.id.asc(),
                 )
-            if paginating:
-                # Deterministic tiebreak only when a client actually paginates —
-                # the unpaginated order stays byte-for-byte what it was.
-                file_select = file_select.order_by(AppMyFile.created_at.desc(), AppMyFile.id.desc())
             else:
                 file_select = file_select.order_by(AppMyFile.created_at.desc())
             if limit > 0:
@@ -2908,7 +3169,20 @@ class MyFilesService:
             if limit > 0 and len(rows) > limit:
                 rows = rows[:limit]
                 tail = rows[-1]
-                next_cursor = _encode_listing_cursor(tail.created_at, tail.id)
+                if cursor_sort == "name":
+                    tail_value = _normalize_text(tail.original_file_name).lower()
+                elif cursor_sort == "size":
+                    tail_value = int(tail.original_size_bytes or 0)
+                elif cursor_sort == "updated":
+                    tail_value = tail.updated_at
+                else:
+                    tail_value = tail.created_at
+                next_cursor = _encode_listing_cursor(cursor_sort, tail_value, tail.id)
+            total = None
+            if paginating:
+                total = int(
+                    session.execute(select(func.count(AppMyFile.id)).where(*file_predicates)).scalar() or 0
+                )
             folders = session.scalars(
                 select(AppMyFileFolder)
                 .where(
@@ -3015,6 +3289,7 @@ class MyFilesService:
                 "breadcrumbs": breadcrumbs,
                 "folder": self._folder_response(folder) if folder else None,
                 "next_cursor": next_cursor or None,
+                "total": total,
             }
 
     def list_audit(self, *, limit: int = 100) -> list[dict[str, Any]]:
