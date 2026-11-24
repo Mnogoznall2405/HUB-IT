@@ -4,6 +4,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { authAPI } from '../api/auth';
 import { invalidateStickerPacksCache } from '../api/chatStickers';
+import { invalidateChatStickerStore } from '../lib/chatStickerStore';
 import { clearAllChatDrafts } from '../lib/chatDraftsStorage';
 import { disableChatPushSubscription } from '../lib/chatNotifications';
 import { clearAllMailRecentCache } from '../lib/mailRecentCache';
@@ -215,6 +216,7 @@ export const AuthProvider = ({ children }) => {
     clearAllMailRecentCache();
     sweepLogoutSessionData();
     invalidateStickerPacksCache();
+    invalidateChatStickerStore();
     setUser(null);
     setPostAuthUiHold(false);
     setLoading(false);

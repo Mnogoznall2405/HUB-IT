@@ -661,6 +661,62 @@ class ChatStickerSendRequest(BaseModel):
         return text or None
 
 
+class ChatStickerListItemResponse(ChatStickerResponse):
+    pack_short_name: str
+
+
+class ChatStickerListResponse(BaseModel):
+    items: list[ChatStickerListItemResponse] = Field(default_factory=list)
+
+
+class ChatStickerRecentListResponse(ChatStickerListResponse):
+    """Recents rail plus the per-user sync ``version`` (monotonic counter,
+    bumped on every PUT; 0 until the first sync)."""
+    version: int = 0
+
+
+class ChatStickerRecentOp(BaseModel):
+    """One recents-sync delta.
+
+    ``bump`` — move ``sticker_id`` to the front of the rail (the user really
+    re-sent it); ``remove`` — delete ``sticker_id`` from the rail;
+    ``clear`` — truncate the rail (``sticker_id`` ignored).
+    """
+    op: Literal["bump", "remove", "clear"]
+    sticker_id: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("sticker_id", mode="before")
+    @classmethod
+    def _normalize_op_sticker_id(cls, value):
+        text = str(value or "").strip()
+        return text or None
+
+
+class ChatStickerRecentUpdateRequest(BaseModel):
+    """Versioned recents sync.
+
+    ``ops`` — ordered delta ops applied sequentially over the server rail.
+    Because a delta only names stickers the device actually acted on, a stale
+    ``base_version`` cannot resurrect entries another device cleared or
+    removed; a mismatch is logged, never rejected (ops are idempotent).
+    ``sticker_ids`` — legacy "bump-head" merge: the device's current rail,
+    newest first, becomes the FRONT and the server tail is preserved. Ignored
+    when ``ops`` is non-empty; still used by the version-0 local migration.
+    ``base_version`` — optional last seen ``version``; advisory only.
+    ``clear`` — with ``ops``: an implicit leading ``clear`` op; with legacy
+    ``sticker_ids``: replace the rail with exactly ``sticker_ids``
+    (``[]`` empties it).
+    """
+    sticker_ids: list[str] = Field(default_factory=list)
+    base_version: Optional[int] = Field(default=None, ge=0)
+    clear: bool = False
+    ops: list[ChatStickerRecentOp] = Field(default_factory=list, max_length=500)
+
+
+class ChatStickerPackOrderRequest(BaseModel):
+    pack_ids: list[str] = Field(default_factory=list)
+
+
 class ChatUnreadSummaryResponse(BaseModel):
     messages_unread_total: int = 0
     conversations_unread: int = 0

@@ -32,7 +32,10 @@ test.use({ actionTimeout: 20_000 });
 
 // ── Инструментация: коммиты (PerformedWork), longtask, t0 по capture ──
 const installHook = () => {
-  window.__perf = { t0: null, commits: [], longTasks: [] };
+  // profiles: обязателен — ChatPerfProbe (react <Profiler> в profiling-
+  // сборке) пишет в window.__perf.profiles[id] на каждый коммит; без поля
+  // onRender падает TypeError'ом и роут уходит в RouteErrorBoundary.
+  window.__perf = { t0: null, commits: [], longTasks: [], profiles: {} };
   window.__longTasks = window.__perf.longTasks;
   const hook = {
     renderers: new Map(),

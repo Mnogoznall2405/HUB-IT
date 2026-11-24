@@ -468,7 +468,74 @@ class ChatUserStickerPack(Base):
         nullable=False,
         index=True,
     )
+    # Picker ordering set by POST /chat/sticker-packs/order; ties fall back to added_at.
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatUserFavoriteSticker(Base):
+    """One sticker pinned to a user's favorites.
+
+    References the sticker itself, not the pack membership: favorites survive
+    pack uninstall while the shared sticker files stay in storage.
+    """
+
+    __tablename__ = "chat_user_favorite_stickers"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "sticker_id", name="uq_chat_user_favorite_stickers_user_sticker"),
+        Index("ix_chat_user_favorite_stickers_user_added", "user_id", "added_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    sticker_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_stickers"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatUserRecentSticker(Base):
+    """One sticker in a user's recents rail; ``position`` 0 is the newest."""
+
+    __tablename__ = "chat_user_recent_stickers"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "sticker_id", name="uq_chat_user_recent_stickers_user_sticker"),
+        Index("ix_chat_user_recent_stickers_user_position", "user_id", "position"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    sticker_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_stickers"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class ChatUserRecentStickerState(Base):
+    """Per-user recents-sync state.
+
+    ``version`` is a monotonic counter bumped on every ``PUT
+    /chat/stickers/recent``. It lets clients detect that another device synced
+    in between (``base_version`` mismatch on write) and distinguishes "never
+    synced" (no row, version 0) from "explicitly cleared" (row with a bumped
+    version and an empty rail). The row is created lazily on the first PUT.
+    """
+
+    __tablename__ = "chat_user_recent_sticker_state"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class ChatAttachmentPreview(Base):
