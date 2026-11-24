@@ -299,7 +299,7 @@ describe('useMailReadMutations', () => {
     expect(rollbackUpdater({ unread_count: 4 })).toEqual({ unread_count: 5 });
   });
 
-  it('clears optimistic overrides and delegates credentials errors on mutation failure', async () => {
+  it('rolls optimistic overrides back to the previous state and delegates credentials errors on mutation failure', async () => {
     const requestError = new Error('auth required');
     const mailAPI = createMailAPI({
       markAsUnread: vi.fn(async () => {
@@ -331,7 +331,7 @@ describe('useMailReadMutations', () => {
 
     const overrideKey = getReadStateOverrideKey({ mode: 'messages', targetId: 'msg-2' });
     expect(mutationResult).toBe(false);
-    expect(result.current.refs.localReadStateOverridesRef.current.has(overrideKey)).toBe(false);
+    expect(result.current.refs.localReadStateOverridesRef.current.get(overrideKey)?.isRead).toBe(true);
     expect(props.refreshList).toHaveBeenCalledWith({ silent: true, force: true });
     expect(props.refreshFolderSummary).toHaveBeenCalledWith({ force: true });
     expect(props.handleMailCredentialsRequired).toHaveBeenCalledWith(requestError, 'Не удалось изменить статус письма.');

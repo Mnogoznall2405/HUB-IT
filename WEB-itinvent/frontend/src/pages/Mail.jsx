@@ -1518,6 +1518,7 @@ function MailWorkspace() {
     getMailErrorDetailAsync,
     setError,
     formatFullDate,
+    uiTheme: mailRenderColorScheme,
   });
 
   const requestCloseComposeThen = useMailComposeCloseThen({

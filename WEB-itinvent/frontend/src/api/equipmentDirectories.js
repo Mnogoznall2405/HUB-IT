@@ -38,9 +38,10 @@ export const equipmentDirectoriesAPI = {
     return response.data;
   },
 
-  searchOwners: async (query, limit = 20) => {
+  searchOwners: async (query, limit = 20, { signal } = {}) => {
     const response = await apiClient.get('/equipment/owners/search', {
       params: { q: query, limit },
+      ...(signal ? { signal } : {}),
     });
     return response.data;
   },
