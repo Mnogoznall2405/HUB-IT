@@ -755,6 +755,9 @@ function Networks() {
     setMapPoints(data?.points || []);
     setAudit(data?.audit || []);
     setSockets(data?.sockets || []);
+    if (data?.socketsTruncated) {
+      pushWarningToast('Список розеток достиг лимита 10000 — показаны не все записи.');
+    }
 
     // Store errors for user notification
     if (data?.errors) {
@@ -793,7 +796,7 @@ function Networks() {
     } else {
       setSelectedMapId(null);
     }
-  }, [notifyError]);
+  }, [notifyError, pushWarningToast]);
 
   const loadBranchContext = useCallback(async (id, force = false) => {
     if (!id) return;
@@ -827,6 +830,7 @@ function Networks() {
           points: Array.isArray(ptResult.value?.points) ? ptResult.value.points : [],
           audit: Array.isArray(auResult.value?.items) ? auResult.value.items : [],
           sockets: Array.isArray(skResult.value?.sockets) ? skResult.value.sockets : [],
+          socketsTruncated: skResult.status === 'fulfilled' && (skResult.value?.sockets?.length || 0) >= 10000,
           errors: {
             overview: ovResult.status === 'rejected' ? String(ovResult.reason?.response?.data?.detail || ovResult.reason?.message || 'Unknown error') : null,
             devices: dvResult.status === 'rejected' ? String(dvResult.reason?.response?.data?.detail || dvResult.reason?.message || 'Unknown error') : null,
@@ -898,7 +902,10 @@ function Networks() {
       return;
     }
     setAllBranchPorts(Array.isArray(data) ? data : []);
-  }, []);
+    if (Array.isArray(data) && data.length >= 10000) {
+      pushWarningToast('Список портов филиала достиг лимита 10000 — показаны не все записи.');
+    }
+  }, [pushWarningToast]);
 
   const partialRefreshSeq = useRef(0);
 
@@ -1081,7 +1088,11 @@ function Networks() {
           setBranchPortLoading(true);
           const response = await networksAPI.getBranchPorts(branchId, { search: searchValue, limit: 5000 });
           if (!active) return;
-          setBranchPortResults(Array.isArray(response?.ports) ? response.ports : []);
+          const foundPorts = Array.isArray(response?.ports) ? response.ports : [];
+          setBranchPortResults(foundPorts);
+          if (foundPorts.length >= 5000) {
+            pushWarningToast('Поиск портов достиг лимита 5000 — показаны не все результаты.');
+          }
         } catch (requestError) {
           if (!active) return;
           console.error('Failed to search branch ports:', requestError);
@@ -1097,7 +1108,7 @@ function Networks() {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [branchIdNum, notifyError, portSearch, getErrorDetail]);
+  }, [branchIdNum, notifyError, portSearch, getErrorDetail, pushWarningToast]);
 
   useEffect(() => {
     let currentUrl = '';
@@ -2082,7 +2093,11 @@ function Networks() {
       }
       if (isBranchWidePortSearch && branchIdNum) {
         const response = await networksAPI.getBranchPorts(branchIdNum, { search: String(portSearch || '').trim(), limit: 5000 });
-        setBranchPortResults(Array.isArray(response?.ports) ? response.ports : []);
+        const foundPorts = Array.isArray(response?.ports) ? response.ports : [];
+        setBranchPortResults(foundPorts);
+        if (foundPorts.length >= 5000) {
+          pushWarningToast('Поиск портов достиг лимита 5000 — показаны не все результаты.');
+        }
       }
       await refreshBranchContext();
       notifySuccess(`Порт ${portDraft.port_name || port.port_name} обновлён.`);

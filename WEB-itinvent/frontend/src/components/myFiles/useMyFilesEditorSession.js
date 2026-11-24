@@ -143,6 +143,7 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
     let refreshRequested = false;
     let retryTimer = null;
     let readyTimer = null;
+    let closeFallbackTimer = null;
     let controller = null;
     let attempt = 0;
     let frameReady = false;
@@ -220,7 +221,11 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
         update({ phase: 'refreshing', message: 'Восстанавливаем документ через HUB…' });
         if (!inFlight) schedule('refresh', 0);
       },
-      onRequestClose: () => { if (!disposed) callbacks.current.onRequestClose?.(); },
+      onRequestClose: () => {
+        clearTimeout(closeFallbackTimer);
+        closeFallbackTimer = null;
+        if (!disposed) callbacks.current.onRequestClose?.();
+      },
       onMetaChange: (event) => {
         if (disposed || terminal || typeof event?.data?.title !== 'string') return;
         const title = event.data.title.trim();
@@ -457,7 +462,25 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
         else setRestart((value) => value + 1);
       },
       close: () => {
-        if (editor && frameReady && typeof editor.requestClose === 'function') editor.requestClose();
+        if (editor && frameReady && typeof editor.requestClose === 'function') {
+          // Упавший iframe DocSpace может не ответить на requestClose() —
+          // локальный fallback, иначе закрытие виснет навсегда (FE-0110).
+          clearTimeout(closeFallbackTimer);
+          closeFallbackTimer = setTimeout(() => {
+            closeFallbackTimer = null;
+            if (disposed) return;
+            if (dirty || unsaved) setDiscardAction('close');
+            else callbacks.current.onRequestClose?.();
+          }, 6000);
+          try {
+            editor.requestClose();
+          } catch {
+            clearTimeout(closeFallbackTimer);
+            closeFallbackTimer = null;
+            if (dirty) setDiscardAction('close');
+            else callbacks.current.onRequestClose?.();
+          }
+        }
         else if (dirty) setDiscardAction('close');
         else callbacks.current.onRequestClose?.();
       },
@@ -468,6 +491,7 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
       controller?.abort();
       clearTimeout(retryTimer);
       clearTimeout(readyTimer);
+      clearTimeout(closeFallbackTimer);
       clearInterval(checkpointTimer);
       clearInterval(presenceTimer);
       window.removeEventListener('online', online);
