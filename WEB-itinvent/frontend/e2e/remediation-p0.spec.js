@@ -1,0 +1,271 @@
+import { test, expect, request } from '@playwright/test';
+import { createHmac } from 'node:crypto';
+
+// Remediation P0 browser checks on the dedicated 2FA stack (policy=all).
+// Covers FE-0197/0198 (2FA + trusted-device post-auth flow) and
+// FE-0059/0083 (multi-tab refresh rotation, lost-response grace, logout
+// propagation). All data is synthetic — SQLite seed users only.
+
+const ADMIN = { user: 'e2e_admin', pass: 'e2e-local-admin-pass' };
+const FRESH = { user: 'e2e_fresh', pass: 'e2e-local-fresh-pass' };
+const BACKEND = 'http://127.0.0.1:18002';
+
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+const base32Decode = (input) => {
+  const clean = String(input).toUpperCase().replace(/[^A-Z2-7]/g, '');
+  let bits = 0;
+  let value = 0;
+  const out = [];
+  for (const ch of clean) {
+    value = (value << 5) | B32.indexOf(ch);
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(out);
+};
+
+const totp = (secret, offsetSteps = 0) => {
+  const key = base32Decode(secret);
+  const counter = Math.floor(Date.now() / 30000) + offsetSteps;
+  const msg = Buffer.alloc(8);
+  msg.writeBigUInt64BE(BigInt(counter));
+  const hmac = createHmac('sha1', key).update(msg).digest();
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const code = ((hmac[offset] & 0x7f) << 24) | (hmac[offset + 1] << 16) | (hmac[offset + 2] << 8) | hmac[offset + 3];
+  return String(code % 1000000).padStart(6, '0');
+};
+
+const fillCredentials = async (page, { user, pass }) => {
+  const form = page.getByTestId('password-auth-form');
+  await form.locator('input[name="username"]').fill(user);
+  await form.locator('input[name="password"]').fill(pass);
+  await form.getByRole('button', { name: 'Войти', exact: true }).click();
+};
+
+// The remember-device dialog may appear right after login. WebAuthn is not
+// available headless, so the prompt is either dismissible ('Не сейчас') or
+// reported as unsupported ('Продолжить'). Either way it must be closed.
+const dismissRememberDevicePrompt = async (page) => {
+  const dialog = page.getByTestId('login-remember-device-dialog');
+  try {
+    await dialog.waitFor({ state: 'visible', timeout: 4000 });
+  } catch {
+    return;
+  }
+  const skip = dialog.getByRole('button', { name: 'Не сейчас' });
+  const cont = dialog.getByRole('button', { name: 'Продолжить' });
+  if (await skip.isVisible().catch(() => false)) {
+    await skip.click();
+  } else if (await cont.isVisible().catch(() => false)) {
+    await cont.click();
+  } else {
+    await page.keyboard.press('Escape');
+  }
+  await dialog.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+};
+
+const waitAuthed = async (page) => {
+  await dismissRememberDevicePrompt(page);
+  // Fresh users land on the /about onboarding page (marketing shell), others on
+  // the app shell — both mean authenticated. The shared marker is: off /login.
+  await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 30_000 });
+};
+
+const submitTotpVerify = async (page, secret) => {
+  const input = page.locator('#login-totp-verify');
+  await input.waitFor({ state: 'visible', timeout: 15_000 });
+  // Desktop viewport: no auto-submit — press 'Подтвердить вход'.
+  await input.fill(totp(secret));
+  await page.getByRole('button', { name: 'Подтвердить вход' }).click();
+};
+
+// Enroll a seed user for TOTP purely through the API so browser specs can log
+// in with a code. Returns { secret, backupCodes }.
+const enrollTotpViaApi = async ({ user, pass }) => {
+  const api = await request.newContext({ baseURL: BACKEND });
+  const login = await api.post('/api/v1/auth/login', { data: { username: user, password: pass } });
+  const loginBody = await login.json();
+  if (loginBody.status !== '2fa_setup_required') {
+    throw new Error(`expected 2fa_setup_required for ${user}, got ${loginBody.status}`);
+  }
+  const challengeId = loginBody.login_challenge_id;
+  const setup = await api.post('/api/v1/auth/enable-2fa', { data: { login_challenge_id: challengeId } });
+  const setupBody = await setup.json();
+  const secret = setupBody.manual_entry_key;
+  const verify = await api.post('/api/v1/auth/verify-2fa', {
+    data: { login_challenge_id: challengeId, totp_code: totp(secret) },
+  });
+  const verifyBody = await verify.json();
+  if (verifyBody.status !== 'authenticated') {
+    throw new Error(`verify-2fa did not authenticate ${user}: ${JSON.stringify(verifyBody).slice(0, 300)}`);
+  }
+  await api.dispose();
+  return { secret, backupCodes: verifyBody.backup_codes || [] };
+};
+
+// Browser login for a TOTP-enrolled user.
+const loginWithTotp = async (page, { user, pass }, secret) => {
+  await page.goto('/login');
+  await fillCredentials(page, { user, pass });
+  await submitTotpVerify(page, secret);
+  await waitAuthed(page);
+};
+
+test('FE-0197/0198: полный 2FA flow — setup, backup-коды, повторный вход, reload без обхода', async ({ page }) => {
+  // 1) Первичный логин: политика all → setup-required → totp_setup шаг.
+  await page.goto('/login');
+  await fillCredentials(page, FRESH);
+  await page.locator('#login-totp-setup-code').waitFor({ state: 'visible', timeout: 15_000 });
+
+  // Ручной ключ за <details> — открываем и читаем секрет.
+  await page.getByText('QR-код и ручной ключ').click();
+  const secret = (await page.locator('details .font-mono').first().innerText()).trim();
+  expect(secret.length).toBeGreaterThanOrEqual(16);
+
+  // 2) Подтверждение кода → setup_complete с backup-кодами.
+  await page.locator('#login-totp-setup-code').fill(totp(secret));
+  await page.getByRole('button', { name: 'Подтвердить код' }).click();
+  await page.getByTestId('setup-complete-continue').waitFor({ state: 'visible', timeout: 15_000 });
+  const backupCodes = await page.locator('div.grid .font-mono').allInnerTexts();
+  expect(backupCodes.length).toBeGreaterThanOrEqual(4);
+  const savedBackupCode = backupCodes[0].trim();
+
+  // 3) Continue → (trusted-device prompt) → приложение.
+  await page.getByTestId('setup-complete-continue').click();
+  await waitAuthed(page);
+
+  // 4) Повторный вход: totp_verify шаг. Reload во время челленджа НЕ обходит его.
+  await page.context().clearCookies();
+  await page.goto('/login');
+  await fillCredentials(page, FRESH);
+  await page.locator('#login-totp-verify').waitFor({ state: 'visible', timeout: 15_000 });
+  await page.reload();
+  // После reload — снова password-форма, приложение недоступно.
+  await page.getByTestId('password-auth-form').waitFor({ state: 'visible', timeout: 15_000 });
+  await expect(page.getByTestId('main-layout-content')).toHaveCount(0);
+  // Повторная подача пароля возвращает на totp_verify, код пускает внутрь.
+  await fillCredentials(page, FRESH);
+  await submitTotpVerify(page, secret);
+  await waitAuthed(page);
+
+  // 5) Вход по backup-коду — работает и код одноразовый.
+  await page.context().clearCookies();
+  await page.goto('/login');
+  await fillCredentials(page, FRESH);
+  await page.locator('#login-totp-verify').waitFor({ state: 'visible', timeout: 15_000 });
+  await page.getByRole('button', { name: 'Использовать backup-код' }).click();
+  await page.locator('#login-totp-verify').fill(savedBackupCode);
+  await page.getByRole('button', { name: 'Подтвердить вход' }).click();
+  await waitAuthed(page);
+
+  // 6) Повторное использование того же backup-кода отклоняется.
+  await page.context().clearCookies();
+  await page.goto('/login');
+  await fillCredentials(page, FRESH);
+  await page.locator('#login-totp-verify').waitFor({ state: 'visible', timeout: 15_000 });
+  await page.getByRole('button', { name: 'Использовать backup-код' }).click();
+  await page.locator('#login-totp-verify').fill(savedBackupCode);
+  await page.getByRole('button', { name: 'Подтвердить вход' }).click();
+  await expect(page.getByTestId('login-top-notice')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('main-layout-content')).toHaveCount(0);
+});
+
+test('FE-0059/0083: multi-tab refresh — single-flight rotation, потеря ответа ≠ logout, отказ → logout', async ({ context }) => {
+  test.setTimeout(120_000);
+  const { secret } = await enrollTotpViaApi(ADMIN);
+
+  const page1 = await context.newPage();
+  await loginWithTotp(page1, ADMIN, secret);
+
+  // Три вкладки на одной cookie jar, все на /chat (SQLite-данные, не SQL Server).
+  const pages = [page1];
+  for (let i = 0; i < 2; i += 1) {
+    const p = await context.newPage();
+    await p.goto('/chat');
+    await p.getByTestId('chat-sidebar-list-scroll').waitFor({ state: 'visible', timeout: 30_000 });
+    pages.push(p);
+  }
+  if (!page1.url().includes('/chat')) {
+    await page1.goto('/chat');
+    await page1.getByTestId('chat-sidebar-list-scroll').waitFor({ state: 'visible', timeout: 30_000 });
+  }
+
+  // Счётчик реальных POST /auth/refresh на бэкенд.
+  let refreshCount = 0;
+  await context.route('**/api/v1/auth/refresh', async (route) => {
+    refreshCount += 1;
+    await route.continue();
+  });
+
+  // Одновременный 401 в трёх вкладках на первый запрос /chat/conversations.
+  for (const p of pages) {
+    let fired = false;
+    await p.route('**/api/v1/chat/conversations**', async (route) => {
+      if (fired || route.request().method() !== 'GET') {
+        await route.continue();
+        return;
+      }
+      fired = true;
+      await route.fulfill({ status: 401, contentType: 'application/json', body: '{"detail":"expired"}' });
+    });
+  }
+  await Promise.all(pages.map((p) => p.reload()));
+  for (const p of pages) {
+    await p.getByTestId('chat-sidebar-list-scroll').waitFor({ state: 'visible', timeout: 30_000 });
+  }
+  // Single-flight: ровно одна ротация на все три вкладки.
+  expect(refreshCount).toBe(1);
+
+  // Потеря ответа refresh (transport abort) — сессия НЕ разрушается.
+  await pages[0].route('**/api/v1/auth/refresh', (route) => route.abort());
+  let fired = false;
+  await pages[0].route('**/api/v1/chat/conversations**', async (route) => {
+    if (fired || route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
+    fired = true;
+    await route.fulfill({ status: 401, contentType: 'application/json', body: '{"detail":"expired"}' });
+  });
+  await pages[0].reload();
+  // Grace: клиент ретраит refresh (500ms) и не разлогинивает по transport-ошибке.
+  await pages[0].waitForTimeout(4000);
+  expect(pages[0].url()).toContain('/chat');
+  const userStillCached = await pages[0].evaluate(() => window.localStorage.getItem('user') !== null);
+  expect(userStillCached).toBe(true);
+  // Восстановление сети — сессия продолжается без повторного логина.
+  await pages[0].unroute('**/api/v1/auth/refresh');
+  await pages[0].unroute('**/api/v1/chat/conversations**');
+  await pages[0].reload();
+  await pages[0].getByTestId('chat-sidebar-list-scroll').waitFor({ state: 'visible', timeout: 30_000 });
+  expect(pages[0].url()).toContain('/chat');
+
+  // Дефинитивный отказ refresh (401) → auth-required → logout.
+  const page2 = pages[1];
+  await context.unroute('**/api/v1/auth/refresh');
+  // Эпоха/клейм из предыдущих фаз (<10s) могла бы замаскировать реальный refresh —
+  // чистим маркеры, чтобы гарантировать запрос на бэкенд.
+  await page2.evaluate(() => {
+    window.localStorage.removeItem('hubit.auth.refresh_epoch');
+    window.localStorage.removeItem('hubit.auth.refresh_claim');
+  });
+  await page2.route('**/api/v1/auth/refresh', (route) =>
+    route.fulfill({ status: 401, contentType: 'application/json', body: '{"detail":"refresh revoked"}' }));
+  let fired2 = false;
+  await page2.route('**/api/v1/auth/me', async (route) => {
+    if (fired2 || route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
+    fired2 = true;
+    await route.fulfill({ status: 401, contentType: 'application/json', body: '{"detail":"expired"}' });
+  });
+  await page2.reload();
+  await expect(page2).toHaveURL(/\/login/, { timeout: 30_000 });
+  // Разлогин в одной вкладке очищает shared localStorage.user.
+  const sharedUser = await page2.evaluate(() => window.localStorage.getItem('user'));
+  expect(sharedUser).toBeNull();
+});

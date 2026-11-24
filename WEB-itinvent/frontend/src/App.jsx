@@ -398,13 +398,19 @@ const LazyChatCallsProvider = lazy(() => import('./components/chat/calls/ChatCal
 const PostAuthChatCallsProvider = ({ children }) => {
   const { isAuthenticated } = useAuth();
   const [callsValue, setCallsValue] = useState(null);
-  if (!isAuthenticated()) return children;
+  const authed = isAuthenticated();
+  // The Provider must wrap children unconditionally: returning bare children
+  // before login swaps the element type at this position and React remounts the
+  // entire route subtree — destroying Login's post-auth state machine and
+  // releasing postAuthUiHold mid-flow.
   return (
-    <ChatCallsContext.Provider value={callsValue || DISABLED_CHAT_CALLS}>
+    <ChatCallsContext.Provider value={(authed && callsValue) || DISABLED_CHAT_CALLS}>
       {children}
-      <Suspense fallback={null}>
-        <LazyChatCallsProvider bare onContextValue={setCallsValue} />
-      </Suspense>
+      {authed ? (
+        <Suspense fallback={null}>
+          <LazyChatCallsProvider bare onContextValue={setCallsValue} />
+        </Suspense>
+      ) : null}
     </ChatCallsContext.Provider>
   );
 };
