@@ -20,10 +20,10 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 231,
+    "OPEN": 230,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
-    "FIXED": 37,
+    "FIXED": 38,
     "IN_PROGRESS": 2
   },
   "issues": [
@@ -4056,7 +4056,7 @@
       "id": "FE-0233",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "account",
       "page": null,
@@ -4064,10 +4064,11 @@
       "lines": "586-605,636-666: user создан/обновлён, но падение updateTaskDelegates → «Не удалось создать/обновить» + ok:false",
       "title": "Аккаунт: частичный успех create/update пользователя показывается как полный провал",
       "related": [],
-      "pr": null,
+      "pr": 27,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | partial-success delegate write reported via notifyInfo",
+      "commit": "4a10b583"
     },
     {
       "id": "FE-0234",
