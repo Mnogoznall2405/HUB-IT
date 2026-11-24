@@ -311,6 +311,13 @@ AI_PROMPT_BLOCKS_ENABLED = (
     AI_PROMPT_OPTIMIZATION_ENABLED
     and str(os.environ.get("AI_PROMPT_BLOCKS_ENABLED", "1")).strip().lower() in _AI_FLAG_ON
 )
+# A10 LLM-round optimizations. Experimental modes default OFF until accepted;
+# AI_PARALLEL_READ_TOOLS_ENABLED guards pre-existing behaviour and stays ON.
+AI_READ_FAST_PATH_ENABLED = str(os.environ.get("AI_READ_FAST_PATH_ENABLED", "0")).strip().lower() in _AI_FLAG_ON
+AI_DIRECT_READ_ENABLED = str(os.environ.get("AI_DIRECT_READ_ENABLED", "0")).strip().lower() in _AI_FLAG_ON
+AI_MEMORY_PLANNER_OPTIMIZATION_ENABLED = str(os.environ.get("AI_MEMORY_PLANNER_OPTIMIZATION_ENABLED", "0")).strip().lower() in _AI_FLAG_ON
+AI_PARALLEL_READ_TOOLS_ENABLED = str(os.environ.get("AI_PARALLEL_READ_TOOLS_ENABLED", "1")).strip().lower() in _AI_FLAG_ON
+AI_RUN_RESULT_REUSE_ENABLED = str(os.environ.get("AI_RUN_RESULT_REUSE_ENABLED", "0")).strip().lower() in _AI_FLAG_ON
 # A8 cycle 2/3: background LLM summary upgrade. Default OFF until the
 # production gate passes — runs then summarize synchronously again
 # (pre-A8 critical path, safe rollback). Must match the worker flag.
@@ -3163,6 +3170,122 @@ def get_ai_chat_runtime_metrics() -> dict[str, Any]:
     }
 
 
+# A10 §2.2: tools whose single successful result renders deterministically.
+# ACT/draft/delivery/file/meta tools are NEVER here — they always need the
+# model's confirmation narrative.
+_FAST_PATH_READ_TOOLS = frozenset({
+    "ad.mailbox.password_status", "ad.mailboxes.expiring_soon",
+    "ad.user.groups", "ad.user.lockout_status", "ad.user.logon_history",
+    "ad.user.password_status", "ad.users.expiring_soon",
+    "chat.conversations.search", "chat.users.search",
+    "directory.department.get", "directory.people.search",
+    "itinvent.acts.pending", "itinvent.analytics.summary",
+    "itinvent.audit.dismissed_with_equipment",
+    "itinvent.computers.changes", "itinvent.computers.get",
+    "itinvent.computers.search", "itinvent.computers.software_search",
+    "itinvent.consumables.search", "itinvent.database.current",
+    "itinvent.directory.branches", "itinvent.directory.departments",
+    "itinvent.directory.equipment_types", "itinvent.directory.locations",
+    "itinvent.directory.statuses", "itinvent.directory.vendors",
+    "itinvent.employee.list_equipment", "itinvent.employee.search",
+    "itinvent.entity.resolve", "itinvent.equipment.acts",
+    "itinvent.equipment.get_card", "itinvent.equipment.history",
+    "itinvent.equipment.list_by_branch", "itinvent.equipment.models_search",
+    "itinvent.equipment.search", "itinvent.equipment.search_multi_db",
+    "itinvent.equipment.search_universal",
+    "itinvent.user.by_name",
+    "kb.articles.get", "kb.articles.search",
+    "me.account.status", "me.computer.health", "me.equipment",
+    "me.files.search", "me.it_requests", "me.mailbox.quota",
+    "mfu.device.status", "mfu.devices.list", "mfu.devices.low_toner",
+    "mfu.pages.monthly",
+    "network.branch.overview", "network.dns.lookup", "network.host.info",
+    "network.host.ping", "network.ports.search", "network.socket.search",
+    "network.ssl.check",
+    "office.announcements.get", "office.mail.contacts.resolve",
+    "office.mail.get_message", "office.mail.search",
+    "office.mailbox.quota_report", "office.tasks.get",
+    "office.tasks.projects", "office.tasks.search",
+    "voice.meeting.get", "voice.meetings.search",
+    "warehouse.balances.search", "warehouse.it_requests.get",
+    "warehouse.it_requests.search",
+})
+
+
+def _try_read_fast_path_answer(
+    *,
+    tool_call: dict[str, Any] | None,
+    tool_results: list[dict[str, Any]],
+    intent_mode: str,
+    report_file_intent: bool,
+    has_meta_calls: bool,
+    template_pending: bool,
+) -> str | None:
+    """Deterministic final answer for a single unambiguous READ round.
+
+    Returns None unless every guard holds — an incomplete or ambiguous
+    result must go through the normal LLM pipeline.
+    """
+    if not AI_READ_FAST_PATH_ENABLED or tool_call is None:
+        return None
+    if has_meta_calls or template_pending or report_file_intent:
+        return None
+    if _normalize_text(intent_mode) == JEV_INTENT_ACT:
+        return None
+    tool_id = _normalize_text((tool_call or {}).get("tool_id"))
+    if tool_id not in _FAST_PATH_READ_TOOLS:
+        return None
+    real_results = [
+        r for r in (tool_results or [])
+        if isinstance(r, dict) and _normalize_text(r.get("tool_id")) == tool_id
+    ]
+    if len(real_results) != 1:
+        return None
+    result = real_results[0]
+    if not result.get("ok") or _normalize_text(result.get("error")):
+        return None
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    if data.get("truncated") or data.get("has_more"):
+        return None
+    items = data.get("items") if isinstance(data.get("items"), list) else None
+    if items:
+        # A partial list must never be presented as complete — the model
+        # paginates or states the limit itself.
+        total = data.get("total")
+        returned = data.get("returned_count", data.get("count"))
+        if isinstance(total, int) and isinstance(returned, int) and returned < total:
+            return None
+    return _format_fallback_tool_answer(real_results)
+
+
+# A10 §2.3 (experimental, default OFF): strict whole-prompt patterns for a
+# handful of self-service questions. The ENTIRE short prompt must match —
+# a keyword inside a longer request never triggers this path, and the mapped
+# tool must be enabled for this specific user.
+_DIRECT_READ_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"^.{0,40}(мой|моей|моего)\W+(рабоч\w+\W+)?телефон\W{0,5}$", re.I | re.U), "me.account.status"),
+    (re.compile(r"^.{0,40}(оборудован\w+\W+за\W+мной\W+числится|мо[еёи]\W+оборудован\w+|что\W+за\W+мной\W+числится)\W{0,5}$", re.I | re.U), "me.equipment"),
+    (re.compile(r"^.{0,40}(истека\w+\W+(мой\W+)?парол\w+|когда\W+.{0,15}пароль)\W{0,5}$", re.I | re.U), "ad.user.password_status"),
+    (re.compile(r"^.{0,30}мо[иё]\W+(активные\W+)?задач\w+\W{0,5}$", re.I | re.U), "office.tasks.search"),
+)
+
+
+def _try_direct_read_tool(request_text: str, *, tool_specs: list[dict[str, Any]]) -> str | None:
+    if not AI_DIRECT_READ_ENABLED:
+        return None
+    text = _normalize_text(request_text)
+    if not text or len(text) > 100:
+        return None
+    enabled_ids = {
+        _normalize_text((spec or {}).get("id") or (spec or {}).get("tool_id"))
+        for spec in (tool_specs or [])
+    }
+    for pattern, tool_id in _DIRECT_READ_PATTERNS:
+        if pattern.match(text):
+            return tool_id if tool_id in enabled_ids and tool_id in _FAST_PATH_READ_TOOLS else None
+    return None
+
+
 def _format_fallback_tool_answer(results: list[dict[str, Any]]) -> str:
     normalized = [item for item in list(results or []) if isinstance(item, dict)]
     if not normalized:
@@ -3195,6 +3318,27 @@ def _format_fallback_tool_answer(results: list[dict[str, Any]]) -> str:
         rows = data.get("rows") if isinstance(data.get("rows"), list) else None
         items = data.get("items") if isinstance(data.get("items"), list) else None
         preview = rows if rows is not None else items
+        if not preview:
+            # Detail/card results carry the answer in scalar fields — without
+            # them the deterministic fallback would be an empty stub.
+            _FALLBACK_SKIP_KEYS = {
+                "query", "branch_name", "returned_count", "count", "total",
+                "truncated", "has_more", "offset", "limit", "diagnostic",
+                "omitted_items", "source_tool_id", "next_offset",
+            }
+            scalar_lines: list[str] = []
+            for key, value in data.items():
+                if key in _FALLBACK_SKIP_KEYS or str(key).startswith("_"):
+                    continue
+                if isinstance(value, (str, int, float, bool)):
+                    text = _normalize_text(value)
+                    if not text:
+                        continue
+                    cap = 1500 if str(key) in {"body", "text", "content", "summary", "markdown"} else 300
+                    scalar_lines.append(f"  - {key}: {text[:cap]}")
+                if len(scalar_lines) >= 14:
+                    break
+            lines.extend(scalar_lines)
         if preview:
             for item in preview[:40]:
                 if not isinstance(item, dict):
@@ -7183,6 +7327,30 @@ class AiChatService:
 
         # Detect dependency groups for parallel execution
         dep_groups = _detect_data_dependencies(limited_calls)
+        if not AI_PARALLEL_READ_TOOLS_ENABLED:
+            # Rollback: strictly sequential, original order preserved.
+            dep_groups = [[i] for i in range(len(limited_calls))]
+
+        # A10 §2.6: per-run READ-result reuse. Key = (tool_id, normalized
+        # args); scope/user/db are already fixed inside tool_context for this
+        # run — nothing outside the run is reachable. Any mutating result
+        # invalidates the cache: a stale READ must never follow an ACT.
+        def _reuse_key(call: dict[str, Any]) -> str | None:
+            if not AI_RUN_RESULT_REUSE_ENABLED:
+                return None
+            tid = _normalize_text(call.get("tool_id"))
+            if not tid or any(marker in tid for marker in _LLM_PROJ_ACTION_MARKERS):
+                return None
+            try:
+                return tid + "|" + json.dumps(
+                    call.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str,
+                )
+            except Exception:
+                return None
+
+        def _result_is_mutating(payload: dict[str, Any]) -> bool:
+            tid = _normalize_text((payload or {}).get("tool_id"))
+            return any(marker in tid for marker in _LLM_PROJ_ACTION_MARKERS)
 
         def _execute_single_call(call: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
             """Execute a single tool call, returning (result, trace). Never raises."""
@@ -7202,6 +7370,29 @@ class AiChatService:
                 report_step = getattr(report_stage, "report_step", None)
                 if callable(report_step):
                     report_step({"id": step_id, "tool_id": tool_id, "label": step_label, "state": "running"})
+                cache_key = _reuse_key({"tool_id": tool_id, "args": prepared_args})
+                result_cache = getattr(tool_context, "_a10_result_cache", None)
+                if result_cache is None:
+                    result_cache = {}
+                    tool_context._a10_result_cache = result_cache
+                if (
+                    cache_key is not None
+                    and cache_key in result_cache
+                    and not getattr(tool_context, "_a10_mutation_seen", False)
+                ):
+                    payload, trace = result_cache[cache_key]
+                    payload = {**payload, "_a10_reused": True}
+                    trace = {
+                        **trace,
+                        "args": prepared_args,
+                        "diagnostic": {**(trace.get("diagnostic") or {}), "a10_reused": True},
+                    }
+                    if callable(report_step):
+                        report_step({
+                            "id": step_id, "tool_id": tool_id, "label": step_label,
+                            "state": "done", "duration_ms": 0,
+                        })
+                    return payload, trace
                 result, audit_row = ai_tool_registry.execute_bounded(
                     tool_id=tool_id,
                     raw_args=prepared_args,
@@ -7230,6 +7421,10 @@ class AiChatService:
                     comparison = payload_data["comparison_1c"]
                     trace["comparison_status"] = comparison.get("status")
                     trace["comparison_error_code"] = comparison.get("reason_code")
+                if _result_is_mutating(payload):
+                    tool_context._a10_mutation_seen = True
+                elif cache_key is not None and payload.get("ok") and not payload.get("error"):
+                    result_cache[cache_key] = (payload, trace)
                 return payload, trace
             except (AiRunCancelled, AiRunDeadlineExceeded):
                 raise
@@ -8554,6 +8749,43 @@ class AiChatService:
                         continue
                     raise RuntimeError(str(exc)) from exc
 
+        # A10 §2.3 (experimental): a strict whitelist of short self-service
+        # prompts runs one READ tool and renders the answer without ANY main
+        # LLM call. Uncertainty, a disabled tool or a failed result fall back
+        # to the normal pipeline below.
+        direct_read_tool_id = _try_direct_read_tool(trigger_text_for_routing, tool_specs=tool_specs)
+        if direct_read_tool_id is not None:
+            if callable(report_stage):
+                report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
+            direct_results, direct_traces = self._execute_tool_calls(
+                tool_calls=[{"tool_id": direct_read_tool_id, "args": {}}],
+                tool_context=tool_context,
+                report_stage=report_stage,
+            )
+            direct_ok = (
+                len(direct_results) == 1
+                and isinstance(direct_results[0], dict)
+                and direct_results[0].get("ok")
+                and not _normalize_text(direct_results[0].get("error"))
+            )
+            if direct_ok:
+                direct_usage: dict[str, Any] = {"direct_read_hit": True, "fast_path_hit": True}
+                extracted_context["direct_read_hit"] = True
+                extracted_context["fast_path_hit"] = True
+                return (
+                    _format_fallback_tool_answer(direct_results),
+                    [],
+                    None,
+                    direct_usage,
+                    extracted_context,
+                    direct_traces,
+                    [],
+                    sorted(routed_groups),
+                )
+            logger.info(
+                "AI direct-read result unusable, falling back to LLM pipeline: run_id=%s tool_id=%s",
+                run_id, direct_read_tool_id,
+            )
         if callable(report_stage):
             report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
         first_llm_started_at = time.perf_counter()
@@ -8585,6 +8817,7 @@ class AiChatService:
         )
         token_budget.add_usage(final_usage)
         budget_exhausted = False
+        fast_path_hit = False
         while tool_specs and tool_rounds_used < max_rounds:
             tool_calls = _normalize_tool_calls(final_payload.get("tool_calls"), limit=max_calls_per_round)
             if not tool_calls:
@@ -8708,6 +8941,27 @@ class AiChatService:
                 if callable(report_stage):
                     report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
                 final_payload = {"answer_markdown": comparison_answer, "artifacts": [], "kb_attachment_send": None}
+                break
+            # A10 §2.2: a single unambiguous successful READ is answered
+            # deterministically — the follow-up LLM call adds latency and
+            # tokens without changing the facts.
+            fast_path_answer = (
+                _try_read_fast_path_answer(
+                    tool_call=tool_calls[0] if len(tool_calls) == 1 else None,
+                    tool_results=tool_results,
+                    intent_mode=intent_mode,
+                    report_file_intent=bool(report_file_intent),
+                    has_meta_calls=bool(read_more_calls or expansion_calls),
+                    template_pending=bool(template_candidates),
+                )
+                if tool_rounds_used == 1
+                else None
+            )
+            if fast_path_answer is not None:
+                if callable(report_stage):
+                    report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
+                final_payload = {"answer_markdown": fast_path_answer, "artifacts": [], "kb_attachment_send": None}
+                fast_path_hit = True
                 break
             # Detect validation errors in this round so the model can self-correct.
             round_validation_errors: list[dict[str, Any]] = []
@@ -9105,6 +9359,9 @@ class AiChatService:
         if intent_mode in (JEV_INTENT_CHAT, JEV_INTENT_READ) and not _normalize_text(answer_markdown):
             answer_markdown = "Не удалось сформировать ответ. Пожалуйста, переформулируйте вопрос."
         extracted_context["mode_denied_calls"] = int(getattr(tool_context, "mode_denied_calls", 0) or 0)
+        if fast_path_hit:
+            final_usage["fast_path_hit"] = True
+            extracted_context["fast_path_hit"] = True
         if llm_call_records:
             final_usage["llm_calls"] = llm_call_records
         return answer_markdown, artifacts, kb_attachment_send, final_usage, extracted_context, tool_traces, generated_file_specs, sorted(routed_groups)
