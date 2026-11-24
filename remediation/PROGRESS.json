@@ -1013,8 +1013,8 @@
       "review": null,
       "notes": "",
       "pr_status": "open",
-      "commit": "4a0e3f56",
-      "note": "PR #29 fix/auth-refresh-coordination @4a0e3f56: navigator.locks serialization + localStorage epoch marker (sibling skip), exactly-one transport retry within grace replay limit, epoch on login/2FA. Vitest 271 pass (6 new + client.test.js updated). Build pass. PR open, not merged."
+      "commit": "faa065f1",
+      "note": "PR #29 fix/auth-refresh-coordination @faa065f1: navigator.locks serialization + localStorage epoch marker + lockless claim path, exactly-one transport retry, poisoned-epoch suppression after double loss, epoch on login/verify-2fa/passkey-verify (exact path match). Vitest 276 pass (11 new). Review round 1 findings fixed. PR open."
     },
     {
       "id": "FE-0060",
@@ -1433,8 +1433,8 @@
       "review": null,
       "notes": "",
       "pr_status": "open",
-      "commit": "4a0e3f56",
-      "note": "PR #29 fix/auth-refresh-coordination @4a0e3f56: navigator.locks serialization + localStorage epoch marker (sibling skip), exactly-one transport retry within grace replay limit, epoch on login/2FA. Vitest 271 pass (6 new + client.test.js updated). Build pass. PR open, not merged."
+      "commit": "faa065f1",
+      "note": "PR #29 fix/auth-refresh-coordination @faa065f1: navigator.locks serialization + localStorage epoch marker + lockless claim path, exactly-one transport retry, poisoned-epoch suppression after double loss, epoch on login/verify-2fa/passkey-verify (exact path match). Vitest 276 pass (11 new). Review round 1 findings fixed. PR open."
     },
     {
       "id": "FE-0084",
