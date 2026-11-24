@@ -318,7 +318,7 @@
       "id": "FE-0017",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "chat",
       "page": null,
@@ -326,10 +326,11 @@
       "lines": "426:1",
       "title": "ESLint: 1 error + 1143/735 warnings (chat/mail)",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0018",
@@ -465,7 +466,7 @@
       "id": "FE-0026",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "chat",
       "page": null,
@@ -473,10 +474,11 @@
       "lines": "1820-1856 (outline none: 1853-1856)",
       "title": "Невидимый фокус: ChatBubble (кнопка выделения), ToastHistoryList (role=button)",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0027",
@@ -1361,7 +1363,7 @@
       "id": "FE-0078",
       "severity": "High",
       "auditStatus": "Fixed-externally",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "VERIFY",
       "batch": "chat",
       "page": null,
@@ -1369,16 +1371,17 @@
       "lines": "657,1107-1186 (offline queue + flushQueue); слияние в ленте — useChatThreadMessageMerge.js",
       "title": "Чат: авто-реотправленное после офлайна сообщение исчезает из ленты отправителя до перезагрузки",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": "Fixed-externally: verify fix present in main + regression tests"
+      "notes": "Fixed-externally: verify fix present in main + regression tests",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0079",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "chat",
       "page": null,
@@ -1386,16 +1389,17 @@
       "lines": "591 (set true),855-859 (finally сбрасывает только если activeConversationIdRef===id),895",
       "title": "Чат: loadingOlder залипает true при смене диалога — дозагрузка истории мёртва",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0080",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "chat",
       "page": null,
@@ -1405,16 +1409,17 @@
       "related": [
         "FE-0060"
       ],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0081",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "chat",
       "page": null,
@@ -1422,16 +1427,17 @@
       "lines": "112-124,139-172",
       "title": "Чат: pending read-receipt IDs сбрасываются при переключении диалога",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0082",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "chat",
       "page": null,
@@ -1439,10 +1445,11 @@
       "lines": "543-560",
       "title": "Чат: коллизия typing-таймаутов между диалогами — сброс чужого индикатора",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0083",
@@ -3853,7 +3860,7 @@
       "id": "FE-0220",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "chat",
       "page": null,
@@ -3861,16 +3868,17 @@
       "lines": "112-119,137,202-237; аналогично applySelectedImageEdit/resetSelectedImageEdit 274-312,324-355",
       "title": "Чат: гонка подготовки файлов — guard на render-state теряет уже подготовленные файлы",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0221",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "REJECTED",
       "priority": "P2",
       "batch": "chat",
       "page": null,
@@ -3881,13 +3889,13 @@
       "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "Deliberate resilience: ChatThread tests assert long-press survives native touchcancel"
     },
     {
       "id": "FE-0222",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "chat",
       "page": null,
@@ -3895,16 +3903,17 @@
       "lines": "344-409 + useChatFileSending.js:503,538-541 (uploadAttempt не сохраняется)",
       "title": "Чат: retryFailedMessage без busy-guard → параллельные повторные отправки (файлы — полный re-upload)",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0223",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "chat",
       "page": null,
@@ -3912,16 +3921,17 @@
       "lines": "634-651: sendVoiceFile без AbortController и вне fileUploadAbortRef/sendingFiles",
       "title": "Чат: отправка голосового не отменяется и не координируется с отправкой файлов",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0224",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "chat",
       "page": null,
@@ -3929,16 +3939,17 @@
       "lines": "156-164 vs 139-154 (первичная загрузка с cancelled)",
       "title": "Чат: chat-sticker-packs-changed перезагружает паки без guard на размонтирование",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0225",
       "severity": "Low",
       "auditStatus": "Fixed-externally",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "VERIFY",
       "batch": "chat",
       "page": null,
@@ -3946,10 +3957,11 @@
       "lines": "354-369,685-728",
       "title": "Чат: отправка стикера — guard через render-state → возможен двойной send без client_message_id",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": "Fixed-externally: verify fix present in main + regression tests"
+      "notes": "Fixed-externally: verify fix present in main + regression tests",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0226",
@@ -3972,7 +3984,7 @@
       "id": "FE-0227",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "chat",
       "page": null,
@@ -3980,10 +3992,11 @@
       "lines": "213-227 + useChatStickerMediaActivity.js:97-111",
       "title": "Чат: video-стикер перекачивается при возврате во viewport (src+preload=auto)",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0228",
@@ -4006,7 +4019,7 @@
       "id": "FE-0229",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "chat",
       "page": null,
@@ -4014,10 +4027,11 @@
       "lines": "375-509: нет ArrowUp/Down/roving tabindex",
       "title": "Чат: контекстное меню сообщения декларирует role=menu/menuitem без клавиатурной навигации",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0230",
@@ -4473,7 +4487,7 @@
       "id": "FE-0255",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "chat",
       "page": null,
@@ -4481,10 +4495,11 @@
       "lines": "129: void revealMessage().then((found)=>...) без .catch",
       "title": "Чат: revealMessage().then без .catch — unhandled rejection при падении поиска сообщения",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0256",
@@ -5315,7 +5330,7 @@
       "id": "FE-0304",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "chat",
       "page": null,
@@ -5323,10 +5338,11 @@
       "lines": "1957-1967: getUsers без requestId/abort",
       "title": "Чат: loadAddMembersUsers без seq-guard — устаревшие результаты поиска при быстром вводе",
       "related": [],
-      "pr": null,
+      "pr": "#45",
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "ea9ca06b"
     },
     {
       "id": "FE-0305",
