@@ -20,10 +20,10 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 32,
+    "OPEN": 31,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
-    "FIXED": 235,
+    "FIXED": 236,
     "IN_PROGRESS": 2,
     "updated": "2026-11-24"
   },
@@ -2471,7 +2471,7 @@
       "id": "FE-0138",
       "severity": "Info",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "desktop",
       "page": null,
@@ -2479,10 +2479,10 @@
       "lines": "240-276",
       "title": "Попытка запуска hubit:// протокола при браузерном входе — console-ошибка «scheme does not have a registered handler»",
       "related": [],
-      "pr": null,
+      "pr": 62,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "Автозапуск убран из DesktopProtocolHandoff (FE-0254); оставшиеся вызовы — только явные клики/выделенная handoff-страница"
     },
     {
       "id": "FE-0139",
