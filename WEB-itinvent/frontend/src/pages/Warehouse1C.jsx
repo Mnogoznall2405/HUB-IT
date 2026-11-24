@@ -477,6 +477,89 @@ function BalanceMobileRow({ row, onShowMovement, onOpenHubMatch }) {
   );
 }
 
+export function MovementTableRow({ row, onOpenDetail }) {
+  const canOpen = canOpenMovementDetail(row);
+  return (
+    <TableRow
+      hover
+      role={canOpen ? 'button' : undefined}
+      tabIndex={canOpen ? 0 : undefined}
+      onClick={canOpen ? () => onOpenDetail?.(row) : undefined}
+      onKeyDown={canOpen ? (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpenDetail?.(row);
+        }
+      } : undefined}
+      sx={canOpen ? { cursor: 'pointer' } : undefined}
+    >
+      <TableCell>
+        {canOpen ? (
+          <Tooltip title="Открыть карточку документа">
+            <Typography variant="body2" component="span" color="primary.main">
+              {row.registrar_name || '-'}
+            </Typography>
+          </Tooltip>
+        ) : (
+          row.registrar_name || '-'
+        )}
+      </TableCell>
+      <TableCell>
+        {row.transfer_from_warehouse_name || row.transfer_to_warehouse_name ? (
+          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ whiteSpace: 'nowrap' }}>
+            <Typography variant="body2">{row.transfer_from_warehouse_name || '-'}</Typography>
+            <TrendingFlatIcon fontSize="small" color="action" />
+            <Typography variant="body2">{row.transfer_to_warehouse_name || '-'}</Typography>
+          </Stack>
+        ) : (
+          '-'
+        )}
+      </TableCell>
+      <TableCell>{formatDate(row.period)}</TableCell>
+      <TableCell align="right">{formatNumber(row.qty_start, 3)}</TableCell>
+      <TableCell align="right">{formatNumber(row.qty_in, 3)}</TableCell>
+      <TableCell align="right">{formatNumber(row.qty_out, 3)}</TableCell>
+      <TableCell align="right">{formatNumber(row.qty_end, 3)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_start)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_in)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_out)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_end)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_accounting_start)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_accounting_in)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_accounting_out)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_accounting_end)}</TableCell>
+      <TableCell align="right">{formatNumber(row.avg_price_start)}</TableCell>
+      <TableCell align="right">{formatNumber(row.avg_price_end)}</TableCell>
+      <TableCell>{formatDocRequisite(row.torg12_number, row.torg12_date)}</TableCell>
+      <TableCell>{formatDocRequisite(row.invoice_number, row.invoice_date)}</TableCell>
+    </TableRow>
+  );
+}
+
+export function BalanceNomenclatureCell({ row, onOpenHubMatch }) {
+  return (
+    <TableCell
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpenHubMatch?.(row)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpenHubMatch?.(row);
+        }
+      }}
+      sx={{
+        cursor: 'pointer',
+        '&:hover .wh-nomenclature-name': { textDecoration: 'underline' },
+      }}
+    >
+      <Box className="wh-nomenclature-name">
+        <NomenclatureCell code={row.nomenclature_code} name={row.nomenclature_name} />
+      </Box>
+    </TableCell>
+  );
+}
+
 function MovementMobileRow({ row, onOpenDetail }) {
   const [expanded, setExpanded] = useState(false);
   const canOpen = canOpenMovementDetail(row);
@@ -1972,17 +2055,7 @@ function Warehouse1C() {
                         key={`${row.nomenclature_ref}|${row.series_ref}|${row.warehouse_ref}|${index}`}
                         hover
                       >
-                        <TableCell
-                          onClick={() => handleOpenHubMatch(row)}
-                          sx={{
-                            cursor: 'pointer',
-                            '&:hover .wh-nomenclature-name': { textDecoration: 'underline' },
-                          }}
-                        >
-                          <Box className="wh-nomenclature-name">
-                            <NomenclatureCell code={row.nomenclature_code} name={row.nomenclature_name} />
-                          </Box>
-                        </TableCell>
+                        <BalanceNomenclatureCell row={row} onOpenHubMatch={handleOpenHubMatch} />
                         <TableCell>{row.characteristic_name || '-'}</TableCell>
                         <TableCell>{row.series_name || row.series_number || '-'}</TableCell>
                         <TableCell>{row.warehouse_name || '-'}</TableCell>
@@ -2160,52 +2233,11 @@ function Warehouse1C() {
                   </TableHead>
                   <TableBody>
                     {movements.map((row, index) => (
-                      <TableRow
+                      <MovementTableRow
                         key={`${row.registrar_ref || row.registrar_name}|${row.period}|${index}`}
-                        hover
-                        onClick={canOpenMovementDetail(row) ? () => handleOpenMovementDetail(row) : undefined}
-                        sx={canOpenMovementDetail(row) ? { cursor: 'pointer' } : undefined}
-                      >
-                        <TableCell>
-                          {canOpenMovementDetail(row) ? (
-                            <Tooltip title="Открыть карточку документа">
-                              <Typography variant="body2" component="span" color="primary.main">
-                                {row.registrar_name || '-'}
-                              </Typography>
-                            </Tooltip>
-                          ) : (
-                            row.registrar_name || '-'
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {row.transfer_from_warehouse_name || row.transfer_to_warehouse_name ? (
-                            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ whiteSpace: 'nowrap' }}>
-                              <Typography variant="body2">{row.transfer_from_warehouse_name || '-'}</Typography>
-                              <TrendingFlatIcon fontSize="small" color="action" />
-                              <Typography variant="body2">{row.transfer_to_warehouse_name || '-'}</Typography>
-                            </Stack>
-                          ) : (
-                            '-'
-                          )}
-                        </TableCell>
-                        <TableCell>{formatDate(row.period)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.qty_start, 3)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.qty_in, 3)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.qty_out, 3)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.qty_end, 3)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_start)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_in)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_out)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_end)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_accounting_start)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_accounting_in)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_accounting_out)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_accounting_end)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.avg_price_start)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.avg_price_end)}</TableCell>
-                        <TableCell>{formatDocRequisite(row.torg12_number, row.torg12_date)}</TableCell>
-                        <TableCell>{formatDocRequisite(row.invoice_number, row.invoice_date)}</TableCell>
-                      </TableRow>
+                        row={row}
+                        onOpenDetail={handleOpenMovementDetail}
+                      />
                     ))}
                   </TableBody>
                 </Table>
