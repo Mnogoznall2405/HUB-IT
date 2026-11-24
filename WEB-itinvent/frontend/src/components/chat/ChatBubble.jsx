@@ -1851,8 +1851,12 @@ export function ChatBubble({
               : selected ? `0 0 0 2px ${alpha(ui.accentText || theme.palette.primary.main, 0.16)}` : ui.shadowSoft,
             cursor: 'pointer',
             outline: 'none',
-            '&:focus, &:focus-visible': {
+            '&:focus': {
               outline: 'none',
+            },
+            '&:focus-visible': {
+              outline: `2px solid ${ui.accentText || theme.palette.primary.main}`,
+              outlineOffset: 2,
             },
           }}
         >

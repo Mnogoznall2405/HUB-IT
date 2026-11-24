@@ -176,15 +176,21 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   }, [applyPackPayload]);
 
   useEffect(() => {
+    let active = true;
     const refreshPacks = () => {
       invalidateStickerPacksCache();
       const requestEpoch = getStickerPacksEpoch();
       chatStickersAPI.listPacks({ ...cacheScope, force: true })
-        .then((payload) => applyPackPayload(payload, '', requestEpoch))
+        .then((payload) => {
+          if (active) applyPackPayload(payload, '', requestEpoch);
+        })
         .catch(() => {});
     };
     window.addEventListener('chat-sticker-packs-changed', refreshPacks);
-    return () => window.removeEventListener('chat-sticker-packs-changed', refreshPacks);
+    return () => {
+      active = false;
+      window.removeEventListener('chat-sticker-packs-changed', refreshPacks);
+    };
   }, [applyPackPayload]);
 
   useEffect(() => {

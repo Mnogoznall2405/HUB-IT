@@ -1,8 +1,8 @@
 // Reproduce races and transitions through real hooks and UI actions.
 // The transport delay is controlled; message/edit/read/pin state belongs to the app.
-import React, { useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import useChatComposerSending from './useChatComposerSending';
 import useChatSelectedMessageActions from './useChatSelectedMessageActions';
 import useChatMessageMenuActions from './useChatMessageMenuActions';
@@ -17,7 +17,7 @@ import { buildChatDraftKey } from './chatHelpers';
 import { buildOptimisticTextMessage } from '../../pages/chat/chatOptimisticMessages';
 import { chatAPI } from '../../api/client';
 import { chatScheduledAPI } from '../../api/chatScheduled';
-import { chatSocket, CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, CHAT_SOCKET_AI_RUN_UPDATED_EVENT } from '../../lib/chatSocket';
+import { CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, CHAT_SOCKET_AI_RUN_UPDATED_EVENT } from '../../lib/chatSocket';
 
 vi.mock('../../api/client', () => ({ chatAPI: {
   sendMessage: vi.fn(), editChatMessage: vi.fn(), setPinnedMessage: vi.fn(), pinMessage: vi.fn(), unpinMessage: vi.fn(),

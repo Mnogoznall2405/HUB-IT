@@ -44,6 +44,7 @@ export default function useChatComposerSending({
   const internalFailedMessagesRef = useRef(new Map());
   const failedMessagesRef = failedThreadMessagesRef || internalFailedMessagesRef;
   const preparingSendsRef = useRef(new Set());
+  const retryInFlightRef = useRef(new Set());
   const composerGenerationRef = useRef(0);
   const latestComposerModeRef = useRef(null);
   latestComposerModeRef.current = {
@@ -344,12 +345,20 @@ export default function useChatComposerSending({
   const retryFailedMessageImpl = useCallback(async (messageId) => {
     const normalizedMessageId = String(messageId || '').trim();
     if (!normalizedMessageId) return false;
+    // Busy-guard: a double retry (e.g. rapid taps on the failed bubble) must
+    // not launch a parallel resend — for file resends that is a full re-upload.
+    if (retryInFlightRef.current.has(normalizedMessageId)) return false;
+    retryInFlightRef.current.add(normalizedMessageId);
     let entry = null;
     for (const byConversation of failedMessagesRef.current.values()) {
       entry = byConversation.get(normalizedMessageId) || null;
       if (entry) break;
     }
-    if (!entry) return false;
+    if (!entry) {
+      retryInFlightRef.current.delete(normalizedMessageId);
+      return false;
+    }
+    try {
     // R20: same no-gap rule as fresh sends — close the newer window before the
     // re-sent bubble lands at the real end of history.
     if (entry.conversationId === String(activeConversationIdRef.current || '').trim()) {
@@ -406,6 +415,9 @@ export default function useChatComposerSending({
       });
       notifySendFailure(error, entry.conversationId);
       return false;
+    }
+    } finally {
+      retryInFlightRef.current.delete(normalizedMessageId);
     }
   }, [
     activeConversation?.kind,
