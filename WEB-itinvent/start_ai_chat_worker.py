@@ -147,6 +147,8 @@ async def main() -> None:
                 remaining -= wave_size
                 if wave_processed == 0:
                     break
+            # A8/P1: off-critical-path LLM summary upgrades queued by runs.
+            await asyncio.to_thread(ai_chat_service.process_pending_summary_upgrade)
         except Exception:
             logger.exception("AI chat worker cycle failed")
             await asyncio.sleep(3.0)

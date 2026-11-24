@@ -1333,6 +1333,13 @@ _JEV_ROUTING_CACHE_MAX = max(50, min(5000, int(os.environ.get("AI_JEV_ROUTING_CA
 _jev_routing_cache: dict[str, tuple[float, tuple[frozenset[str], str | None]]] = {}
 _jev_routing_cache_lock = threading.Lock()
 
+# A8/P1: conversations whose summarized range was checkpointed with the
+# head/tail fallback and are queued for an async LLM-quality upgrade.
+# Keyed by (conversation_id, user_id): duplicate registrations coalesce.
+_pending_summary_upgrades: dict[tuple[str, int], int] = {}
+_pending_summary_lock = threading.Lock()
+_PENDING_SUMMARY_MAX = max(16, min(1024, int(os.environ.get("AI_SUMMARY_PENDING_MAX", "256") or 256)))
+
 
 def _jev_routing_cache_key(
     *,
@@ -4762,6 +4769,120 @@ class AiChatService:
                 logger.error("AI result delivery repair failed: run_id=%s error_type=%s", snapshot["id"], type(exc).__name__)
         return repaired
 
+    def _register_pending_summary(
+        self,
+        *,
+        conversation_id: str,
+        user_id: int,
+        reset_seq: int,
+    ) -> None:
+        key = (_normalize_text(conversation_id), int(user_id))
+        with _pending_summary_lock:
+            if len(_pending_summary_upgrades) >= _PENDING_SUMMARY_MAX and key not in _pending_summary_upgrades:
+                return
+            _pending_summary_upgrades[key] = int(reset_seq)
+
+    def process_pending_summary_upgrade(self, *, limit: int = 1) -> int:
+        """Async quality upgrade for summaries checkpointed with the head/tail
+        fallback. Recomputes the whole summarized range with the LLM and
+        compare-and-set-swaps ``rolling_summary`` — history is never lost (the
+        fallback is already persisted synchronously), and a stale result can
+        never land after a context reset or a newer checkpoint."""
+        processed = 0
+        for _ in range(max(1, int(limit or 1))):
+            with _pending_summary_lock:
+                try:
+                    key, reset_seq = _pending_summary_upgrades.popitem()
+                except KeyError:
+                    return processed
+            try:
+                self._upgrade_conversation_summary(
+                    conversation_id=key[0], user_id=key[1], reset_seq=reset_seq,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "ai_summary_upgrade failed conversation_id=%s error_type=%s",
+                    key[0], type(exc).__name__,
+                )
+            processed += 1
+        return processed
+
+    def _upgrade_conversation_summary(
+        self,
+        *,
+        conversation_id: str,
+        user_id: int,
+        reset_seq: int,
+    ) -> None:
+        normalized_conversation_id = _normalize_text(conversation_id)
+        with app_session() as app_db:
+            mapping = app_db.execute(
+                select(AppAiBotConversation).where(
+                    AppAiBotConversation.conversation_id == normalized_conversation_id,
+                    AppAiBotConversation.user_id == int(user_id),
+                )
+            ).scalar_one_or_none()
+            if mapping is None:
+                return
+            current_reset_seq = int(getattr(mapping, "context_reset_seq", 0) or 0)
+            if current_reset_seq != int(reset_seq):
+                return
+            until_seq = int(getattr(mapping, "summary_until_seq", 0) or 0)
+            if until_seq <= int(reset_seq):
+                return
+            bot = app_db.get(AppAiBot, mapping.bot_id)
+            bot_user_id = int(getattr(bot, "bot_user_id", 0) or 0) if bot is not None else 0
+            bot_title = _normalize_text(getattr(bot, "title", None)) or "AI"
+            memory_model = _normalize_text(getattr(bot, "model", None)) if bot is not None else ""
+        with chat_session() as session:
+            rows = list(
+                session.execute(
+                    select(ChatMessage)
+                    .where(
+                        ChatMessage.conversation_id == normalized_conversation_id,
+                        ChatMessage.conversation_seq > int(reset_seq),
+                        ChatMessage.conversation_seq <= until_seq,
+                        ChatMessage.is_deleted.is_(False),
+                    )
+                    .order_by(ChatMessage.conversation_seq.asc())
+                    .limit(200)
+                ).scalars()
+            )
+        if not rows:
+            return
+        summary_append_lines = [
+            f"{bot_title if int(item.sender_user_id or 0) == bot_user_id else 'Пользователь'}: "
+            f"{_truncate_tokens(_normalize_text(item.body), 300)}"
+            for item in rows
+            if _normalize_text(item.body)
+        ]
+        if not summary_append_lines:
+            return
+        rolling_summary, _usage = smart_memory.summarize(
+            "", summary_append_lines, model=memory_model,
+        )
+        if _MEMORY_SENSITIVE_RE.search(rolling_summary):
+            raise ValueError("Summary contains sensitive content")
+        rolling_summary = _truncate_tokens(rolling_summary, AI_ROLLING_SUMMARY_TOKENS)
+        with app_session() as app_db:
+            app_db.execute(
+                update(AppAiBotConversation)
+                .where(
+                    AppAiBotConversation.conversation_id == normalized_conversation_id,
+                    AppAiBotConversation.user_id == int(user_id),
+                    AppAiBotConversation.context_reset_seq == int(reset_seq),
+                    AppAiBotConversation.summary_until_seq == until_seq,
+                )
+                .values(
+                    rolling_summary=rolling_summary,
+                    updated_at=_utc_now(),
+                )
+            )
+            logger.info(
+                "ai_summary_upgrade done conversation_id=%s until_seq=%s lines=%s",
+                normalized_conversation_id, until_seq, len(summary_append_lines),
+            )
+
     def reap_stale_runs(
         self,
         *,
@@ -7810,18 +7931,15 @@ class AiChatService:
                 summary_ready = False
                 rolling_summary = fallback_summary
             elif memory_enabled:
-                try:
-                    rolling_summary, summary_usage = smart_memory.summarize(rolling_summary,
-                        summary_append_lines, model=memory_model)
-                    if _MEMORY_SENSITIVE_RE.search(rolling_summary):
-                        raise ValueError("Summary contains sensitive content")
-                    memory_usage = _merge_usage(memory_usage, summary_usage)
-                    rolling_summary = _truncate_tokens(rolling_summary, AI_ROLLING_SUMMARY_TOKENS)
-                except Exception as exc:
-                    logger.warning("ai_memory_summary_failed conversation_id=%s error_type=%s",
-                                   normalized_conversation_id, type(exc).__name__)
-                    summary_ready = False
-                    rolling_summary = fallback_summary
+                # A8/P1: LLM-саммаризация уходит из критического пути ответа —
+                # в промпт уходит head/tail fallback, а LLM-качество догоняет
+                # фоновой upgrade (см. process_pending_summary_upgrade).
+                self._register_pending_summary(
+                    conversation_id=normalized_conversation_id,
+                    user_id=int(user_payload["id"]),
+                    reset_seq=reset_seq,
+                )
+                rolling_summary = fallback_summary
             else:
                 rolling_summary = fallback_summary
             if summary_ready:
