@@ -605,7 +605,7 @@
       "id": "FE-0033",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "warehouse",
       "page": null,
@@ -613,10 +613,10 @@
       "lines": "903,923,1922,1970,2121,2162",
       "title": "Warehouse1C: списки 200-1000 строк без виртуализации/memo",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 66
     },
     {
       "id": "FE-0034",
@@ -697,7 +697,7 @@
       "id": "FE-0038",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "REJECTED",
       "priority": "P3",
       "batch": "build",
       "page": null,
@@ -705,16 +705,16 @@
       "lines": "3 (import), ~30 (plugins: tailwindcss())",
       "title": "Двойная система стилей: Tailwind (Login/чат) vs MUI sx (остальное)",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "pr": 66,
+      "notes": "Design decision: Tailwind (Login/chat) vs MUI sx — full restyle out of remediation scope; both systems co-exist intentionally."
     },
     {
       "id": "FE-0039",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "REJECTED",
       "priority": "P3",
       "batch": "theme",
       "page": null,
@@ -722,10 +722,10 @@
       "lines": "31",
       "title": "Тема light-only; AGENTS.md требует dark theme — противоречие",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "pr": 66,
+      "notes": "Design decision: light-only theme is the shipped product; dark theme per AGENTS.md is a feature request, not a bug."
     },
     {
       "id": "FE-0040",
@@ -1115,7 +1115,7 @@
       "id": "FE-0062",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "a11y-global",
       "page": null,
@@ -1123,16 +1123,16 @@
       "lines": "7",
       "title": "Viewport-мета запрещает масштабирование (maximum-scale=1.0, user-scalable=no) — WCAG 1.4.4",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 66
     },
     {
       "id": "FE-0063",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "infra",
       "page": null,
@@ -1140,10 +1140,10 @@
       "lines": "150-161",
       "title": "/robots.txt отдаёт SPA index.html (IIS fallback)",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 66
     },
     {
       "id": "FE-0064",
@@ -1167,7 +1167,7 @@
       "id": "FE-0065",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "REJECTED",
       "priority": "P3",
       "batch": "infra",
       "page": null,
@@ -1175,10 +1175,10 @@
       "lines": "186",
       "title": "CSP только Report-Only; enforce сломает drawio (нет frame-src)",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "pr": 66,
+      "notes": "CSP stays report-only: enforce requires staged rollout — drawio needs frame-src and violation reports must drain first; noted in web.config comment."
     },
     {
       "id": "FE-0066",
@@ -1256,7 +1256,7 @@
       "id": "FE-0070",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "pwa",
       "page": null,
@@ -1264,10 +1264,10 @@
       "lines": "44-54",
       "title": "Нет глобального сбора ошибок (window.onerror/unhandledrejection) — только chunk-ошибки",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 66
     },
     {
       "id": "FE-0071",
@@ -1308,7 +1308,7 @@
       "id": "FE-0073",
       "severity": "Info",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "build",
       "page": null,
@@ -1316,10 +1316,10 @@
       "lines": "42",
       "title": "quill 2.0.2 pin (история XSS); обвязка безопасна; npm audit не проводился",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 66
     },
     {
       "id": "FE-0074",
@@ -1377,7 +1377,7 @@
       "id": "FE-0077",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "REJECTED",
       "priority": "P3",
       "batch": "mail",
       "page": null,
@@ -1387,10 +1387,10 @@
       "related": [
         "FE-0056"
       ],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": "backend-scope: POST /mail/drafts/upsert-multipart slow 7-26s; needs backend optimization, out of frontend remediation scope"
+      "pr": 66,
+      "notes": "Backend perf (POST /drafts/upsert-multipart 7-26s) — outside frontend-audit remediation scope; needs backend profiling."
     },
     {
       "id": "FE-0078",
@@ -1510,7 +1510,7 @@
       "id": "FE-0084",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "pwa",
       "page": null,
@@ -1520,10 +1520,10 @@
       "related": [
         "FE-0004"
       ],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 66
     },
     {
       "id": "FE-0085",
@@ -3868,7 +3868,7 @@
       "id": "FE-0215",
       "severity": "High",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "mail-inline",
       "page": null,
@@ -3876,10 +3876,10 @@
       "lines": "524-539 + MailRichTextEditor.jsx:151-157,228-242 + mailComposeHtml.js:138-145: после saveDraftMultipart blob: отозван, DOM Quill не переписан (эффект выходит по nextValue===valueRef), buildPortableComposeHtml удаляет img как не-cid",
       "title": "Почта: inline-изображение теряется из письма после autosave черновика",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 66
     },
     {
       "id": "FE-0216",
