@@ -1,10 +1,10 @@
 """Chat sticker favorites/recents/pack-order through the real HTTP router.
 
 Covers the user-visible flow instead of isolated units: install packs -> favorite
-stickers (idempotent, isolated per user) -> recents replace with dedupe+cap ->
-pack reorder -> favorites survive pack uninstall and stay sendable. The boundary
-is HTTP on a temp SQLite chat DB, like test_e2e_chat_flow.py. The migration
-itself is checked separately through alembic upgrade/downgrade.
+stickers (idempotent, isolated per user) -> recents versioned merge-sync with
+dedupe+cap -> pack reorder -> favorites survive pack uninstall and stay sendable.
+The boundary is HTTP on a temp SQLite chat DB, like test_e2e_chat_flow.py. The
+migration itself is checked separately through alembic upgrade/downgrade.
 """
 from __future__ import annotations
 
@@ -295,10 +295,138 @@ def test_recents_replace_orders_dedupes_and_caps(sticker_env):
     assert _favorite_ids(listed.json()) == ["st-1", "st-2", "st-3"]
     assert listed.json()["items"][0]["pack_short_name"] == "testpack_delta"
 
-    # Full replace drops the old rail and caps the stored list at 50.
+    # A merge PUT puts the payload in front and keeps server-only entries in
+    # place; the rail is still capped at 50.
     big = client.put("/chat/stickers/recent", json={"sticker_ids": sticker_ids})
     assert big.status_code == 200, big.text
     assert _favorite_ids(big.json()) == sticker_ids[:50]
+
+
+def test_recents_merge_sync_versions_and_clear(sticker_env):
+    """Two devices merge instead of clobbering; every PUT bumps ``version``."""
+    client = sticker_env.client
+    _seed_pack(
+        storage_root=sticker_env.storage_root,
+        pack_id="pack-merge",
+        short_name="testpack_merge",
+        title="Merge pack",
+        sticker_ids=["m-1", "m-2", "m-3", "m-4"],
+        install_for=[1],
+    )
+
+    first = client.put("/chat/stickers/recent", json={"sticker_ids": ["m-1", "m-2"]})
+    assert first.status_code == 200, first.text
+    assert first.json()["version"] == 1
+    assert _favorite_ids(first.json()) == ["m-1", "m-2"]
+
+    # Device B uploads its own rail: server entries absent from the payload are
+    # KEPT appended after the client's front, not lost.
+    merged = client.put(
+        "/chat/stickers/recent",
+        json={"sticker_ids": ["m-4", "m-1"], "base_version": first.json()["version"]},
+    )
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["version"] == 2
+    assert _favorite_ids(merged.json()) == ["m-4", "m-1", "m-2"]
+
+    # A stale base_version is advisory: the merge still succeeds.
+    stale = client.put(
+        "/chat/stickers/recent",
+        json={"sticker_ids": ["m-3"], "base_version": 0},
+    )
+    assert stale.status_code == 200, stale.text
+    assert stale.json()["version"] == 3
+    assert _favorite_ids(stale.json()) == ["m-3", "m-4", "m-1", "m-2"]
+
+    # GET reports the current version alongside the items.
+    listed = client.get("/chat/stickers/recent")
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["version"] == 3
+
+    # An empty merge payload is a content no-op (bumps version only); an
+    # explicit clear really empties the rail.
+    noop = client.put("/chat/stickers/recent", json={"sticker_ids": []})
+    assert _favorite_ids(noop.json()) == ["m-3", "m-4", "m-1", "m-2"]
+    cleared = client.put("/chat/stickers/recent", json={"sticker_ids": [], "clear": True})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["items"] == []
+    assert client.get("/chat/stickers/recent").json()["items"] == []
+
+
+def test_recents_reject_stickers_the_user_cannot_reference(sticker_env):
+    """Recents PUT silently drops stickers outside the caller's entitlement."""
+    client = sticker_env.client
+    _seed_pack(
+        storage_root=sticker_env.storage_root,
+        pack_id="pack-own",
+        short_name="testpack_own",
+        title="Own pack",
+        sticker_ids=["own-1"],
+        install_for=[1],
+    )
+    _seed_pack(
+        storage_root=sticker_env.storage_root,
+        pack_id="pack-foreign",
+        short_name="testpack_foreign",
+        title="Foreign pack",
+        sticker_ids=["foreign-1"],
+        install_for=[2],  # installed for bob only — alice cannot reference it
+    )
+
+    pushed = client.put(
+        "/chat/stickers/recent",
+        json={"sticker_ids": ["own-1", "foreign-1", "st-missing"]},
+    )
+    assert pushed.status_code == 200, pushed.text
+    assert _favorite_ids(pushed.json()) == ["own-1"]
+    assert _favorite_ids(client.get("/chat/stickers/recent").json()) == ["own-1"]
+
+
+def test_recents_listing_hides_stickers_after_access_lost(sticker_env):
+    """GET /stickers/recent filters entries the user can no longer reference."""
+    client = sticker_env.client
+    _seed_pack(
+        storage_root=sticker_env.storage_root,
+        pack_id="pack-gone",
+        short_name="testpack_gone",
+        title="Gone pack",
+        sticker_ids=["gone-1", "gone-2"],
+        install_for=[1],
+    )
+    client.put("/chat/stickers/recent", json={"sticker_ids": ["gone-1", "gone-2"]})
+    # Favorite one sticker: it keeps its entitlement via the favorites row.
+    assert client.put("/chat/stickers/favorites/gone-1").status_code == 200
+
+    assert client.delete("/chat/sticker-packs/pack-gone").status_code == 200
+
+    listed = client.get("/chat/stickers/recent")
+    assert listed.status_code == 200, listed.text
+    assert _favorite_ids(listed.json()) == ["gone-1"]  # favorite still allowed
+
+
+def test_received_sticker_can_be_added_to_recents(sticker_env):
+    """A sticker received in a conversation is referenceable without the pack."""
+    client, set_user = sticker_env.client, sticker_env.set_user
+    _seed_pack(
+        storage_root=sticker_env.storage_root,
+        pack_id="pack-h",
+        short_name="testpack_theta",
+        title="Theta pack",
+        sticker_ids=["st-h1"],
+        install_for=[1],
+    )
+    conversation = client.post("/chat/conversations/direct", json={"peer_user_id": 2})
+    conversation_id = conversation.json()["id"]
+    sent = client.post(
+        f"/chat/conversations/{conversation_id}/messages/sticker",
+        json={"sticker_id": "st-h1", "client_message_id": "sticker-recents-for-bob"},
+    )
+    assert sent.status_code == 200, sent.text
+
+    set_user(2)  # bob never installed the pack but received the sticker.
+    pushed = client.put("/chat/stickers/recent", json={"sticker_ids": ["st-h1"]})
+    assert pushed.status_code == 200, pushed.text
+    assert _favorite_ids(pushed.json()) == ["st-h1"]
 
 
 def test_pack_order_persists_in_pack_listing(sticker_env):
@@ -473,8 +601,51 @@ def test_sticker_favorites_migration_upgrade_and_downgrade(tmp_path):
     engine.dispose()
 
 
+def test_recents_sync_state_migration_upgrade_and_downgrade(tmp_path):
+    """20261124_0178 creates the per-user recents version table, then rolls back."""
+    revision = "20261124_0178"
+    parent = "20261124_0177"
+    engine = sa.create_engine(f"sqlite:///{(tmp_path / 'mig178.db').as_posix()}")
+    cfg = _alembic_config(str(engine.url))
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE chat_conversations (id VARCHAR(36) PRIMARY KEY)")
+        connection.exec_driver_sql(
+            "CREATE TABLE chat_user_recent_stickers (id INTEGER PRIMARY KEY, "
+            "user_id INTEGER NOT NULL, sticker_id VARCHAR(64) NOT NULL, "
+            "position INTEGER NOT NULL)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO chat_user_recent_stickers (id, user_id, sticker_id, position) "
+            "VALUES (1, 7, 'st-keep', 0)"
+        )
+
+    command.stamp(cfg, parent)
+    command.upgrade(cfg, revision)
+    inspector = sa.inspect(engine)
+    assert inspector.has_table("chat_user_recent_sticker_state")
+    state_columns = {
+        col["name"] for col in inspector.get_columns("chat_user_recent_sticker_state")
+    }
+    assert state_columns >= {"user_id", "version", "updated_at"}
+
+    command.upgrade(cfg, revision)  # create-if-missing: applying again is a no-op.
+
+    # Existing recents rows survive the migration untouched.
+    with engine.connect() as connection:
+        rows = connection.exec_driver_sql(
+            "SELECT user_id, sticker_id FROM chat_user_recent_stickers"
+        ).fetchall()
+    assert rows == [(7, "st-keep")]
+
+    command.downgrade(cfg, parent)
+    inspector = sa.inspect(engine)
+    assert not inspector.has_table("chat_user_recent_sticker_state")
+    assert inspector.has_table("chat_user_recent_stickers")
+    engine.dispose()
+
+
 def test_sticker_favorites_revision_is_the_single_head_descendant():
     cfg = _alembic_config("sqlite:///unused.db")
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
-    assert heads == ["20261124_0177"], heads
+    assert heads == ["20261124_0178"], heads

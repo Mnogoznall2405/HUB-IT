@@ -13,6 +13,7 @@ from backend.chat.schemas import (
     ChatStickerPackListResponse,
     ChatStickerPackOrderRequest,
     ChatStickerPackResponse,
+    ChatStickerRecentListResponse,
     ChatStickerRecentUpdateRequest,
     ChatStickerSendRequest,
 )
@@ -203,7 +204,7 @@ async def remove_chat_favorite_sticker(
         _raise_sticker_error(exc)
 
 
-@router.get("/stickers/recent", response_model=ChatStickerListResponse)
+@router.get("/stickers/recent", response_model=ChatStickerRecentListResponse)
 async def list_chat_recent_stickers(
     current_user: User = Depends(require_permission(PERM_CHAT_READ)),
 ):
@@ -216,7 +217,7 @@ async def list_chat_recent_stickers(
         _raise_sticker_error(exc)
 
 
-@router.put("/stickers/recent", response_model=ChatStickerListResponse)
+@router.put("/stickers/recent", response_model=ChatStickerRecentListResponse)
 async def replace_chat_recent_stickers(
     payload: ChatStickerRecentUpdateRequest,
     current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
@@ -226,6 +227,8 @@ async def replace_chat_recent_stickers(
             telegram_sticker_service.replace_recent_stickers,
             current_user_id=int(current_user.id),
             sticker_ids=payload.sticker_ids,
+            base_version=payload.base_version,
+            clear=payload.clear,
         )
     except Exception as exc:
         _raise_sticker_error(exc)

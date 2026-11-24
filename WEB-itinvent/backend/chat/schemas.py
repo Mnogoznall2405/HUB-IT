@@ -669,8 +669,25 @@ class ChatStickerListResponse(BaseModel):
     items: list[ChatStickerListItemResponse] = Field(default_factory=list)
 
 
+class ChatStickerRecentListResponse(ChatStickerListResponse):
+    """Recents rail plus the per-user sync ``version`` (monotonic counter,
+    bumped on every PUT; 0 until the first sync)."""
+    version: int = 0
+
+
 class ChatStickerRecentUpdateRequest(BaseModel):
+    """Versioned recents sync.
+
+    ``sticker_ids`` — the device's current rail, newest first; ids the user
+    cannot reference are dropped silently.
+    ``base_version`` — optional last seen ``version``; advisory only, a
+    mismatch never rejects the write (the server merges anyway).
+    ``clear`` — replace the rail with exactly ``sticker_ids`` instead of
+    merging (``[]`` empties it).
+    """
     sticker_ids: list[str] = Field(default_factory=list)
+    base_version: Optional[int] = Field(default=None, ge=0)
+    clear: bool = False
 
 
 class ChatStickerPackOrderRequest(BaseModel):

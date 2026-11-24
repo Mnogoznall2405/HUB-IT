@@ -520,6 +520,24 @@ class ChatUserRecentSticker(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
 
+class ChatUserRecentStickerState(Base):
+    """Per-user recents-sync state.
+
+    ``version`` is a monotonic counter bumped on every ``PUT
+    /chat/stickers/recent``. It lets clients detect that another device synced
+    in between (``base_version`` mismatch on write) and distinguishes "never
+    synced" (no row, version 0) from "explicitly cleared" (row with a bumped
+    version and an empty rail). The row is created lazily on the first PUT.
+    """
+
+    __tablename__ = "chat_user_recent_sticker_state"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class ChatAttachmentPreview(Base):
     """Durable Chat file-preview job and its published artifact metadata."""
 
