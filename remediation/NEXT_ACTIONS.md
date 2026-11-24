@@ -2,6 +2,14 @@
 
 Обновлять при каждом checkpoint. Восстановление контекста: читать `PROGRESS.json` (все 324), этот файл, `MASTER_PLAN.md`, `DECISIONS.md`.
 
+## Текущее состояние (2026-11-24, checkpoint 4)
+
+- **FIXED 24** из 324 (OPEN 244, NEEDS_EVIDENCE 12, REJECTED 42, IN_PROGRESS 2: FE-0064 чужой PR #10 + FE-0159 residual).
+- **Сессия 2 (эта)**: FE-0154 → PR **#34** (CSV formula-injection); FE-0029/0145/0153 → PR **#35** (keydown-ref, mapBusy/pointBusy, confirm-ы); FE-0036/0146/0158/0159/0160/0143/0144 → PR **#36** (`fix/networks-sites-deadcode`, **stacked на #35** — мержить после него): site code/name из данных филиала, мёртвый код (ImportDialog.jsx, mobilePortEditorOpen, hasBranchDbChanges, focusPointId, pointEditMode-проп, containerWidth), canEdit-guard на MAC sync, сброс stale map image.
+- **Networks-батч остаток**: FE-0140 (Отмена не откатывает mapPoints), FE-0141 (мобильное размещение точки), FE-0142 (жест панорамы съедается), FE-0151 (clamp панорамы), FE-0031 (ре-рендер на pointermove), FE-0030 (god-component — крупная декомпозиция, отдельная задача).
+- **Следующие батчи**: account 15, database 11, voice 9, chat 6, tasks 6, mail 5 — по PROGRESS.json `batch`.
+- **FE-0159 residual**: селектор города требует продуктового решения (нет источника списка городов).
+
 ## Текущее состояние (2026-11-23, checkpoint 3)
 
 - **P0.1 закрыт**: FE-0197/0198/0199 → PR **#23** (`fix/auth-2fa-flow`, `bcb41ca0`, open). `postAuthUiHold` + unmount cleanup; a11y диалога. Ревью: APPROVE. Follow-up: required trusted-device enrollment обходится Back/reload (pre-existing, отдельный тикет).
