@@ -254,7 +254,7 @@
       "id": "FE-0013",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "docflow",
       "page": "/address-book",
@@ -262,10 +262,11 @@
       "lines": "15",
       "title": "Address book: два запроса docflow/absences по 3.4-3.8 c на загрузке (общий + по сотруднику)",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "189bfe97",
+      "pr": 61
     },
     {
       "id": "FE-0014",
@@ -4777,7 +4778,7 @@
       "id": "FE-0266",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "company-structure",
       "page": null,
@@ -4785,10 +4786,11 @@
       "lines": "144-178: параллельные вызовы применяются в порядке resolve",
       "title": "CompanyStructure: loadTree без seq/abort-guard — устаревшее дерево побеждает и делает replaceState",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "189bfe97",
+      "pr": 61
     },
     {
       "id": "FE-0267",
@@ -4811,7 +4813,7 @@
       "id": "FE-0268",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "company-structure",
       "page": null,
@@ -4819,16 +4821,17 @@
       "lines": "45-52,316-381: .catch только гасит спиннер; elkInstancePromise остаётся rejected навсегда",
       "title": "CompanyStructureOverview: ошибка layout/импорта ELK → перманентно пустой граф без ошибки и retry",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "189bfe97",
+      "pr": 61
     },
     {
       "id": "FE-0269",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "company-structure",
       "page": null,
@@ -4836,10 +4839,11 @@
       "lines": "228-231",
       "title": "CompanyStructure: ошибка getNodePeople → setPeople([]) — ложное «нет сотрудников»",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "commit": "189bfe97",
+      "pr": 61
     },
     {
       "id": "FE-0270",
