@@ -20,10 +20,10 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 244,
+    "OPEN": 239,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
-    "FIXED": 24,
+    "FIXED": 29,
     "IN_PROGRESS": 2
   },
   "issues": [
@@ -549,7 +549,7 @@
       "id": "FE-0031",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -557,10 +557,13 @@
       "lines": "530-544,55-105",
       "title": "InteractiveMapCanvas: полный ре-рендер карты на каждый pointermove",
       "related": [],
-      "pr": null,
+      "pr": 37,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "43b356be",
+      "note": "PR #37 fix/networks-map @43b356be (stacked on #36): pan clamp 80px; stale marker flag cleared via pointerup/cancel + pointDragRef check; markers layer in useMemo + viewRef; mobile onCanvasClick wired under placingMarker; point-edit snapshot rollback on cancel/close/switch. Build pass."
     },
     {
       "id": "FE-0032",
@@ -2413,7 +2416,7 @@
       "id": "FE-0140",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2421,16 +2424,19 @@
       "lines": "2576-2603,3106-3108,3226-3228: поля мутируют mapPoints на каждый ввод; Отмена делает только setPointEditMode(false)",
       "title": "Networks: «Отмена» редактирования точки карты не откатывает локальные изменения mapPoints",
       "related": [],
-      "pr": null,
+      "pr": 37,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "43b356be",
+      "note": "PR #37 fix/networks-map @43b356be (stacked on #36): pan clamp 80px; stale marker flag cleared via pointerup/cancel + pointDragRef check; markers layer in useMemo + viewRef; mobile onCanvasClick wired under placingMarker; point-edit snapshot rollback on cancel/close/switch. Build pass."
     },
     {
       "id": "FE-0141",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2438,16 +2444,19 @@
       "lines": "2872-2873 (onPointDrop/onCanvasClick только при mobileMapEditMode); 1340-1352,337-347 ставят placingMarker, но не mobileMapEditMode; InteractiveMapCanvas.jsx:311",
       "title": "Networks: мобильный режим размещения точки не работает — клики по карте игнорируются",
       "related": [],
-      "pr": null,
+      "pr": 37,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "43b356be",
+      "note": "PR #37 fix/networks-map @43b356be (stacked on #36): pan clamp 80px; stale marker flag cleared via pointerup/cancel + pointDragRef check; markers layer in useMemo + viewRef; mobile onCanvasClick wired under placingMarker; point-edit snapshot rollback on cancel/close/switch. Build pass."
     },
     {
       "id": "FE-0142",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2455,10 +2464,13 @@
       "lines": "519/646 (isPointPointerDownRef на marker down),305-307 (сброс только в container pointerup),547/677 (stopPropagation у маркера),205",
       "title": "Networks: первый жест панорамы карты после касания маркера «съедается»",
       "related": [],
-      "pr": null,
+      "pr": 37,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "43b356be",
+      "note": "PR #37 fix/networks-map @43b356be (stacked on #36): pan clamp 80px; stale marker flag cleared via pointerup/cancel + pointDragRef check; markers layer in useMemo + viewRef; mobile onCanvasClick wired under placingMarker; point-edit snapshot rollback on cancel/close/switch. Build pass."
     },
     {
       "id": "FE-0143",
@@ -2612,7 +2624,7 @@
       "id": "FE-0151",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2620,10 +2632,13 @@
       "lines": "274-277 (setOffset без clamp),463; zoomBy:161 клампит только scale",
       "title": "Networks: панорама карты не ограничена — карту можно утащить за экран",
       "related": [],
-      "pr": null,
+      "pr": 37,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "43b356be",
+      "note": "PR #37 fix/networks-map @43b356be (stacked on #36): pan clamp 80px; stale marker flag cleared via pointerup/cancel + pointDragRef check; markers layer in useMemo + viewRef; mobile onCanvasClick wired under placingMarker; point-edit snapshot rollback on cancel/close/switch. Build pass."
     },
     {
       "id": "FE-0152",
