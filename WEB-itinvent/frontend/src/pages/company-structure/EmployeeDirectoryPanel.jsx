@@ -1,7 +1,9 @@
 import { useMemo } from 'react';
 import {
+  Alert,
   Avatar,
   Box,
+  Button,
   Chip,
   CircularProgress,
   Link,
@@ -129,7 +131,7 @@ function PersonCard({ person, highlighted = false, leadershipRole = 'staff', sho
   );
 }
 
-export default function EmployeeDirectoryPanel({ people, loading, focusedPerson }) {
+export default function EmployeeDirectoryPanel({ people, loading, error = '', onRetry, focusedPerson }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const peopleItems = Array.isArray(people) ? people : [];
@@ -203,7 +205,12 @@ export default function EmployeeDirectoryPanel({ people, loading, focusedPerson 
           <Typography variant="body2" color="text.secondary">Загружаем сотрудников…</Typography>
         </Stack>
       ) : null}
-      {!loading && peopleItems.length === 0 ? (
+      {!loading && error ? (
+        <Alert severity="warning" action={onRetry ? <Button size="small" onClick={onRetry}>Повторить</Button> : undefined}>
+          {error}
+        </Alert>
+      ) : null}
+      {!loading && !error && peopleItems.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
           Сотрудники не указаны.
         </Typography>
