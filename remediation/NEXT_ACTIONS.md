@@ -9,7 +9,17 @@
 - **FE-0233** -> PR **#27** дополнен (4a10b583, на ветке delegates): частичный успех create/update user при падении updateTaskDelegates -> notifyInfo вместо полного провала.
 - **Account остаток (следующий кластер)**: seq-guards FE-0238 (FeedbackAdminSection loadMore race), FE-0240/0241 (ItinventReferencesTab lookups seq + openDelete race), FE-0247 (шесть loader-ов в useAccountSectionData), FE-0248 (MyFilesStats.load seq); draft-loss FE-0243 (EnvVariablesTab refresh wipe), FE-0244 (AdminLoginAllowlistSettingsCard draft), FE-0245 (password groups pseudo-autosave); perf FE-0019 (30 API calls on admin load, authSessions.js).
 - **Потом**: database 11, voice 9, chat 6, tasks 6, mail 5; финал — REMEDIATION_FINAL_REPORT.md.
+## Текущее состояние (2026-11-25, checkpoint 6)
+- **FIXED 48** из 324 (OPEN 220, NEEDS_EVIDENCE 12, REJECTED 42, IN_PROGRESS 2: FE-0064 чужой PR #10 + FE-0159 residual). **Account-батч закрыт целиком (17/17).**
+- PR **#38** ix/account-guards -> main: FE-0034/0234/0235/0236/0237/0242/0249/0250/0251.
+- PR **#39** ix/account-seq-guards -> base fix/account-guards (stacked): FE-0238/0240/0241/0247/0248 — useRequestGuard на 6 loader-ов, loadMore/reload раздельные seq, deleteSeq, MyFilesStats seq.
+- PR **#40** ix/account-draft-loss -> base fix/account-seq-guards (stacked): FE-0243 (env merge-seed + dirty-confirm), FE-0244 (synced-ref в двух карточках), FE-0245 (реальный debounce-autosave групп паролей + flush on refresh/unmount).
+- PR **#41** ix/account-aibots-lazy -> base fix/account-draft-loss (stacked): FE-0019 — lazy per-bot runs на вкладке diagnostics; фан-аут ~30 запросов убран.
+- Порядок мержа account-цепочки: #38 -> #39 -> #40 -> #41 (каждый base указывает на предыдущую ветку; перед мержем очередного PR его base можно переключить на main или мержить последовательно).
+- **Следующий батч**: database 21 запись (см. PROGRESS.json batch=database). План: misc-кластер (FE-0293/0294/0295/0305/0316) -> seq/race (0283/0306/0307/0308/0309/0310/0311/0314/0315/0313/0320/0321/0287) -> a11y/layout (FE-0010 Login labels, FE-0252 overflow 200%).
+- Потом: voice 9, chat 6, tasks 6, mail 5; финал — REMEDIATION_FINAL_REPORT.md.
 ## Сессия 2 (checkpoint 4)
+
 
 
 - **FIXED 24** из 324 (OPEN 244, NEEDS_EVIDENCE 12, REJECTED 42, IN_PROGRESS 2: FE-0064 чужой PR #10 + FE-0159 residual).
