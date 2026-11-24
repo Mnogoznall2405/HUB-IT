@@ -997,7 +997,7 @@
       "id": "FE-0059",
       "severity": "High",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P0",
       "batch": "auth-refresh",
       "page": null,
@@ -1008,10 +1008,13 @@
         "FE-0015",
         "FE-0016"
       ],
-      "pr": null,
+      "pr": 29,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "4a0e3f56",
+      "note": "PR #29 fix/auth-refresh-coordination @4a0e3f56: navigator.locks serialization + localStorage epoch marker (sibling skip), exactly-one transport retry within grace replay limit, epoch on login/2FA. Vitest 271 pass (6 new + client.test.js updated). Build pass. PR open, not merged."
     },
     {
       "id": "FE-0060",
@@ -1415,7 +1418,7 @@
       "id": "FE-0083",
       "severity": "High",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P0",
       "batch": "auth-refresh",
       "page": null,
@@ -1425,10 +1428,13 @@
       "related": [
         "FE-0059"
       ],
-      "pr": null,
+      "pr": 29,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "4a0e3f56",
+      "note": "PR #29 fix/auth-refresh-coordination @4a0e3f56: navigator.locks serialization + localStorage epoch marker (sibling skip), exactly-one transport retry within grace replay limit, epoch on login/2FA. Vitest 271 pass (6 new + client.test.js updated). Build pass. PR open, not merged."
     },
     {
       "id": "FE-0084",

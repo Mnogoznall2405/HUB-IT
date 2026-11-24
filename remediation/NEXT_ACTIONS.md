@@ -2,12 +2,13 @@
 
 Обновлять при каждом checkpoint. Восстановление контекста: читать `PROGRESS.json` (все 324), этот файл, `MASTER_PLAN.md`, `DECISIONS.md`.
 
-## Текущее состояние (2026-11-23, checkpoint 2)
+## Текущее состояние (2026-11-23, checkpoint 3)
 
-- **P0.1 закрыт по коду**: FE-0197/0198/0199 → PR **#23** (`fix/auth-2fa-flow`, `0f310c9d`, open, не merged). Механизм: `postAuthUiHold` в AuthContext; LoginRoute держит `<Login/>` пока идёт post-auth UI. Тесты: 7 новых + 42 регрессии зелёные; build ок. Независимое ревью diff — проведено автором по differential-review (auth-политика не тронута).
-- **P0.3 FE-0232 в работе**: фикс закоммичен в `fix/account-delegate-integrity` @`5bc077f9` (origin/main `8c31457c`, ветка запушена, PR НЕ создан). Механизм: `taskDelegatesLoadFailed` в `useAccountSectionData.js` — при падении `getTaskDelegatesBulk` save пропускает `updateTaskDelegates` + notifyInfo вместо записи `items:[]`.
-  Осталось: (1) регрессионный тест по scaffold `useAccountSectionData.preferences.test.jsx` — bulk reject → `handleUpdateUser` не вызывает `updateTaskDelegates` + info-нотификация; control: bulk ok → PUT шлётся; (2) `vitest run` + build; (3) ревью; (4) PR → статус FIXED.
-- Далее по очереди: P0.4 FE-0239 → P0.2 FE-0059/0083 → P1.
+- **P0.1 закрыт**: FE-0197/0198/0199 → PR **#23** (`fix/auth-2fa-flow`, `bcb41ca0`, open). `postAuthUiHold` + unmount cleanup; a11y диалога. Ревью: APPROVE. Follow-up: required trusted-device enrollment обходится Back/reload (pre-existing, отдельный тикет).
+- **P0.3 закрыт**: FE-0232 → PR **#27** (`fix/account-delegate-integrity`, `d1af1245`, open). Флаг `taskDelegatesLoadFailed` + reseed драфта после save в `UsersTab.jsx`. Тесты 4 новых. Ревью выявило второй путь того же дефекта — исправлен в том же PR.
+- **P0.4 закрыт**: FE-0239 → PR **#28** (`fix/account-department-race`, `2f80488b`, open). Seq-guard в `loadMembers`, `membersDeptId`, save-time check, `selectedDepartmentIdRef`. Тесты 3 новых.
+- **P0.2 закрыт по коду**: FE-0059/0083 → PR **#29** (`fix/auth-refresh-coordination`, `4a0e3f56`, open). navigator.locks + localStorage epoch marker (sibling skip ≤10s), ровно один transport-retry в пределах grace replay, epoch на login/2FA. Тесты 6 новых + client.test.js обновлён (271 зелёный). Независимое ревью — в процессе.
+- Далее по очереди: P1 → P2+ Confirmed.
 
 ## Стартовое состояние (2026-11-23)
 
