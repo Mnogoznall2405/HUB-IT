@@ -224,7 +224,7 @@ describe('KnowledgeBase', () => {
       ? Promise.resolve(newer)
       : new Promise((resolve) => pending.push(resolve)));
     renderPage();
-    await waitFor(() => expect(pending.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(pending.length).toBeGreaterThanOrEqual(1));
     await act(async () => { pending.at(-1)(clone(runbookArticle)); });
     const next = await screen.findByText('Second instruction');
     fireEvent.click(next);

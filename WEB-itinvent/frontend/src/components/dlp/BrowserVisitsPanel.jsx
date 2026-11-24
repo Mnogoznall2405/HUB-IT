@@ -189,6 +189,7 @@ function BrowserShotButton({ host, fileName }) {
   const [busy, setBusy] = useState(false);
   const [url, setUrl] = useState('');
   const [open, setOpen] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   const openShot = async () => {
     if (!host || !fileName) return;
@@ -197,6 +198,7 @@ function BrowserShotButton({ host, fileName }) {
       return;
     }
     setBusy(true);
+    setFailed(false);
     try {
       const res = await fsEgressAPI.getBrowserMedia(host, fileName);
       const blobUrl = URL.createObjectURL(res.data);
@@ -204,6 +206,7 @@ function BrowserShotButton({ host, fileName }) {
       setOpen(true);
     } catch {
       setUrl('');
+      setFailed(true);
     } finally {
       setBusy(false);
     }
@@ -217,8 +220,15 @@ function BrowserShotButton({ host, fileName }) {
 
   return (
     <>
-      <Button size="small" variant="outlined" onClick={openShot} disabled={busy}>
-        {busy ? '…' : 'Снимок'}
+      <Button
+        size="small"
+        variant="outlined"
+        color={failed ? 'error' : 'primary'}
+        onClick={openShot}
+        disabled={busy}
+        title={failed ? 'Не удалось загрузить снимок — нажмите, чтобы повторить' : undefined}
+      >
+        {busy ? '…' : failed ? 'Снимок · ошибка' : 'Снимок'}
       </Button>
       <Dialog open={open} onClose={() => setOpen(false)} maxWidth="lg" fullWidth>
         <DialogContent sx={{ p: 1, position: 'relative' }}>
@@ -629,9 +639,19 @@ export function BrowserVisitsPanel({ host, initialDay = '', initialCategory = ''
                 <TableRow
                   key={agg.key}
                   hover
+                  tabIndex={0}
                   onClick={() => openDomainRows(agg.domain)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      openDomainRows(agg.domain);
+                    }
+                  }}
                   title={agg.domain === '—' ? 'Показать строки без домена' : `Показать URL домена ${agg.domain}`}
-                  sx={{ cursor: 'pointer' }}
+                  sx={{
+                    cursor: 'pointer',
+                    '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
+                  }}
                 >
                   <TableCell sx={{ maxWidth: 280 }}>
                     <Typography variant="body2" noWrap title={agg.domain}>
