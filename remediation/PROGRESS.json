@@ -20,10 +20,10 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 220,
+    "OPEN": 215,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
-    "FIXED": 48,
+    "FIXED": 53,
     "IN_PROGRESS": 2
   },
   "issues": [
@@ -5100,7 +5100,7 @@
       "id": "FE-0293",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "database",
       "page": null,
@@ -5108,16 +5108,17 @@
       "lines": "55-64 + lib/clipboard.js:28: handleCopy без try/catch",
       "title": "Database: unhandled rejection при провале копирования расхождений",
       "related": [],
-      "pr": null,
+      "pr": 42,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | database misc cluster",
+      "commit": "81beacae"
     },
     {
       "id": "FE-0294",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "database",
       "page": null,
@@ -5125,16 +5126,17 @@
       "lines": "344: result.failed.slice(0,5)",
       "title": "Database: список ошибок перемещения обрезан до 5 без пометки «и ещё N»",
       "related": [],
-      "pr": null,
+      "pr": 42,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | database misc cluster",
+      "commit": "81beacae"
     },
     {
       "id": "FE-0295",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "database",
       "page": null,
@@ -5142,10 +5144,11 @@
       "lines": "161-163: catch→setSearchResults([])",
       "title": "Database: ошибка поиска принтеров неотличима от «не найдено»",
       "related": [],
-      "pr": null,
+      "pr": 42,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | database misc cluster",
+      "commit": "81beacae"
     },
     {
       "id": "FE-0296",
@@ -5304,7 +5307,7 @@
       "id": "FE-0305",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "database",
       "page": null,
@@ -5312,10 +5315,11 @@
       "lines": "58: crypto.randomUUID() внутри try — нет в не-secure context (HTTP IIS); useTransferActJob.js:32-37 имеет fallback — несогласованность",
       "title": "Database: crypto.randomUUID() без fallback — перенос в другую БД падает на HTTP-развёртывании",
       "related": [],
-      "pr": null,
+      "pr": 42,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | database misc cluster",
+      "commit": "81beacae"
     },
     {
       "id": "FE-0306",
@@ -5491,7 +5495,7 @@
       "id": "FE-0316",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "database",
       "page": null,
@@ -5499,10 +5503,11 @@
       "lines": "154-168: allEquipment — grouped-объект, .length===undefined → import() никогда не выполняется",
       "title": "Database: мёртвый prefetch чанков диалогов — guard !allEquipment?.length всегда истинен",
       "related": [],
-      "pr": null,
+      "pr": 42,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": " | database misc cluster",
+      "commit": "81beacae"
     },
     {
       "id": "FE-0317",
