@@ -125,6 +125,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   // Start as loading for managers: the users effect fires after the first paint, and an initial
   // `false` renders the short "not found" row first, so the table jumps when the real rows arrive.
   const [usersLoading, setUsersLoading] = useState(canManageUsers);
+  const [taskDelegatesLoadFailed, setTaskDelegatesLoadFailed] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
   const [cleanupResult, setCleanupResult] = useState({ deactivated: 0, deleted: 0 });
@@ -242,15 +243,18 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
         custom_permissions: normalizePermissions(item?.custom_permissions),
       }));
       let usersWithDelegates = mergeTaskDelegatesIntoUsers(baseUsers, { items: [] });
+      let delegatesLoadFailed = false;
       if (baseUsers.length > 0) {
         try {
           const delegatesPayload = await authAPI.getTaskDelegatesBulk(baseUsers.map((item) => item.id));
           usersWithDelegates = mergeTaskDelegatesIntoUsers(baseUsers, delegatesPayload);
         } catch (delegateError) {
+          delegatesLoadFailed = true;
           console.error(delegateError);
         }
       }
       if (!isCurrent()) return;
+      setTaskDelegatesLoadFailed(delegatesLoadFailed);
       setUsers(usersWithDelegates);
       setBlockingError('');
     } catch (error) {
@@ -584,18 +588,30 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
         return { ok: false };
       }
       const created = await authAPI.createUser(payload);
+      let delegatesSaved = true;
       if (Array.isArray(draft.task_delegate_links) && draft.task_delegate_links.length > 0) {
-        await authAPI.updateTaskDelegates(
-          created.id,
-          normalizeTaskDelegateLinks(draft.task_delegate_links).map((item) => ({
-            delegate_user_id: Number(item.delegate_user_id),
-            role_type: item.role_type === 'deputy' ? 'deputy' : 'assistant',
-            is_active: item.is_active !== false,
-          })),
-        );
+        try {
+          await authAPI.updateTaskDelegates(
+            created.id,
+            normalizeTaskDelegateLinks(draft.task_delegate_links).map((item) => ({
+              delegate_user_id: Number(item.delegate_user_id),
+              role_type: item.role_type === 'deputy' ? 'deputy' : 'assistant',
+              is_active: item.is_active !== false,
+            })),
+          );
+        } catch {
+          delegatesSaved = false;
+        }
       }
       await loadUsers();
-      notifySuccess(`Пользователь ${created.username} создан.`, { source: 'settings', dedupeMode: 'none' });
+      if (delegatesSaved) {
+        notifySuccess(`Пользователь ${created.username} создан.`, { source: 'settings', dedupeMode: 'none' });
+      } else {
+        notifyInfo(`Пользователь ${created.username} создан, но список помощников и заместителей сохранить не удалось. Проверьте связи вручную.`, {
+          source: 'settings',
+          dedupeMode: 'none',
+        });
+      }
       return { ok: true, user: created };
     } catch (error) {
       notifyApiError(error, 'Не удалось создать пользователя.', {
@@ -634,20 +650,41 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
         my_files_quota_bytes: draft.my_files_quota_bytes ?? null,
       };
       const updated = await authAPI.updateUser(userId, payload);
-      await authAPI.updateTaskDelegates(
-        userId,
-        normalizeTaskDelegateLinks(draft.task_delegate_links).map((item) => ({
-          delegate_user_id: Number(item.delegate_user_id),
-          role_type: item.role_type === 'deputy' ? 'deputy' : 'assistant',
-          is_active: item.is_active !== false,
-        })),
-      );
+      // FE-0232: если bulk-загрузка делегатов упала, draft.task_delegate_links —
+      // это не данные пользователя, а пустой дефолт. Отправка такого списка
+      // стирает реальные связи на сервере — пропускаем запись и предупреждаем.
+      let delegatesSaved = true;
+      if (taskDelegatesLoadFailed) {
+        notifyInfo('Связи помощников и заместителей не изменены: не удалось загрузить их текущий список.', {
+          dedupeMode: 'none',
+        });
+      } else {
+        try {
+          await authAPI.updateTaskDelegates(
+            userId,
+            normalizeTaskDelegateLinks(draft.task_delegate_links).map((item) => ({
+              delegate_user_id: Number(item.delegate_user_id),
+              role_type: item.role_type === 'deputy' ? 'deputy' : 'assistant',
+              is_active: item.is_active !== false,
+            })),
+          );
+        } catch {
+          delegatesSaved = false;
+        }
+      }
       await loadUsers();
       if (canManageSessions) await loadSessions();
       if (Number(userId) === Number(user?.id)) {
         await refreshSession();
       }
-      notifySuccess(`Пользователь ${updated.username} обновлён.`, { source: 'settings', dedupeMode: 'none' });
+      if (delegatesSaved) {
+        notifySuccess(`Пользователь ${updated.username} обновлён.`, { source: 'settings', dedupeMode: 'none' });
+      } else {
+        notifyInfo(`Пользователь ${updated.username} обновлён, но список помощников и заместителей сохранить не удалось. Проверьте связи вручную.`, {
+          source: 'settings',
+          dedupeMode: 'none',
+        });
+      }
       return { ok: true, user: updated };
     } catch (error) {
       if (error?.response?.status === 404) {
@@ -667,7 +704,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     } finally {
       setSavingUser(false);
     }
-  }, [canManageSessions, loadSessions, loadUsers, notifyApiError, notifyInfo, notifySuccess, refreshSession, user?.id]);
+  }, [canManageSessions, loadSessions, loadUsers, notifyApiError, notifyInfo, notifySuccess, refreshSession, taskDelegatesLoadFailed, user?.id]);
 
   const handleDeleteUser = useCallback(async (target) => {
     try {
