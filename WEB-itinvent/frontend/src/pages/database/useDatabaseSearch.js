@@ -37,6 +37,8 @@ export const filterGroupedByType = (grouped, typeNo) => {
 
 // Row keys per single-field scope — covers both universal-search aliases
 // (lowercase) and raw ITEMS columns from loaded list pages.
+const SEARCH_RETRY_DELAY_MS = 5000;
+
 const SEARCH_FIELD_ROW_KEYS = {
   serial: ['serial_no', 'SERIAL_NO', 'hw_serial_no', 'HW_SERIAL_NO'],
   model: ['model_name', 'MODEL_NAME'],
@@ -117,6 +119,7 @@ export function useDatabaseSearch({
   const searchSeqRef = useRef(0);
   const searchNextPageRef = useRef(null);
   const searchLoadingMoreRef = useRef(false);
+  const searchRetryAtRef = useRef(0);
   // Latest loaded rows for the offline/error fallback — kept in a ref so
   // load-more never retriggers an active search or resets expansion state.
   const allEquipmentRef = useRef(allEquipment);
@@ -284,6 +287,7 @@ export function useDatabaseSearch({
     const typeNo = searchTypeNoRef.current;
     const hasTypeScope = typeNo != null && typeNo !== '';
     if (!page || (!query && !hasTypeScope) || searchLoadingMoreRef.current) return;
+    if (Date.now() < searchRetryAtRef.current) return;
 
     const seq = searchSeqRef.current;
     searchLoadingMoreRef.current = true;
@@ -309,9 +313,12 @@ export function useDatabaseSearch({
         const pages = Number(response?.pages) || respPage;
         searchNextPageRef.current = respPage < pages ? respPage + 1 : null;
         setSearchHasMore(respPage < pages);
+        searchRetryAtRef.current = 0;
       })
       .catch(() => {
-        // Keep what we have; next sentinel intersection retries the same page.
+        // Keep what we have; next sentinel intersection retries the same page,
+        // throttled so a dead endpoint does not produce a request storm.
+        searchRetryAtRef.current = Date.now() + SEARCH_RETRY_DELAY_MS;
       })
       .finally(() => {
         searchLoadingMoreRef.current = false;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { equipmentAPI } from '../../api/client';
 
@@ -26,8 +26,20 @@ export function useDatabaseRecentCards({
 } = {}) {
   const [recentCards, setRecentCards] = useState([]);
   const [recentCardsLoading, setRecentCardsLoading] = useState(false);
+  const recentSeqRef = useRef(0);
+  const dbNameRef = useRef(dbName);
+  dbNameRef.current = dbName;
+
+  useEffect(() => {
+    recentSeqRef.current += 1;
+    setRecentCards([]);
+    setRecentCardsLoading(false);
+  }, [dbName]);
 
   const refreshRecentCards = useCallback(async () => {
+    const seq = ++recentSeqRef.current;
+    const scope = dbNameRef.current;
+    const isCurrent = () => seq === recentSeqRef.current && scope === dbNameRef.current;
     if (!enabled) {
       setRecentCards([]);
       setRecentCardsLoading(false);
@@ -37,15 +49,17 @@ export function useDatabaseRecentCards({
     setRecentCardsLoading(true);
     try {
       const payload = await equipmentAPI.getRecentCards({ limit });
+      if (!isCurrent()) return [];
       const items = normalizeItems(payload);
       setRecentCards(items);
       return items;
     } catch (error) {
+      if (!isCurrent()) return [];
       console.warn('Failed to load recent equipment cards', error);
       setRecentCards([]);
       return [];
     } finally {
-      setRecentCardsLoading(false);
+      if (isCurrent()) setRecentCardsLoading(false);
     }
   }, [enabled, limit]);
 

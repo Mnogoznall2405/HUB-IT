@@ -257,7 +257,7 @@ export function useTransferFormState({
             : null;
           if (byDefaultName) return toIdOrNull(byDefaultName?.LOC_NO ?? byDefaultName?.loc_no);
 
-          return normalizedPrev;
+          return null;
         });
       } catch (error) {
         console.error('Error loading transfer locations:', error);
