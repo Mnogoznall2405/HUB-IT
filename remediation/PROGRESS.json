@@ -20,10 +20,10 @@
     "note": "status = remediation state on current main; auditStatus = verdict from ISSUES.json (unchanged)"
   },
   "summary": {
-    "OPEN": 246,
+    "OPEN": 244,
     "NEEDS_EVIDENCE": 12,
     "REJECTED": 42,
-    "FIXED": 22,
+    "FIXED": 24,
     "IN_PROGRESS": 2
   },
   "issues": [
@@ -2464,7 +2464,7 @@
       "id": "FE-0143",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2472,16 +2472,19 @@
       "lines": "1562-1590: syncSocketHostContext без проверки canEdit; backend networks.py:410 требует PERM_NETWORKS_WRITE",
       "title": "Networks: автосинк MAC/ФИО дёргает write-эндпоинт у read-only пользователей → 403-тосты",
       "related": [],
-      "pr": null,
+      "pr": 36,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "18083545",
+      "note": "PR #36 @18083545: canEdit guard on silent MAC sync; map image cleared before download. Build pass."
     },
     {
       "id": "FE-0144",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "networks",
       "page": null,
@@ -2489,10 +2492,13 @@
       "lines": "1079-1112: mapBlobUrl/mapIsPdf/mapRenderedFrom не сбрасываются до завершения downloadMapFile; при ошибке остаётся прежний URL",
       "title": "Networks: устаревшее изображение карты при смене/ошибке загрузки — точки новой карты поверх старой",
       "related": [],
-      "pr": null,
+      "pr": 36,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "18083545",
+      "note": "PR #36 @18083545: canEdit guard on silent MAC sync; map image cleared before download. Build pass."
     },
     {
       "id": "FE-0145",
