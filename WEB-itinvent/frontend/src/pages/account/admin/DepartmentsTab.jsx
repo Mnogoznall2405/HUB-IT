@@ -160,7 +160,9 @@ export default function DepartmentsTab({ canManageDepartments }) {
   }, [canManageDepartments, draftManagerIds, loadDepartments, loadMembers, membersDeptId, selectedDepartmentId]);
 
   const handleSyncDepartments = useCallback(async () => {
-    if (!canManageDepartments) return;
+    if (!canManageDepartments || saving) return;
+    const confirmed = window.confirm('Синхронизировать отделы из AD? Список будет заменён данными из каталога.');
+    if (!confirmed) return;
     setSaving(true);
     setError('');
     try {
@@ -174,7 +176,7 @@ export default function DepartmentsTab({ canManageDepartments }) {
     } finally {
       setSaving(false);
     }
-  }, [canManageDepartments]);
+  }, [canManageDepartments, saving]);
 
   return (
     <Box sx={{ overflowY: { xs: 'visible', md: 'auto' }, minHeight: 0, pr: { md: 0.5 } }}>

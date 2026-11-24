@@ -17,7 +17,6 @@ export {
   SETTINGS_PERMISSION_GROUPS,
   SETTINGS_VERY_WIDE_QUERY,
   USER_ROWS_PER_PAGE_OPTIONS,
-  resolveAvailableSettingsTabs,
   roleOptions,
   sessionStatusMeta,
   staticRunbook,
