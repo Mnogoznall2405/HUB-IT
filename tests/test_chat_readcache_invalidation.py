@@ -56,6 +56,57 @@ def _configure(db_path, monkeypatch):
     return url
 
 
+class _MiniRedis:
+    """In-memory stand-in for the redis client — implements just the
+    commands the read cache uses, including the conditional-write script."""
+
+    def __init__(self):
+        self._data: dict[str, str] = {}
+
+    def get(self, key):
+        return self._data.get(key)
+
+    def setex(self, key, ttl, payload):
+        self._data[key] = payload
+
+    def set(self, key, value, *args, **kwargs):
+        self._data[key] = value
+        return "OK"
+
+    def incr(self, key):
+        self._data[key] = str(int(self._data.get(key) or 0) + 1)
+        return int(self._data[key])
+
+    def delete(self, *keys):
+        for key in keys:
+            self._data.pop(key, None)
+
+    def scan_iter(self, match="*", count=256):
+        import fnmatch
+        for key in list(self._data.keys()):
+            if fnmatch.fnmatch(key, match):
+                yield key
+
+    def pipeline(self, transaction=False):
+        return self
+
+    def execute(self):
+        return []
+
+    def eval(self, script, numkeys, *args):
+        # Emulates the conditional write used by set_if_epoch().
+        key, epoch_key = args[0], args[1]
+        payload, epoch = args[2], int(args[4])
+        current = self._data.get(epoch_key)
+        ok = (current is None and epoch == 0) or (
+            current is not None and int(current) == epoch
+        )
+        if not ok:
+            return 0
+        self._data[key] = payload
+        return "OK"
+
+
 @pytest.fixture(autouse=True)
 def _clear_singleton_cache():
     svc_mod = importlib.import_module("backend.chat.service")
@@ -252,3 +303,79 @@ def test_pending_map_coalesces_whole_conversation():
         assert mgr._cache_invalidation_pending == {}
 
     asyncio.run(_run())
+
+
+# ---------- A8c3/P1c: distributed redis generation guard ----------
+
+def test_redis_epoch_guard_drops_stale_fill(monkeypatch):
+    """Race: reader captures generation N, an invalidation bumps it to N+1,
+    the stale fill must be rejected atomically in the shared store —
+    a local epoch check cannot see invalidations from other processes."""
+    cache_redis = importlib.import_module("backend.chat.chat_read_cache_redis").chat_read_cache_redis
+    fake = _MiniRedis()
+    monkeypatch.setattr(cache_redis, "_client", fake)
+
+    captured = cache_redis.get_conversation_epoch("conv1")  # generation 0
+    cache_redis.bump_conversation_epoch("conv1")            # invalidation -> 1
+    assert cache_redis.set_if_epoch(
+        "u1::conversations::50", {"items": ["stale"]}, 60,
+        conversation_id="conv1", epoch=captured,
+    ) is False
+    # The stale value never reached redis.
+    assert cache_redis.get("u1::conversations::50") is None
+    # A fresh reader captures the NEW generation and fills normally.
+    fresh = cache_redis.get_conversation_epoch("conv1")
+    assert cache_redis.set_if_epoch(
+        "u1::conversations::50", {"items": ["fresh"]}, 60,
+        conversation_id="conv1", epoch=fresh,
+    ) is True
+    assert cache_redis.get("u1::conversations::50") == {"items": ["fresh"]}
+    # invalidate_conversation() also bumps the generation.
+    cache_redis.invalidate_conversation(conversation_id="conv1")
+    assert cache_redis.set_if_epoch(
+        "u1::conversations::50", {"items": ["stale2"]}, 60,
+        conversation_id="conv1", epoch=fresh,
+    ) is False
+    monkeypatch.setattr(cache_redis, "_client", None)
+
+
+def test_cache_set_skips_redis_write_on_epoch_mismatch(monkeypatch):
+    """End-to-end through ChatService._cache_set: local fill still lands
+    (its own epoch passed) but the shared redis copy is NOT re-seeded."""
+    cache_redis = importlib.import_module("backend.chat.chat_read_cache_redis").chat_read_cache_redis
+    fake = _MiniRedis()
+    monkeypatch.setattr(cache_redis, "_client", fake)
+    chat_svc_mod = importlib.import_module("backend.chat.service")
+    service = chat_svc_mod.ChatService()
+
+    captured = cache_redis.get_conversation_epoch("convX")
+    cache_redis.bump_conversation_epoch("convX")
+    service._cache_set(
+        user_id=7, bucket="conversations",
+        value={"items": ["stale"]},
+        redis_epoch_check=("convX", captured),
+    )
+    # Local write landed; the conditional redis write was rejected.
+    assert any(v[1] == {"items": ["stale"]} for v in service._runtime_cache.values())
+    assert cache_redis.get("7::conversations::") is None
+    assert all("conversations" not in k for k in fake._data)
+    monkeypatch.setattr(cache_redis, "_client", None)
+
+
+def test_invalidate_bumps_redis_epoch(env, monkeypatch):
+    """Every conv-scoped invalidation path bumps the shared generation so
+    in-flight fills on any node are rejected."""
+    cache_redis = importlib.import_module("backend.chat.chat_read_cache_redis").chat_read_cache_redis
+    fake = _MiniRedis()
+    monkeypatch.setattr(cache_redis, "_client", fake)
+    chat_svc_mod = importlib.import_module("backend.chat.service")
+    service = chat_svc_mod.ChatService()
+
+    before = cache_redis.get_conversation_epoch("conv-bump")
+    service._invalidate_conversation_views(conversation_id="conv-bump")
+    assert cache_redis.get_conversation_epoch("conv-bump") == before + 1
+    service._invalidate_conversation_views_for_users(
+        conversation_id="conv-bump", user_ids={7}, hard=True,
+    )
+    assert cache_redis.get_conversation_epoch("conv-bump") == before + 2
+    monkeypatch.setattr(cache_redis, "_client", None)

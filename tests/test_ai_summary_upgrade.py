@@ -3,7 +3,7 @@ import importlib
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -56,10 +56,16 @@ def _clear_pending():
     svc._pending_summary_upgrades.clear()
     svc._summary_upgrade_attempts.clear()
     svc._summary_suppressed_until.clear()
+    svc._summary_inflight.clear()
+    svc._summary_rate_window.clear()
+    for _k in svc._summary_metrics:
+        svc._summary_metrics[_k] = 0
     yield
     svc._pending_summary_upgrades.clear()
     svc._summary_upgrade_attempts.clear()
     svc._summary_suppressed_until.clear()
+    svc._summary_inflight.clear()
+    svc._summary_rate_window.clear()
 
 
 @pytest.fixture
@@ -73,6 +79,8 @@ def env(tmp_path, monkeypatch, prebuilt_chat_db):
     e.chat_models = importlib.import_module("backend.chat.models")
     e.svc = svc.ai_chat_service
     monkeypatch.setattr(svc, "AI_PERSONAL_MEMORY_ENABLED", True)
+    # Lease=0: seeded rows carry updated_at=NOW and must be claimable.
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_LEASE_SEC", 0)
     return e
 
 
@@ -80,7 +88,8 @@ def _seed(env, *, conversation_id: str, user_id: int, count: int,
           reset_seq: int = 0, summary_until_seq: int | None = None,
           llm_until_seq: int = 0, rolling_summary: str = "FALLBACK",
           rolling_summary_llm: str = "", use_personal_memory: bool = True,
-          deleted_seqs: set[int] | None = None) -> None:
+          deleted_seqs: set[int] | None = None,
+          updated_at_offset_sec: int = 0) -> None:
     deleted_seqs = deleted_seqs or set()
     with env.chatdb.chat_session(env.url) as db:
         db.add(env.chat_models.ChatConversation(
@@ -108,6 +117,18 @@ def _seed(env, *, conversation_id: str, user_id: int, count: int,
                 created_at=NOW,
             ))
     with env.appdb.app_session(env.url) as db:
+        if db.get(env.app_models.AppAiBot, "bot-test") is None:
+            db.add(env.app_models.AppAiBot(
+                id="bot-test", slug="bot-test", title="Bot", system_prompt="",
+                model="test-model", temperature=0.0, max_tokens=1024,
+                allowed_kb_scope_json="[]", enabled_tools_json="[]",
+                tool_settings_json="{}", allow_file_input=False,
+                allow_generated_artifacts=False,
+                allow_kb_document_delivery=False, surface="chat",
+                placement="sidebar", sort_order=0, required_permission="",
+                use_personal_memory=True, is_enabled=True,
+                bot_user_id=99999, created_at=NOW, updated_at=NOW,
+            ))
         db.add(env.app_models.AppAiBotConversation(
             bot_id="bot-test", user_id=user_id, conversation_id=conversation_id,
             rolling_summary=rolling_summary,
@@ -116,7 +137,8 @@ def _seed(env, *, conversation_id: str, user_id: int, count: int,
             rolling_summary_llm=rolling_summary_llm,
             summary_llm_until_seq=int(llm_until_seq),
             use_personal_memory=use_personal_memory,
-            title_source="assistant", created_at=NOW, updated_at=NOW,
+            title_source="assistant", created_at=NOW,
+            updated_at=NOW - timedelta(seconds=int(updated_at_offset_sec)),
         ))
 
 
@@ -189,7 +211,8 @@ def test_process_retries_with_backoff_then_suppresses(monkeypatch):
     assert svc.ai_chat_service.process_pending_summary_upgrade() == 1
     assert ("conv", 7) not in svc._pending_summary_upgrades
     assert ("conv", 7) not in svc._summary_upgrade_attempts
-    assert svc._summary_suppressed_until[("conv", 7)] > time.monotonic()
+    deadline, sup_reset = svc._summary_suppressed_until[("conv", 7)]
+    assert deadline > time.monotonic() and sup_reset == 2
 
 
 def test_process_runs_claimed_upgrade(monkeypatch):
@@ -395,7 +418,8 @@ def test_upgrade_suppressed_when_memory_disabled(env, monkeypatch):
     assert calls == []
     row = _mapping(env, conv, 7)
     assert int(row.summary_llm_until_seq) == 0
-    assert svc._summary_suppressed_until[(conv, 7)] > time.monotonic()
+    deadline, sup_reset = svc._summary_suppressed_until[(conv, 7)]
+    assert deadline > time.monotonic() and sup_reset == 0
 
 
 # ---------- durability: scan is the source of truth ----------
@@ -422,7 +446,7 @@ def test_scan_skips_suppressed_and_fully_covered(env, monkeypatch):
     _seed(env, conversation_id=conv_done, user_id=7, count=60,
           llm_until_seq=60, rolling_summary_llm="done")
     _seed(env, conversation_id=conv_sup, user_id=8, count=60)
-    svc._summary_suppressed_until[(conv_sup, 8)] = time.monotonic() + 3600
+    svc._summary_suppressed_until[(conv_sup, 8)] = (time.monotonic() + 3600, 0)
     registered = svc.ai_chat_service.scan_pending_summary_upgrades()
     assert registered == 0
     assert svc._pending_summary_upgrades == {}
@@ -470,3 +494,237 @@ def test_multi_user_independent(env, monkeypatch):
     assert int(_mapping(env, conv_a, 7).summary_llm_until_seq) == 50
     assert int(_mapping(env, conv_b, 8).summary_llm_until_seq) == 0
     assert _mapping(env, conv_b, 8).rolling_summary == "FALLBACK"
+
+
+# ---------- A8c3: CAS after context reset (P1a) ----------
+
+def test_upgrade_persists_after_context_reset(env, monkeypatch):
+    """Repro for the confirmed defect: reset_seq=100, until=120, but the
+    stored llm checkpoint is 0. The CAS anchor must be the ACTUAL stored
+    value (0), while history reading starts at max(reset_seq, checkpoint).
+    The old code compared CAS against reset_seq and could never persist."""
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=120,
+          reset_seq=100, summary_until_seq=120, llm_until_seq=0,
+          rolling_summary="POST-RESET-FALLBACK", rolling_summary_llm="")
+    calls = []
+    monkeypatch.setattr(svc.smart_memory, "summarize", _fake_summarize(calls))
+    outcome = svc.ai_chat_service._upgrade_conversation_summary(
+        conversation_id=conv, user_id=7, reset_seq=100,
+    )
+    row = _mapping(env, conv, 7)
+    # Real DB state: checkpoint advanced past the reset boundary.
+    assert int(row.summary_llm_until_seq) == 120, outcome
+    assert row.rolling_summary == row.rolling_summary_llm
+    assert row.rolling_summary_llm
+    # Only post-reset messages were folded (seq 101-120).
+    folded = "\n".join(line for batch in calls for line in batch)
+    assert "msg-0120" in folded and "FACT-END-gamma" in folded
+    assert "msg-0001" not in folded and "FACT-START-alpha" not in folded
+    # Re-running is idempotent — covered state, no infinite recompute.
+    outcome2 = svc.ai_chat_service._upgrade_conversation_summary(
+        conversation_id=conv, user_id=7, reset_seq=100,
+    )
+    assert outcome2["outcome"] == "covered"
+    assert len(calls) == 1
+
+
+def test_upgrade_legacy_row_with_reset_and_stale_llm_text(env, monkeypatch):
+    """Historical row: reset_seq=50, llm_until=30 (< reset — coverage is
+    pre-reset and unusable) — rebuild from the reset boundary, CAS anchored
+    on the stored 30."""
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=120,
+          reset_seq=50, summary_until_seq=120, llm_until_seq=30,
+          rolling_summary="FALLBACK", rolling_summary_llm="STALE-PRE-RESET")
+    calls = []
+    monkeypatch.setattr(svc.smart_memory, "summarize", _fake_summarize(calls))
+    svc.ai_chat_service._upgrade_conversation_summary(
+        conversation_id=conv, user_id=7, reset_seq=50,
+    )
+    row = _mapping(env, conv, 7)
+    assert int(row.summary_llm_until_seq) == 120
+    assert "STALE-PRE-RESET" not in row.rolling_summary
+    folded = "\n".join(line for batch in calls for line in batch)
+    assert "msg-0051" in folded and "msg-0050" not in folded
+
+
+# ---------- A8c3: backoff / suppression / inflight (P1b) ----------
+
+def test_scan_does_not_cancel_backoff():
+    key = ("conv-bo", 7)
+    deadline = time.monotonic() + 600
+    svc._pending_summary_upgrades[key] = (0, deadline, time.monotonic())
+    # A scan-equivalent registration with deadline 0 must keep the backoff.
+    svc.ai_chat_service._register_pending_summary(
+        conversation_id="conv-bo", user_id=7, reset_seq=0,
+    )
+    assert svc._pending_summary_upgrades[key][1] == deadline
+    assert svc.ai_chat_service.claim_pending_summary_upgrade() is None
+
+
+def test_new_run_registration_does_not_cancel_backoff():
+    key = ("conv-bo2", 7)
+    deadline = time.monotonic() + 600
+    svc._pending_summary_upgrades[key] = (0, deadline, time.monotonic())
+    # Run-path registration also cannot zero out the retry deadline.
+    svc.ai_chat_service._register_pending_summary(
+        conversation_id="conv-bo2", user_id=7, reset_seq=0,
+        not_before_mono=0.0,
+    )
+    assert svc._pending_summary_upgrades[key][1] == deadline
+
+
+def test_suppressed_key_not_registered_before_expiry():
+    key = ("conv-sup", 7)
+    svc._summary_suppressed_until[key] = (time.monotonic() + 3600, 0)
+    assert svc.ai_chat_service._register_pending_summary(
+        conversation_id="conv-sup", user_id=7, reset_seq=0,
+    ) is False
+    assert key not in svc._pending_summary_upgrades
+    # Expired suppression lifts on the next registration.
+    svc._summary_suppressed_until[key] = (time.monotonic() - 1, 0)
+    assert svc.ai_chat_service._register_pending_summary(
+        conversation_id="conv-sup", user_id=7, reset_seq=0,
+    ) is True
+
+
+def test_new_reset_does_not_inherit_suppression_or_attempts():
+    key = ("conv-rst", 7)
+    svc._summary_suppressed_until[key] = (time.monotonic() + 3600, 5)
+    svc._summary_upgrade_attempts[key] = 4
+    assert svc.ai_chat_service._register_pending_summary(
+        conversation_id="conv-rst", user_id=7, reset_seq=9,
+    ) is True
+    assert svc._pending_summary_upgrades[key][0] == 9
+    assert key not in svc._summary_suppressed_until
+    assert key not in svc._summary_upgrade_attempts
+
+
+def test_inflight_dedup_and_single_claim():
+    key = ("conv-inf", 7)
+    svc._summary_inflight[key] = 3
+    # Same checkpoint basis: the running job covers it.
+    assert svc.ai_chat_service._register_pending_summary(
+        conversation_id="conv-inf", user_id=7, reset_seq=3,
+    ) is False
+    assert key not in svc._pending_summary_upgrades
+    # A newer reset still queues while the old job runs.
+    assert svc.ai_chat_service._register_pending_summary(
+        conversation_id="conv-inf", user_id=7, reset_seq=9,
+    ) is True
+    svc._summary_inflight.pop(key)
+    svc._pending_summary_upgrades[("conv-b", 8)] = (0, 0.0, time.monotonic())
+    first = svc.ai_chat_service.claim_pending_summary_upgrade()
+    second = svc.ai_chat_service.claim_pending_summary_upgrade()
+    assert first is not None
+    # The claimed key moved to inflight — a second claim cannot re-grab it.
+    assert second is None or second[0] != first[0]
+    assert first[0] in svc._summary_inflight
+
+
+def test_process_pops_inflight_after_completion(monkeypatch):
+    svc._pending_summary_upgrades[("conv", 7)] = (2, 0.0, time.monotonic())
+    monkeypatch.setattr(
+        svc.ai_chat_service, "_upgrade_conversation_summary", lambda **kw: {"outcome": "done"},
+    )
+    assert svc.ai_chat_service.process_pending_summary_upgrade() == 1
+    assert svc._summary_inflight == {}
+
+
+# ---------- A8c3: scan fairness (P2) ----------
+
+def test_scan_fetches_past_suppressed_head(env, monkeypatch):
+    """50 suppressed rows at the head of the oldest-first ordering must not
+    starve a new pending row behind them (fetch window extends past them)."""
+    for i in range(50):
+        conv = f"conv-sup{i}-{uuid.uuid4().hex[:4]}"
+        _seed(env, conversation_id=conv, user_id=700 + i, count=60,
+              updated_at_offset_sec=3600 + i)
+        svc._summary_suppressed_until[(conv, 700 + i)] = (time.monotonic() + 3600, 0)
+    fresh = f"conv-fresh-{uuid.uuid4().hex[:4]}"
+    _seed(env, conversation_id=fresh, user_id=7, count=60)
+    registered = svc.ai_chat_service.scan_pending_summary_upgrades(limit=10)
+    assert registered >= 1
+    assert (fresh, 7) in svc._pending_summary_upgrades
+
+
+# ---------- A8c3: cost control / lease / metrics ----------
+
+def test_claim_rate_limited():
+    svc._pending_summary_upgrades[("a", 1)] = (0, 0.0, time.monotonic())
+    svc._pending_summary_upgrades[("b", 2)] = (0, 0.0, time.monotonic())
+    for _ in range(svc.AI_SUMMARY_UPGRADE_JOBS_PER_MIN):
+        svc._summary_rate_window.append(time.monotonic())
+    assert svc.ai_chat_service.claim_pending_summary_upgrade() is None
+    assert ("a", 1) in svc._pending_summary_upgrades
+    assert svc._summary_metrics["rate_limited"] >= 1
+
+
+def test_lease_denies_recently_touched_mapping(env, monkeypatch):
+    """Cross-worker lease: a mapping updated < LEASE_SEC ago is owned by
+    another worker (or was just written by an interactive run — interactive
+    traffic wins)."""
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_LEASE_SEC", 45)
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=60)
+    # NOW is fixed at module import — under a long suite it ages past the
+    # lease window; refresh updated_at to "just written".
+    with env.appdb.app_session(env.url) as db:
+        row = db.execute(
+            select(env.app_models.AppAiBotConversation).where(
+                env.app_models.AppAiBotConversation.conversation_id == conv,
+            )
+        ).scalar_one()
+        row.updated_at = datetime.now(timezone.utc)
+    calls = []
+    monkeypatch.setattr(svc.smart_memory, "summarize", _fake_summarize(calls))
+    outcome = svc.ai_chat_service._upgrade_conversation_summary(
+        conversation_id=conv, user_id=7, reset_seq=0,
+    )
+    assert outcome["outcome"] == "lease_busy"
+    assert calls == []
+    assert int(_mapping(env, conv, 7).summary_llm_until_seq) == 0
+
+
+def test_token_budget_splits_fold_chunks(env, monkeypatch):
+    """A batch whose est-token sum exceeds the fold budget is split into
+    multiple summarize() calls; every call stays inside the budget and the
+    checkpoint advances chunk by chunk (never past unfolded messages)."""
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=60)
+    calls = []
+    monkeypatch.setattr(svc.smart_memory, "summarize", _fake_summarize(calls))
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_BATCH", 150)
+    monkeypatch.setattr(svc, "AI_SUMMARY_UPGRADE_BATCH_TOKENS", 100)
+    svc.ai_chat_service._upgrade_conversation_summary(conversation_id=conv, user_id=7, reset_seq=0)
+    row = _mapping(env, conv, 7)
+    assert int(row.summary_llm_until_seq) == 60
+    assert len(calls) > 1  # split actually happened
+    for batch in calls:
+        assert sum(svc._estimated_tokens(line) for line in batch) <= 100
+    folded = "\n".join(line for batch in calls for line in batch)
+    assert "msg-0060" in folded and "FACT-END-gamma" in folded
+
+
+def test_metrics_reported_after_process(env, monkeypatch):
+    conv = f"conv-{uuid.uuid4().hex[:6]}"
+    _seed(env, conversation_id=conv, user_id=7, count=40)
+    monkeypatch.setattr(svc.smart_memory, "summarize", _fake_summarize([]))
+    svc._pending_summary_upgrades[(conv, 7)] = (0, 0.0, time.monotonic())
+    svc.ai_chat_service.process_pending_summary_upgrade()
+    m = svc.ai_chat_service.get_summary_upgrade_metrics()
+    assert m["completed"] == 1
+    assert m["llm_calls"] >= 1
+    assert m["messages_folded"] == 40
+    assert m["total_tokens"] >= 1
+    assert m["duration_ms_total"] >= 0
+    assert m["pending"] == 0 and m["in_flight"] == 0
+
+
+def test_background_flag_default_off():
+    # Flag consistency gate: service default must be OFF until the
+    # production gate passes (worker reads the same env with default False).
+    import os
+    if "AI_SUMMARY_BACKGROUND_ENABLED" not in os.environ:
+        assert svc.AI_SUMMARY_BACKGROUND_ENABLED is False

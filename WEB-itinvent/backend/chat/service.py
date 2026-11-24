@@ -623,8 +623,8 @@ class ChatService:
         return self._cache._cache_key(user_id=user_id, bucket=bucket, extra=extra)
     def _cache_get(self, *, user_id: int, bucket: str, extra: str = "") -> Any:
         return self._cache._cache_get(user_id=user_id, bucket=bucket, extra=extra)
-    def _cache_set(self, *, user_id: int, bucket: str, value: Any, extra: str = "", ttl_sec: int | None = None, epoch_check: tuple[str, int] | None = None) -> Any:
-        return self._cache._cache_set(user_id=user_id, bucket=bucket, value=value, extra=extra, ttl_sec=ttl_sec, epoch_check=epoch_check)
+    def _cache_set(self, *, user_id: int, bucket: str, value: Any, extra: str = "", ttl_sec: int | None = None, epoch_check: tuple[str, int] | None = None, redis_epoch_check: tuple[str, int] | None = None) -> Any:
+        return self._cache._cache_set(user_id=user_id, bucket=bucket, value=value, extra=extra, ttl_sec=ttl_sec, epoch_check=epoch_check, redis_epoch_check=redis_epoch_check)
     def _conversation_cache_epoch(self, conversation_id: str) -> int:
         return self._cache._conversation_cache_epoch(conversation_id)
     def _invalidate_user_cache(self, *, user_id: int, bucket: str | None = None, extra_prefix: str = "", hard: bool = False) -> None:

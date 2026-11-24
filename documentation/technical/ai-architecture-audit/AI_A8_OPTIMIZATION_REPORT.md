@@ -153,3 +153,80 @@
 - Pre-existing defect, закрытый заодно: 0139 frozen spec расходился с ORM ещё с 0176 (`last_run_seq`, `queue_seq`, partial unique index) — `test_frozen_spec_matches_the_orm_models` падал на cycle-1 HEAD.
 - A/B e2e: **NOT MEASURED** — изолированный контур со scratch-БД не поднят на этом хосте (нет scratch PG; prod-очередь недопустима). Ожидания по конструкции: claim-loop latency summary=0 (архитектурно), REST-свежесть <1 с cross-node (подтверждено интеграционно), `ctx_summary` в критическом пути ~0 (LLM-саммаризация удалена из пути).
 - PR #25: метрики 16.3/47.1 с остаются клиентскими измерениями; серверные 13.7/31.9 с — отдельная метрика (поправлено в body).
+
+
+---
+
+# A8 Cycle 3 — Production Readiness Gate
+
+Архитектура цикла 2 принята — изменения точечные: согласованность checkpoint, retry/backoff, distributed cache-generation, fairness scan, cost-control, телеметрия. По каждому дефекту: воспроизведение → решение → тест → результат.
+
+## P1a — CAS после сброса контекста не мог сохранить upgrade
+
+**Воспроизведение.** `context_reset_seq=100, summary_until_seq=120, summary_llm_until_seq=0, rolling_summary_llm=''` — состояние после `reset_conversation_context` + новых 20 сообщений + fallback-summary. Старый код присваивал checkpoint `llm_until := reset_seq` (100), затем CAS `WHERE summary_llm_until_seq = 100` — в БД хранится **0** → rowcount=0 на каждом батче → upgrade никогда не мог записаться, задача крутилась по scan бесконечно. Тест `test_upgrade_persists_after_context_reset` на реальной БД подтверждает фикс.
+
+**Решение.** Три значения разведены явно: `db_llm_until` — фактическое значение в БД (CAS-якорь), `read_from = max(reset_seq, db_llm_until)` — позиция начала чтения истории (когда старая LLM-coverage непригодна: `db_llm_until <= reset_seq`, пустой текст или over-claim `> until`), `expected_until` — то, что каждый CAS утверждает (начинается с фактического `db_llm_until`, двигается после каждого успешного батча). Покрытое состояние возвращает `covered` — бесконечного пересчёта нет.
+
+**Случаи:** новый reset (checkpoint 0 → CAS на 0); legacy-строки с `llm_until < reset_seq` (CAS на фактическое значение, чтение от reset_seq); повреждённый checkpoint `> until` — rebuild от reset; пустая LLM-summary — rebuild; рестарт — scan по инварианту.
+
+## P1b — retry/backoff сбрасывался регистрациями
+
+**Воспроизведение.** `_register_pending_summary` безусловно перезаписывал `not_before_mono`: после ошибки LLM запись перерегистрируется с deadline `now+15s`, но периодический scan (30 с) или новый run тут же обнуляли его — backoff фактически не работал; suppressed-ключ мог быть re-admitted немедленно через run-путь.
+
+**Решение** (все точки под `_pending_summary_lock`):
+- pending = `(reset_seq, not_before_mono, registered_mono)`; merge при повторной регистрации = `max(old, new)` deadline — ни scan, ни run не отменяют backoff;
+- suppression = `(deadline, reset_seq)` — действует на всех путях регистрации; **новый reset не наследует** чужое состояние (suppression и attempts сбрасываются при смене reset_seq);
+- `_summary_inflight` (key→reset_seq): claim переносит ключ в inflight — один диалог не исполняется дважды локальными summary-workers; регистрация того же checkpoint-basis во время полёта — дедуп; retry регистрируется после снятия inflight;
+- rate limit `AI_SUMMARY_UPGRADE_JOBS_PER_MIN` (default 6) на claim — глобальный потолок фоновых LLM-джоб/мин на процесс;
+- maps bounded: pending cap 256, attempts trim >4×cap, протухшие suppression чистятся при scan и при регистрации;
+- **кросс-процессный lease** через CAS по `updated_at` (`AI_SUMMARY_UPGRADE_LEASE_SEC=45`): claim lease перед LLM-вызовами, каждый batch-CAS продлевает lease записью `updated_at` — второй AI-worker не сделает дублирующий платный вызов (ответ на вопрос ревью: CAS на данных защищал БД, но не деньги — теперь и деньги). Побочный эффект-фича: `updated_at` свежий <45с означает, что интерактивный run только что писал — фон уступает приоритет интерактивному трафику.
+
+**Тесты (7 новых):** scan не отменяет backoff; run-регистрация не отменяет backoff; suppressed не retry до истечения; новый reset не наследует suppression/attempts; inflight dedup + единственный claim; inflight снимается после обработки; lease_busy при свежей записи (второй воркер отпускает).
+
+## P1c — race заполнения Redis-кэша
+
+**Воспроизведение.** Cycle-2 epoch проверялся под локальным `_cache_lock`, но `chat_read_cache_redis.set` шёл **после** выхода из него: нода A читает старую страницу → проверяет epoch → нода B инвалидирует + чистит redis → A дозаписывает старое в redis → все ноды читают stale до следующей инвалидации или TTL. Локальный epoch ничего не знает об инвалидациях других процессов.
+
+**Решение — распределённая генерация в самом хранилище:**
+- `chat_read_cache_redis`: per-conversation счётчик `conv_epoch:{conv}`; `set_if_epoch` — атомарная Lua (`GET epoch → compare → SET`), drop при рассинхроне и при любой ошибке (fail-safe: промах лучше stale);
+- bump в каждой conv-scoped инвалидирующей ветке: `invalidate_conversation` (INCR внутри), `_invalidate_conversation_views_for_users`, `_invalidate_reader_views_after_mark_read` — вне локального lock (1 INCR на коалесцированную инвалидацию, не hot-loop);
+- читатели (`get_thread_messages` latest, `get_thread_bootstrap`, `get_conversation` detail) захватывают redis-generation до DB-чтения и передают `redis_epoch_check` в `_cache_set` — запись в redis только если генерация не изменилась;
+- Redis disabled: `supports_bucket=False` → весь путь no-op; lost realtime-event/reconnect: redis-generation + delete при инвалидации + TTL — худший случай = stale до TTL/следующей инвалидации, как и раньше.
+
+**Тесты (3 новых, `_MiniRedis`):** stale fill отклонён при смене генерации, свежий reader пишет; `_cache_set` сквозь сервис — локальная запись есть, redis-ресеед отклонён; все ветки инвалидации бампают генерацию (+1 за каждую).
+
+## P2 — fairness scan'а + метрики
+
+**Дефект:** `LIMIT scan_limit` применялся до фильтрации suppressed → 50 подавленных строк в голове oldest-first блокировали новую работу за ними (starvation при недоступности провайдера). **Фикс:** fetch-window = `scan_limit + suppressed + inflight + pending` — регистрация доходит до неподавленных строк; suppressed не считаются в registered.
+
+**Метрики** (`get_summary_upgrade_metrics`): pending, in_flight, suppressed, oldest_pending_age_sec, registrations, discarded_registrations, claims, rate_limited, completed, failed, retries, suppressed_total, cas_conflicts, lease_busy, llm_calls, messages_folded, prompt/completion/total_tokens, duration_ms_total — отдельные счётчики фона, не смешанные с usage интерактивных runs.
+
+**Тест:** `test_scan_fetches_past_suppressed_head` — 50 suppressed + свежий конв → scan(limit=10) регистрирует свежий.
+
+## P2 — контроль стоимости и нагрузки
+
+- `AI_SUMMARY_UPGRADE_BATCH_TOKENS=6000` — батч режется на fold-чанки по est-бюджету (chars/4): `smart_memory.summarize` не обрезает вход сам — проверено исходником (`memory.py:364`, весь список сериализуется в запрос; previous ограничен 6000 chars). Без бюджета батч 150×~300 tok мог уйти за контекст/лимит модели. Checkpoint продвигается **почанково** — никогда не заявляет недофолднутые сообщения. Тест `test_token_budget_splits_fold_chunks`.
+- Rate limit `AI_SUMMARY_UPGRADE_JOBS_PER_MIN=6` (claim-level, на процесс) + lease по `updated_at` (кросс-процесс) + `AI_SUMMARY_UPGRADE_MAX_MESSAGES=1500`/claim + bounded executor (1 поток default).
+- Приоритет интерактива: свежий `updated_at` (<45с) блокирует lease — run'ы идут первыми, фон догоняет; flag off → фон выключен полностью.
+- Pre-LLM проверки: бот существует (`bot_missing` → suppression), маппинг, `use_personal_memory` (mapping + user setting + bot + sandbox-surface), членство в беседе (`not_a_member`), reset-совпадение — всё до обращения к провайдеру; per-batch CAS перепроверяет `context_reset_seq` перед записью.
+- Backfill-оценка после 0177 (`summary_llm_until_seq=0`): **NOT MEASURED** — доступа к production-БД с этого хоста нет. Формула для владельца: `count(*) WHERE summary_until_seq > 0 AND use_personal_memory` = потенциальный объём re-summarization; с лимитом 6 jobs/мин/процесс и scan-window 30дн разогрев контролируем.
+- Телеметрия: outcome-лог `ai_summary_upgrade done ... folded llm_calls prompt_tokens total_tokens duration_ms checkpoint a->b promoted` + метрики выше.
+- Executor: `shutdown(wait=False, cancel_futures=True)` — отмена asyncio.Future не убивает поток внутри LLM (Python-ограничение); комментарий в коде, drain естественный (сокеты по timeout=10 на вызов summarize).
+- **Флаг `AI_SUMMARY_BACKGROUND_ENABLED`: default OFF в обоих местах** (service.py `"0"`, worker `_env_flag(..., False)`) до production-приёмки; при =0 поведение = цикл 0 (inline summarize, измеренный baseline).
+
+## Production gate — честный статус
+
+| Проверка | Статус |
+|---|---|
+| Миграция 0176→0177 на данных + fresh + re-run + rollback-совместимость | PASS в sqlite: идемпотентные column-checks в 0177, старый код работает (новые колонки nullable/server_default); `test_internal_db_migration_runtime` 16/16, `test_app_tables_missing_migration` 4/4 |
+| Изменение исторической 0139 | Обоснование: frozen spec не содержал `last_run_seq`/`queue_seq` (добавлены 0176) и new 0177-колонок — тест падал ещё на cycle-1 HEAD. Spec = декларативный «эталон схемы» для тестов и fresh-install в тестовом runner; существующие PG-БД мигрируют через alembic-цепочку — spec не применяется. Guard по существующим колонкам добавлен |
+| Scratch PostgreSQL | **BLOCKED** — на хосте нет docker/psql/5432, env PG-URL не задан → PG serialization/realtime relay/reconnect остаются skipped, не выданы за PASS |
+| Двухпроцессный PG relay | **BLOCKED** (та же причина) — логика покрыта local-transport интеграционными тестами + unit; PG-специфика (LISTEN/NOTIFY payload limits, catch-up cursor) требует живого PG |
+
+## Оставшиеся риски
+
+1. Lease granularity = `updated_at` — общий «recent activity» маркер: фон уступает интерактиву до 45с задержки (фича, не баг; self-healing через scan).
+2. `estimated_tokens` chars/4 — грубая оценка; при экзотическом UTF-8 реальный бюджет может отличаться ~×2 — запас через `AI_SUMMARY_UPGRADE_BATCH_TOKENS` (6k при контекстах ≥32k).
+3. Suppression in-memory: новый worker-instance re-admit'ит suppressed-ключ сразу (scan) — при хронической poison-записи один платный retry на рестарт, дальше backoff.
+4. `conv_epoch` redis-ключи без TTL — одночисленный ключ на активную беседу, память пренебрежима; при eviction ключа генерация = 0 → writes с captured>0 отклоняются (fail-safe).
+5. PG-ветка realtime/serialization не проверена на живом PG — gate до merge: поднять scratch PG и прогнать `test_ai_run_serialization_pg` + `test_chat_realtime_postgres` + 2-процессный сценарий.

@@ -143,13 +143,18 @@ async def main() -> None:
     # queued backlog is preserved instead of being falsely declared lost.
     heartbeat_interval_sec = _env_float("AI_WORKER_HEARTBEAT_SEC", 15.0, 5.0, 300.0)
     last_heartbeat_at = 0.0
-    # A8c2: summary upgrades run on a dedicated bounded executor in an
+    # A8c2/3: summary upgrades run on a dedicated bounded executor in an
     # independent supervisor task — a slow LLM summary can no longer stall
-    # the claim loop (AI_SUMMARY_BACKGROUND_ENABLED=0 rolls the feature off).
-    summary_bg_enabled = _env_flag("AI_SUMMARY_BACKGROUND_ENABLED", True)
+    # the claim loop. Default OFF until production gate passes; must match
+    # service.AI_SUMMARY_BACKGROUND_ENABLED (both read the same env).
+    summary_bg_enabled = _env_flag("AI_SUMMARY_BACKGROUND_ENABLED", False)
     summary_workers = _env_int("AI_SUMMARY_BG_WORKERS", 1, 1, 4)
     summary_idle_sec = _env_float("AI_SUMMARY_BG_IDLE_SEC", 0.5, 0.1, 30.0)
     summary_scan_sec = _env_float("AI_SUMMARY_BG_SCAN_SEC", 30.0, 5.0, 600.0)
+    # Note: cancelling the supervisor task only cancels queued executor
+    # futures — a Python thread already inside an LLM call runs to
+    # completion (threads cannot be killed); shutdown(wait=False) lets the
+    # process exit path proceed without joining it.
     summary_executor: ThreadPoolExecutor | None = None
     summary_task: asyncio.Task | None = None
     if summary_bg_enabled:

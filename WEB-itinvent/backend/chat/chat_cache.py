@@ -61,6 +61,7 @@ class ChatCache:
         extra: str = "",
         ttl_sec: int | None = None,
         epoch_check: tuple[str, int] | None = None,
+        redis_epoch_check: tuple[str, int] | None = None,
     ) -> Any:
         ttl = max(1, int(ttl_sec or self._service.chat_cache_ttl_sec))
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
@@ -74,7 +75,18 @@ class ChatCache:
                     return value
             self._service._runtime_cache[key] = (expires_at, value)
         if chat_read_cache_redis.supports_bucket(bucket):
-            chat_read_cache_redis.set(key, value, ttl)
+            if redis_epoch_check is not None:
+                # Cross-process guard: a local epoch says nothing about
+                # invalidations performed by other nodes. The shared
+                # generation must still equal what the reader captured
+                # before the DB read — enforced atomically in Redis.
+                rconv, repoch = redis_epoch_check
+                chat_read_cache_redis.set_if_epoch(
+                    key, value, ttl,
+                    conversation_id=rconv, epoch=repoch,
+                )
+            else:
+                chat_read_cache_redis.set(key, value, ttl)
         return value
 
     def _invalidate_user_cache(self, *, user_id: int, bucket: str | None = None, extra_prefix: str = "", hard: bool = False) -> None:
@@ -133,6 +145,7 @@ class ChatCache:
             extra=normalized_conversation_id,
         )
         chat_read_cache_redis.delete_keys([conversations_key, unread_key, detail_key])
+        chat_read_cache_redis.bump_conversation_epoch(normalized_conversation_id)
         soft_ttl = timedelta(seconds=2.5)
         now = datetime.now(timezone.utc)
         with self._service._cache_lock:
@@ -192,6 +205,11 @@ class ChatCache:
             chat_read_cache_redis.invalidate_prefix(
                 f"{int(target_user_id)}::thread_bootstrap::{normalized_conversation_id}|"
             )
+        # Distributed generation bump: fills in flight on ANY node that
+        # captured the previous epoch are rejected at write time. Done
+        # outside the local lock — this is one redis INCR per coalesced
+        # invalidation, not a hot-loop call.
+        chat_read_cache_redis.bump_conversation_epoch(normalized_conversation_id)
 
         soft_buckets = {"conversations", "unread_summary"}
         if hard_drop_unread:

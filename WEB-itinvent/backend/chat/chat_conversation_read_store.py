@@ -11,6 +11,7 @@ from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.orm import aliased
 
 from backend.chat.chat_formatting import _iso
+from backend.chat.chat_read_cache_redis import chat_read_cache_redis
 from backend.chat.db import chat_read_session as chat_session
 from backend.chat.models import (
     ChatConversation,
@@ -611,6 +612,7 @@ class ChatConversationReadStore:
         if cached is not None:
             return cached
         detail_epoch = self._service._conversation_cache_epoch(normalized_conversation_id)
+        detail_redis_epoch = chat_read_cache_redis.get_conversation_epoch(normalized_conversation_id)
         with chat_session() as session:
             conversation = self._service._require_membership(
                 session=session,
@@ -628,6 +630,7 @@ class ChatConversationReadStore:
             extra=normalized_conversation_id,
             value=result,
             epoch_check=(normalized_conversation_id, int(detail_epoch)),
+            redis_epoch_check=(normalized_conversation_id, int(detail_redis_epoch)),
         )
         return result
 
