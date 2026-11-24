@@ -7308,6 +7308,7 @@ class AiChatService:
         tool_calls: list[dict[str, Any]],
         tool_context: AiToolExecutionContext,
         report_stage=None,
+        reuse_state: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Execute tool calls with parallel execution for independent calls.
 
@@ -7336,7 +7337,7 @@ class AiChatService:
         # run — nothing outside the run is reachable. Any mutating result
         # invalidates the cache: a stale READ must never follow an ACT.
         def _reuse_key(call: dict[str, Any]) -> str | None:
-            if not AI_RUN_RESULT_REUSE_ENABLED:
+            if not AI_RUN_RESULT_REUSE_ENABLED or reuse_state is None:
                 return None
             tid = _normalize_text(call.get("tool_id"))
             if not tid or any(marker in tid for marker in _LLM_PROJ_ACTION_MARKERS):
@@ -7371,16 +7372,12 @@ class AiChatService:
                 if callable(report_step):
                     report_step({"id": step_id, "tool_id": tool_id, "label": step_label, "state": "running"})
                 cache_key = _reuse_key({"tool_id": tool_id, "args": prepared_args})
-                result_cache = getattr(tool_context, "_a10_result_cache", None)
-                if result_cache is None:
-                    result_cache = {}
-                    tool_context._a10_result_cache = result_cache
                 if (
                     cache_key is not None
-                    and cache_key in result_cache
-                    and not getattr(tool_context, "_a10_mutation_seen", False)
+                    and cache_key in reuse_state
+                    and not reuse_state.get("_mutation")
                 ):
-                    payload, trace = result_cache[cache_key]
+                    payload, trace = reuse_state[cache_key]
                     payload = {**payload, "_a10_reused": True}
                     trace = {
                         **trace,
@@ -7422,9 +7419,10 @@ class AiChatService:
                     trace["comparison_status"] = comparison.get("status")
                     trace["comparison_error_code"] = comparison.get("reason_code")
                 if _result_is_mutating(payload):
-                    tool_context._a10_mutation_seen = True
+                    if reuse_state is not None:
+                        reuse_state["_mutation"] = True
                 elif cache_key is not None and payload.get("ok") and not payload.get("error"):
-                    result_cache[cache_key] = (payload, trace)
+                    reuse_state[cache_key] = (payload, trace)
                 return payload, trace
             except (AiRunCancelled, AiRunDeadlineExceeded):
                 raise
@@ -8818,6 +8816,9 @@ class AiChatService:
         token_budget.add_usage(final_usage)
         budget_exhausted = False
         fast_path_hit = False
+        # A10 §2.6: shared across tool rounds — reserved "_mutation" key is set
+        # by the first mutating result and disables further reuse.
+        run_reuse_state: dict[str, Any] = {}
         while tool_specs and tool_rounds_used < max_rounds:
             tool_calls = _normalize_tool_calls(final_payload.get("tool_calls"), limit=max_calls_per_round)
             if not tool_calls:
@@ -8879,6 +8880,7 @@ class AiChatService:
                     tool_calls=tool_calls,
                     tool_context=tool_context,
                     report_stage=report_stage,
+                    reuse_state=run_reuse_state,
                 )
                 tool_results.extend(real_results)
                 round_traces.extend(real_traces)
@@ -8922,6 +8924,7 @@ class AiChatService:
                     tool_calls=auto_pagination_calls[:max_calls_per_round],
                     tool_context=tool_context,
                     report_stage=report_stage,
+                    reuse_state=run_reuse_state,
                 )
                 _log_ai_run_timing(
                     "tools_autopagination",
