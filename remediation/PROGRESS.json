@@ -383,7 +383,7 @@
       "id": "FE-0022",
       "severity": "High",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P1",
       "batch": "warehouse-a11y",
       "page": null,
@@ -391,16 +391,19 @@
       "lines": "2163-2216,1975-1980",
       "title": "Warehouse1C: кликабельные строки недоступны с клавиатуры (desktop)",
       "related": [],
-      "pr": null,
+      "pr": 32,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "6785b0ed",
+      "note": "PR #32 fix/warehouse1c-keyboard @6785b0ed: MovementTableRow + BalanceNomenclatureCell extracted/exported, role=button+tabIndex+Enter/Space (codebase pattern). Tests +3 (11/11 with regressions). PR open."
     },
     {
       "id": "FE-0023",
       "severity": "High",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P1",
       "batch": "networks-perf",
       "page": null,
@@ -408,10 +411,13 @@
       "lines": "351-433",
       "title": "Networks: мобильная вкладка «Оборудование» без виртуализации (до 10000 карточек); SocketsTab аналогично",
       "related": [],
-      "pr": null,
+      "pr": 31,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "e4532f81",
+      "note": "PR #31 fix/networks-mobile-render: mobile card lists in EquipmentTab/SocketsTab render in 100-card chunks + \"Показать ещё\" (existing render-window convention); desktop virtualization untouched. Tests +3. PR open."
     },
     {
       "id": "FE-0024",
@@ -4433,7 +4439,7 @@
       "id": "FE-0259",
       "severity": "High",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P1",
       "batch": "construction-drafts",
       "page": null,
@@ -4441,10 +4447,13 @@
       "lines": "dirty/useConstructionWorkLeaveGuard(dirty||saving) без beforeunload; в Panel.jsx:163-168 и TaskCanvasWorkspace.jsx:342-350 он есть",
       "title": "Construction-workspace: нет beforeunload — черновики дневной сводки и недельного плана теряются при F5/закрытии",
       "related": [],
-      "pr": null,
+      "pr": 30,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr_status": "open",
+      "commit": "5ff5c620",
+      "note": "PR #30 fix/construction-beforeunload @5ff5c620: beforeunload effect mirrored from ConstructionWorkPanel — F5/close warns on dirty daily/weekly/attendance/crew drafts. Test +1 (8/8 green). PR open."
     },
     {
       "id": "FE-0260",
