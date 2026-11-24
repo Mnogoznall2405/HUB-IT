@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
@@ -113,19 +113,24 @@ function MyFilesStats({ canManageUsers = false, onOpenFiles }) {
   const [query, setQuery] = useState('');
   const [savingUserId, setSavingUserId] = useState(0);
 
+  const loadSeq = useRef(0);
+
   const load = useCallback(async ({ q = query } = {}) => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     try {
       const payload = await myFilesAPI.listAdminUserStats({ limit: 500, q });
+      if (seq !== loadSeq.current) return;
       setStats({
         items: Array.isArray(payload?.items) ? payload.items : [],
         total: Number(payload?.total || 0),
         totals: payload?.totals || {},
       });
     } catch (error) {
+      if (seq !== loadSeq.current) return;
       notifyApiError(error, 'Не удалось загрузить статистику «Мой диск».', { dedupeMode: 'recent' });
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [notifyApiError, query]);
 

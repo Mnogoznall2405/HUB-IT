@@ -312,6 +312,8 @@ export default function ItinventReferencesTab({ dbOptions = [], defaultDbId = ''
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
   const loadSeq = useRef(0);
+  const lookupSeq = useRef(0);
+  const deleteSeq = useRef(0);
 
   const tab = KIND_TABS[kindIndex];
   const ciScope = tab.scopedByCiType ? ciType : undefined;
@@ -348,15 +350,18 @@ export default function ItinventReferencesTab({ dbOptions = [], defaultDbId = ''
 
   const loadLookups = useCallback(async () => {
     if (!dbId) return;
+    const seq = ++lookupSeq.current;
     try {
       const [types, vendors, branches] = await Promise.all([
         itinventReferencesAPI.list('types', { dbId, ci_type: ciType }),
         itinventReferencesAPI.list('vendors', { dbId }),
         itinventReferencesAPI.list('branches', { dbId }),
       ]);
+      if (seq !== lookupSeq.current) return;
       const byName = (items) => [...(items || [])].sort((a, b) => collator.compare(String(a.name || ''), String(b.name || '')));
       setLookups({ types: byName(types.items), vendors: byName(vendors.items), branches: byName(branches.items) });
     } catch {
+      if (seq !== lookupSeq.current) return;
       setLookups(emptyLookups);
     }
   }, [ciType, dbId]);
@@ -450,21 +455,27 @@ export default function ItinventReferencesTab({ dbOptions = [], defaultDbId = ''
   };
 
   const openDelete = useCallback(async (row) => {
+    const seq = ++deleteSeq.current;
     setDeleteTarget(row);
     setUsage(null);
     setDeleteError('');
     setUsageLoading(true);
     try {
-      setUsage(await itinventReferencesAPI.usage(tab.kind, row.id, { dbId, ciType: ciScope }));
+      const usage = await itinventReferencesAPI.usage(tab.kind, row.id, { dbId, ciType: ciScope });
+      if (seq !== deleteSeq.current) return;
+      setUsage(usage);
     } catch (error) {
+      if (seq !== deleteSeq.current) return;
       setDeleteError(getReferenceErrorMessage(error, 'Не удалось проверить использование записи.'));
     } finally {
-      setUsageLoading(false);
+      if (seq === deleteSeq.current) setUsageLoading(false);
     }
   }, [ciScope, dbId, tab.kind]);
 
   const closeDelete = () => {
     if (deleting) return;
+    deleteSeq.current += 1;
+    setUsageLoading(false);
     setDeleteTarget(null);
     setUsage(null);
     setDeleteError('');
