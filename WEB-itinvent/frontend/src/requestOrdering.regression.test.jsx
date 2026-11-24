@@ -191,6 +191,52 @@ describe('my-files loadData counter and cache', () => {
     expect(applied).toHaveLength(1);
     expect(applied[0].filesPayload.items).toEqual([]);
   });
+
+  it('never paints a cached payload in the trash view before server validation', async () => {
+    const { result } = renderHook(() => useRequestGuard());
+    const applied = [];
+    const sharedCache = { current: new Map([
+      ['u7|trash|||', { t: Date.now(), payload: { filesPayload: { items: [{ id: 'cached-deleted' }] } } }],
+    ]) };
+    let release;
+    const { loader } = bindMyFilesLoader({
+      beginLoad: result.current,
+      applyListingsPayload: (p) => applied.push(p),
+      listFiles: () => new Promise((resolve) => { release = resolve; }),
+      extra: { listingsCacheRef: sharedCache, isTrashView: true },
+    });
+    const pending = loader();
+    await Promise.resolve();
+    expect(applied).toEqual([]);
+    release({ items: [] });
+    await pending;
+    expect(applied).toHaveLength(1);
+    expect(applied[0].filesPayload.items).toEqual([]);
+  });
+});
+
+describe('my-files loadLibraries identity guard', () => {
+  it('discards a response that started under the previous auth identity', async () => {
+    const authUserKeyRef = { current: 'u7' };
+    const applied = [];
+    const release = [];
+    const list = () => new Promise((resolve) => release.push(resolve));
+    const make = (authUserKey) => bindLoader('./pages/MyFiles.jsx', 'loadLibraries', {
+      authUserKey,
+      authUserKeyRef,
+      myFilesLibrariesAPI: { list },
+      setLibraries: (v) => applied.push(v),
+      setCanManageLibraries: () => {},
+    });
+    const callA = make('u7')();
+    authUserKeyRef.current = 'u9'; // identity switched while A was in flight
+    const callB = make('u9')();
+    release[0]({ items: [{ id: 'lib-A' }] });
+    await callA;
+    release[1]({ items: [{ id: 'lib-B' }] });
+    await callB;
+    expect(applied).toEqual([[{ id: 'lib-B' }]]);
+  });
 });
 
 // A mutation succeeds but only patches local state: every OTHER cached

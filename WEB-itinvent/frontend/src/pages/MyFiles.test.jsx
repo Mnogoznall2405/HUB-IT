@@ -362,6 +362,32 @@ describe('MyFiles page', () => {
     expect(mockListFiles.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('clears the selection and details panel when the auth identity changes', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [readyFile, { ...readyFile, id: 'file-2', original_file_name: 'notes.txt' }],
+    });
+    const { rerender } = renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    await screen.findByTestId('my-files-selection-bar');
+    fireEvent.click(screen.getByTestId('my-files-details-toggle'));
+    await screen.findByTestId('my-files-details-panel');
+
+    mockAuthUser.current = { id: 9, username: 'other-user' };
+    mockListFiles.mockResolvedValue({ items: [] });
+    rerender(
+      <MemoryRouter initialEntries={['/']}>
+        <ThemeProvider theme={theme}>
+          <MyFiles />
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.queryByTestId('my-files-selection-bar')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByTestId('my-files-details-panel')).not.toBeInTheDocument());
+  });
+
   it('clears the listing when access is revoked mid-session (403 on silent revalidation)', async () => {
     const timeoutSpy = vi.spyOn(window, 'setTimeout');
     try {

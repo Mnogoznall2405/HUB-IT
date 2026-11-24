@@ -80,6 +80,11 @@ export function useMyFilesShares({ onFileShareChanged, onFolderShareChanged, not
     }
   }, [onFolderShareChanged, notifyApiError, notifySuccess, notifyWarning]);
 
+  const resetShareDialogs = useCallback(() => {
+    setShareDialog(EMPTY_FILE_SHARE);
+    setFolderShareDialog(EMPTY_FOLDER_SHARE);
+  }, []);
+
   const revokeFolderShare = useCallback(async (folderId) => {
     try {
       await myFilesAPI.revokeFolderShare(folderId);
@@ -96,6 +101,7 @@ export function useMyFilesShares({ onFileShareChanged, onFolderShareChanged, not
     setShareDialog,
     folderShareDialog,
     setFolderShareDialog,
+    resetShareDialogs,
     shareFile,
     revokeShare,
     shareFolder,

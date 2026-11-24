@@ -333,6 +333,9 @@ export default function MyFiles() {
   // context (re-login without unmount, impersonation-style flows) must never
   // answer a listing from the previous user's payload.
   const authUserKey = String(authUser?.id || authUser?.username || 'anon');
+  // Updated only inside the auth-change effect below: async helpers compare
+  // their start-time key against it to discard responses from a previous user.
+  const authUserKeyRef = useRef(authUserKey);
   const invalidateListingsCache = useCallback(() => {
     listingsCacheRef.current.clear();
   }, []);
@@ -369,9 +372,11 @@ export default function MyFiles() {
     try {
       const cached = listingsCacheRef.current.get(cacheKey);
       // Optimistic paint is limited to the user's own space. Shared scopes (a
-      // library, the "shared with me" view) revalidate first: access can be
-      // revoked server-side and a cached payload would flash forbidden rows.
-      const sharedScope = Boolean(libraryId) || isSharedView;
+      // library, the "shared with me" view) and the trash (items may have been
+      // deleted from a shared scope whose access was since revoked) revalidate
+      // first: access can be revoked server-side and a cached payload would
+      // flash forbidden rows.
+      const sharedScope = Boolean(libraryId) || isSharedView || isTrashView;
       const cacheFresh = !silent && !sharedScope && cached && (Date.now() - cached.t) < LISTINGS_CACHE_TTL_MS;
       if (cacheFresh) {
         applyListingsPayload(cached.payload);
@@ -430,14 +435,18 @@ export default function MyFiles() {
   );
 
   const loadLibraries = useCallback(async () => {
+    const expectedKey = authUserKey;
     try {
       const payload = await myFilesLibrariesAPI.list();
+      // A response that started under the previous identity must not paint
+      // that user's libraries over the freshly cleared list.
+      if (authUserKeyRef.current !== expectedKey) return;
       setLibraries(Array.isArray(payload?.items) ? payload.items : []);
       setCanManageLibraries(Boolean(payload?.can_manage));
     } catch {
       // Libraries are an optional section: without the endpoint it simply stays hidden.
     }
-  }, []);
+  }, [authUserKey]);
 
   useEffect(() => {
     void loadLibraries();
@@ -676,6 +685,7 @@ export default function MyFiles() {
     revokeShare: handleRevokeShare,
     shareFolder: handleFolderShare,
     revokeFolderShare: handleRevokeFolderShare,
+    resetShareDialogs,
   } = useMyFilesShares({ onFileShareChanged: handleFileShareChanged, onFolderShareChanged: handleFolderShareChanged, notifySuccess, notifyWarning, notifyApiError, isCurrent: isPageCurrent });
 
   // A folder found by search or in recent files may belong to a library other than the one being browsed.
@@ -707,10 +717,10 @@ export default function MyFiles() {
   // cache and reload under the new identity.
   const loadDataRef = useRef(loadData);
   loadDataRef.current = loadData;
-  const authUserKeyRef = useRef(authUserKey);
   useEffect(() => {
     if (authUserKeyRef.current === authUserKey) return;
     authUserKeyRef.current = authUserKey;
+    loadAbortRef.current?.abort();
     listingsCacheRef.current.clear();
     setItems([]);
     setFolders([]);
@@ -719,9 +729,37 @@ export default function MyFiles() {
     setLibraryInfo(null);
     setLibraries([]);
     setQuota(null);
-    void loadLibraries();
+    // UI fragments that point at the previous user's objects: open menus,
+    // dialogs, the details panel, the multi-selection and in-flight upload UI.
+    setSelectedKeys(new Set());
+    setDetailsOpen(false);
+    setDetailsPinned(null);
+    setFileActionsMenu({ item: null, anchorPosition: null });
+    setFolderActionsMenu({ folder: null, anchorPosition: null });
+    setFolderSubmenu('');
+    setFilterMenu({ kind: '', anchor: null });
+    setCreateFolderOpen(false);
+    setRenameDialog({ open: false, kind: '', id: '', name: '' });
+    setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' });
+    setAuditDialogFile(null);
+    setCopyDialogFile(null);
+    setCollaboratorsFile(null);
+    setCollaboratorsFolder(null);
+    setVersionsFile(null);
+    setConfirmState(null);
+    setConfirmBusy(false);
+    setOfficeEditorFile(null);
+    setBulkBusy(false);
+    resetShareDialogs();
+    // Thumbnail blob URLs are the previous user's file bytes — revoke them.
+    Object.values(thumbsRef.current).forEach((value) => {
+      if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
+    });
+    thumbsRef.current = {};
+    setThumbs({});
+    // loadLibraries re-fires by itself through its authUserKey dependency.
     void loadDataRef.current();
-  }, [authUserKey, loadLibraries]);
+  }, [authUserKey, resetShareDialogs]);
 
   // Leaving the page must release the in-flight listing fetch — its results
   // can no longer be applied anyway, and a held socket slows the next screen.
