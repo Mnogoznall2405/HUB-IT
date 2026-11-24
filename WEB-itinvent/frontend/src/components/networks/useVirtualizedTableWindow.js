@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 function buildOffsets(itemHeights) {
   const offsets = [0];
@@ -29,10 +29,26 @@ export function useVirtualizedTableWindow({
   overscanPx = 320,
   viewportFallback = 720,
 }) {
-  const containerRef = useRef(null);
+  // Callback-ref вместо useRef: когда контейнер перемонтируется (смена вкладки,
+  // условный рендер), новый узел подхватывается явно — иначе scrollTop/viewport
+  // остаются от старого узла и таблица выглядит «пустой».
+  const [containerNode, setContainerNode] = useState(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [containerWidth, setContainerWidth] = useState(0);
+
+  const containerRef = useCallback((node) => {
+    setContainerNode(node);
+    if (!node) {
+      setScrollTop(0);
+      setViewportHeight(0);
+      setContainerWidth(0);
+      return;
+    }
+    setScrollTop(node.scrollTop || 0);
+    setViewportHeight(node.clientHeight || 0);
+    setContainerWidth(node.clientWidth || 0);
+  }, []);
 
   const offsets = useMemo(() => buildOffsets(itemHeights), [itemHeights]);
   const itemCount = itemHeights.length;
@@ -44,7 +60,7 @@ export function useVirtualizedTableWindow({
   }, [enabled]);
 
   useEffect(() => {
-    const node = containerRef.current;
+    const node = containerNode;
     if (!node) return undefined;
 
     const updateViewport = () => {
@@ -64,7 +80,7 @@ export function useVirtualizedTableWindow({
 
     window.addEventListener('resize', updateViewport);
     return () => window.removeEventListener('resize', updateViewport);
-  }, [enabled, itemCount]);
+  }, [containerNode, enabled, itemCount]);
 
   return useMemo(() => {
     if (!enabled || itemCount === 0) {

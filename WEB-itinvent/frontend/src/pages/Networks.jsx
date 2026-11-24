@@ -1338,6 +1338,9 @@ function Networks() {
   }, [notifyError, notifySuccess, refreshBranchContextParts]);
 
   const applySocketPointDraft = useCallback((socketLike) => {
+    // Read-only пользователь не должен попадать в режим размещения точки —
+    // иначе commit потом ловит серию 403.
+    if (!canEdit) return;
     const socketCode = String(socketLike?.socket_code || socketLike?.patch_panel_port || '').trim();
     clearPendingPointDraft();
     setPlacingMarker(true);
@@ -1349,7 +1352,7 @@ function Networks() {
     if (isMobile) {
       setMobileMapPanelOpen(true);
     }
-  }, [clearPendingPointDraft, isMobile]);
+  }, [canEdit, clearPendingPointDraft, isMobile]);
 
   const commitPendingPoint = async () => {
     if (!pendingPoint || !selectedMapId || !branchIdNum) {
@@ -1448,6 +1451,7 @@ function Networks() {
   };
 
   const startSocketPointCreation = (socketLike) => {
+    if (!canEdit) return;
     const socketCode = String(socketLike?.socket_code || socketLike?.patch_panel_port || '').trim();
     const mapIdCandidate = Number(socketLike?.map_id || selectedMapId || maps?.[0]?.id || 0) || null;
     setTab('maps');
@@ -1734,7 +1738,12 @@ function Networks() {
     }
   };
 
+  const branchEditMappingRequestRef = useRef(0);
   const openEditBranchDialog = async (branch) => {
+    // Быстрое переоткрытие диалога на другом филиале: старый ответ не должен
+    // перезаписать уже открытый диалог чужим db_id.
+    const requestId = branchEditMappingRequestRef.current + 1;
+    branchEditMappingRequestRef.current = requestId;
     setBranchEditId(branch.id);
     setBranchEditName(String(branch.name || ''));
     setBranchDefaultSiteCode(branch.default_site_code || '');
@@ -1743,12 +1752,13 @@ function Networks() {
     try {
       setBranchEditLoading(true);
       const mapping = await networksAPI.getBranchDbMapping(branch.id);
+      if (requestId !== branchEditMappingRequestRef.current) return;
       setBranchEditDbId(String(mapping?.db_id || ''));
     } catch (err) {
       console.error('Failed to load branch DB mapping for edit:', err);
-      setBranchEditDbId('');
+      if (requestId === branchEditMappingRequestRef.current) setBranchEditDbId('');
     } finally {
-      setBranchEditLoading(false);
+      if (requestId === branchEditMappingRequestRef.current) setBranchEditLoading(false);
     }
   };
 
@@ -2052,26 +2062,41 @@ function Networks() {
     }
   };
 
+  // Рефы — чтобы глобальный слушатель висел один раз, а не перевешивался на
+  // каждый новый массив displayedPorts / пересозданные колбэки.
+  const editingPortIdRef = useRef(editingPortId);
+  editingPortIdRef.current = editingPortId;
+  const displayedPortsRef = useRef(displayedPorts);
+  displayedPortsRef.current = displayedPorts;
+  const cancelEditPortRef = useRef(cancelEditPort);
+  cancelEditPortRef.current = cancelEditPort;
+  const savePortEditRef = useRef(savePortEdit);
+  savePortEditRef.current = savePortEdit;
+
   useEffect(() => {
     const handleKeyDown = (e) => {
+      // Открытый диалог/дровер сам обрабатывает Escape и Ctrl+S — не трогаем.
+      if (document.querySelector('.MuiModal-root')) return;
+      const portId = editingPortIdRef.current;
+
       // Escape key
       if (e.key === 'Escape') {
-        if (editingPortId) cancelEditPort(e);
+        if (portId) cancelEditPortRef.current(e);
       }
 
       // Ctrl + S or Meta + S
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        if (editingPortId) {
+        if (portId) {
           e.preventDefault();
-          const portObj = displayedPorts.find(p => Number(p.id) === Number(editingPortId)) || { id: editingPortId };
-          savePortEdit(portObj, e);
+          const portObj = displayedPortsRef.current.find(p => Number(p.id) === Number(portId)) || { id: portId };
+          savePortEditRef.current(portObj, e);
         }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [editingPortId, displayedPorts, cancelEditPort, savePortEdit]);
+  }, []);
 
   const setDeviceChipRef = useCallback((deviceId, node) => {
     const key = Number(deviceId || 0);
