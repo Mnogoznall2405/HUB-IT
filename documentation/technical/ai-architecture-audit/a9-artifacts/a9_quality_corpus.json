@@ -315,7 +315,7 @@
    "category": "READ",
    "prompt": "Покажи картриджи для HP LaserJet M404",
    "expected_tools": [
-    "warehouse.cartridge.search"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -348,7 +348,7 @@
    "category": "READ",
    "prompt": "Сколько ноутбуков на складе?",
    "expected_tools": [
-    "warehouse.*"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -359,7 +359,7 @@
    "category": "READ",
    "prompt": "Покажи историю выдачи принтера INV-1024",
    "expected_tools": [
-    "itinvent.equipment.*"
+    "itinvent.equipment.history"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -403,7 +403,7 @@
    "category": "READ",
    "prompt": "Что в AD у пользователя sidorov — когда истекает пароль?",
    "expected_tools": [
-    "ad.user.*"
+    "ad.user.password_status"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -414,7 +414,7 @@
    "category": "READ",
    "prompt": "Найди сетевые устройства в серверной",
    "expected_tools": [
-    "network.*"
+    "network.branch.overview"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -447,7 +447,7 @@
    "category": "READ",
    "prompt": "Покажи список пустых картриджей на замену",
    "expected_tools": [
-    "warehouse.*"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -469,7 +469,7 @@
    "category": "READ",
    "prompt": "Найди документ 'Приказ о закупке'",
    "expected_tools": [
-    "files.*",
+    "ai.files.create",
     "kb.articles.search"
    ],
    "required_facts": [],
@@ -481,8 +481,8 @@
    "category": "READ",
    "prompt": "Покажи активные сессии пользователя ivanov",
    "expected_tools": [
-    "ad.user.*",
-    "network.*"
+    "ad.user.password_status",
+    "network.branch.overview"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -515,7 +515,7 @@
    "category": "READ",
    "prompt": "Какие компьютеры у отдела продаж?",
    "expected_tools": [
-    "directory.*",
+    "directory.people.search",
     "itinvent.equipment.search"
    ],
    "required_facts": [],
@@ -549,8 +549,8 @@
    "category": "READ",
    "prompt": "Покажи расход картриджей за квартал",
    "expected_tools": [
-    "warehouse.*",
-    "office.*"
+    "warehouse.balances.search",
+    "office.workday.summary"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -562,7 +562,7 @@
    "prompt": "Создай черновик письма Иванову о передаче принтера",
    "expected_tools": [
     "directory.people.search",
-    "office.action.mail.draft"
+    "office.action.mail_send_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -586,7 +586,7 @@
    "prompt": "Поставь задачу Петрову: проверить картриджи до пятницы",
    "expected_tools": [
     "directory.people.search",
-    "office.action.task.draft"
+    "office.action.task_create_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -609,7 +609,7 @@
    "category": "ACT",
    "prompt": "Отправь уведомление Сидорову о замене картриджа",
    "expected_tools": [
-    "chat.action.*",
+    "chat.action.message_send_draft",
     "directory.people.search"
    ],
    "required_facts": [],
@@ -656,7 +656,7 @@
    "category": "ACT",
    "prompt": "Создай напоминание: инвентаризация в четверг",
    "expected_tools": [
-    "office.action.*"
+    "office.action.task_create_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -669,7 +669,7 @@
    "expected_tools": [
     "itinvent.equipment.search",
     "ai.files.report",
-    "chat.action.*"
+    "chat.action.message_send_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -680,7 +680,7 @@
    "category": "ACT",
    "prompt": "Зарегистрируй замену батареи у ноутбука INV-9",
    "expected_tools": [
-    "itinvent.action.*"
+    "itinvent.action.transfer_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -702,7 +702,7 @@
    "category": "ACT",
    "prompt": "Добавь в избранное статью про VPN",
    "expected_tools": [
-    "kb.action.*"
+    "office.action.mail_send_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -714,8 +714,7 @@
    "prompt": "Передай монитор от Иванова к Петрову",
    "expected_tools": [
     "itinvent.equipment.search",
-    "itinvent.action.*",
-    "directory.people.search"
+    "itinvent.action.transfer_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -727,7 +726,7 @@
    "prompt": "Создай письмо руководителю с отчётом по задачам недели",
    "expected_tools": [
     "office.workday.summary",
-    "office.action.mail.draft"
+    "office.action.mail_send_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -738,7 +737,7 @@
    "category": "ACT",
    "prompt": "Сгенерируй справку о закреплённом оборудовании",
    "expected_tools": [
-    "me.*",
+    "me.equipment",
     "ai.files.report"
    ],
    "required_facts": [],
@@ -751,7 +750,7 @@
    "prompt": "Отметь письмо от бухгалтерии прочитанным",
    "expected_tools": [
     "office.mail.search",
-    "office.action.mail.*"
+    "office.action.mail_reply_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -786,7 +785,7 @@
    "category": "ACT",
    "prompt": "Уведоми команду о плановой замене картриджей",
    "expected_tools": [
-    "chat.action.*"
+    "chat.action.message_send_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -822,7 +821,7 @@
    "prompt": "Посмотри мои задачи и создай черновик письма руководителю по ним",
    "expected_tools": [
     "office.tasks.search",
-    "office.action.mail.draft"
+    "office.action.mail_send_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -834,7 +833,7 @@
    "prompt": "Найди статью про VPN и отправь её новичку в чат",
    "expected_tools": [
     "kb.articles.search",
-    "chat.action.*"
+    "chat.action.message_send_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -845,7 +844,7 @@
    "category": "MULTI",
    "prompt": "Собери список картриджей и оформи заявку на закупку недостающих",
    "expected_tools": [
-    "warehouse.*",
+    "warehouse.balances.search",
     "helpdesk.request_draft"
    ],
    "required_facts": [],
@@ -859,7 +858,7 @@
    "expected_tools": [
     "office.mail.search",
     "directory.people.search",
-    "office.action.mail.draft"
+    "office.action.mail_send_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -870,7 +869,7 @@
    "category": "MULTI",
    "prompt": "Покажи моё оборудование и создай заявку на замену старого",
    "expected_tools": [
-    "me.*",
+    "me.equipment",
     "helpdesk.request_draft"
    ],
    "required_facts": [],
@@ -895,7 +894,7 @@
    "prompt": "Проверь пароли у 5 пользователей из отдела продаж",
    "expected_tools": [
     "directory.people.search",
-    "ad.user.*"
+    "ad.user.password_status"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -907,7 +906,7 @@
    "prompt": "Найди задачу про принтер и обнови её статус",
    "expected_tools": [
     "office.tasks.search",
-    "office.action.task.*"
+    "office.action.task_status_draft"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -919,7 +918,7 @@
    "prompt": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 201. Теперь найди картридж для него",
    "expected_tools": [
     "itinvent.equipment.search",
-    "warehouse.cartridge.search"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -931,7 +930,7 @@
    "prompt": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 202. Теперь найди картридж для него",
    "expected_tools": [
     "itinvent.equipment.search",
-    "warehouse.cartridge.search"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -943,7 +942,7 @@
    "prompt": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 203. Теперь найди картридж для него",
    "expected_tools": [
     "itinvent.equipment.search",
-    "warehouse.cartridge.search"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -955,7 +954,7 @@
    "prompt": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 204. Теперь найди картридж для него",
    "expected_tools": [
     "itinvent.equipment.search",
-    "warehouse.cartridge.search"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -967,7 +966,7 @@
    "prompt": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 205. Теперь найди картридж для него",
    "expected_tools": [
     "itinvent.equipment.search",
-    "warehouse.cartridge.search"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -979,7 +978,7 @@
    "prompt": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 206. Теперь найди картридж для него",
    "expected_tools": [
     "itinvent.equipment.search",
-    "warehouse.cartridge.search"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -991,7 +990,7 @@
    "prompt": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 207. Теперь найди картридж для него",
    "expected_tools": [
     "itinvent.equipment.search",
-    "warehouse.cartridge.search"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -1003,7 +1002,7 @@
    "prompt": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 208. Теперь найди картридж для него",
    "expected_tools": [
     "itinvent.equipment.search",
-    "warehouse.cartridge.search"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -1015,7 +1014,7 @@
    "prompt": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 209. Теперь найди картридж для него",
    "expected_tools": [
     "itinvent.equipment.search",
-    "warehouse.cartridge.search"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],
@@ -1027,7 +1026,7 @@
    "prompt": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 210. Теперь найди картридж для него",
    "expected_tools": [
     "itinvent.equipment.search",
-    "warehouse.cartridge.search"
+    "warehouse.balances.search"
    ],
    "required_facts": [],
    "forbidden": [],

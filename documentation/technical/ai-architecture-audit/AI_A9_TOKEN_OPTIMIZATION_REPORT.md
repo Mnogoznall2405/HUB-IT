@@ -159,3 +159,26 @@ Routing guides (2139 est.) сознательно **не урезаны**: со�
 
 ## 12. Отключение
 Оптимизации обратимо: пустые блоки — условие рендера; compaction regexes — локальны; projection/fit — чистые функции, фолбэк = прошлое поведение по одному diff. Env-флаги не добавлялись (изменения безопасны по умолчанию).
+
+## 13. Final gate (HEAD `6b782f99`)
+
+### Закрыто
+- **Дубль `_fit_prompt_pair`**: удалена устаревшая реализация (передавала строку в `_fit_prompt_blocks` — краш при переполнении). Осталась одна типизированная пара `_fit_prompt_pair_blocks` + string-shim.
+- **Бюджет — реальное ограничение**: effective limit = `min(AI_INPUT_BUDGET_TOKENS, context_window − max_tokens − schema/transport reserve)`; консервативная калибровка 3 chars/token (для RU/JSON len/4 занижает). При `over_budget` провайдер НЕ вызывается — возвращается контролируемый ответ об ограничении + запись `skipped_over_budget` в телеметрии. Повторная проверка после invalid-JSON retry; бесконечных retries нет (max 1 retry).
+- **ai.results.read_more**: оркестраторный meta-tool — постраничное чтение уже полученных `items` текущего run (result_index/offset/limit, ≤50/стр); scope/изоляция унаследованы, повторных обращений к корпоративному API нет.
+- **Полнота схем**: `test_registry_signatures_preserve_required_and_enum` проверяет все 100 specs реестра — каждый required и каждый enum (первые 12 вложенными) присутствует в компактной сигнатуре.
+- **Feature flags**: `AI_PROMPT_OPTIMIZATION_ENABLED` (master) + `AI_COMPACT_SPECS_ENABLED`, `AI_TOOL_RESULT_PROJECTION_ENABLED`, `AI_PROMPT_BLOCKS_ENABLED` — все default ON; при OFF: specs/projection/компрессия отключаются, но проверки бюджета и защита инструкций сохраняются (rollback без слепой обрезки).
+- **Baseline JSON**: `prompt_audit_base_jev0/jev1.json` + `prompt_audit_c3_jev0/jev1.json` в репозитории (пропущенные ранее base-артефакты восстановлены).
+- **Корпус**: `a9_quality_gate.py` — валидатор корпуса против реального реестра (100 tools); выявил и исправлены 15+ несуществующих tool_id/ wildcard. PASS.
+
+### Регрессии
+- sqlite: compaction 13/13; runtime+smart_memory — падения идентичны baseline (17 при `AI_RUN_TEST_DATABASE_URL` в env / 9 без — env-sensitivity, проверено прогоном baseline@926dd9f5: те же 17).
+- **PostgreSQL 17.6 (portable, a8test@55432)**: `test_pg_a8_gate` + `test_ai_run_serialization_pg` — **24/24 PASS**.
+- Флаг OFF: compaction 13/13 (флаги пинятся в тестах); safety-проверки активны.
+
+### Ограничения / NOT MEASURED
+- Live tokens/cached/latency — нет провайдера; scripted-LLM проверяет контракты, не качество генерации.
+- Качество самостоятельного выбора модели на корпусе — требует live-прогона.
+
+### Rollback-план
+`AI_PROMPT_OPTIMIZATION_ENABLED=0` в env → A9-оптимизации off (поведение ≈ pre-A9 с сохранением safety); отдельные диагностические флаги — выше. Телеметрия независима от флагов.
