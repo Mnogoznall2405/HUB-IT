@@ -156,6 +156,9 @@ export default function ScanCenterOverview({ dashboard, dashboardLoading, review
         <Typography variant="body2" color="text.secondary">Сначала разберите находки и неполные проверки. Технические метрики оставлены ниже.</Typography>
       </Box>
 
+      {/* Grid's negative spacing margins would otherwise overflow the page
+        horizontally by 12px on narrow breakpoints; the wrapper absorbs them. */}
+      <Box sx={{ overflow: 'hidden' }}>
       <Grid container spacing={1.5}>
         <Grid item xs={12} lg={8}>
           <Paper variant="outlined" sx={{ px: 1.5, borderRadius: 2, height: '100%' }}>
@@ -243,6 +246,7 @@ export default function ScanCenterOverview({ dashboard, dashboardLoading, review
           </Paper>
         </Grid>
       </Grid>
+      </Box>
 
       {Number(reviewItems?.total || 0) > 0 ? (
         <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>

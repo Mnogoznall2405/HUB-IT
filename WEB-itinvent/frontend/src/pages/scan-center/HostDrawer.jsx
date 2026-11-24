@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -173,6 +173,7 @@ function IncidentFragments({ incident }) {
 
 function IncidentUncPath({ incident, host }) {
   const [pathCopied, setPathCopied] = useState(false);
+  const pathCopyTimerRef = useRef(null);
   const uncPath = formatIncidentUncPath({
     ...incident,
     hostname: String(incident?.hostname || host || '').trim(),
@@ -181,6 +182,7 @@ function IncidentUncPath({ incident, host }) {
 
   useEffect(() => {
     setPathCopied(false);
+    return () => { window.clearTimeout(pathCopyTimerRef.current); };
   }, [incident?.id, uncPath]);
 
   const handleCopyPath = async () => {
@@ -189,7 +191,8 @@ function IncidentUncPath({ incident, host }) {
       const ok = await copyTextToClipboard(uncPath);
       if (!ok) return;
       setPathCopied(true);
-      window.setTimeout(() => setPathCopied(false), 1500);
+      window.clearTimeout(pathCopyTimerRef.current);
+      pathCopyTimerRef.current = window.setTimeout(() => setPathCopied(false), 1500);
     } catch {
       setPathCopied(false);
     }

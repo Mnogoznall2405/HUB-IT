@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import useDebounce from '../../hooks/useDebounce';
 import {
   Alert,
@@ -58,6 +59,7 @@ import {
 } from '../../lib/scanEvents';
 
 const AUTO_REFRESH_MS = 30_000;
+const SCAN_SECTION_IDS = new Set(['overview', 'incidents', 'review', 'agents', 'hosts']);
 const TASK_POLL_MS = 3_000;
 const DEFAULT_ROWS_PER_PAGE = 25;
 const REVIEW_PREVIEW_LIMIT = 3;
@@ -519,7 +521,19 @@ function ScanCenterPage() {
   const canScanAck = hasPermission('scan.ack');
   const canScanTasks = hasPermission('scan.tasks');
 
-  const [activeSection, setActiveSection] = useState('overview');
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Вкладка живёт в ?section=, чтобы deep-link, Back/Forward и reload открывали её же.
+  const sectionParam = String(searchParams.get('section') || '').trim();
+  const activeSection = SCAN_SECTION_IDS.has(sectionParam) ? sectionParam : 'overview';
+  const setActiveSection = useCallback((section) => {
+    const target = SCAN_SECTION_IDS.has(section) ? section : 'overview';
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (target === 'overview') next.delete('section');
+      else next.set('section', target);
+      return next;
+    });
+  }, [setSearchParams]);
   const [dashboard, setDashboard] = useState({ totals: {}, daily: [], by_severity: [], by_branch: [], new_hosts: [] });
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [reviewItems, setReviewItems] = useState({ items: [], total: 0 });
@@ -616,7 +630,9 @@ function ScanCenterPage() {
   const [hostOverviewExpandedHosts, setHostOverviewExpandedHosts] = useState({});
   const [hostOverviewFilesLoading, setHostOverviewFilesLoading] = useState({});
   const [scanSseConnected, setScanSseConnected] = useState(false);
-  const [scanSsePulse, setScanSsePulse] = useState(0);
+  // SSE events must not restart the activity-poll effect — a direct ref-call to
+  // its tick keeps polling cadence stable while still delivering fresh data.
+  const activityTickRef = useRef(() => {});
 
   const agentsRequestIdRef = useRef(0);
   const agentsAbortRef = useRef(null);
@@ -625,8 +641,13 @@ function ScanCenterPage() {
   const reviewRequestIdRef = useRef(0);
   const reviewAbortRef = useRef(null);
   const hostIncidentRequestIdRef = useRef(0);
+  const hostIncidentsAbortRef = useRef(null);
   const hostNewCountRequestIdRef = useRef(0);
+  const hostNewCountAbortRef = useRef(null);
   const hostScanRunsRequestIdRef = useRef(0);
+  const hostScanRunsAbortRef = useRef(null);
+  const observationsAbortRef = useRef(null);
+  const activityAbortRef = useRef(null);
   const refreshAllInFlightRef = useRef(false);
   const refreshAllPromiseRef = useRef(null);
   const refreshAllManualRef = useRef(false);
@@ -965,6 +986,9 @@ function ScanCenterPage() {
     }
     const requestId = hostIncidentRequestIdRef.current + 1;
     hostIncidentRequestIdRef.current = requestId;
+    hostIncidentsAbortRef.current?.abort();
+    const controller = new AbortController();
+    hostIncidentsAbortRef.current = controller;
     const offset = append ? hostIncidents.length : 0;
     // Silent refresh always reloads the first page only; avoid growing to thousands of rows.
     const limit = append
@@ -994,7 +1018,7 @@ function ScanCenterPage() {
         ...runFilters,
         limit,
         offset,
-      });
+      }, { signal: controller.signal });
       if (requestId !== hostIncidentRequestIdRef.current) return;
       const items = Array.isArray(response?.items) ? response.items : [];
       setHostIncidents((prev) => {
@@ -1008,6 +1032,7 @@ function ScanCenterPage() {
       });
       setHostIncidentsTotal(Number(response?.total || 0));
     } catch (error) {
+      if (controller.signal.aborted) return;
       console.error('Host incidents load failed', error);
       if (requestId === hostIncidentRequestIdRef.current) {
         if (!silent && !append) {
@@ -1030,6 +1055,9 @@ function ScanCenterPage() {
     if (!host || hostDrawerTab !== 'findings') return;
     const requestId = hostNewCountRequestIdRef.current + 1;
     hostNewCountRequestIdRef.current = requestId;
+    hostNewCountAbortRef.current?.abort();
+    const controller = new AbortController();
+    hostNewCountAbortRef.current = controller;
     try {
       const response = await scanAPI.getIncidents({
         hostname: host,
@@ -1044,11 +1072,12 @@ function ScanCenterPage() {
         has_fragment: incidentHasFragment ? true : undefined,
         limit: 1,
         offset: 0,
-      });
+      }, { signal: controller.signal });
       if (requestId === hostNewCountRequestIdRef.current) {
         setHostNewCount(Number(response?.total || 0));
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
       console.error('Host new incidents count failed', error);
     }
   };
@@ -1078,6 +1107,9 @@ function ScanCenterPage() {
     if (!host) return;
     const requestId = hostScanRunsRequestIdRef.current + 1;
     hostScanRunsRequestIdRef.current = requestId;
+    hostScanRunsAbortRef.current?.abort();
+    const controller = new AbortController();
+    hostScanRunsAbortRef.current = controller;
     const limit = append
       ? HOST_SCAN_RUNS_PAGE_SIZE
       : HOST_SCAN_RUNS_PAGE_SIZE;
@@ -1090,7 +1122,7 @@ function ScanCenterPage() {
       const response = await scanAPI.getHostScanRuns(host, {
         limit,
         offset: append ? hostScanRuns.length : 0,
-      });
+      }, { signal: controller.signal });
       if (requestId !== hostScanRunsRequestIdRef.current) return;
       const items = Array.isArray(response?.items) ? response.items : [];
       setHostScanRuns((prev) => {
@@ -1109,6 +1141,7 @@ function ScanCenterPage() {
         setSelectedScanRunId(String(items[0].id));
       }
     } catch (error) {
+      if (controller.signal.aborted) return;
       console.error('Host scan runs load failed', error);
       if (requestId === hostScanRunsRequestIdRef.current && !silent) {
         setHostScanRuns([]);
@@ -1127,14 +1160,19 @@ function ScanCenterPage() {
   const loadScanRunObservations = async (taskId, { append = false } = {}) => {
     const normalizedTaskId = String(taskId || '').trim();
     const currentBucket = scanRunObservations[normalizedTaskId];
-    if (!normalizedTaskId || (!append && currentBucket)) return;
+    // A failed first page is marked `error` instead of cached as an empty result —
+    // otherwise the "already loaded" guard would block any retry forever.
+    if (!normalizedTaskId || (!append && currentBucket && !currentBucket.error)) return;
     if (append && !currentBucket?.hasMore) return;
+    observationsAbortRef.current?.abort();
+    const controller = new AbortController();
+    observationsAbortRef.current = controller;
     setScanRunObservationsLoading(normalizedTaskId);
     try {
       const response = await scanAPI.getTaskObservations(normalizedTaskId, {
         limit: SCAN_RUN_OBSERVATION_LIMIT,
         offset: append ? Number(currentBucket?.nextOffset ?? currentBucket?.items?.length ?? 0) : 0,
-      });
+      }, { signal: controller.signal });
       const items = Array.isArray(response?.items) ? response.items : [];
       setScanRunObservations((prev) => ({
         ...prev,
@@ -1146,12 +1184,13 @@ function ScanCenterPage() {
         },
       }));
     } catch (error) {
+      if (controller.signal.aborted) return;
       console.error('Scan run observations load failed', error);
       setScanRunObservations((prev) => ({
         ...prev,
         [normalizedTaskId]: append
           ? prev[normalizedTaskId]
-          : { total: 0, items: [], hasMore: false, nextOffset: null },
+          : { total: 0, items: [], hasMore: false, nextOffset: null, error: true },
       }));
     } finally {
       setScanRunObservationsLoading((prev) => (prev === normalizedTaskId ? '' : prev));
@@ -1237,7 +1276,7 @@ function ScanCenterPage() {
     let refreshTimer = null;
     const handleConnected = () => {
       setScanSseConnected(true);
-      setScanSsePulse((value) => value + 1);
+      activityTickRef.current?.();
       refreshAllRef.current({ silent: true });
     };
     const handleStatus = (event) => {
@@ -1245,7 +1284,9 @@ function ScanCenterPage() {
     };
     const handleInvalidate = (event) => {
       const sections = Array.isArray(event?.detail?.sections) ? event.detail.sections : [];
-      setScanSsePulse((value) => value + 1);
+      // Agents-only invalidations still need the activity tick even though the
+      // heavy table refresh below is skipped.
+      if (sections.includes('agents')) activityTickRef.current?.();
       if (sections.length === 1 && sections[0] === 'agents') return;
       if (refreshTimer) return;
       refreshTimer = window.setTimeout(() => {
@@ -1340,7 +1381,22 @@ function ScanCenterPage() {
     reviewAbortRef.current?.abort();
     agentsAbortRef.current?.abort();
     hostsAbortRef.current?.abort();
+    hostIncidentsAbortRef.current?.abort();
+    hostNewCountAbortRef.current?.abort();
+    hostScanRunsAbortRef.current?.abort();
+    observationsAbortRef.current?.abort();
+    activityAbortRef.current?.abort();
   }, []);
+
+  // Closing the drawer must cancel its request families, not just ignore their
+  // late responses via requestId guards.
+  useEffect(() => {
+    if (hostDrawerOpen) return;
+    hostIncidentsAbortRef.current?.abort();
+    hostNewCountAbortRef.current?.abort();
+    hostScanRunsAbortRef.current?.abort();
+    observationsAbortRef.current?.abort();
+  }, [hostDrawerOpen]);
 
   useEffect(() => {
     if (!hostDrawerOpen || !selectedHost) return;
@@ -1425,8 +1481,11 @@ function ScanCenterPage() {
     let cancelled = false;
 
     const tick = async () => {
+      activityAbortRef.current?.abort();
+      const controller = new AbortController();
+      activityAbortRef.current = controller;
       try {
-        const data = await scanAPI.getAgentsActivity(monitoredAgentIds);
+        const data = await scanAPI.getAgentsActivity(monitoredAgentIds, { signal: controller.signal });
         if (cancelled) return;
         const activityByAgent = new Map(
           (Array.isArray(data?.items) ? data.items : []).map((item) => [String(item?.agent_id || '').trim(), item]),
@@ -1451,20 +1510,22 @@ function ScanCenterPage() {
           return Boolean(activity && isActiveTask(activity.active_task));
         }));
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && !controller.signal.aborted) {
           console.error('Scan activity polling failed', error);
         }
       }
     };
 
+    activityTickRef.current = tick;
     tick();
     const timer = scanSseConnected ? null : window.setInterval(tick, TASK_POLL_MS);
     return () => {
       cancelled = true;
+      activityTickRef.current = () => {};
       if (timer) window.clearInterval(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [monitoredAgentIdsKey, scanSseConnected, scanSsePulse]);
+  }, [monitoredAgentIdsKey, scanSseConnected]);
 
   const patchHostNewCount = (hostname, delta) => {
     const host = normalizeHost(hostname);
@@ -1486,7 +1547,9 @@ function ScanCenterPage() {
   const handleAckIncident = async (incident) => {
     if (!canScanAck) return;
     const incidentId = String(incident?.id || '').trim();
-    if (!incidentId) return;
+    // Single busy slot: a second ack while one is in flight would have its
+    // finally-clear stomp the first operation's indicator.
+    if (!incidentId || busyIncident) return;
     setBusyIncident(incidentId);
     try {
       await scanAPI.ackIncident(incidentId);
@@ -1503,7 +1566,7 @@ function ScanCenterPage() {
       console.error('Ack incident failed', error);
       setTaskNotice({ severity: 'error', text: 'Не удалось отметить инцидент просмотренным.' });
     } finally {
-      setBusyIncident('');
+      setBusyIncident((prev) => (prev === incidentId ? '' : prev));
     }
   };
 
@@ -1773,7 +1836,8 @@ function ScanCenterPage() {
   const enqueueTask = async (agentId, command, options = {}) => {
     if (!canScanTasks) return;
     const normalizedAgentId = String(agentId || '').trim();
-    if (!normalizedAgentId) return;
+    // Single busy slot: drop a second enqueue while one is still running.
+    if (!normalizedAgentId || busyTaskAgent) return;
     const payload = options.payload && typeof options.payload === 'object' ? options.payload : undefined;
     const dedupeKey = String(options.dedupeKey || `${command}:${normalizedAgentId}`).trim();
     try {
@@ -1818,7 +1882,7 @@ function ScanCenterPage() {
         text: `Не удалось отправить ${label} для ${normalizedAgentId}`,
       });
     } finally {
-      setBusyTaskAgent('');
+      setBusyTaskAgent((prev) => (prev === normalizedAgentId ? '' : prev));
     }
   };
 
@@ -2025,7 +2089,7 @@ function ScanCenterPage() {
   return (
     <MainLayout showDatabaseSelector headerMode="integrated">
       <PageShell sx={{ width: '100%', pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : 2, minHeight: isMobile ? undefined : 'calc(100dvh - var(--app-shell-top-offset, 0px) - 32px)' }}>
-        {isMobile ? <MobileShellPageHeader title="Scan Center" showDatabaseSelector /> : null}
+        {isMobile ? <MobileShellPageHeader title="Контроль документов" showDatabaseSelector /> : null}
         <ScanCenterHeader
           integrated={!isMobile}
           dashboard={dashboard}

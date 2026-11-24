@@ -1,8 +1,16 @@
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import ScanCenter from './ScanCenter';
+import ScanCenterPage from './ScanCenter';
 import { scanAPI } from '../api/client';
+
+// The page keeps its active tab in ?section= — it needs a router context.
+const ScanCenter = () => (
+  <MemoryRouter>
+    <ScanCenterPage />
+  </MemoryRouter>
+);
 
 // Keep in sync with AUTO_REFRESH_MS in ScanCenter.jsx (not exported).
 const AUTO_REFRESH_MS = 30_000;
@@ -442,7 +450,10 @@ describe('ScanCenter page', () => {
     });
 
     await waitFor(() => {
-      expect(scanAPI.getAgentsActivity).toHaveBeenCalledWith(['agent-1']);
+      expect(scanAPI.getAgentsActivity).toHaveBeenCalledWith(
+        ['agent-1'],
+        expect.objectContaining({ signal: expect.any(Object) }),
+      );
     });
 
     expect(scanAPI.getDashboard).not.toHaveBeenCalled();
@@ -662,7 +673,8 @@ describe('ScanCenter page', () => {
           hostname: 'HOST-01',
           limit: 200,
           offset: 0,
-        })
+        }),
+        expect.objectContaining({ signal: expect.any(Object) }),
       );
     });
 
@@ -692,7 +704,11 @@ describe('ScanCenter page', () => {
     fireEvent.click(within(hostRowElement).getByRole('button'));
 
     await waitFor(() => {
-      expect(scanAPI.getHostScanRuns).toHaveBeenCalledWith('HOST-01', { limit: 30, offset: 0 });
+      expect(scanAPI.getHostScanRuns).toHaveBeenCalledWith(
+        'HOST-01',
+        { limit: 30, offset: 0 },
+        expect.objectContaining({ signal: expect.any(Object) }),
+      );
     });
 
     const exportButton = (await screen.findAllByRole('button', { name: /Excel/i, hidden: true })).at(-1);
