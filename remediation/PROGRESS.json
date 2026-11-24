@@ -513,7 +513,7 @@
       "id": "FE-0028",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "mfu",
       "page": null,
@@ -521,10 +521,10 @@
       "lines": "1297-1298",
       "title": "Mfu: Drawer 360px шире экранов <360px",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 65
     },
     {
       "id": "FE-0029",
@@ -983,7 +983,7 @@
       "id": "FE-0054",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "misc",
       "page": null,
@@ -991,10 +991,10 @@
       "lines": "235",
       "title": "При открытии диалога создания задачи — 2 идентичных GET /hub/users/controllers",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 65
     },
     {
       "id": "FE-0056",
@@ -2294,7 +2294,7 @@
       "id": "FE-0128",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "misc",
       "page": null,
@@ -2302,10 +2302,10 @@
       "lines": "6-7,39-40",
       "title": "Tasks: чекбокс чек-листа без optimistic-отклика; мёртвый проп updatingItemId",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 65
     },
     {
       "id": "FE-0129",
@@ -3069,7 +3069,7 @@
       "id": "FE-0170",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "it-requests",
       "page": null,
@@ -3077,16 +3077,16 @@
       "lines": "834 (warehouseRef в запросе),1060-1085 (renderValue показывает «Все склады» при отсутствии в фасетах)",
       "title": "IT-заявки: устаревший фильтр склада фильтрует, пока Select рисует «Все склады»",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 65
     },
     {
       "id": "FE-0171",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "it-requests",
       "page": null,
@@ -3094,10 +3094,10 @@
       "lines": "665-681 (RequestDetail),1136: {error} рендерится только внутри ветки с request",
       "title": "IT-заявки: ошибка загрузки детали невидима, когда заявки нет в списке",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 65
     },
     {
       "id": "FE-0172",
@@ -3747,7 +3747,7 @@
       "id": "FE-0208",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "notifications",
       "page": null,
@@ -3755,16 +3755,16 @@
       "lines": "347-380: мутация chatSerialQueueRef в чистом апдейтере",
       "title": "Notifications: побочный эффект внутри setState-апдейтера — очередь чат-тостов",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 65
     },
     {
       "id": "FE-0209",
       "severity": "Low",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P3",
       "batch": "notifications",
       "page": null,
@@ -3772,10 +3772,10 @@
       "lines": "194-196,433-449: чтение один раз, без storage-слушателя; windowsNotifications.js read-then-write без lock",
       "title": "Notifications: seen-маркеры не синхронизируются между вкладками → дубли уведомлений",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 65
     },
     {
       "id": "FE-0210",
@@ -4426,7 +4426,7 @@
       "id": "FE-0246",
       "severity": "Medium",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "FIXED",
       "priority": "P2",
       "batch": "misc",
       "page": null,
@@ -4434,10 +4434,10 @@
       "lines": "88-94 (ad_users.read) vs AdUsers.jsx:135,152-154 (getImportCandidates) vs backend ad_users.py:79-86 (admin-only)",
       "title": "Аккаунт: раздел «Пользователи AD» доступен по ad_users.read, но эндпоинты admin-only → гарантированный 403",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "notes": "",
+      "pr": 65
     },
     {
       "id": "FE-0247",
@@ -4919,7 +4919,7 @@
       "id": "FE-0274",
       "severity": "Info",
       "auditStatus": "Confirmed",
-      "status": "OPEN",
+      "status": "REJECTED",
       "priority": "P3",
       "batch": "address-book",
       "page": null,
@@ -4927,10 +4927,10 @@
       "lines": "958-963,993-998",
       "title": "AddressBook: onComposeEmail продублирован в JSX — dev-предупреждение о дубле prop",
       "related": [],
-      "pr": null,
       "tests": [],
       "review": null,
-      "notes": ""
+      "pr": 65,
+      "notes": "False positive: canComposeEmail and onComposeEmail are distinct props; each JSX site passes onComposeEmail exactly once. No literal duplicate attribute found in AddressBook.jsx or child panels."
     },
     {
       "id": "FE-0275",
