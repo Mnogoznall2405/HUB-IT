@@ -7,8 +7,8 @@ import { chatStickersAPI, primeStickerPacksCache } from '../../api/chatStickers'
 import TelegramStickersTab from './TelegramStickersTab';
 
 const stickerEpochRef = { value: 0 };
-vi.mock('../../api/chatStickers', () => ({
-  chatStickersAPI: {
+vi.mock('../../api/chatStickers', () => {
+  const chatStickersAPI = {
     listPacks: vi.fn(),
     importPack: vi.fn(),
     listFavorites: vi.fn(),
@@ -17,12 +17,36 @@ vi.mock('../../api/chatStickers', () => ({
     listRecentStickers: vi.fn(),
     pushRecentStickers: vi.fn(),
     setPackOrder: vi.fn(),
-  },
-  getStickerPacksEpoch: vi.fn(() => stickerEpochRef.value),
-  peekStickerPacksCache: vi.fn(() => null),
-  primeStickerPacksCache: vi.fn((scope, payload) => payload),
-  invalidateStickerPacksCache: vi.fn(() => { stickerEpochRef.value += 1; }),
-}));
+  };
+  // Дебаунс-синк «недавних» воспроизводим честно, чтобы поведенческие
+  // тесты проходили по реальной цепочке schedule → timer → PUT.
+  let recentSyncTimer = null;
+  let pendingRecentIds = null;
+  return {
+    chatStickersAPI,
+    scheduleRecentStickersSync: vi.fn((stickerIds) => {
+      pendingRecentIds = Array.isArray(stickerIds) ? stickerIds : [];
+      if (recentSyncTimer !== null) clearTimeout(recentSyncTimer);
+      recentSyncTimer = setTimeout(() => {
+        recentSyncTimer = null;
+        const idsToPush = pendingRecentIds || [];
+        pendingRecentIds = null;
+        chatStickersAPI.pushRecentStickers(idsToPush).catch(() => {});
+      }, 1500);
+    }),
+    cancelRecentStickersSync: vi.fn(() => {
+      if (recentSyncTimer !== null) {
+        clearTimeout(recentSyncTimer);
+        recentSyncTimer = null;
+      }
+      pendingRecentIds = null;
+    }),
+    getStickerPacksEpoch: vi.fn(() => stickerEpochRef.value),
+    peekStickerPacksCache: vi.fn(() => null),
+    primeStickerPacksCache: vi.fn((scope, payload) => payload),
+    invalidateStickerPacksCache: vi.fn(() => { stickerEpochRef.value += 1; }),
+  };
+});
 
 const theme = createTheme();
 const ui = {
@@ -530,5 +554,123 @@ describe('TelegramStickersTab', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('filters stickers by keyword and restores the sections after Escape', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack, secondStickerPack] });
+    renderTab();
+
+    await screen.findByRole('tabpanel', { name: 'Офисные звери' });
+    const searchInput = screen.getByLabelText('Поиск стикеров');
+    fireEvent.change(searchInput, { target: { value: 'кот' } });
+
+    // В режиме поиска секции и лента наборов скрыты, видна только выдача.
+    const results = await screen.findByTestId('chat-sticker-search-results');
+    await waitFor(() => {
+      expect(within(results).getByRole('button', { name: 'Отправить стикер 🐈' })).toBeInTheDocument();
+    });
+    expect(within(results).queryByRole('button', { name: 'Отправить стикер 🦆' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('chat-sticker-sections-scroll')).toHaveStyle({ display: 'none' });
+    expect(screen.getByTestId('chat-sticker-pack-strip-row')).toHaveStyle({ display: 'none' });
+
+    // Escape в поле очищает запрос — обычный список возвращается.
+    fireEvent.keyDown(searchInput, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('chat-sticker-search-results')).not.toBeInTheDocument();
+    });
+    expect(screen.getByRole('tabpanel', { name: 'Офисные звери' })).toBeInTheDocument();
+    expect(searchInput).toHaveValue('');
+  });
+
+  it('shows the whole pack group when the query matches the pack title', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack, secondStickerPack] });
+    renderTab();
+
+    await screen.findByRole('tabpanel', { name: 'Офисные звери' });
+    const searchInput = screen.getByLabelText('Поиск стикеров');
+    fireEvent.change(searchInput, { target: { value: 'звери' } });
+
+    const results = await screen.findByTestId('chat-sticker-search-results');
+    await waitFor(() => {
+      expect(within(results).getByText('Офисные звери')).toBeInTheDocument();
+    });
+    expect(within(results).getByRole('button', { name: 'Отправить стикер 🐈' })).toBeInTheDocument();
+    expect(within(results).queryByText('Офисные птицы')).not.toBeInTheDocument();
+
+    fireEvent.keyDown(searchInput, { key: 'Escape' });
+  });
+
+  it('matches stickers by the emoji inside the query', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack, secondStickerPack] });
+    renderTab();
+
+    await screen.findByRole('tabpanel', { name: 'Офисные звери' });
+    const searchInput = screen.getByLabelText('Поиск стикеров');
+    fireEvent.change(searchInput, { target: { value: 'привет 🦆' } });
+
+    const results = await screen.findByTestId('chat-sticker-search-results');
+    await waitFor(() => {
+      expect(within(results).getByRole('button', { name: 'Отправить стикер 🦆' })).toBeInTheDocument();
+    });
+    expect(within(results).queryByRole('button', { name: 'Отправить стикер 🐈' })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(searchInput, { key: 'Escape' });
+  });
+
+  it('shows the not-found state for a query without matches', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    renderTab();
+
+    await screen.findByRole('tabpanel', { name: 'Офисные звери' });
+    const searchInput = screen.getByLabelText('Поиск стикеров');
+    fireEvent.change(searchInput, { target: { value: 'субмарина' } });
+
+    const results = await screen.findByTestId('chat-sticker-search-results');
+    await waitFor(() => {
+      expect(within(results).getByText('Ничего не найдено')).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(searchInput, { key: 'Escape' });
+  });
+
+  it('sends a sticker from search results and clears the query', async () => {
+    const onSendSticker = vi.fn().mockResolvedValue(true);
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    renderTab(onSendSticker);
+
+    await screen.findByRole('tabpanel', { name: 'Офисные звери' });
+    const searchInput = screen.getByLabelText('Поиск стикеров');
+    fireEvent.change(searchInput, { target: { value: 'кот' } });
+    const results = await screen.findByTestId('chat-sticker-search-results');
+    const resultButton = await within(results).findByRole('button', { name: 'Отправить стикер 🐈' });
+
+    fireEvent.click(resultButton);
+
+    await waitFor(() => expect(onSendSticker).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'sticker-1',
+    })));
+    // После отправки поиск очищается — как в Telegram Desktop.
+    await waitFor(() => expect(searchInput).toHaveValue(''));
+    await waitFor(() => {
+      expect(screen.queryByTestId('chat-sticker-search-results')).not.toBeInTheDocument();
+    });
+  });
+
+  it('persists the typing-suggestions toggle in localStorage', async () => {
+    chatStickersAPI.listPacks.mockResolvedValue({ items: [stickerPack] });
+    renderTab();
+
+    await screen.findByRole('tabpanel', { name: 'Офисные звери' });
+    const toggle = screen.getByRole('button', { name: 'Подсказки стикеров при вводе эмодзи' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(window.localStorage.getItem('hubit.chat.sticker-suggestions.v1')).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(window.localStorage.getItem('hubit.chat.sticker-suggestions.v1')).toBe('0');
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(window.localStorage.getItem('hubit.chat.sticker-suggestions.v1')).toBe('1');
   });
 });

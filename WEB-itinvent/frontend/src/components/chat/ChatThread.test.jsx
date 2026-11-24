@@ -39,7 +39,14 @@ vi.mock('emoji-picker-react', () => ({ default: () => null }));
 vi.mock('../../api/chatConfig', () => ({ getChatConfigCached: () => Promise.resolve({ scheduled_messages_enabled: false }) }));
 
 vi.mock('../../api/chatStickers', () => ({
-  chatStickersAPI: { listPacks: vi.fn(async () => ({ items: [] })) },
+  chatStickersAPI: {
+    listPacks: vi.fn(async () => ({ items: [] })),
+    listFavorites: vi.fn(async () => ({ items: [] })),
+    listRecentStickers: vi.fn(async () => ({ items: [] })),
+    pushRecentStickers: vi.fn(async () => ({ items: [] })),
+  },
+  scheduleRecentStickersSync: vi.fn(),
+  cancelRecentStickersSync: vi.fn(),
   peekStickerPacksCache: vi.fn(() => null),
   primeStickerPacksCache: vi.fn((scope, payload) => payload),
   invalidateStickerPacksCache: vi.fn(),

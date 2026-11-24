@@ -1,10 +1,11 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
   Button,
   CircularProgress,
   IconButton,
+  InputAdornment,
   ListItemIcon,
   ListItemText,
   Menu,
@@ -18,7 +19,9 @@ import { alpha } from '@mui/material/styles';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
+import EmojiEmotionsRoundedIcon from '@mui/icons-material/EmojiEmotionsRounded';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import StarOutlineRoundedIcon from '@mui/icons-material/StarOutlineRounded';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
@@ -26,14 +29,29 @@ import StickyNote2RoundedIcon from '@mui/icons-material/StickyNote2Rounded';
 import TelegramIcon from '@mui/icons-material/Telegram';
 
 import {
+  cancelRecentStickersSync,
   chatStickersAPI,
   getStickerPacksEpoch,
   invalidateStickerPacksCache,
   peekStickerPacksCache,
   primeStickerPacksCache,
+  scheduleRecentStickersSync,
 } from '../../api/chatStickers';
 import ChatStickerMedia from './ChatStickerMedia';
 import ChatStickerThumbnail from './ChatStickerThumbnail';
+import {
+  buildRecentStorageKey,
+  buildStickerSearchIndex,
+  normalizeStickerSearchQuery,
+  notifyStickerRecentsChanged,
+  readRecentStickerIds,
+  readStickerSuggestionsEnabled,
+  RECENT_STICKERS_LIMIT,
+  searchStickerIndex,
+  STICKER_SUGGESTIONS_EVENT,
+  writeRecentStickerIds,
+  writeStickerSuggestionsEnabled,
+} from './stickerSearchIndex';
 import {
   getFileActionsAnchorPosition,
   isFileActionsKeyboardShortcut,
@@ -41,30 +59,13 @@ import {
 
 const STICKER_PREVIEW_HOLD_MS = 420;
 const STICKER_PREVIEW_MOVE_TOLERANCE_PX = 12;
-const RECENT_STICKERS_LIMIT = 20;
-// Локальное обновление «недавних» мгновенное, а PUT на сервер уходит
-// trailing-debounce — серия отправок схлопывается в один запрос.
-const RECENT_SYNC_DEBOUNCE_MS = 1500;
 
 // Позиция прокрутки списка стикеров переживает закрытие панели —
 // Telegram Desktop возвращает пользователя туда, где он остановился.
 let persistedStickerScrollTop = 0;
-
-const buildRecentStorageKey = (currentUserId) => (
-  `hubit.chat.recent-stickers.v1:${String(currentUserId || 'device')}`
-);
-
-const readRecentStickerIds = (storageKey) => {
-  if (typeof window === 'undefined') return [];
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || '[]');
-    return Array.isArray(parsed)
-      ? parsed.map((item) => String(item || '').trim()).filter(Boolean).slice(0, RECENT_STICKERS_LIMIT)
-      : [];
-  } catch {
-    return [];
-  }
-};
+// Поисковый запрос тоже переживает remount поповера/дока — Telegram
+// сохраняет его, пока пользователь не очистил поле и не отправил стикер.
+let persistedStickerSearchQuery = '';
 
 const getApiError = (error, fallback) => String(
   error?.response?.data?.detail
@@ -116,8 +117,6 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   const keyboardPressRef = useRef(false);
   const holdTriggeredRef = useRef(false);
   const suppressClickRef = useRef(false);
-  const recentSyncTimerRef = useRef(null);
-  const pendingRecentIdsRef = useRef(null);
 
   const clearHoldTimer = useCallback(() => {
     if (holdTimerRef.current !== null) {
@@ -181,32 +180,11 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     setRecentStickerIds(readRecentStickerIds(recentStorageKey));
   }, [recentStorageKey]);
 
-  const flushRecentSync = useCallback(() => {
-    recentSyncTimerRef.current = null;
-    const stickerIds = pendingRecentIdsRef.current || [];
-    pendingRecentIdsRef.current = null;
-    chatStickersAPI.pushRecentStickers(stickerIds).catch(() => {
-      // Синхронизация не критична: локальная копия уже лежит в localStorage
-      // и следующая успешная запись привезёт список целиком.
-    });
-  }, []);
-
-  const scheduleRecentSync = useCallback((stickerIds) => {
-    pendingRecentIdsRef.current = Array.isArray(stickerIds) ? [...stickerIds] : [];
-    if (recentSyncTimerRef.current !== null) window.clearTimeout(recentSyncTimerRef.current);
-    recentSyncTimerRef.current = window.setTimeout(flushRecentSync, RECENT_SYNC_DEBOUNCE_MS);
-  }, [flushRecentSync]);
-
   // Отмена без flush при размонтировании и смене аккаунта: в очереди список
   // прежнего пользователя — слать его под чужой сессией нельзя, а локальная
-  // копия уже сохранена в его localStorage-ключ.
-  useEffect(() => () => {
-    if (recentSyncTimerRef.current !== null) {
-      window.clearTimeout(recentSyncTimerRef.current);
-      recentSyncTimerRef.current = null;
-      pendingRecentIdsRef.current = null;
-    }
-  }, [recentStorageKey]);
+  // копия уже сохранена в его localStorage-ключ. Дебаунс общий для всех
+  // поверхностей отправки (api/chatStickers), scope — ключ хранилища.
+  useEffect(() => () => cancelRecentStickersSync(recentStorageKey), [recentStorageKey]);
 
   // Серверные «недавние» выигрывают у локального кэша; если сервер пуст,
   // а локальная копия есть — поднимаем её наверх один раз (миграция с
@@ -222,21 +200,18 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
           .slice(0, RECENT_STICKERS_LIMIT);
         if (serverIds.length > 0) {
           setRecentStickerIds(serverIds);
-          try {
-            window.localStorage.setItem(recentStorageKey, JSON.stringify(serverIds));
-          } catch {
-            // localStorage — только офлайн-кэш, picker работает и без него.
-          }
+          writeRecentStickerIds(recentStorageKey, serverIds);
+          notifyStickerRecentsChanged(recentStorageKey);
           return;
         }
         const localIds = readRecentStickerIds(recentStorageKey);
-        if (localIds.length > 0) scheduleRecentSync(localIds);
+        if (localIds.length > 0) scheduleRecentStickersSync(localIds, recentStorageKey);
       })
       .catch(() => {
         // Офлайн/старый backend — остаёмся на localStorage-копии.
       });
     return () => { cancelled = true; };
-  }, [recentStorageKey, scheduleRecentSync]);
+  }, [recentStorageKey]);
 
   // Избранное грузится параллельно наборам: секция рендерится сразу,
   // стикеры появляются по готовности.
@@ -325,6 +300,54 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     ],
     [packs, recentStickers, favoriteStickers],
   );
+
+  // Поиск по уже загруженным секциям: deferred-запрос не блокирует ввод,
+  // индекс пересчитывается только при смене секций — как в Telegram Desktop.
+  const [searchQuery, setSearchQuery] = useState(() => persistedStickerSearchQuery);
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const stickerSearchIndex = useMemo(() => buildStickerSearchIndex(stickerSections), [stickerSections]);
+  const searchResults = useMemo(
+    () => searchStickerIndex(stickerSearchIndex, deferredSearchQuery),
+    [stickerSearchIndex, deferredSearchQuery],
+  );
+  const isSearching = Boolean(normalizeStickerSearchQuery(deferredSearchQuery));
+
+  const handleSearchQueryChange = useCallback((event) => {
+    const nextQuery = event.target.value;
+    persistedStickerSearchQuery = nextQuery;
+    setSearchQuery(nextQuery);
+  }, []);
+
+  const handleSearchClear = useCallback(() => {
+    persistedStickerSearchQuery = '';
+    setSearchQuery('');
+  }, []);
+
+  const handleSearchKeyDown = useCallback((event) => {
+    if (event.key !== 'Escape') return;
+    // Escape в поле только чистит запрос и убирает фокус — поповер не
+    // должен закрываться, поэтому всплытие до document останавливаем.
+    event.preventDefault();
+    event.stopPropagation();
+    persistedStickerSearchQuery = '';
+    setSearchQuery('');
+    event.currentTarget.blur();
+  }, []);
+
+  // Переключатель «подсказки стикеров при вводе эмодзи» живёт в строке
+  // поиска — это единственное место, где он нужен по Telegram-логике.
+  const [suggestionsEnabled, setSuggestionsEnabled] = useState(() => readStickerSuggestionsEnabled());
+  useEffect(() => {
+    const syncSuggestionsSetting = () => setSuggestionsEnabled(readStickerSuggestionsEnabled());
+    window.addEventListener(STICKER_SUGGESTIONS_EVENT, syncSuggestionsSetting);
+    return () => window.removeEventListener(STICKER_SUGGESTIONS_EVENT, syncSuggestionsSetting);
+  }, []);
+
+  const handleToggleSuggestions = useCallback(() => {
+    const next = !readStickerSuggestionsEnabled();
+    writeStickerSuggestionsEnabled(next);
+    setSuggestionsEnabled(next);
+  }, []);
 
   useEffect(() => {
     const validSectionIds = new Set(stickerSections.map((section) => String(section.id)));
@@ -452,15 +475,12 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     setRecentStickerIds((current) => {
       const next = [normalizedStickerId, ...current.filter((item) => item !== normalizedStickerId)]
         .slice(0, RECENT_STICKERS_LIMIT);
-      try {
-        window.localStorage.setItem(recentStorageKey, JSON.stringify(next));
-      } catch {
-        // The picker still works when browser storage is unavailable.
-      }
-      scheduleRecentSync(next);
+      writeRecentStickerIds(recentStorageKey, next);
+      scheduleRecentStickersSync(next, recentStorageKey);
+      notifyStickerRecentsChanged(recentStorageKey);
       return next;
     });
-  }, [recentStorageKey, scheduleRecentSync]);
+  }, [recentStorageKey]);
 
   const forgetRecentSticker = useCallback((stickerId) => {
     const normalizedStickerId = String(stickerId || '').trim();
@@ -468,15 +488,12 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     setRecentStickerIds((current) => {
       if (!current.includes(normalizedStickerId)) return current;
       const next = current.filter((item) => item !== normalizedStickerId);
-      try {
-        window.localStorage.setItem(recentStorageKey, JSON.stringify(next));
-      } catch {
-        // The picker still works when browser storage is unavailable.
-      }
-      scheduleRecentSync(next);
+      writeRecentStickerIds(recentStorageKey, next);
+      scheduleRecentStickersSync(next, recentStorageKey);
+      notifyStickerRecentsChanged(recentStorageKey);
       return next;
     });
-  }, [recentStorageKey, scheduleRecentSync]);
+  }, [recentStorageKey]);
 
   const handleImportSubmit = useCallback(async (event) => {
     event.preventDefault();
@@ -521,6 +538,9 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
         setStatusText('Стикер не отправлен.');
       } else {
         rememberRecentSticker(stickerId);
+        // После отправки поиск очищается — как в Telegram Desktop.
+        persistedStickerSearchQuery = '';
+        setSearchQuery('');
       }
     } finally {
       setSendingStickerIds((current) => {
@@ -688,6 +708,61 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     forgetRecentSticker(menuStickerId);
   }, [closeStickerMenu, forgetRecentSticker, menuStickerId]);
 
+  // Одна и та же ячейка используется и в обычных секциях, и в результатах
+  // поиска — обработчики (клик, hold-preview, контекстное меню) общие.
+  const renderStickerButton = (sticker, sectionKey) => (
+    <Box
+      key={`${sectionKey}-${sticker.id}`}
+      component="button"
+      type="button"
+      aria-label={`Отправить стикер ${sticker.emoji || ''}`.trim()}
+      disabled={Boolean(sendingStickerIds[String(sticker.id)])}
+      onClick={(event) => handleStickerButtonClick(event, sticker)}
+      onPointerDown={(event) => handleStickerPointerDown(event, sticker)}
+      onPointerMove={handleStickerPointerMove}
+      onPointerUp={handleStickerPointerEnd}
+      onPointerCancel={handleStickerPointerCancel}
+      onKeyDown={(event) => handleStickerKeyDown(event, sticker)}
+      onKeyUp={(event) => handleStickerKeyUp(event, sticker)}
+      onContextMenu={(event) => openStickerMenu(event, sticker)}
+      sx={{
+        position: 'relative',
+        aspectRatio: '1 / 1',
+        minWidth: 0,
+        p: 0.2,
+        display: 'grid',
+        placeItems: 'center',
+        border: 'none',
+        borderRadius: 2,
+        bgcolor: 'transparent',
+        cursor: sendingStickerIds[String(sticker.id)] ? 'wait' : 'pointer',
+        touchAction: 'manipulation',
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+        WebkitTouchCallout: 'none',
+        contentVisibility: 'auto',
+        containIntrinsicSize: dense ? '72px 72px' : '80px 80px',
+        transition: 'background-color 120ms ease, transform 100ms ease, opacity 120ms ease',
+        opacity: sendingStickerIds[String(sticker.id)] ? 0.55 : 1,
+        '&:hover': { bgcolor: alpha(ui.accentText || theme.palette.primary.main, 0.08) },
+        '&:active': { transform: 'scale(0.96)' },
+        '&:focus-visible': {
+          outline: `2px solid ${ui.accentText || theme.palette.primary.main}`,
+          outlineOffset: 1,
+        },
+      }}
+    >
+      <ChatStickerThumbnail sticker={sticker} size={dense ? 68 : 76} staticOnly />
+      {sendingStickerIds[String(sticker.id)] ? (
+        <CircularProgress
+          size={22}
+          sx={{ position: 'absolute', color: ui.accentText || theme.palette.primary.main }}
+          aria-label="Отправка стикера"
+        />
+      ) : null}
+    </Box>
+  );
+
   const accent = ui.accentText || theme.palette.primary.main;
   const border = ui.borderSoft || theme.palette.divider;
   const panelBg = ui.composerBg || ui.panelBg || theme.palette.background.paper;
@@ -704,8 +779,90 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <Box
         sx={{
-          minHeight: dense ? 44 : 48,
           display: 'flex',
+          alignItems: 'center',
+          gap: 0.5,
+          px: 0.75,
+          pt: 0.6,
+          pb: 0.4,
+        }}
+      >
+        <TextField
+          value={searchQuery}
+          onChange={handleSearchQueryChange}
+          onKeyDown={handleSearchKeyDown}
+          placeholder="Поиск стикеров"
+          size="small"
+          fullWidth
+          autoComplete="off"
+          inputProps={{ 'aria-label': 'Поиск стикеров' }}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start" sx={{ mr: 0.4 }}>
+                <SearchRoundedIcon
+                  sx={{ fontSize: 18, color: ui.textSecondary || theme.palette.text.secondary }}
+                  aria-hidden="true"
+                />
+              </InputAdornment>
+            ),
+            endAdornment: searchQuery ? (
+              <InputAdornment position="end" sx={{ ml: 0.2 }}>
+                <IconButton
+                  type="button"
+                  aria-label="Очистить поиск стикеров"
+                  size="small"
+                  onClick={handleSearchClear}
+                  sx={{ width: 24, height: 24 }}
+                >
+                  <CloseRoundedIcon sx={{ fontSize: 15 }} />
+                </IconButton>
+              </InputAdornment>
+            ) : null,
+          }}
+          sx={{
+            '& .MuiOutlinedInput-root': {
+              minHeight: dense ? 32 : 34,
+              borderRadius: '999px',
+              fontSize: 13,
+              bgcolor: alpha(ui.textSecondary || theme.palette.text.secondary, 0.1),
+              '& fieldset': { borderColor: 'transparent' },
+              '&:hover fieldset': { borderColor: 'transparent' },
+              '&.Mui-focused fieldset': { borderColor: alpha(accent, 0.6) },
+            },
+            '& .MuiInputBase-input': { py: 0.4 },
+          }}
+        />
+        <Tooltip
+          title={suggestionsEnabled
+            ? 'Подсказки стикеров при вводе эмодзи: вкл.'
+            : 'Подсказки стикеров при вводе эмодзи: выкл.'}
+          placement="top"
+        >
+          <IconButton
+            type="button"
+            aria-label="Подсказки стикеров при вводе эмодзи"
+            aria-pressed={suggestionsEnabled}
+            onClick={handleToggleSuggestions}
+            sx={{
+              width: 32,
+              height: 32,
+              flexShrink: 0,
+              color: suggestionsEnabled ? accent : (ui.textSecondary || theme.palette.text.secondary),
+              bgcolor: suggestionsEnabled ? alpha(accent, 0.14) : 'transparent',
+              transition: 'background-color 120ms ease, transform 100ms ease',
+              '&:hover': { bgcolor: alpha(accent, 0.1) },
+              '&:active': { transform: 'scale(0.96)' },
+            }}
+          >
+            <EmojiEmotionsRoundedIcon sx={{ fontSize: 19 }} aria-hidden="true" />
+          </IconButton>
+        </Tooltip>
+      </Box>
+      <Box
+        data-testid="chat-sticker-pack-strip-row"
+        sx={{
+          minHeight: dense ? 44 : 48,
+          display: isSearching ? 'none' : 'flex',
           alignItems: 'center',
           gap: 0.5,
           px: 0.75,
@@ -910,12 +1067,80 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
           </Box>
         </Box>
       ) : (
-        <Box
-          ref={scrollContainerRef}
-          data-testid="chat-sticker-sections-scroll"
-          sx={{ flex: 1, minHeight: 0, overflowY: 'auto', WebkitOverflowScrolling: 'touch', px: 0.75, py: 0.6 }}
-        >
-          {stickerSections.map((section) => (
+        <>
+          {isSearching ? (
+            <Box
+              data-testid="chat-sticker-search-results"
+              sx={{ flex: 1, minHeight: 0, overflowY: 'auto', WebkitOverflowScrolling: 'touch', px: 0.75, py: 0.6 }}
+            >
+              {searchResults.length === 0 ? (
+                <Box sx={{ height: '100%', display: 'grid', placeItems: 'center', p: 2, textAlign: 'center' }}>
+                  <Box>
+                    <SearchRoundedIcon
+                      sx={{
+                        fontSize: 34,
+                        color: alpha(ui.textSecondary || theme.palette.text.secondary, 0.6),
+                        mb: 0.6,
+                      }}
+                      aria-hidden="true"
+                    />
+                    <Typography sx={{ fontSize: 14, fontWeight: 700, color: ui.textPrimary || theme.palette.text.primary }}>
+                      Ничего не найдено
+                    </Typography>
+                    <Typography sx={{ mt: 0.4, fontSize: 12.5, lineHeight: 1.35, color: ui.textSecondary || theme.palette.text.secondary }}>
+                      Попробуйте другое слово или эмодзи
+                    </Typography>
+                  </Box>
+                </Box>
+              ) : (
+                searchResults.map((group) => (
+                  <Box key={group.id} component="section" sx={{ pb: 1.2 }}>
+                    <Typography
+                      sx={{
+                        position: 'sticky',
+                        top: 0,
+                        zIndex: 2,
+                        px: 0.4,
+                        py: 0.55,
+                        fontSize: 12,
+                        fontWeight: 800,
+                        color: ui.textSecondary || theme.palette.text.secondary,
+                        bgcolor: panelBg,
+                      }}
+                    >
+                      {group.title}
+                    </Typography>
+                    <Box
+                      role="tabpanel"
+                      aria-label={group.title}
+                      sx={{
+                        display: 'grid',
+                        gridTemplateColumns: `repeat(${dense ? 5 : 4}, minmax(0, 1fr))`,
+                        gap: dense ? 0.3 : 0.4,
+                        alignItems: 'start',
+                      }}
+                    >
+                      {group.stickers.map((sticker) => renderStickerButton(sticker, `search-${group.id}`))}
+                    </Box>
+                  </Box>
+                ))
+              )}
+            </Box>
+          ) : null}
+          <Box
+            ref={scrollContainerRef}
+            data-testid="chat-sticker-sections-scroll"
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: 'auto',
+              WebkitOverflowScrolling: 'touch',
+              px: 0.75,
+              py: 0.6,
+              display: isSearching ? 'none' : 'block',
+            }}
+          >
+            {stickerSections.map((section) => (
             <Box
               key={section.id}
               component="section"
@@ -973,56 +1198,13 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
                     alignItems: 'start',
                   }}
                 >
-                  {section.stickers.map((sticker) => (
-              <Box
-                key={`${section.id}-${sticker.id}`}
-                component="button"
-                type="button"
-                aria-label={`Отправить стикер ${sticker.emoji || ''}`.trim()}
-                disabled={Boolean(sendingStickerIds[String(sticker.id)])}
-                onClick={(event) => handleStickerButtonClick(event, sticker)}
-                onPointerDown={(event) => handleStickerPointerDown(event, sticker)}
-                onPointerMove={handleStickerPointerMove}
-                onPointerUp={handleStickerPointerEnd}
-                onPointerCancel={handleStickerPointerCancel}
-                onKeyDown={(event) => handleStickerKeyDown(event, sticker)}
-                onKeyUp={(event) => handleStickerKeyUp(event, sticker)}
-                onContextMenu={(event) => openStickerMenu(event, sticker)}
-                sx={{
-                  position: 'relative',
-                  aspectRatio: '1 / 1',
-                  minWidth: 0,
-                  p: 0.2,
-                  display: 'grid',
-                  placeItems: 'center',
-                  border: 'none',
-                  borderRadius: 2,
-                  bgcolor: 'transparent',
-                  cursor: sendingStickerIds[String(sticker.id)] ? 'wait' : 'pointer',
-                  touchAction: 'manipulation',
-                  userSelect: 'none',
-                  WebkitUserSelect: 'none',
-                  WebkitTouchCallout: 'none',
-                  contentVisibility: 'auto',
-                  containIntrinsicSize: dense ? '72px 72px' : '80px 80px',
-                  transition: 'background-color 120ms ease, transform 100ms ease, opacity 120ms ease',
-                  opacity: sendingStickerIds[String(sticker.id)] ? 0.55 : 1,
-                  '&:hover': { bgcolor: alpha(accent, 0.08) },
-                  '&:active': { transform: 'scale(0.96)' },
-                  '&:focus-visible': { outline: `2px solid ${accent}`, outlineOffset: 1 },
-                }}
-              >
-                <ChatStickerThumbnail sticker={sticker} size={dense ? 68 : 76} staticOnly />
-                {sendingStickerIds[String(sticker.id)] ? (
-                  <CircularProgress size={22} sx={{ position: 'absolute', color: accent }} aria-label="Отправка стикера" />
-                ) : null}
-              </Box>
-                  ))}
+                  {section.stickers.map((sticker) => renderStickerButton(sticker, section.id))}
                 </Box>
               )}
             </Box>
-          ))}
-        </Box>
+            ))}
+          </Box>
+        </>
       )}
 
       <Menu

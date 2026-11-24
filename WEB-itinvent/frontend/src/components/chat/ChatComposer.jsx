@@ -11,6 +11,8 @@ import TextareaAutosize from '@mui/material/TextareaAutosize';
 import useAiAgentAccess from './useAiAgentAccess';
 import { useChatEmojiUi } from './ChatEmojiUiContext';
 import { ChatComposerScheduling, ScheduledMessagesBar } from './ChatScheduledMessages';
+import ChatStickerSuggestions from './ChatStickerSuggestions';
+import { getTrailingEmojiToken } from './stickerSearchIndex';
 import { alpha } from '@mui/material/styles';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
@@ -400,6 +402,9 @@ const ChatComposer = memo(function ChatComposer({
   const hiddenSelectedFileCount = Math.max(0, selectedFileList.length - selectedFilePreviewItems.length);
   const [mentionTrigger, setMentionTrigger] = useState(null);
   const mentionTriggerRef = useRef(null);
+  const stickerSuggestionsRef = useRef(null);
+  // Эмодзи-токен в конце ввода — триггер полосы подсказок стикеров.
+  const stickerEmojiToken = useMemo(() => getTrailingEmojiToken(messageText), [messageText]);
   const [remoteMentionPeople, setRemoteMentionPeople] = useState([]);
   const [mentionLoading, setMentionLoading] = useState(false);
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
@@ -486,6 +491,15 @@ const ChatComposer = memo(function ChatComposer({
   }, []);
   useEffect(() => { closeMentions(); }, [activeConversationId, closeMentions]);
   useEffect(() => { if (!messageText) closeMentions(); }, [messageText, closeMentions]);
+
+  // После отправки стикера из подсказок поле чистится только если в нём
+  // был один эмодзи-токен — как в Telegram Desktop.
+  const handleStickerSuggestionSent = useCallback(() => {
+    const token = getTrailingEmojiToken(messageText);
+    if (token && String(messageText || '').trim() === token) {
+      onMessageTextChange?.('');
+    }
+  }, [messageText, onMessageTextChange]);
   useEffect(() => {
     if (!mentionOpen) return;
     document.getElementById(`${mentionListId}-${activeMentionIndex}`)?.scrollIntoView?.({ block: 'nearest' });
@@ -576,6 +590,9 @@ const ChatComposer = memo(function ChatComposer({
         return;
       }
     }
+    // Полоса стикеров: Esc гасит только её (до общей цепочки закрытия),
+    // стрелки/Enter — только когда выбор уже ушёл на полосу (↑).
+    if (stickerSuggestionsRef.current?.handleComposerKey?.(event)) return;
     if (event.key === 'Escape') {
       const dismiss = mobileEmojiPickerOpen || emojiPickerOpen ? onCloseEmojiPicker
         : editingMessage ? onClearEditing : replyMessage ? onClearReply : null;
@@ -965,6 +982,18 @@ const ChatComposer = memo(function ChatComposer({
             ) : null}
           </Box>
         ) : null}
+
+        <ChatStickerSuggestions
+          key={activeConversationId || 'no-conversation'}
+          ref={stickerSuggestionsRef}
+          theme={theme}
+          ui={ui}
+          compactMobile={compactMobile}
+          emojiToken={stickerEmojiToken}
+          onSendSticker={onSendSticker}
+          currentUserId={currentUserId}
+          onStickerSent={handleStickerSuggestionSent}
+        />
       </Box>
 
         <Box

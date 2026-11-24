@@ -42,6 +42,52 @@ export const invalidateStickerPacksCache = () => {
   stickerPacksEpoch += 1;
 };
 
+// Общая trailing-debounce очередь синка «недавних» для всех поверхностей
+// отправки (вкладка стикеров, подсказки над композером): серия записей
+// схлопывается в один PUT, а scope-маркер не даёт списку ушедшего
+// пользователя улететь под чужой сессией после смены аккаунта.
+const RECENT_STICKERS_SYNC_DEBOUNCE_MS = 1500;
+let recentStickersSyncTimer = null;
+let pendingRecentStickerIds = null;
+let pendingRecentStickersScope = '';
+
+export const scheduleRecentStickersSync = (stickerIds, scopeKey = '') => {
+  if (
+    pendingRecentStickerIds !== null
+    && pendingRecentStickersScope
+    && scopeKey
+    && pendingRecentStickersScope !== scopeKey
+  ) {
+    // Под чужим scope ждать нельзя — список прежнего пользователя сбрасываем.
+    pendingRecentStickerIds = null;
+  }
+  pendingRecentStickerIds = (Array.isArray(stickerIds) ? stickerIds : [])
+    .map((stickerId) => String(stickerId || '').trim())
+    .filter(Boolean);
+  pendingRecentStickersScope = scopeKey;
+  if (recentStickersSyncTimer !== null) clearTimeout(recentStickersSyncTimer);
+  recentStickersSyncTimer = setTimeout(() => {
+    recentStickersSyncTimer = null;
+    const stickerIdsToPush = pendingRecentStickerIds || [];
+    pendingRecentStickerIds = null;
+    chatStickersAPI.pushRecentStickers(stickerIdsToPush).catch(() => {
+      // Синхронизация не критична: локальная копия в localStorage уже
+      // актуальна, следующая успешная запись довезёт список целиком.
+    });
+  }, RECENT_STICKERS_SYNC_DEBOUNCE_MS);
+};
+
+export const cancelRecentStickersSync = (scopeKey = '') => {
+  // Отменяем только свою очередь: чужой pending (другого scope) не трогаем.
+  if (scopeKey && pendingRecentStickersScope && scopeKey !== pendingRecentStickersScope) return;
+  if (recentStickersSyncTimer !== null) {
+    clearTimeout(recentStickersSyncTimer);
+    recentStickersSyncTimer = null;
+  }
+  pendingRecentStickerIds = null;
+  pendingRecentStickersScope = '';
+};
+
 export const chatStickersAPI = {
   listPacks: async (options = {}) => {
     const scope = resolveStickerPacksScope(options);
