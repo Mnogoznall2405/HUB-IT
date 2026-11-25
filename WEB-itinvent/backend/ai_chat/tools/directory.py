@@ -96,7 +96,9 @@ class PeopleSearchTool(AiTool):
         "Company phone book (1C ZUP address book): find colleagues by name, position, phone or e-mail and get "
         "position, department, office room, work phones/e-mails and current absence (vacation/sick leave with "
         "return date). Use for 'телефон Петрова', 'кто бухгалтер по зарплате', 'Иванова в отпуске?', "
-        "'кто отсутствует в отделе продаж' (department + absent_only)."
+        "'кто отсутствует в отделе продаж' (department + absent_only). "
+        "ARGUMENT RULE: you MUST always pass the person's name/surname from the user's request in the 'query' "
+        "argument, e.g. {\"query\": \"Петров\"} — never call this tool with empty arguments."
     )
     input_model = PeopleSearchArgs
     stage = "checking_chat"
@@ -105,7 +107,11 @@ class PeopleSearchTool(AiTool):
         from backend.services.address_book_service import address_book_service
 
         if not args.query and not args.department:
-            return AiToolResult(tool_id=self.tool_id, ok=False, error="Укажите имя, должность, телефон или отдел.")
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=False,
+                error="Пустой поиск. Повторите вызов, передав ФИО/телефон/должность в аргументе 'query' (например {\"query\": \"Иванов\"}) или отдел в 'department'.",
+            )
         kwargs: dict[str, Any] = {}
         if args.department:
             kwargs["department"] = args.department

@@ -9337,6 +9337,14 @@ class AiChatService:
         final_usage = usage or {}
         accumulated_tool_results: list[dict[str, Any]] = []
         read_more_calls_used = 0
+        # A11 P6: total expansion-call budget per run. distinct-group expansion
+        # is limited by AI_TOOL_GROUP_EXPANSION_LIMIT, but repeated requests of
+        # already-enabled or invalid groups were free — measured storms of 6+
+        # consecutive request_tool_group calls burning whole rounds. Every meta
+        # call now consumes from a total budget.
+        expansion_calls_used = 0
+        expansion_calls_budget = AI_TOOL_GROUP_EXPANSION_LIMIT + 2
+        executed_call_signatures: set[tuple[str, str]] = set()
         tool_rounds_used = 0
         # Per-bot limits from context (with env fallback)
         max_rounds = tool_context.max_tool_rounds if tool_context else AI_TOOL_ROUND_LIMIT
@@ -9395,19 +9403,74 @@ class AiChatService:
                 tool_results.append(read_result)
                 round_traces.append(read_trace)
             for expansion_call in expansion_calls:
-                expansion_payload, expansion_trace = _handle_tool_group_expansion(
-                    call=expansion_call,
-                    tool_context=tool_context,
-                    all_tool_specs=all_tool_specs,
-                    tool_specs=tool_specs,
-                    routed_groups=routed_groups,
-                    available_groups=available_tool_groups,
-                    expanded_groups=expanded_groups,
-                    run_id=run_id,
-                )
+                expansion_calls_used += 1
+                if expansion_calls_used > expansion_calls_budget:
+                    # Storm guard: the model keeps requesting groups instead of
+                    # answering. Deny firmly and point it at what it already has.
+                    expansion_payload = {
+                        "tool_id": AI_TOOL_REQUEST_GROUP,
+                        "ok": False,
+                        "error": (
+                            "Запросы групп инструментов на этот запуск исчерпаны. "
+                            "НЕ запрашивай группы повторно — ответь на основе уже подключённых "
+                            "инструментов или честно сообщи, каких данных не хватает."
+                        ),
+                        "code": "expansion_storm_guard",
+                        "data": None,
+                    }
+                    expansion_trace = {
+                        "tool_id": AI_TOOL_REQUEST_GROUP,
+                        "args": expansion_call.get("args") or {},
+                        "state": "denied",
+                        "error": expansion_payload["error"],
+                        "run_id": run_id,
+                    }
+                else:
+                    expansion_payload, expansion_trace = _handle_tool_group_expansion(
+                        call=expansion_call,
+                        tool_context=tool_context,
+                        all_tool_specs=all_tool_specs,
+                        tool_specs=tool_specs,
+                        routed_groups=routed_groups,
+                        available_groups=available_tool_groups,
+                        expanded_groups=expanded_groups,
+                        run_id=run_id,
+                    )
                 tool_results.append(expansion_payload)
                 round_traces.append(expansion_trace)
             tool_started_at = time.perf_counter()
+            # A11 P5: no-progress dedup. An exact repeat of a call that already
+            # succeeded in this run cannot produce new information — measured
+            # loops re-fired identical searches round after round. Pagination
+            # and corrected args differ in args, so they pass through.
+            fresh_calls: list[dict[str, Any]] = []
+            for call in tool_calls:
+                signature = (
+                    _normalize_text(call.get("tool_id")),
+                    json.dumps(call.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str),
+                )
+                if signature in executed_call_signatures:
+                    tool_results.append({
+                        "tool_id": call.get("tool_id"),
+                        "ok": False,
+                        "error": (
+                            "Этот инструмент уже выполнялся в этом запуске с точно такими же аргументами — "
+                            "повтор не даст новых данных. Используй уже полученный результат, измени стратегию "
+                            "(другие аргументы или другой инструмент) либо честно сообщи об отсутствии данных."
+                        ),
+                        "code": "duplicate_call",
+                        "data": None,
+                    })
+                    round_traces.append({
+                        "tool_id": call.get("tool_id"),
+                        "args": call.get("args") or {},
+                        "state": "duplicate",
+                        "error": "duplicate_call",
+                        "run_id": run_id,
+                    })
+                else:
+                    fresh_calls.append(call)
+            tool_calls = fresh_calls
             if tool_calls:
                 real_results, real_traces = self._execute_tool_calls(
                     tool_calls=tool_calls,
@@ -9417,6 +9480,12 @@ class AiChatService:
                 )
                 tool_results.extend(real_results)
                 round_traces.extend(real_traces)
+                for trace, result in zip(real_traces, real_results):
+                    if result.get("ok"):
+                        executed_call_signatures.add((
+                            _normalize_text(trace.get("tool_id")),
+                            json.dumps(trace.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str),
+                        ))
             _log_ai_run_timing(
                 "tools",
                 tool_started_at,
