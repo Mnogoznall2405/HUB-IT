@@ -66,10 +66,10 @@ def main() -> int:
     for letter, label, flags in CONFIGS:
         if letter not in args.configs.upper():
             continue
-        out = HERE / f"real_run_c2_{label}.json"
+        out = HERE / f"real_run_fin_{label}.json"
         cmd = [
             sys.executable, "-X", "utf8", str(HARNESS),
-            "--label", f"c2_{label}",
+            "--label", f"fin_{label}",
             "--provider", args.provider,
             "--corpus", str(corpus_path),
             "--out", str(out),
@@ -103,7 +103,7 @@ def main() -> int:
         "Config C (A9 ON + A10 OFF) is identical to B on the merged tree — "
         "A10 flags default OFF; B's numbers serve for C."
     )
-    sp = HERE / "ab_summary.json"
+    sp = HERE / "ab_summary_fin.json"
     sp.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[ab_driver] summary -> {sp}", flush=True)
     return 0

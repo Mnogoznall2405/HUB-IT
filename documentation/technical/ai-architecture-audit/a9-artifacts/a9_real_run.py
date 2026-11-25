@@ -607,10 +607,17 @@ for idx, scenario in enumerate(scenarios, 1):
             if want_total not in [int(v) for v in got]:
                 expect_failures.append(f"tool_result_total: want {want_total}, got {got or 'no trace'}")
         if expect.get("scope_downgraded") is not None:
+            # ACL property: IF the model actually requested scope=all, every
+            # such trace must carry the downgrade flag. A scope=my call is
+            # safe and does not exercise the property.
             want_sd = bool(expect["scope_downgraded"])
-            got_sd = any(t.get("scope_downgraded") for t in executed)
-            if got_sd != want_sd:
-                expect_failures.append(f"scope_downgraded: want {want_sd}, got {got_sd}")
+            scope_all = [t for t in executed
+                         if str((t.get("args") or {}).get("scope") or "").lower() == "all"]
+            if scope_all:
+                got_sd = all(bool(t.get("scope_downgraded")) for t in scope_all)
+                if got_sd != want_sd:
+                    expect_failures.append(
+                        f"scope_downgraded: want {want_sd} for scope=all calls, got {got_sd}")
         if expect.get("tool_error") is not None:
             want_te = bool(expect["tool_error"])
             got_te = any(t.get("error") for t in executed)

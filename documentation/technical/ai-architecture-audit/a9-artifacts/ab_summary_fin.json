@@ -1,0 +1,102 @@
+{
+  "B": {
+    "label": "a9on",
+    "flags": [],
+    "outcomes": {
+      "completed": 15,
+      "degraded": 3,
+      "failed": 0
+    },
+    "correctness": {
+      "PASS": 10,
+      "FAIL": 8,
+      "NO_CHECK": 0
+    },
+    "llm_calls_total": 61,
+    "tokens_in_total": 245427,
+    "exit": 0
+  },
+  "D": {
+    "label": "fastpath",
+    "flags": [
+      "AI_READ_FAST_PATH_ENABLED=1"
+    ],
+    "outcomes": {
+      "completed": 14,
+      "degraded": 4,
+      "failed": 0
+    },
+    "correctness": {
+      "PASS": 12,
+      "FAIL": 6,
+      "NO_CHECK": 0
+    },
+    "llm_calls_total": 49,
+    "tokens_in_total": 206394,
+    "exit": 0
+  },
+  "E": {
+    "label": "directread",
+    "flags": [
+      "AI_READ_FAST_PATH_ENABLED=1",
+      "AI_DIRECT_READ_ENABLED=1"
+    ],
+    "outcomes": {
+      "completed": 18,
+      "degraded": 0,
+      "failed": 0
+    },
+    "correctness": {
+      "PASS": 16,
+      "FAIL": 2,
+      "NO_CHECK": 0
+    },
+    "llm_calls_total": 41,
+    "tokens_in_total": 157046,
+    "exit": 0
+  },
+  "F": {
+    "label": "planner",
+    "flags": [
+      "AI_READ_FAST_PATH_ENABLED=1",
+      "AI_DIRECT_READ_ENABLED=1",
+      "AI_MEMORY_PLANNER_OPTIMIZATION_ENABLED=1"
+    ],
+    "outcomes": {
+      "completed": 18,
+      "degraded": 0,
+      "failed": 0
+    },
+    "correctness": {
+      "PASS": 16,
+      "FAIL": 2,
+      "NO_CHECK": 0
+    },
+    "llm_calls_total": 36,
+    "tokens_in_total": 155040,
+    "exit": 0
+  },
+  "G": {
+    "label": "all",
+    "flags": [
+      "AI_READ_FAST_PATH_ENABLED=1",
+      "AI_DIRECT_READ_ENABLED=1",
+      "AI_MEMORY_PLANNER_OPTIMIZATION_ENABLED=1",
+      "AI_RUN_RESULT_REUSE_ENABLED=1"
+    ],
+    "outcomes": {
+      "completed": 18,
+      "degraded": 0,
+      "failed": 0
+    },
+    "correctness": {
+      "PASS": 16,
+      "FAIL": 2,
+      "NO_CHECK": 0
+    },
+    "llm_calls_total": 36,
+    "tokens_in_total": 154892,
+    "exit": 0
+  },
+  "_note": "Config C (A9 ON + A10 OFF) is identical to B on the merged tree — A10 flags default OFF; B's numbers serve for C."
+}
