@@ -9439,17 +9439,20 @@ class AiChatService:
                 tool_results.append(expansion_payload)
                 round_traces.append(expansion_trace)
             tool_started_at = time.perf_counter()
-            # A11 P5: no-progress dedup. An exact repeat of a call that already
-            # succeeded in this run cannot produce new information — measured
-            # loops re-fired identical searches round after round. Pagination
-            # and corrected args differ in args, so they pass through.
+            # A11 P5: no-progress dedup, scoped by the server-side tool-effect
+            # classification (cycle-2 P1). Only pure read lookups are deduped:
+            # repeating a search with identical args cannot yield new data,
+            # but artifacts (regenerate a file), deliveries (resend), actions
+            # and unclassified tools may be repeated intentionally — blocking
+            # them broke legitimate retries. Pagination/corrected args differ
+            # in args and pass through regardless.
             fresh_calls: list[dict[str, Any]] = []
             for call in tool_calls:
                 signature = (
                     _normalize_text(call.get("tool_id")),
                     json.dumps(call.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str),
                 )
-                if signature in executed_call_signatures:
+                if signature in executed_call_signatures and tool_effect(call.get("tool_id")) == "read":
                     tool_results.append({
                         "tool_id": call.get("tool_id"),
                         "ok": False,
@@ -9481,7 +9484,7 @@ class AiChatService:
                 tool_results.extend(real_results)
                 round_traces.extend(real_traces)
                 for trace, result in zip(real_traces, real_results):
-                    if result.get("ok"):
+                    if result.get("ok") and tool_effect(trace.get("tool_id")) == "read":
                         executed_call_signatures.add((
                             _normalize_text(trace.get("tool_id")),
                             json.dumps(trace.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str),
