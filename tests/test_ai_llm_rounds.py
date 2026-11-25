@@ -68,6 +68,40 @@ class TestReadFastPath:
                             args={"status": "active"})
         assert answer == "Активных задач не найдено."
 
+    def test_scope_downgraded_surfaces_partial_notice(self, fast_path_on):
+        # ACL: a user without tasks.manage_all asking for scope=all gets own
+        # tasks only — the fast-path answer must never read as a complete
+        # system-wide list.
+        result = _ok_result("office.tasks.search", {
+            "items": [{"title": "Бенч-задача 001", "status": "in_progress",
+                       "due_at": "2026-11-30", "is_overdue": False}],
+            "total": 1, "count": 1, "scope_downgraded": True,
+            "notice": "Requested scope 'all' exceeds the user's permissions",
+        })
+        answer = _fast_path(tool_id="office.tasks.search", results=[result],
+                            args={"scope": "all"})
+        assert "Бенч-задача 001" in answer
+        assert "участвуете" in answer and "расширенные права" in answer
+
+    def test_scope_downgraded_empty_result_keeps_notice(self, fast_path_on):
+        result = _ok_result("office.tasks.search", {
+            "items": [], "total": 0, "count": 0, "scope_downgraded": True,
+            "notice": "Requested scope 'all' exceeds the user's permissions",
+        })
+        answer = _fast_path(tool_id="office.tasks.search", results=[result],
+                            args={"scope": "all"})
+        assert "Задачи не найдены." in answer
+        assert "расширенные права" in answer
+
+    def test_full_scope_has_no_notice(self, fast_path_on):
+        result = _ok_result("office.tasks.search", {
+            "items": [{"title": "Бенч-задача 001", "status": "in_progress",
+                       "due_at": "2026-11-30", "is_overdue": False}],
+            "total": 1, "count": 1,
+        })
+        answer = _fast_path(tool_id="office.tasks.search", results=[result])
+        assert "расширенные права" not in answer
+
     def test_blocked_requests_never_fast_path(self, fast_path_on):
         for text in ("Сравни мои задачи", "Почему задача просрочена",
                      "Покажи топ-5 задач", "Сначала задачи, затем письма",

@@ -3236,16 +3236,29 @@ def _fp_task_status(status: Any) -> str:
     }.get(_normalize_text(status), _normalize_text(status))
 
 
+def _fp_scope_notice(data: dict) -> str:
+    """User-facing warning when the backend silently narrowed the requested
+    scope (ACL downgrade). A partial answer must never read as a complete one,
+    including through the deterministic fast path / direct read rendering."""
+    if not data.get("scope_downgraded"):
+        return ""
+    return (
+        "\n\nПоказаны только задачи, в которых вы участвуете: "
+        "для просмотра всех задач системы требуются расширенные права."
+    )
+
+
 def _fp_render_tasks(data: dict, args: dict) -> str:
     items = list(data.get("items") or [])
     total = data.get("total")
     status_arg = _normalize_text((args or {}).get("status")).lower()
+    notice = _fp_scope_notice(data)
     if not items:
         if status_arg in ("open", "active", "new", "in_progress", "review"):
-            return "Активных задач не найдено."
+            return "Активных задач не найдено." + notice
         if status_arg == "done":
-            return "Выполненных задач не найдено."
-        return "Задачи не найдены."
+            return "Выполненных задач не найдено." + notice
+        return "Задачи не найдены." + notice
     count = int(total) if isinstance(total, int) and total else len(items)
     head = f"Задач: {count}."
     lines = [head]
@@ -3261,7 +3274,7 @@ def _fp_render_tasks(data: dict, args: dict) -> str:
         lines.append(f"- {parts[0]} ({tail})" if tail else f"- {parts[0]}")
     if len(items) > 25:
         lines.append(f"… и ещё {len(items) - 25}")
-    return "\n".join(lines)
+    return "\n".join(lines) + notice
 
 
 def _fp_person_line(item: dict) -> str:
