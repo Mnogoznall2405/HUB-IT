@@ -15,6 +15,8 @@ const authState = vi.hoisted(() => ({
   postAuthUiHold: false,
 }));
 
+const loginLifecycle = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
+
 vi.mock('./contexts/AuthContext', () => ({
   AuthProvider: ({ children }) => children,
   useAuth: () => ({
@@ -41,7 +43,21 @@ vi.mock('./components/layout/MainLayoutRouteShell', async () => {
   return { default: () => <Outlet /> };
 });
 vi.mock('./pages/About', () => ({ default: () => <main>Знакомство с HUB-IT</main> }));
-vi.mock('./pages/Login', () => ({ default: () => <main data-testid="login-page">Вход в HUB-IT</main> }));
+vi.mock('./pages/Login', async () => {
+  const { useEffect } = await import('react');
+  return {
+    default: () => {
+      useEffect(() => {
+        loginLifecycle.mounts += 1;
+        return () => {
+          loginLifecycle.unmounts += 1;
+        };
+      }, []);
+      return <main data-testid="login-page">Вход в HUB-IT</main>;
+    },
+  };
+});
+vi.mock('./components/chat/calls/ChatCallsProvider', () => ({ default: () => null }));
 vi.mock('./pages/Dashboard', () => ({ default: () => <main>HUB workspace</main> }));
 vi.mock('./pages/SharedFile', () => ({ default: () => <main>Общий файл</main> }));
 
@@ -60,6 +76,8 @@ describe('LoginRoute post-auth UI hold (FE-0197/FE-0198)', () => {
     authState.authenticated = false;
     authState.permissions = [];
     authState.postAuthUiHold = false;
+    loginLifecycle.mounts = 0;
+    loginLifecycle.unmounts = 0;
     window.sessionStorage.clear();
     window.history.replaceState({}, '', '/login');
     window.scrollTo = vi.fn();
@@ -105,6 +123,29 @@ describe('LoginRoute post-auth UI hold (FE-0197/FE-0198)', () => {
       expect(window.location.pathname).toBe('/dashboard');
     });
     expect(screen.queryByTestId('login-page')).not.toBeInTheDocument();
+  });
+
+  it('does not remount the login route subtree when the user is committed', async () => {
+    // PostAuthChatCallsProvider must keep the route subtree mounted across the
+    // guest→authenticated transition: the bare-children fast path swapped the
+    // element type and React deleted the whole subtree — Login lost its
+    // post-auth state machine and the unmount cleanup released the hold.
+    const { rerender } = render(<App />);
+    expect(await screen.findByTestId('login-page')).toBeInTheDocument();
+    expect(loginLifecycle.mounts).toBe(1);
+
+    authState.authenticated = true;
+    authState.user = makeUser();
+    authState.permissions = ['dashboard.read'];
+    authState.postAuthUiHold = true;
+    await act(async () => {
+      rerender(<App />);
+    });
+
+    expect(screen.getByTestId('login-page')).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/login');
+    expect(loginLifecycle.mounts).toBe(1);
+    expect(loginLifecycle.unmounts).toBe(0);
   });
 
   it('still shows Login to a guest while the hold is active', async () => {

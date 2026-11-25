@@ -61,10 +61,93 @@ def _sticker_fk(schema: str | None) -> str:
     return f"{schema + '.' if schema else ''}chat_stickers.id"
 
 
+def _ensure_base_sticker_tables(schema: str | None) -> None:
+    """Repair guard: create the 0086 base tables if they are missing.
+
+    The pre-release 0086 detection looked only at ``chat.chat_conversations``
+    and silently skipped databases whose chat tables live in ``public``;
+    such environments carry the 0086 stamp without the tables, and the
+    foreign keys below would abort the release upgrade. 0178 has not been
+    applied anywhere yet (production sits at 0176), so healing here is
+    safe and forward-only: existing tables are untouched, missing ones are
+    created next to ``chat_conversations`` — exactly where the runtime ORM
+    resolves them.
+    """
+    if not _has_table(schema, "chat_sticker_packs"):
+        op.create_table(
+            "chat_sticker_packs",
+            sa.Column("id", sa.String(length=36), nullable=False),
+            sa.Column("short_name", sa.String(length=128), nullable=False),
+            sa.Column("title", sa.String(length=255), nullable=False),
+            sa.Column("sticker_type", sa.String(length=32), nullable=False, server_default="regular"),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("short_name"),
+            schema=schema,
+        )
+        op.create_index(
+            "ix_chat_sticker_packs_short_name",
+            "chat_sticker_packs",
+            ["short_name"],
+            unique=True,
+            schema=schema,
+        )
+
+    if not _has_table(schema, "chat_stickers"):
+        op.create_table(
+            "chat_stickers",
+            sa.Column("id", sa.String(length=36), nullable=False),
+            sa.Column("pack_id", sa.String(length=36), nullable=False),
+            sa.Column("telegram_file_id", sa.Text(), nullable=False),
+            sa.Column("telegram_file_unique_id", sa.String(length=128), nullable=False),
+            sa.Column("emoji", sa.String(length=64), nullable=False, server_default=""),
+            sa.Column("format", sa.String(length=20), nullable=False),
+            sa.Column("mime_type", sa.String(length=64), nullable=False),
+            sa.Column("storage_name", sa.String(length=255), nullable=False),
+            sa.Column("file_size", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("width", sa.Integer(), nullable=True),
+            sa.Column("height", sa.Integer(), nullable=True),
+            sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.ForeignKeyConstraint(
+                ["pack_id"],
+                [f"{schema + '.' if schema else ''}chat_sticker_packs.id"],
+                ondelete="CASCADE",
+            ),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("pack_id", "telegram_file_unique_id", name="uq_chat_stickers_pack_file_unique"),
+            schema=schema,
+        )
+        op.create_index("ix_chat_stickers_pack_id", "chat_stickers", ["pack_id"], schema=schema)
+        op.create_index("ix_chat_stickers_pack_sort", "chat_stickers", ["pack_id", "sort_order"], schema=schema)
+
+    if not _has_table(schema, "chat_user_sticker_packs"):
+        op.create_table(
+            "chat_user_sticker_packs",
+            sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column("user_id", sa.Integer(), nullable=False),
+            sa.Column("pack_id", sa.String(length=36), nullable=False),
+            sa.Column("added_at", sa.DateTime(timezone=True), nullable=False),
+            sa.ForeignKeyConstraint(
+                ["pack_id"],
+                [f"{schema + '.' if schema else ''}chat_sticker_packs.id"],
+                ondelete="CASCADE",
+            ),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("user_id", "pack_id", name="uq_chat_user_sticker_packs_user_pack"),
+            schema=schema,
+        )
+        op.create_index("ix_chat_user_sticker_packs_user_id", "chat_user_sticker_packs", ["user_id"], schema=schema)
+        op.create_index("ix_chat_user_sticker_packs_pack_id", "chat_user_sticker_packs", ["pack_id"], schema=schema)
+        op.create_index("ix_chat_user_sticker_packs_user_added", "chat_user_sticker_packs", ["user_id", "added_at"], schema=schema)
+
+
 def upgrade() -> None:
     if not _chat_tables_present():
         return
     schema = _chat_tables_schema()
+    _ensure_base_sticker_tables(schema)
 
     if not _has_table(schema, "chat_user_favorite_stickers"):
         op.create_table(

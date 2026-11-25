@@ -357,8 +357,17 @@ test('manage dialog: lists packs, DnD reorder hits API, default-pack delete refu
     return 'dispatched';
   }, [testPackId, bigPackId]);
   expect(dnd).toBe('dispatched');
+  // Fallback допустим только когда синтетические DragEvent вообще не дошли
+  // до React-обработчика (запроса нет). Если запрос ушёл — payload, порядок
+  // в UI и серверное состояние проверяются жёстко: их поломка обязана
+  // валить тест, а не уходить в gap-ветку.
+  let orderCall = null;
   try {
-    const orderCall = await orderReq;
+    orderCall = await orderReq;
+  } catch {
+    orderCall = null;
+  }
+  if (orderCall) {
     // Перетаскиваемый ряд встаёт на место целевого → [big, test].
     expect(orderCall.postDataJSON().pack_ids).toEqual([bigPackId, testPackId]);
     await expect(rows.nth(0)).toContainText('E2E Big Pack', { timeout: 10_000 });
@@ -369,7 +378,7 @@ test('manage dialog: lists packs, DnD reorder hits API, default-pack delete refu
     await page.request.post('/api/v1/chat/sticker-packs/order', {
       data: { pack_ids: [testPackId, bigPackId] },
     });
-  } catch {
+  } else {
     test.info().annotations.push({
       type: 'gap',
       description: 'synthetic HTML5 DnD did not reach the React drop handler; reorder verified via API below',

@@ -151,12 +151,9 @@ describe('apiClient auth response interceptor', () => {
     const protectedRequest = getRejectedHandler()({
       response: { status: 401 }, config: { url: '/auth/me' },
     });
-    // Cross-tab coordination deliberately waits a short propagation window
-    // before the holder posts /auth/refresh; wait for that first shared POST
-    // instead of assuming it starts in the same macrotask.
-    await vi.waitFor(() => {
-      expect(apiClientMock.post).toHaveBeenCalledTimes(1);
-    }, { timeout: 1000 });
+    // The coordinator absorbs cross-tab epoch propagation (~400ms worst case)
+    // before posting — wait for the shared POST rather than a single tick.
+    await vi.waitFor(() => expect(apiClientMock.post.mock.calls.length).toBe(1), { timeout: 3000 });
     const refreshCount = apiClientMock.post.mock.calls.length;
     completions.forEach((resolve) => resolve({ data: { session_id: 'session-1' } }));
     expect(refreshCount).toBe(1);

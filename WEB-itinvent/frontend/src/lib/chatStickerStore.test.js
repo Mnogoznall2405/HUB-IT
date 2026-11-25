@@ -417,6 +417,10 @@ describe('chatStickerStore', () => {
     rememberRecentSticker(scopeKey(), 'sticker-x');
     const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
     const pending = flush();
+    // Сериализованный flush захватывает журнал в микротаске цепочки —
+    // даём захвату случиться ДО нового bump, иначе bump-y попал бы в
+    // первый пакет и проверять было бы нечего.
+    await flushPromises();
     // Пока первый пакет в пути — новый bump копится в журнале.
     rememberRecentSticker(scopeKey(), 'sticker-y');
     first.resolve({ items: [stickerX], version: 2 });
@@ -564,30 +568,28 @@ describe('chatStickerStore', () => {
     expect(thirdBatchId).not.toBe(secondBatchId);
   });
 
-  it('sends the same batchId for overlapping flushes of the same journal', async () => {
+  it('serializes overlapping flushes so the second one no-ops after the drain', async () => {
     const first = deferred();
-    const second = deferred();
-    chatStickersAPI.pushRecentStickers
-      .mockImplementationOnce(() => first.promise)
-      .mockImplementationOnce(() => second.promise);
+    chatStickersAPI.pushRecentStickers.mockImplementationOnce(() => first.promise);
     ensureChatStickerData(scope);
     await flushPromises();
     rememberRecentSticker(scopeKey(), 'sticker-x');
 
-    // Два параллельных flush'а одного и того же журнала (дебаунс +
-    // поверхностный PUT) — оба несут один batchId, сервер дедуплицирует
-    // второй как уже применённый пакет.
+    // Два перекрывающихся flush'а одного журнала (дебаунс + поверхностный
+    // PUT): цепочка сериализует их — второй стартует только после ответа
+    // первого, когда журнал уже подтверждён и пуст, поэтому в сеть уходит
+    // ровно один запрос. batchId-дедупликация на сервере остаётся страховкой
+    // для потерянных ответов, а не для параллельных пакетов.
     const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
     const pendingA = flush();
     const pendingB = flush();
-    expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledTimes(2);
-    expect(chatStickersAPI.pushRecentStickers.mock.calls[0][0].batchId)
-      .toBe(chatStickersAPI.pushRecentStickers.mock.calls[1][0].batchId);
+    await flushPromises();
+    expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledTimes(1);
 
     first.resolve({ items: [stickerX], version: 1 });
-    second.resolve({ items: [stickerX], version: 1 });
-    await pendingA;
-    await pendingB;
+    await expect(pendingA).resolves.toEqual({ ok: true });
+    await expect(pendingB).resolves.toEqual({ ok: true });
+    expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledTimes(1);
   });
 
   it('drops queued ops and the pending flush on store invalidation', async () => {

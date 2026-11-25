@@ -529,6 +529,9 @@ function Login() {
     refreshTrustedDeviceAuth,
     verifyTrustedDeviceAuth,
     setPostAuthUiHold,
+    isAuthenticated,
+    user,
+    refreshSession,
   } = useAuth();
 
   const [username, setUsername] = useState(readInitialLoginUsername);
@@ -992,13 +995,23 @@ function Login() {
     usernameInputRef.current.focus();
   }, [loginModeLoading, step, passwordFormForced]);
 
+  // FE-0198: after a mid-enrollment reload the session is authenticated but
+  // still owes a trusted-device registration (external zone, zero devices).
+  // Auto-passkey and presentation cleanups must not tear down the required
+  // enrollment sheet while this holds.
+  const sessionRequiresDeviceEnrollment = Boolean(isAuthenticated?.())
+    && String(user?.network_zone || '').trim().toLowerCase() === 'external'
+    && Number(user?.discoverable_trusted_devices_count || 0) <= 0;
+
   const clearPasskeyPresentationLock = useCallback(() => {
-    setRememberDeviceOpen(false);
+    if (!rememberDeviceRequired || rememberDeviceUnsupported) {
+      setRememberDeviceOpen(false);
+    }
     resetLoginPagePresentation({
       logContext: 'clearPasskeyPresentationLock',
       hypothesisId: 'H4',
     });
-  }, []);
+  }, [rememberDeviceRequired, rememberDeviceUnsupported]);
 
   // If this page unmounts while a post-auth UI step is pending (user left
   // /login via SPA navigation), the hold must not outlive its owner.
@@ -1055,13 +1068,14 @@ function Login() {
       || networkZone !== 'external'
       || !biometricLoginEnabled
       || !webAuthnReady
+      || sessionRequiresDeviceEnrollment
       || passkeyAttemptedRef.current
     ) {
       return;
     }
     passkeyAttemptedRef.current = true;
     void attemptPasskeyLogin({ auto: true });
-  }, [loginModeLoading, step, networkZone, biometricLoginEnabled, webAuthnReady]);
+  }, [loginModeLoading, step, networkZone, biometricLoginEnabled, webAuthnReady, sessionRequiresDeviceEnrollment]);
 
   let portalChatReturn = false;
   try {
@@ -1240,6 +1254,24 @@ function Login() {
       redirectAfterAuthentication();
     }
   };
+
+  // FE-0198: reloading /login mid-enrollment must reopen the mandatory
+  // trusted-device sheet — the authenticated session alone must not drop the
+  // user into the hub. Step is still 'password' after a full reload, so the
+  // effect only fires outside the interactive post-auth flow.
+  const enrollmentGateOpenedRef = useRef(false);
+  useEffect(() => {
+    if (
+      step !== 'password'
+      || !sessionRequiresDeviceEnrollment
+      || rememberDeviceOpen
+      || enrollmentGateOpenedRef.current
+    ) {
+      return;
+    }
+    enrollmentGateOpenedRef.current = true;
+    void openRememberDevicePrompt({ enabled: true, required: true });
+  }, [step, sessionRequiresDeviceEnrollment, rememberDeviceOpen]);
 
   const revealPasswordFallback = (message = '') => {
     const text = String(message || '').trim();
@@ -1738,6 +1770,13 @@ function Login() {
         label: deviceLabel,
         platformOnly: rememberDeviceMode === 'platform',
       });
+      // Refresh the profile so discoverable_trusted_devices_count reflects the
+      // new credential — otherwise the FE-0198 route gate re-blocks navigation.
+      try {
+        await refreshSession?.();
+      } catch (refreshError) {
+        console.error('Post-enrollment profile refresh failed:', refreshError);
+      }
       closeRememberDevicePrompt();
     } catch (registerError) {
       console.error('Trusted device registration failed:', registerError);

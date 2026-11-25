@@ -23,6 +23,7 @@ from sqlalchemy import and_, delete, func, insert, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.chat.db import chat_read_session, chat_write_session
+from backend.chat.message_persistence import FileMessageCommittedError
 from backend.chat.models import (
     ChatMember,
     ChatMessageAttachment,
@@ -868,11 +869,13 @@ class TelegramStickerService:
                     ChatMember.left_at.is_(None),
                 ),
             )
-            .where(or_(*(ChatMessageAttachment.file_name.like(pattern) for pattern in patterns)))
-            # Only server-side sticker messages confer the entitlement. A user
-            # upload may control file_name, but files_meta_json cannot assign
-            # media_kind='sticker' (covered by the upload regression tests).
-            .where(ChatMessageAttachment.media_kind == "sticker")
+            # media_kind фильтр обязателен: имя файла обычного upload
+            # контролируется пользователем, без фильтра crafted-имя
+            # sticker-<id>--x.png подделывало бы leg-3 entitlement.
+            .where(
+                ChatMessageAttachment.media_kind == "sticker",
+                or_(*(ChatMessageAttachment.file_name.like(pattern) for pattern in patterns)),
+            )
             .distinct()
         ).scalars()
         # Extract the real sticker id from each matched file name and keep only
@@ -1559,6 +1562,10 @@ class TelegramStickerService:
                 reply_to_message_id=reply_to_message_id,
             )
             chat_service._set_request_meta(conversation_kind=persisted.conversation_kind)
+        except FileMessageCommittedError:
+            # The committed message owns the sticker copy; deleting it would
+            # leave the committed attachment dead (DCHAT-05).
+            raise
         except Exception:
             target_path.unlink(missing_ok=True)
             raise
