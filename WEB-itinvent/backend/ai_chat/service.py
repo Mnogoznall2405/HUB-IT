@@ -1703,7 +1703,13 @@ def _route_tool_groups_jev(
         and chat_prob < threshold
         and _env_flag("AI_JEV_TOP1_RESCUE", True)
     ):
-        best_group, best_prob = max(probs.items(), key=lambda item: item[1])
+        # A11 c3: deterministic tie-break. max() over a dict resolves equal
+        # probabilities by iteration order, which can depend on how the
+        # answers mapping was built — pinning (probability desc, name asc)
+        # makes the rescue reproducible across runs and interpreters.
+        best_group, best_prob = sorted(
+            probs.items(), key=lambda item: (-item[1], str(item[0]))
+        )[0]
         if best_prob >= max(0.2, threshold * 0.5):
             routed.add(best_group)
             jev_selected = True
