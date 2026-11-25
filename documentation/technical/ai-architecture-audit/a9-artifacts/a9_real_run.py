@@ -423,7 +423,7 @@ def _summarize_trace(trace: dict) -> dict:
 corpus_path = (
     ROOT / _args.corpus
     if _args.corpus
-    else ROOT / "documentation" / "technical" / "ai-architecture-audit" / "a9-artifacts" / "a9_quality_corpus.json"
+    else ROOT / "documentation" / "technical" / "ai-architecture-audit" / "a9-artifacts" / "bench_intel_corpus.json"
 )
 corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
 scenarios = corpus["scenarios"] if isinstance(corpus, dict) else corpus
