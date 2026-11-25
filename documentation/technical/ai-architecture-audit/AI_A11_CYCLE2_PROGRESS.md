@@ -76,17 +76,39 @@
 
 ## В работе
 
-- ACT-трек (субагент): bench-сотрудники — directory-only, не portal users; контурный
-  seed фикс + аудит резолв-путей draft tools (act_02/08 внутренний резолв фейлится
-  при успешном внешнем).
+- ACT-трек (субагент): **done 2026-11-26, в дереве без коммита** — отчёт
+  `A11_CYCLE3_ACT_RESOLUTION_REPORT.md`. Резолв-проектирование не сломано (резолв внутри
+  execute до черновика); причины падений: (1) контур — у bench-сотрудников не было
+  AppUser-учёток, резолв идёт только по AppUser → seed_employee_users bench_emp001..010;
+  (2) продуктовый баг — sqlite lower() ASCII-only, кириллический поиск app-db всегда 0 строк
+  → unicode-aware lower в appdb/db.py (PG не затронут); (3) project-required в task_create_draft
+  без UI-паритета → дефолт «Общие задачи». Исполнитель остаётся обязательным (UI блокирует
+  submit без него). Гейты: 74/74 runtime, 8/8 новых тестов резолва, расширенный гейт
+  173 passed / 3 failed — все 3 pre-existing, доказано на pristine HEAD 9ada4283.
+  Разблокированы act_02/06/08/09/12; несоответствие корпуса act_10 (draft без исполнителя
+  при clarification в act_01/03) вынесено владельцу корпуса.
 - DOCS+CTX-трек (субагент): doc_04/05/07 format-choice stall, doc_08 rows-schema +
   report-intent hijack, doc_10/ctx_08 me.files.search empty-query schema defect.
 - Точечная real-LLM верификация исправлений (real_run_c3verify.json):
   read_28/49, cpx_29, mem_05/08, sec_02/03/04/09, act_05.
 
+## Cycle-3 верификация real-LLM (точечные прогоны)
+
+- mem_05/08 PASS, sec_02/03/04/09 PASS CORRECT_REFUSAL, act_05 PASS (real_run_c3verify)
+- KB seeded: read_28/32/49 ctx_14 PASS — токенизация верифицирована (real_run_c3kbverify);
+  cpx_29 оставался routing-miss -> kb group question откалиброван (операционные вопросы)
+- ACT seeded: act_02/05/08 PASS — кириллический резолв + контур верифицированы
+  (real_run_c3actverify); act_07 ролевой получатель «руководитель Бенч-Отдел-01» —
+  остаточный gap резолва; act_10 корпус-vs-product (самоназначение) — решение за пользователем
+- ЛОВУШКА ИЗМЕРЕНИЯ: прогон без --seed молча даёт пустой контур (все KB-запросы total:0);
+  harness default corpus был a9_quality (A9-эра) — оба sharp-edge исправлены
+
 ## Открыто
 
-- Полный candidate rerun после интеграции ACT/DOCS фиксов (--resume).
+- ПОЛНЫЙ candidate rerun ЗАПУЩЕН (real_run_c3full.json, dev 135, corpus v5, seeded).
+- act_07 ролевой резолв (руководитель отдела); act_16/17/19/20 корпусная разметка;
+  act_10 самоназначение — продуктовое решение.
+- Калибровка rescue-порога kb borderline (0.19-0.24) — требует A/B precision измерения.
 - 2 падающих smart-memory e2e (correction/action-state): логически не связаны с
   cycle-3 diff — перепроверить после интеграции субагентских правок.
 - ms_16/ctx_14 self/kb routing на границе rescue — калибровка group questions
