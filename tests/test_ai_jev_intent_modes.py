@@ -340,9 +340,13 @@ _SCENARIOS = [
      "act", ["office"], []),
     ("подготовь перемещение оборудования", {"g_itinvent": 0.9, "m_mode_act": 0.9},
      "act", ["itinvent"], []),
-    # ambiguous -> undecided keeps recovery path
+    # A11: weak-but-present group signal is rescued top-1 — 'сводка по письмам'
+    # genuinely needs office; stranding it as undecided was the measured D5.1 defect.
     ("составь сводку по письмам", {"g_office": 0.4, "m_mode_chat": 0.4, "m_mode_act": 0.4},
-     None, ["other"], []),
+     "read", ["office", "other"], []),
+    # truly ambiguous (negligible signal everywhere) -> undecided keeps recovery path
+    ("ну посмотри чо там", {"g_office": 0.1, "g_kb": 0.1, "m_mode_chat": 0.3, "m_mode_act": 0.1},
+     None, ["other"], ["office", "kb"]),
 ]
 
 

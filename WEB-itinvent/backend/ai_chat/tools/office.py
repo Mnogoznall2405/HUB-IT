@@ -488,7 +488,11 @@ class TasksSearchTool(AiTool):
     tool_id = OFFICE_TOOL_TASKS_SEARCH
     description = (
         "Search Hub tasks visible to the current user by text, status, role, assignee and due state. "
-        "Statuses: new, in_progress, review, done; status 'open' means all except done; empty status means any."
+        "Statuses: new, in_progress, review, done; status 'open' means all except done; empty status means any. "
+        "IMPORTANT argument rules: when the user says 'активные/открытые/текущие/невыполненные задачи' you MUST "
+        "pass status='open' — otherwise completed tasks are returned too. When the user says 'мои задачи' keep "
+        "scope='my' (default); scope='all' requires elevated rights and may be downgraded server-side. "
+        "Use due_state='overdue' for 'просроченные', 'today' for 'на сегодня'."
     )
     input_model = TasksSearchArgs
     stage = "checking_office"
@@ -821,7 +825,12 @@ class TasksProjectsTool(AiTool):
 
 class AnnouncementsListTool(AiTool):
     tool_id = OFFICE_TOOL_ANNOUNCEMENTS_LIST
-    description = "List Hub announcements visible to the current user, with optional search query and filters."
+    description = (
+        "List Hub announcements (объявления/новости компании) visible to the current user, with optional "
+        "search query and filters. This is the ONLY authoritative source for corporate announcements/news: "
+        "use it for 'покажи объявления', 'что нового в компании', 'что объявляли про X'. Do NOT search "
+        "kb.articles for announcements — KB holds instructions/regulations, not company news."
+    )
     input_model = AnnouncementsListArgs
     stage = "checking_office"
 

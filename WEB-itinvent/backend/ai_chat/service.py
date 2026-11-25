@@ -400,7 +400,7 @@ AI_FILE_TOOL_ROUTING_GUIDE = (
     "File generation routing:\n"
     "- When the user asks to create/export/send a polished report, inventory report, summary document, PDF or Excel report, prefer ai.files.report.\n"
     "- Use ai.files.create for simpler raw files, one-off text/JSON/CSV exports, or when you already have exact file rows/content.\n"
-    "- If the file needs live ITinvent data, call the needed ITinvent tools first with a high limit (e.g., limit=1000 or omit limit for default 250), then create the file from accumulated tool results.\n"
+    "- If the file needs live ITinvent data, call the needed ITinvent tools first with limit=250 (the maximum) or omit limit, then create the file from accumulated tool results.\n"
     "- For ITinvent equipment exports, always include these columns: \u0418\u043d\u0432. \u043d\u043e\u043c\u0435\u0440, \u0421\u0435\u0440\u0438\u0439\u043d\u044b\u0439 \u043d\u043e\u043c\u0435\u0440, \u0422\u0438\u043f, \u041c\u043e\u0434\u0435\u043b\u044c, \u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a, \u0421\u0442\u0430\u0442\u0443\u0441, \u0424\u0438\u043b\u0438\u0430\u043b, \u041b\u043e\u043a\u0430\u0446\u0438\u044f. Use serial_no from tool results; if empty, use \u2014.\n"
     "- Markdown tables and generated Excel/CSV tables must have the same columns, same order and same rows. Pass rows as arrays of row arrays or row objects; never pass a flat list of cells.\n"
     "- For report tables, use tables[].columns when you need fixed order or translated column labels; keep tables[].rows as row objects or row arrays.\n"
@@ -1680,6 +1680,24 @@ def _route_tool_groups_jev(
     # to the group selection under a READ ceiling — same rule as tool-mode.
     act_prob = float(getattr(decision.answers.get("m_mode_act"), "probability", 0.0) or 0.0)
     chat_prob = float(getattr(decision.answers.get("m_mode_chat"), "probability", 0.0) or 0.0)
+    # A11: top-1 rescue. A hard single threshold strands every query whose best
+    # group peaks below it (measured: announcements at 0.32 with threshold 0.5
+    # produced empty routing and blind recovery). When nothing crosses the
+    # threshold and the query is not confidently conversational, rescue the
+    # argmax group if it carries meaningful probability mass — the model can
+    # still decline the tools, but it cannot recover groups it never sees.
+    if not routed and group_questions and probs and chat_prob < threshold:
+        best_group, best_prob = max(probs.items(), key=lambda item: item[1])
+        if best_prob >= max(0.2, threshold * 0.5):
+            routed.add(best_group)
+            jev_selected = True
+            logger.info(
+                "ai_jev_routing top1_rescue group=%s prob=%.3f threshold=%.3f run_id=%s",
+                best_group,
+                best_prob,
+                threshold,
+                run_id or "-",
+            )
     if act_prob >= threshold:
         intent_mode = JEV_INTENT_ACT
     elif chat_prob >= threshold and not jev_selected:
@@ -1865,10 +1883,32 @@ def _route_tools_jev(
     return JevRoutingResult(selected, intent_mode=intent_mode)
 
 
+# A11: one-line semantic map of tool groups. Without it the recovery path is
+# blind — the model sees bare group names ('self', 'other') and must guess
+# their contents, which is exactly how 'find my file' ended up requesting the
+# 'files' group (file generation) instead of 'self' (personal storage).
+AI_TOOL_GROUP_SUMMARIES: dict[str, str] = {
+    "itinvent": "ITinvent equipment/owners: devices, cards, OWNER_NO resolution, transfers, acts, branches, computers (profiles/pst/software)",
+    "office": "corporate mail, tasks, projects, workday summary AND company announcements/news",
+    "files": "file GENERATION only: create/report/convert documents (xlsx, csv, pdf, docx) — no search of existing files",
+    "mfu": "printers/MFU as print devices: online status, errors, toner, cartridges, page counters",
+    "network": "ping, DNS, SSL, TCP ports, cabling/switch ports, Wake-on-LAN",
+    "ad": "Active Directory: password status/expiry, account lockout, group membership, logons",
+    "kb": "knowledge base: instructions, FAQ, regulations, templates — NOT company announcements",
+    "chat": "internal Hub chat: find colleagues/dialogs, send chat messages (not e-mail)",
+    "self": "the asking employee's OWN data: my files storage (me.files.search/attach), my equipment, my password, IT support requests",
+    "directory": "corporate phonebook (1C): people search, phone/e-mail/position/office/absence, org structure",
+    "warehouse": "warehouse stock balances and IT purchase requests",
+    "other": "miscellaneous utilities (voice notes etc.)",
+}
+
+
 def _unattached_tool_group_hint(group: str, title: str) -> str:
     """Prompt line for a permitted group that tool routing left out of this step."""
+    summary = AI_TOOL_GROUP_SUMMARIES.get(group, "")
+    contents = f" Group contents: {summary}." if summary else ""
     return (
-        f"{title} tools are not attached to this step (narrowed by tool routing), but this employee may use them. "
+        f"{title} tools are not attached to this step (narrowed by tool routing), but this employee may use them.{contents} "
         f"If they are needed, call {AI_TOOL_REQUEST_GROUP} with group='{group}' first; do not say they are disabled."
     )
 
