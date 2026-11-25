@@ -1020,9 +1020,10 @@ class MyFilesCollabService:
             changed = [
                 uid for uid, item in current.items() if uid in wanted and oo.normalize_role(item.role) != wanted[uid]
             ]
+            now = _utc_now()
             for uid in changed:
                 current[uid].role = wanted[uid]
-            now = _utc_now()
+                current[uid].updated_at = now
             for uid in added:
                 session.add(
                     AppMyFileFolderCollaborator(
@@ -1097,6 +1098,7 @@ class MyFilesCollabService:
             previous_roles = {uid: oo.normalize_role(current[uid].role) for uid in changed}
             for uid in changed:
                 current[uid].role = wanted[uid]
+                current[uid].updated_at = now
             for uid in added:
                 session.add(
                     AppMyFileCollaborator(

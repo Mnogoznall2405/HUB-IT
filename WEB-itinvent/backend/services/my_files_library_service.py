@@ -459,6 +459,8 @@ class MyFilesLibraryService:
             for key in changed:
                 current[key].role = wanted[key]
             now = _utc_now()
+            for key in changed:
+                current[key].updated_at = now
             for kind, pid in added:
                 session.add(
                     AppMyFileLibraryMember(

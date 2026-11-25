@@ -1,0 +1,4 @@
+scenario,metric,unit,value,run
+memory_nav_churn,heap_first_mb,MB,58.5,0
+memory_nav_churn,heap_last_mb,MB,28.35,0
+memory_nav_churn,heap_growth_mb,MB,-30.16,0

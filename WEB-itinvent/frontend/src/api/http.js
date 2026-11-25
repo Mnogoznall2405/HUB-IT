@@ -5,6 +5,7 @@
  */
 
 import axios from 'axios';
+import { safeLocalGetItem, safeLocalRemoveItem } from '../lib/safeStorage';
 import { buildCacheKey, getOrFetchSWR } from '../lib/swrCache';
 import {
   cacheMobileGetResponse,
@@ -43,13 +44,7 @@ const normalizeCacheValue = (value) => {
   return value ?? null;
 };
 
-const getSelectedDatabaseCachePart = () => {
-  try {
-    return normalizeDbId(window.localStorage.getItem('selected_database'));
-  } catch {
-    return '';
-  }
-};
+const getSelectedDatabaseCachePart = () => normalizeDbId(safeLocalGetItem('selected_database'));
 
 let refreshInFlight = null;
 // Fan-out guard: N параллельных 401 после финального отказа refresh иначе
@@ -63,9 +58,161 @@ const resetAuthRejectionEpoch = () => {
   refreshFailureReported = false;
 };
 
+// Cross-tab refresh coordination. The backend rotates the refresh cookie and
+// tolerates exactly one replay of the old cookie (reuse limit). All tabs share
+// the cookie jar, so a second tab POSTing /auth/refresh with the same cookie
+// counts as a replay and revokes the whole token family. Coordinate through
+// navigator.locks plus a localStorage epoch marker: one tab rotates, siblings
+// observe the fresh epoch and skip their own POST.
+const REFRESH_EPOCH_STORAGE_KEY = 'hubit.auth.refresh_epoch';
+const REFRESH_CLAIM_STORAGE_KEY = 'hubit.auth.refresh_claim';
+const REFRESH_RECENT_WINDOW_MS = 10_000;
+const REFRESH_NETWORK_RETRY_DELAY_MS = 500;
+const REFRESH_CLAIM_POLL_MS = 150;
+const REFRESH_CLAIM_WAIT_MS = 12_000;
+const REFRESH_LOCK_NAME = 'hubit.auth.refresh';
+// A sibling's localStorage epoch write reaches this page asynchronously: a tab
+// entering the lock right behind a just-released rotation can read a stale
+// epoch and pay for a redundant rotation, burning the replay allowance.
+const REFRESH_EPOCH_PROPAGATION_MS = 400;
+const REFRESH_EPOCH_PROPAGATION_POLL_MS = 25;
+
+const readRefreshMarker = (key) => {
+  try {
+    return Number(window.localStorage.getItem(key) || 0);
+  } catch {
+    return 0;
+  }
+};
+
+const writeRefreshMarker = (key, timestamp) => {
+  try {
+    window.localStorage.setItem(key, String(timestamp));
+  } catch {
+    // Storage unavailable (private mode) — coordination degrades to per-tab only.
+  }
+};
+
+const markRefreshEpoch = () => writeRefreshMarker(REFRESH_EPOCH_STORAGE_KEY, Date.now());
+const siblingRefreshedRecently = () => (
+  Date.now() - readRefreshMarker(REFRESH_EPOCH_STORAGE_KEY) < REFRESH_RECENT_WINDOW_MS
+);
+const markRefreshClaim = () => writeRefreshMarker(REFRESH_CLAIM_STORAGE_KEY, Date.now());
+const clearRefreshClaim = () => {
+  try {
+    window.localStorage.removeItem(REFRESH_CLAIM_STORAGE_KEY);
+  } catch {
+    // Storage unavailable — nothing to clear.
+  }
+};
+const siblingClaimedRecently = () => (
+  Date.now() - readRefreshMarker(REFRESH_CLAIM_STORAGE_KEY) < REFRESH_RECENT_WINDOW_MS
+);
+
+// Callers only await the refresh and retry their own request (or ignore the
+// payload entirely) — a defined-shape sentinel keeps `response.data` readers
+// safe when a sibling tab performed the rotation.
+const skippedRefreshResponse = () => ({ data: { skipped: true }, skippedRefresh: true });
+
+const postRefreshRequest = () => (
+  apiClient.post('/auth/refresh', null, { suppressAuthRequired: true })
+);
+
+const REFRESH_RETRYABLE_CODES = new Set(['ERR_NETWORK', 'ECONNABORTED', 'ETIMEDOUT']);
+const isRetryableTransportError = (requestError) => (
+  !requestError?.response && REFRESH_RETRYABLE_CODES.has(requestError?.code)
+);
+
+// A lost rotation response (network cut between server commit and client read)
+// leaves this tab holding an already-rotated cookie. The reuse limit tolerates
+// exactly one replay within the grace window, so retry a transport-failed
+// refresh exactly once. A definitive response (4xx/5xx) is never retried —
+// posting again would burn the grace replay and revoke the family.
+const performRefreshRequest = async () => {
+  try {
+    return await postRefreshRequest();
+  } catch (firstError) {
+    if (!isRetryableTransportError(firstError)) throw firstError;
+    if (siblingRefreshedRecently()) return skippedRefreshResponse();
+    await new Promise((resolve) => { setTimeout(resolve, REFRESH_NETWORK_RETRY_DELAY_MS); });
+    try {
+      return await postRefreshRequest();
+    } catch (secondError) {
+      // Both attempts were lost in transport — the server may have rotated the
+      // cookie anyway, leaving the jar with a replay-prone stale cookie. Mark
+      // the epoch (shifted so it outlives the backend grace window) so no tab
+      // burns the last allowed reuse and revokes the whole family. The next
+      // attempt after the window gets a definitive answer instead.
+      if (!secondError?.response) {
+        writeRefreshMarker(REFRESH_EPOCH_STORAGE_KEY, Date.now() + REFRESH_RECENT_WINDOW_MS);
+      }
+      throw secondError;
+    }
+  }
+};
+
+const waitForFreshSiblingEpoch = async () => {
+  const deadline = Date.now() + REFRESH_EPOCH_PROPAGATION_MS;
+  while (Date.now() < deadline) {
+    if (siblingRefreshedRecently()) return true;
+    await new Promise((resolve) => { setTimeout(resolve, REFRESH_EPOCH_PROPAGATION_POLL_MS); });
+  }
+  return siblingRefreshedRecently();
+};
+
+const refreshAuthSessionLocked = async () => {
+  // NOTE: a tab that waited on the lock longer than the epoch window performs
+  // a redundant — but legitimate — rotation of the *current* cookie, never a
+  // replay. The epoch only dedupes the common fast case.
+  if (siblingRefreshedRecently()) return skippedRefreshResponse();
+  if (await waitForFreshSiblingEpoch()) return skippedRefreshResponse();
+  const response = await performRefreshRequest();
+  markRefreshEpoch();
+  return response;
+};
+
+const waitForSiblingClaim = async () => {
+  const deadline = Date.now() + REFRESH_CLAIM_WAIT_MS;
+  while (siblingClaimedRecently() && Date.now() < deadline) {
+    await new Promise((resolve) => { setTimeout(resolve, REFRESH_CLAIM_POLL_MS); });
+  }
+};
+
+// Fallback when Web Locks is unavailable (e.g. plain-HTTP intranet deploys —
+// the API is secure-context only). The localStorage claim narrows the
+// check-then-POST race from a full request RTT to one synchronous write.
+// A tab seeing a fresh claim must WAIT for the holder — skipping immediately
+// would retry its request with the still-old cookie and log the session out.
+const refreshAuthSessionUnlocked = async () => {
+  if (siblingRefreshedRecently()) return skippedRefreshResponse();
+  if (siblingClaimedRecently()) {
+    await waitForSiblingClaim();
+    if (siblingRefreshedRecently()) return skippedRefreshResponse();
+  }
+  markRefreshClaim();
+  try {
+    // The claim only narrows the check-then-POST race; a just-finished sibling
+    // rotation may not have propagated here yet, so absorb that lag too.
+    if (await waitForFreshSiblingEpoch()) return skippedRefreshResponse();
+    const response = await performRefreshRequest();
+    markRefreshEpoch();
+    return response;
+  } finally {
+    clearRefreshClaim();
+  }
+};
+
+const refreshAuthSessionAcrossTabs = () => {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : null;
+  if (!locks || typeof locks.request !== 'function') {
+    return refreshAuthSessionUnlocked();
+  }
+  return locks.request(REFRESH_LOCK_NAME, () => refreshAuthSessionLocked());
+};
+
 function refreshAuthSession() {
   if (!refreshInFlight) {
-    refreshInFlight = apiClient.post('/auth/refresh', null, { suppressAuthRequired: true })
+    refreshInFlight = refreshAuthSessionAcrossTabs()
       .then((response) => {
         resetAuthRejectionEpoch();
         return response;
@@ -245,7 +392,7 @@ apiClient.interceptors.request.use(
       }
     }
 
-    const selectedDatabase = localStorage.getItem('selected_database');
+    const selectedDatabase = safeLocalGetItem('selected_database');
     if (selectedDatabase && config.headers['X-Database-ID'] == null) {
       config.headers['X-Database-ID'] = selectedDatabase;
     }
@@ -278,8 +425,23 @@ apiClient.interceptors.response.use(
   (response) => {
     const metadata = response?.config?.metadata || {};
     const responseUrl = String(response?.config?.url || '');
-    if (responseUrl.includes('/auth/login') || responseUrl.includes('/auth/verify-2fa')) {
+    // Any interactive sign-in success (password, 2FA, passkey, trusted device)
+    // opens a new rejection epoch — suppressing the reset here left the
+    // auth-required fan-out muted for up to ~12 min after a passkey login.
+    // Suffix match on the *verify* endpoints only: '/auth/login-mode' and the
+    // '*/options' calls are public pre-auth probes (no cookies issued) — a
+    // substring match would let them mark the epoch and wrongly skip queued
+    // refreshes for live sessions.
+    const responsePath = responseUrl.split('?')[0];
+    if (
+      responsePath.endsWith('/auth/login')
+      || responsePath.endsWith('/auth/verify-2fa')
+      || responsePath.endsWith('/auth/verify-2fa-login')
+      || responsePath.endsWith('/auth/passkey-login/verify')
+      || responsePath.endsWith('/auth/trusted-devices/auth/verify')
+    ) {
       resetAuthRejectionEpoch();
+      markRefreshEpoch();
     }
     if (shouldDebugChatRequests()) {
       pushChatRequestDebugEntry({
@@ -367,7 +529,13 @@ apiClient.interceptors.response.use(
       }
 
       // Session expired or invalid - clear cached user and notify app state.
-      localStorage.removeItem('user');
+      // Suppressed calls are background probes: wiping localStorage.user here
+      // would race a fresh login on another tab (the stale response resolves
+      // after the new user was stored) and split tabs into different auth
+      // states. The next non-suppressed 401 still clears it.
+      if (!suppressAuthRequired) {
+        safeLocalRemoveItem('user');
+      }
       if (!suppressAuthRequired && !isLoginRequest && !isSessionTelemetryRequest && !authRequiredNotified) {
         authRequiredNotified = true;
         reportAuthSessionTelemetry({
@@ -393,6 +561,7 @@ export const getCachedGet = async (
     staleTimeMs = SYSTEM_GET_STALE_TIME_MS,
     force = false,
     suppressAuthRequired = false,
+    signal = undefined,
   } = {},
 ) => {
   const cacheKey = buildCacheKey(
@@ -408,6 +577,7 @@ export const getCachedGet = async (
       await apiClient.get(url, {
         params,
         suppressAuthRequired,
+        signal,
       })
     ).data,
     {
