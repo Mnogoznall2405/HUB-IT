@@ -811,6 +811,120 @@ describe('MyFiles page', () => {
     });
   });
 
+  it('makes the already-rendered rows inert while the next folder loads', async () => {
+    let resolveFolder;
+    mockListFiles.mockImplementation(({ folderId } = {}) => (folderId
+      ? new Promise((resolve) => { resolveFolder = resolve; })
+      : Promise.resolve({
+        items: [readyFile],
+        folders: [{ id: 'folder-1', name: 'Документы', parent_id: null }],
+        breadcrumbs: [],
+        folder: null,
+      })));
+    renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-folder-folder-1'));
+
+    // Old rows stay on screen but become inert until the new payload lands:
+    // the attribute — not just pointer-events — removes them from focus order.
+    await waitFor(() => expect(screen.getByTestId('my-files-list-panel').inert).toBe(true));
+    expect(screen.getByText('report.txt')).toBeInTheDocument();
+
+    await act(async () => resolveFolder({
+      items: [], folders: [], breadcrumbs: [{ id: 'folder-1', name: 'Документы' }],
+      folder: { id: 'folder-1', name: 'Документы' },
+    }));
+    await waitFor(() => expect(screen.getByTestId('my-files-list-panel').inert).toBe(false));
+  });
+
+  it('clears rows, selection and cursor when the next page request is revoked', async () => {
+    let rejectPage;
+    mockListFiles
+      .mockResolvedValueOnce({
+        items: [readyFile], folders: [], breadcrumbs: [], folder: null,
+        next_cursor: 'cursor-1', total: 2,
+      })
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectPage = reject; }));
+    renderPage();
+    await screen.findByText('report.txt');
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    await screen.findByTestId('my-files-selection-bar');
+    await waitFor(() => expect(mockListFiles).toHaveBeenCalledTimes(2));
+
+    const denied = new Error('forbidden');
+    denied.response = { status: 403 };
+    await act(async () => rejectPage(denied));
+
+    // Rows already loaded may be forbidden too — everything is dropped.
+    await waitFor(() => expect(screen.queryByText('report.txt')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('my-files-selection-bar')).not.toBeInTheDocument();
+  });
+
+  it('does not repaint a cached recent payload that merged library documents', async () => {
+    const libFile = {
+      ...readyFile, id: 'lib-hit', original_file_name: 'shared.docx',
+      download_file_name: 'shared.docx', library_id: 'lib-1', library_name: 'Общая',
+    };
+    mockListFiles.mockImplementation(({ view } = {}) => Promise.resolve(
+      view === 'recent'
+        ? { items: [libFile], folders: [], breadcrumbs: [], folder: null }
+        : { items: [], folders: [], breadcrumbs: [], folder: null },
+    ));
+    renderPage('/?view=recent');
+    await screen.findByText('shared.docx');
+
+    fireEvent.click(screen.getByTestId('my-files-nav-drive'));
+    await waitFor(() => expect(screen.queryByText('shared.docx')).not.toBeInTheDocument());
+
+    let resolveRecent;
+    mockListFiles.mockImplementationOnce(() => new Promise((resolve) => { resolveRecent = resolve; }));
+    fireEvent.click(screen.getByTestId('my-files-nav-recent'));
+
+    // Membership may have been revoked while away — the cached library row
+    // must not repaint ahead of the revalidation response.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    expect(screen.queryByText('shared.docx')).not.toBeInTheDocument();
+
+    await act(async () => resolveRecent({ items: [libFile], folders: [], breadcrumbs: [], folder: null }));
+    await screen.findByText('shared.docx');
+  });
+
+  it('drops an in-flight select-all payload when the folder changes first', async () => {
+    let resolveAll;
+    mockListFiles.mockImplementation(({ folderId, limit } = {}) => {
+      if (folderId === 'folder-1') {
+        return Promise.resolve({
+          items: [{ ...readyFile, id: 'in-f1', original_file_name: 'inside.txt', download_file_name: 'inside.txt' }],
+          folders: [], breadcrumbs: [{ id: 'folder-1', name: 'Папка' }],
+          folder: { id: 'folder-1', name: 'Папка' }, total: 1,
+        });
+      }
+      if (!limit) return new Promise((resolve) => { resolveAll = resolve; });
+      return Promise.resolve({
+        items: [readyFile],
+        folders: [{ id: 'folder-1', name: 'Папка', parent_id: null }],
+        breadcrumbs: [], folder: null, next_cursor: null, total: 3,
+      });
+    });
+    renderPage();
+    await screen.findByText('report.txt');
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    fireEvent.click(await screen.findByTestId('my-files-select-all-set'));
+
+    // Navigate before the materialization resolves, then let it land.
+    fireEvent.click(screen.getByTestId('my-files-folder-folder-1'));
+    await waitFor(() => expect(mockListFiles).toHaveBeenCalledWith(expect.objectContaining({ folderId: 'folder-1' })));
+    await act(async () => resolveAll({
+      items: [readyFile, { ...readyFile, id: 'x-2' }, { ...readyFile, id: 'x-3' }],
+      folders: [], breadcrumbs: [], folder: null, total: 3,
+    }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+
+    // Selected ids from the previous context must not reach the new folder's bar.
+    expect(screen.queryByTestId('my-files-selection-bar')).not.toBeInTheDocument();
+  });
+
   it('switches to grid view and shows folder file counts', async () => {
     mockListFiles.mockResolvedValue({
       items: [readyFile],

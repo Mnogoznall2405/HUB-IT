@@ -873,13 +873,30 @@ class MyFilesService:
         # delete/restore path stamps ``updated_at`` too, so a separate
         # ``max(deleted_at)`` term would only double the index scan.
         file_scope = [AppMyFile.owner_user_id == owner]
-        if folder_scoped:
-            # The listing branch reached only for non-global views scopes rows
-            # by folder_id (NULL for the root view) — mirror it so the
-            # aggregates ride the folder index instead of the owner scan.
-            file_scope.append(
-                AppMyFile.folder_id == folder if folder else AppMyFile.folder_id.is_(None)
-            )
+        if folder_scoped and folder:
+            # Every folder row in the payload renders a recursive subtree
+            # file_count, so the response depends on this folder's files AND
+            # on files in every descendant — a single folder_id equality would
+            # miss writes deeper in the tree. Walk the owner's (id, parent_id)
+            # map once and scope the aggregates to the subtree; the folder
+            # index still serves the IN list.
+            children_map: dict[str | None, list[str]] = {}
+            for fid, parent in session.execute(
+                select(AppMyFileFolder.id, AppMyFileFolder.parent_id).where(
+                    AppMyFileFolder.owner_user_id == owner,
+                    AppMyFileFolder.deleted_at.is_(None),
+                )
+            ).all():
+                children_map.setdefault(parent, []).append(fid)
+            file_folder_ids = [folder]
+            stack = [folder]
+            while stack:
+                file_folder_ids.extend(children_map.get(stack.pop(), []))
+            file_scope.append(AppMyFile.folder_id.in_(file_folder_ids))
+        # Root view (folder_scoped, no folder): every root folder renders a
+        # recursive subtree count, so a file anywhere under the owner moves
+        # the payload — the owner-wide aggregate is the cheapest correct
+        # scope and no folder predicate is appended.
         files = session.execute(
             select(
                 func.count(AppMyFile.id),
@@ -1024,6 +1041,7 @@ class MyFilesService:
             f"l={int(limit or 0)}",
             f"c={_normalize_text(cursor)}",
             f"p={params_ctx}",
+            f"a={int(self.is_admin_locked(session, int(user_id)))}",
         )
         raw = "|".join(str(part) for part in (*context, *files, *folders, *extras))
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:32]
@@ -2784,12 +2802,21 @@ class MyFilesService:
         folder_scoped = not _normalize_text(query) and normalized_view not in {
             "shared", "favorites", "recent",
         }
+        # Query text and the resolved date-filter cutoff belong in the ETag
+        # context: without the former, two different searches could share a
+        # fingerprint; without the latter, a "today" listing stayed valid
+        # across midnight while its row set slid under the moving cutoff.
+        date_cutoff_ctx = _date_filter_cutoff(
+            _normalize_text(date_filter).lower(), int(tz_offset_minutes or 0)
+        )
         params_ctx = "|".join(
             (
+                " ".join(_normalize_text(query).lower().split()),
                 _normalize_text(sort).lower(),
                 _normalize_text(order).lower(),
                 _normalize_text(type_filter).lower(),
                 _normalize_text(date_filter).lower(),
+                date_cutoff_ctx.isoformat() if date_cutoff_ctx else "",
                 str(int(tz_offset_minutes or 0)),
             )
         )

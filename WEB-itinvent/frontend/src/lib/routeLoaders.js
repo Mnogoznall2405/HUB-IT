@@ -5,21 +5,6 @@ import {
 } from './routeChunkRecovery';
 
 const routePrefetchPromises = new Map();
-const MY_FILES_GRANT_DEPLOY_KEY = 'hubit:my-files:grant-download-v2';
-
-const ensureMyFilesGrantDeployReload = () => {
-  if (typeof window === 'undefined') return false;
-  try {
-    if (window.sessionStorage.getItem(MY_FILES_GRANT_DEPLOY_KEY) === '1') {
-      return false;
-    }
-    window.sessionStorage.setItem(MY_FILES_GRANT_DEPLOY_KEY, '1');
-    window.location.reload();
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 const loadRouteWithReloadFallback = (loader) => (
   loader()
@@ -81,12 +66,7 @@ export const loadConstructionDirectionDetailRoute = defineRouteLoader(() => impo
 export const loadDocflowRoute = defineRouteLoader(() => import('../pages/Docflow'));
 export const loadPasswordsRoute = defineRouteLoader(() => import('../pages/Passwords'));
 export const loadGroupsAccessRoute = defineRouteLoader(() => import('../pages/GroupsAccess'));
-export const loadMyFilesRoute = defineRouteLoader(() => {
-  if (ensureMyFilesGrantDeployReload()) {
-    return new Promise(() => {});
-  }
-  return import('../pages/MyFiles');
-});
+export const loadMyFilesRoute = defineRouteLoader(() => import('../pages/MyFiles'));
 export const loadMyFilesEditorRoute = defineRouteLoader(() => import('../pages/MyFilesEditor'));
 export const loadSharedFileRoute = defineRouteLoader(() => import('../pages/SharedFile'));
 export const loadSharedFolderRoute = defineRouteLoader(() => import('../pages/SharedFolder'));

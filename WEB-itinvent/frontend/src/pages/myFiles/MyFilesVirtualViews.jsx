@@ -1,3 +1,4 @@
+import { forwardRef } from 'react';
 import { Box } from '@mui/material';
 
 import {
@@ -30,14 +31,22 @@ export function VirtualListRows({ rows, rowHeight, renderRow, overscan = 8 }) {
 
 // Measures its own content width and passes it to children — drives the grid
 // column-count math below without forcing width state up into the page.
-export function MeasuredBox({ children, sx, ...props }) {
+export const MeasuredBox = forwardRef(function MeasuredBox({ children, sx, ...props }, outerRef) {
   const [ref, width] = useElementWidth();
   return (
-    <Box ref={ref} sx={sx} {...props}>
+    <Box
+      ref={(el) => {
+        ref(el);
+        if (typeof outerRef === 'function') outerRef(el);
+        else if (outerRef) outerRef.current = el;
+      }}
+      sx={sx}
+      {...props}
+    >
       {children(width)}
     </Box>
   );
-}
+});
 
 // Grid virtualized by ROWS: column count mirrors the CSS
 // repeat(auto-fill, minmax(N,1fr)) rule — floor((width+gap)/(N+gap)).

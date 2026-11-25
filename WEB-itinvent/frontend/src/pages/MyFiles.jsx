@@ -145,6 +145,13 @@ const LIBRARY_ROLE_LABELS = { manage: 'Управление', edit: 'Правк�
 const ROW_NAME_COLLATOR = new Intl.Collator('ru', { sensitivity: 'base' });
 const MY_FILES_PAGE_SIZE = 150;
 const MY_FILES_PREFETCH_PX = 1200;
+// Adaptive page-apply thresholds: a +150-row merge/commit landing in the
+// middle of a fast fling is what spiked worst_frame — below this velocity
+// (px/ms) it applies immediately, above it waits for the gesture to slow.
+const MY_FILES_SCROLL_APPLY_VELOCITY = 0.4;
+// …but never later than this remaining distance — the user must not reach
+// the end of rendered rows while a fetched page sits stashed.
+const MY_FILES_SCROLL_APPLY_FLOOR_PX = 900;
 
 const reconcileById = (previous, next) => {
   const previousById = new Map(previous.map((entry) => [String(entry?.id), entry]));
@@ -370,14 +377,34 @@ export default function MyFiles() {
   const [listTotal, setListTotal] = useState(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const pageFetchRef = useRef({ inFlight: false, key: '' });
+  // Scroll velocity tracker + deferred page slot: an arrived page that lands
+  // during a fast gesture is stashed here and committed once scrolling slows,
+  // so the +page-size merge never occupies a scroll frame.
+  const scrollStateRef = useRef({ y: 0, t: 0, v: 0 });
+  const pendingPageRef = useRef(null);
+  const pendingPageTimerRef = useRef(null);
+  // Ids deleted/moved out locally while a keyset page is in flight: the merge
+  // must not resurrect a row the user just removed from this view. Cleared
+  // whenever a full listing payload lands (ground truth re-applied).
+  const removedFileIdsRef = useRef(new Set());
+  const nextCursorValueRef = useRef('');
+  useEffect(() => {
+    nextCursorValueRef.current = nextCursor;
+  }, [nextCursor]);
   useEffect(() => {
     pageFetchRef.current.controller?.abort();
     pageFetchRef.current = { inFlight: false, key: '' };
+    pendingPageRef.current = null;
+    if (pendingPageTimerRef.current) {
+      window.clearTimeout(pendingPageTimerRef.current);
+      pendingPageTimerRef.current = null;
+    }
     setNextCursor('');
     setListTotal(null);
   }, [locationKey]);
   const applyListingsPayload = useCallback(({ filesPayload, quotaPayload, foldersPayload, locationKey: appliedKey }) => {
     if (appliedKey !== undefined) setRowsKey(appliedKey);
+    removedFileIdsRef.current.clear();
     setLibraryInfo(libraryId && filesPayload?.library ? filesPayload.library : null);
     const nextItems = Array.isArray(filesPayload?.items) ? filesPayload.items : [];
     const nextFolders = Array.isArray(filesPayload?.folders) ? filesPayload.folders : [];
@@ -416,8 +443,10 @@ export default function MyFiles() {
       // library, the "shared with me" view) and the trash (items may have been
       // deleted from a shared scope whose access was since revoked) revalidate
       // first: access can be revoked server-side and a cached payload would
-      // flash forbidden rows.
-      const sharedScope = Boolean(libraryId) || isSharedView || isTrashView;
+      // flash forbidden rows. The same applies to search/recent payloads that
+      // actually merged library hits — a revoked membership must not repaint
+      // documents the viewer may no longer see.
+      const sharedScope = Boolean(libraryId) || isSharedView || isTrashView || cached?.hasLibrary;
       const cacheFresh = !silent && !sharedScope && cached && (Date.now() - cached.t) < LISTINGS_CACHE_TTL_MS;
       if (cacheFresh) {
         applyListingsPayload({ ...cached.payload, locationKey });
@@ -500,6 +529,8 @@ export default function MyFiles() {
       listingsCacheRef.current.set(cacheKey, {
         t: Date.now(),
         etag: listingEtag,
+        hasLibrary: (Array.isArray(filesPayload?.items) ? filesPayload.items : [])
+          .some((item) => item?.library_id),
         payload: { filesPayload, quotaPayload, foldersPayload },
       });
       if (listingsCacheRef.current.size > LISTINGS_CACHE_MAX) {
@@ -536,11 +567,67 @@ export default function MyFiles() {
   // cache/etag flow. The dedupe-by-id merge tolerates rows that moved between
   // the page-1 and page-N reads (a file edited mid-scroll reappears shifted
   // instead of duplicated); deleted rows are reconciled on the next reload.
+  // Commit an arrived keyset page: rows merge deduped (and tombstone-free),
+  // inside a transition so a scroll in progress can interrupt the work. The
+  // cursor/total are adopted only when the chain is unperturbed — a page-1
+  // revalidate or a mutation that re-anchored the chain since this fetch left
+  // must not be overwritten by an older anchor.
+  const commitFetchedPage = useCallback((page, cursorUsed) => {
+    const chainIntact = nextCursorValueRef.current === cursorUsed;
+    startTransition(() => {
+      setItems((prev) => {
+        const seen = new Set(prev.map((item) => String(item.id)));
+        const fresh = (Array.isArray(page?.items) ? page.items : []).filter(
+          (item) => !seen.has(String(item.id)) && !removedFileIdsRef.current.has(String(item.id)),
+        );
+        return fresh.length ? [...prev, ...fresh] : prev;
+      });
+      if (chainIntact) {
+        setNextCursor(page?.next_cursor || '');
+        if (page?.total != null) setListTotal(page.total);
+      }
+    });
+  }, []);
+
+  const flushPendingPage = useCallback(() => {
+    const pending = pendingPageRef.current;
+    if (!pending) return;
+    pendingPageRef.current = null;
+    if (locationKeyRef.current === pending.pageKey) {
+      commitFetchedPage(pending.page, pending.cursorUsed);
+    }
+  }, [commitFetchedPage]);
+
+  const schedulePendingPageFlush = useCallback(() => {
+    if (pendingPageTimerRef.current) return;
+    pendingPageTimerRef.current = window.setTimeout(() => {
+      pendingPageTimerRef.current = null;
+      const pending = pendingPageRef.current;
+      if (!pending) return;
+      const s = scrollStateRef.current;
+      const remaining = document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
+      const idle = performance.now() - s.t > 150;
+      // The floor flush also requires a non-fast gesture: a cyclic fast fling
+      // (scrollTop wraps to 0) touches the floor transiently — committing the
+      // merge then is exactly the mid-gesture frame spike the stash exists to
+      // avoid. A real user decelerates at the end; velocity/idle flush covers it.
+      const stranded = remaining < MY_FILES_SCROLL_APPLY_FLOOR_PX && (s.v < MY_FILES_SCROLL_APPLY_VELOCITY * 2 || idle);
+      if (s.v < MY_FILES_SCROLL_APPLY_VELOCITY || idle || stranded) {
+        flushPendingPage();
+      } else {
+        schedulePendingPageFlush();
+      }
+    }, 160);
+  }, [flushPendingPage]);
+
   const loadNextPage = useCallback(async () => {
     const state = pageFetchRef.current;
     // rowsStale ⇒ navigation pending: nextCursor still belongs to the previous
     // location, so a keyset request now would splice a foreign page in.
-    if (!paginatedView || !nextCursor || state.inFlight || rowsStale) return;
+    // pendingPageRef: a fetched page sits stashed for the next slow frame —
+    // the cursor has not advanced yet, so refiring would re-request the same
+    // page in a loop for as long as the fast gesture continues.
+    if (!paginatedView || !nextCursor || state.inFlight || rowsStale || pendingPageRef.current) return;
     const pageKey = locationKey;
     const controller = new AbortController();
     pageFetchRef.current = { inFlight: true, key: pageKey, controller };
@@ -561,38 +648,69 @@ export default function MyFiles() {
         signal: controller.signal,
       });
       if (!latestIsCurrentRef.current() || pageFetchRef.current.key !== pageKey) return;
-      // The appended page is rendered as a transition so a fast scroll in
-      // progress can interrupt the commit instead of stalling on one frame.
-      startTransition(() => {
-        setItems((prev) => {
-          const seen = new Set(prev.map((item) => String(item.id)));
-          const fresh = (Array.isArray(page?.items) ? page.items : []).filter((item) => !seen.has(String(item.id)));
-          return fresh.length ? [...prev, ...fresh] : prev;
-        });
-        setNextCursor(page?.next_cursor || '');
-        if (page?.total != null) setListTotal(page.total);
-      });
+      const cursorUsed = nextCursor;
+      const s = scrollStateRef.current;
+      const remaining = document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
+      const fastGesture = s.v >= MY_FILES_SCROLL_APPLY_VELOCITY && performance.now() - s.t < 200;
+      if (fastGesture && remaining >= MY_FILES_SCROLL_APPLY_FLOOR_PX) {
+        // The page stays stashed until the gesture slows (scroll handler),
+        // stops (idle timer), or the user approaches the end of rendered rows
+        // (floor) — whichever comes first.
+        pendingPageRef.current = { page, pageKey, cursorUsed };
+        schedulePendingPageFlush();
+      } else {
+        commitFetchedPage(page, cursorUsed);
+      }
     } catch (error) {
       if (error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return;
+      const status = Number(error?.response?.status || error?.status || 0);
+      if (status === 401 || status === 403 || status === 404) {
+        // Access revoked mid-scroll: the already-loaded rows may be forbidden
+        // too — evict the cache entry, drop selection/cursor, and clear the
+        // listing so nothing from the revoked scope stays on screen.
+        listingsCacheRef.current.delete(pageKey);
+        setExtraSelectedRows([]);
+        setSelectedKeys(new Set());
+        setNextCursor('');
+        setListTotal(null);
+        applyListingsPayload({
+          filesPayload: { items: [], folders: [], breadcrumbs: [] },
+          quotaPayload: null,
+          foldersPayload: { items: [] },
+          locationKey: pageKey,
+        });
+      }
       notifyApiError(error, 'Не удалось загрузить следующую страницу файлов.', { dedupeMode: 'recent' });
     } finally {
       if (pageFetchRef.current.key === pageKey) pageFetchRef.current = { inFlight: false, key: '' };
       setLoadingMore(false);
     }
-  }, [currentFolderId, dateFilter, libraryId, listView, locationKey, nextCursor, notifyApiError, paginatedView, rowsStale, sortDir, sortField, typeFilter]);
+  }, [applyListingsPayload, commitFetchedPage, currentFolderId, dateFilter, libraryId, listView, locationKey, nextCursor, notifyApiError, paginatedView, rowsStale, schedulePendingPageFlush, sortDir, sortField, typeFilter]);
 
   // Infinite scroll: when the document end approaches, pull the next page —
   // the loaded window keeps virtualizing regardless of how many pages landed.
+  // The handler also tracks scroll velocity (basis of the deferred apply)
+  // and lands a stashed page as soon as the gesture slows or nears the end.
   useEffect(() => {
     if (!paginatedView || !nextCursor || rowsStale) return undefined;
     const onScroll = () => {
+      const s = scrollStateRef.current;
+      const now = performance.now();
+      const dt = now - s.t;
+      if (s.t && dt > 0) s.v = Math.abs(window.scrollY - s.y) / dt;
+      s.y = window.scrollY;
+      s.t = now;
       const remaining = document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
       if (remaining < MY_FILES_PREFETCH_PX) void loadNextPage();
+      const stranded = remaining < MY_FILES_SCROLL_APPLY_FLOOR_PX && s.v < MY_FILES_SCROLL_APPLY_VELOCITY * 2;
+      if (pendingPageRef.current && (s.v < MY_FILES_SCROLL_APPLY_VELOCITY || stranded)) {
+        flushPendingPage();
+      }
     };
     window.addEventListener('scroll', onScroll, { passive: true });
     onScroll();
     return () => window.removeEventListener('scroll', onScroll);
-  }, [loadNextPage, nextCursor, paginatedView]);
+  }, [flushPendingPage, loadNextPage, nextCursor, paginatedView, rowsStale]);
 
   const postMutationLoadData = useCallback(
     (opts) => { listingsCacheRef.current.clear(); return loadData(opts); },
@@ -1064,6 +1182,7 @@ export default function MyFiles() {
           await myFilesAPI.deleteFile(item.id);
           listingsCacheRef.current.clear();
           const id = String(item.id);
+          removedFileIdsRef.current.add(id);
           setItems((prev) => prev.filter((entryItem) => String(entryItem.id) !== id));
           adjustListTotal(-1);
           notifySuccess('Файл удалён.', { source: 'my-files-delete', dedupeMode: 'none' });
@@ -1127,6 +1246,18 @@ export default function MyFiles() {
     setFolderSubmenu('');
     setDetailsPinned(null);
   }, [locationKey]);
+
+  // Stale rows are fully inert, not just visually: the HTML `inert` attribute
+  // removes the subtree from focus order, blocks keyboard interaction, text
+  // selection and hit-testing alike — pointer-events alone left the checkbox
+  // column and any focusable control reachable by Tab.
+  const listPanelRef = useRef(null);
+  const gridPanelRef = useRef(null);
+  useEffect(() => {
+    for (const el of [listPanelRef.current, gridPanelRef.current]) {
+      if (el) el.inert = rowsStale;
+    }
+  }, [rowsStale]);
 
   const handleCreateFolder = useCallback(async () => {
     const name = String(folderNameInput || '').trim();
@@ -1203,7 +1334,10 @@ export default function MyFiles() {
         setItems((prev) => staysVisible
           ? prev.map((entryItem) => (String(entryItem.id) === id ? { ...entryItem, folder_id: target } : entryItem))
           : prev.filter((entryItem) => String(entryItem.id) !== id));
-        if (!staysVisible) adjustListTotal(-1);
+        if (!staysVisible) {
+          removedFileIdsRef.current.add(id);
+          adjustListTotal(-1);
+        }
       }
       listingsCacheRef.current.clear();
       setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' });
@@ -1340,8 +1474,9 @@ export default function MyFiles() {
   const folderDragIdRef = useRef('');
 
   const folderDragProps = useCallback((folder) => ({
-    draggable: canWrite,
+    draggable: canWrite && !rowsStale,
     onDragStart: (event) => {
+      if (rowsStale) { event.preventDefault(); return; }
       folderDragIdRef.current = String(folder.id);
       event.dataTransfer.setData('application/x-hubit-folder', String(folder.id));
       event.dataTransfer.effectAllowed = 'move';
@@ -1350,11 +1485,13 @@ export default function MyFiles() {
       folderDragIdRef.current = '';
       setDropTargetFolderId('');
     },
-  }), [canWrite]);
+  }), [canWrite, rowsStale]);
 
   const folderDropProps = useCallback((folder) => ({
     onDragOver: (event) => {
-      if (isTrashView || !canWrite) return;
+      // Stale rows belong to the previous location — a drop target that no
+      // longer represents the current folder must not accept anything.
+      if (isTrashView || !canWrite || rowsStale) return;
       const types = event.dataTransfer?.types;
       if (!types) return;
       const internalFolder = types.includes('application/x-hubit-folder');
@@ -1379,7 +1516,7 @@ export default function MyFiles() {
       setDropTargetFolderId('');
     },
     onDrop: (event) => {
-      if (isTrashView || !canWrite) return;
+      if (isTrashView || !canWrite || rowsStale) return;
       const internalId = event.dataTransfer.getData('application/x-hubit-file');
       const internalFolderId = event.dataTransfer.getData('application/x-hubit-folder');
       const osFiles = event.dataTransfer.files;
@@ -1411,7 +1548,7 @@ export default function MyFiles() {
           });
       }
     },
-  }), [allFolders, canWrite, handleMoveFileToFolder, handleMoveFolderToFolder, isTrashView, notifyApiError, notifyWarning, openUploadDialog]);
+  }), [allFolders, canWrite, handleMoveFileToFolder, handleMoveFolderToFolder, isTrashView, notifyApiError, notifyWarning, openUploadDialog, rowsStale]);
 
   // Подстраховка: drop/dragend за пределами строки-папки снимает подсветку цели.
   useEffect(() => {
@@ -1425,12 +1562,13 @@ export default function MyFiles() {
   }, []);
 
   const fileDragProps = useCallback((item) => ({
-    draggable: true,
+    draggable: !rowsStale,
     onDragStart: (event) => {
+      if (rowsStale) { event.preventDefault(); return; }
       event.dataTransfer.setData('application/x-hubit-file', String(item.id));
       event.dataTransfer.effectAllowed = 'move';
     },
-  }), []);
+  }), [rowsStale]);
 
   useEffect(() => () => {
     Object.values(thumbsRef.current).forEach((value) => {
@@ -1467,15 +1605,27 @@ export default function MyFiles() {
   }, [allFolders, moveDialog.id, moveDialog.kind, selectedKeys]);
 
   const [selectAllBusy, setSelectAllBusy] = useState(false);
+  const selectAllAbortRef = useRef(null);
   // Full row objects for selected files that are not on any loaded page yet —
   // without them bulk ops would silently skip the unloaded tail of a "select
   // all N" set because selectedFiles is derived from the loaded list.
   const [extraSelectedRows, setExtraSelectedRows] = useState([]);
+  // Latest context for stale-response guards — the materialize request below
+  // must never merge a payload minted under a previous user or location.
+  const locationKeyRef = useRef(locationKey);
+  locationKeyRef.current = locationKey;
+  const authUserKeyLatestRef = useRef(authUserKey);
+  authUserKeyLatestRef.current = authUserKey;
   // The header checkbox marks only loaded pages; this action materializes the
   // whole server-side set (same filters/sort) so bulk ops cover every row —
   // each item's permission is still verified per call on the server.
   const selectAllFilesInSet = useCallback(async () => {
-    if (!paginatedView || selectAllBusy) return;
+    if (!paginatedView || selectAllBusy || rowsStale) return;
+    const capturedKey = locationKey;
+    const capturedUser = authUserKey;
+    selectAllAbortRef.current?.abort();
+    const controller = new AbortController();
+    selectAllAbortRef.current = controller;
     setSelectAllBusy(true);
     try {
       const all = await myFilesAPI.listFiles({
@@ -1488,17 +1638,22 @@ export default function MyFiles() {
         typeFilter,
         dateFilter,
         tzOffset: new Date().getTimezoneOffset(),
+        signal: controller.signal,
       });
+      // A navigation, filter change or user switch during the request makes
+      // this payload foreign to the current context — drop it wholesale.
+      if (locationKeyRef.current !== capturedKey || authUserKeyLatestRef.current !== capturedUser) return;
       const rows = Array.isArray(all?.items) ? all.items : [];
       setExtraSelectedRows(rows);
       const fileKeys = rows.map((item) => `file:${item.id}`);
       setSelectedKeys((current) => new Set([...current, ...fileKeys]));
     } catch (error) {
+      if (error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return;
       notifyApiError(error, 'Не удалось выбрать все файлы.', { dedupeMode: 'recent' });
     } finally {
       setSelectAllBusy(false);
     }
-  }, [currentFolderId, dateFilter, libraryId, listView, notifyApiError, paginatedView, selectAllBusy, sortDir, sortField, typeFilter]);
+  }, [authUserKey, currentFolderId, dateFilter, libraryId, listView, locationKey, notifyApiError, paginatedView, rowsStale, selectAllBusy, sortDir, sortField, typeFilter]);
 
   const clearSelection = useCallback(
     () => {
@@ -1508,9 +1663,16 @@ export default function MyFiles() {
     [],
   );
 
+  // Selection context — everything that changes the row set. A re-sort keeps
+  // the same membership, so it is deliberately absent: sorting must not drop
+  // the selection. Anything else (user, view, library, folder, query, filters)
+  // clears selection AND aborts a pending "select all N" materialization —
+  // selected ids from a foreign context must never reach a bulk op.
+  const selectionContextKey = `${authUserKey}|${isTrashView ? 'trash' : listView}|${libraryId || ''}|${currentFolderId || ''}|${debouncedSearchQuery}|${typeFilter}|${dateFilter}`;
   useEffect(() => {
     clearSelection();
-  }, [currentFolderId, viewParam, debouncedSearchQuery, typeFilter, dateFilter, clearSelection]);
+    selectAllAbortRef.current?.abort();
+  }, [selectionContextKey, clearSelection]);
 
   // A fresh selection or a navigation wins over an entry pinned via «Сведения».
   useEffect(() => {
@@ -1769,6 +1931,7 @@ export default function MyFiles() {
           }
           if (removedIds.size > 0) {
             listingsCacheRef.current.clear();
+            removedFileIds.forEach((fileId) => removedFileIdsRef.current.add(fileId));
             setFolders((prev) => prev.filter((entryItem) => !removedIds.has(String(entryItem.id))));
             setAllFolders((prev) => prev.filter((entryItem) => !removedIds.has(String(entryItem.id))));
             setItems((prev) => prev.filter((entryItem) => !removedIds.has(String(entryItem.id))));
@@ -1846,7 +2009,10 @@ export default function MyFiles() {
         setItems((prev) => staysVisible
           ? prev.map((entryItem) => (movedFileIds.has(String(entryItem.id)) ? { ...entryItem, folder_id: targetFolderId } : entryItem))
           : prev.filter((entryItem) => !movedFileIds.has(String(entryItem.id))));
-        if (!staysVisible) adjustListTotal(-movedFileIds.size);
+        if (!staysVisible) {
+          movedFileIds.forEach((fileId) => removedFileIdsRef.current.add(fileId));
+          adjustListTotal(-movedFileIds.size);
+        }
       }
       if (failed.length === 0) {
         notifySuccess('Выбранные объекты перемещены.', { source: 'my-files-bulk-move', dedupeMode: 'none' });
@@ -2708,6 +2874,8 @@ export default function MyFiles() {
 
             {viewMode === 'list' ? (
             <Paper
+              ref={listPanelRef}
+              data-testid="my-files-list-panel"
               variant="outlined"
               // Контейнерная адаптивность колонок: ярусы rowGridColumns и
               // видимость второстепенных ячеек реагируют на ширину ЭТОГО блока
@@ -2897,6 +3065,7 @@ export default function MyFiles() {
             </Paper>
             ) : (
             <MeasuredBox
+              ref={gridPanelRef}
               data-testid="my-files-grid"
               aria-busy={rowsStale || undefined}
               sx={rowsStale ? { pointerEvents: 'none', opacity: 0.55, transition: 'opacity 120ms ease' } : undefined}

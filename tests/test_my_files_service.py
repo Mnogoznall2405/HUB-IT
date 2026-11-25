@@ -1976,6 +1976,30 @@ def test_library_listing_etag_covers_member_and_role_changes(tmp_path):
         service.list_files(user_id=8, library_id=library["id"])
     assert service.list_files(user_id=7, library_id=library["id"])["etag"] == manager_etag
 
+
+def test_listing_etag_covers_nested_subtree_counts_and_query_context(tmp_path):
+    service = _new_service(tmp_path)
+    outer = service.create_folder(actor=_user(), name="Outer")
+    inner = service.create_folder(actor=_user(), name="Inner", parent_id=outer["id"])
+    _etag_pending(service, "direct.txt", folder_id=outer["id"])
+
+    outer_etag = service.list_files(user_id=7, folder_id=outer["id"])["etag"]
+    root_etag = service.list_files(user_id=7)["etag"]
+
+    # A write inside a nested subfolder changes the subtree file_count on the
+    # displayed folder row — both the parent listing and the root listing
+    # must revalidate even though neither lists that file directly.
+    _etag_pending(service, "deep.txt", folder_id=inner["id"])
+    assert service.list_files(user_id=7, folder_id=outer["id"])["etag"] != outer_etag
+    assert service.list_files(user_id=7)["etag"] != root_etag
+
+    # Search fingerprints are bound to the normalized query text.
+    q1 = service.list_files(user_id=7, query="deep")["etag"]
+    q2 = service.list_files(user_id=7, query="direct")["etag"]
+    assert q1 != q2
+    assert q1 == service.list_files(user_id=7, query="  Deep  ")["etag"]
+
+
 def test_list_files_paginates_with_server_sort_filters_and_total(tmp_path):
     service = _new_service(tmp_path)
     for name in ("b.docx", "a.pdf", "c.zip", "d.txt"):

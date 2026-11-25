@@ -22,10 +22,6 @@
           "slack": 4
         },
         {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 47
-        },
-        {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
           "slack": 4
         },
@@ -34,8 +30,12 @@
           "slack": 4
         },
         {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 65
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
+        },
+        {
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
@@ -101,11 +101,11 @@
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 132
+          "slack": 134
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 177
+          "slack": 179
         }
       ]
     },
@@ -127,11 +127,11 @@
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 132
+          "slack": 134
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 177
+          "slack": 179
         }
       ]
     }
@@ -240,7 +240,7 @@
     "folderTopLevel": [
       "Открыть",
       "Скачать папку (ZIP)",
-      "Поделиться",
+      "Поделиться папкой",
       "Организовать",
       "Сведения",
       "Удалить"

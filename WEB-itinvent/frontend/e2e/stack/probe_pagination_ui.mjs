@@ -22,6 +22,11 @@ page.on('request', (req) => {
 
 await page.goto(`${base}/login`);
 const form = page.getByTestId('password-auth-form');
+const formVisible = await form.waitFor({ state: 'visible', timeout: 20000 }).then(() => true).catch(() => false);
+if (!formVisible) {
+  const b = page.getByRole('button', { name: /логином и паролем|password/i }).first();
+  if (await b.isVisible().catch(() => false)) await b.click();
+}
 await form.waitFor({ state: 'visible', timeout: 20000 });
 await form.locator('input[name="username"]').fill('e2e_admin');
 await form.locator('input[name="password"]').fill('e2e-local-admin-pass');

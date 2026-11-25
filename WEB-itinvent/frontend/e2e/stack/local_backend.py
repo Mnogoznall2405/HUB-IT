@@ -110,6 +110,12 @@ os.environ.update(
         "CHAT_SURFACE": "full",
         "HUBIT_RUNTIME_ROLE": "embedded",
         "JWT_SECRET_KEY": "e2e-local-jwt-secret-not-for-production",
+        # Login encrypts the session password via encrypt_secret(), which
+        # fails closed when MAIL_CREDENTIALS_KEY is unset. Test-only
+        # passphrase: outside production it is SHA-256-derived into a Fernet
+        # key; it decrypts only ciphertexts written inside this throwaway
+        # stack, never production values.
+        "MAIL_CREDENTIALS_KEY": "e2e-local-mail-key-not-for-production",
         "AUTH_COOKIE_SECURE": "false",
         # Background loops that would otherwise reach for LDAP / SQL Server /
         # external services — none of that exists in the test stack.
@@ -127,6 +133,15 @@ os.environ.update(
         "MAIL_MODULE_ENABLED": "0",
         "MAIL_NOTIFICATION_BACKGROUND_ENABLED": "0",
         "MY_FILES_INLINE_WORKER_ENABLED": "1" if os.environ.get("E2E_FILES_WORKER") == "1" else "0",
+        # Upload caps are production DoS guards: one spec seeds 30 files and a
+        # multi-spec run pushes hundreds through one user on loopback, while the
+        # worker drains the queue on a 1–5 s poll — at production values seeding
+        # stalls on 429 mid-loop. Lift them so seeds are deterministic.
+        "MY_FILES_UPLOAD_LIMIT_PER_USER": "2000",
+        "MY_FILES_UPLOAD_LIMIT_PER_IP": "2000",
+        "MY_FILES_MAX_UPLOADING_PER_USER": "10",
+        "MY_FILES_MAX_ACTIVE_JOBS_PER_USER": "200",
+        "MY_FILES_MAX_ACTIVE_JOBS_GLOBAL": "500",
         "WINDOWS_SSO_ENABLED": "0",
         # The seed users have no second factor; the browser login flow is the
         # contract under test, not the 2FA enrollment wizard. The root .env
