@@ -5,6 +5,7 @@ import io
 import importlib
 import json
 import os
+import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -136,6 +137,51 @@ def _make_tool_execution_context(*, enabled_tools: list[str], database_id: str =
             "allowed_databases": [],
         },
     )
+
+
+def _patch_ai_tool_database_catalog(monkeypatch) -> None:
+    """Make ITINVENT and OBJ-ITINVENT resolvable for AI tool database targeting.
+
+    The live catalog is built from env ``DB_<id>_HOST/DATABASE/USERNAME/PASSWORD``
+    and is empty in tests, so ``normalize_database_id`` rejects even ITINVENT and
+    the effective database silently degrades to ``config.database.database``.
+    ``context.py`` does ``from ... import get_all_db_configs`` — patch the name in
+    that module, not in ``backend.services.database_catalog``.
+    """
+    tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
+    monkeypatch.setattr(
+        tools_context_module,
+        "get_all_db_configs",
+        lambda: [
+            {"id": "ITINVENT", "name": "ITINVENT"},
+            {"id": "OBJ-ITINVENT", "name": "OBJ-ITINVENT"},
+        ],
+    )
+
+
+def _untrusted_section(prompt: str, heading: str, kind: str) -> str:
+    """Return the body of the untrusted block of ``kind`` introduced by ``heading``.
+
+    A3 hardening wraps attachments/tool results in nonce-delimited blocks:
+    ``<heading>\\n<<UNTRUSTED_<kind> nonce=N>>\\n<body>\\n<<END_UNTRUSTED_<kind> nonce=N>>``.
+    The block must open immediately after the heading and the closing marker must
+    carry the same nonce as the opening one — this asserts both the trust labelling
+    and the integrity of the delimiters, not just the presence of the content.
+    """
+    heading_index = prompt.find(heading)
+    assert heading_index >= 0, f"expected heading {heading!r} in prompt"
+    tail = prompt[heading_index + len(heading):]
+    match = re.match(
+        r"\n<<UNTRUSTED_" + re.escape(kind) + r" nonce=(?P<nonce>[^\s>]+)(?: source=[^\n>]*)?>>\n"
+        r"(?P<body>.*?)\n"
+        r"<<END_UNTRUSTED_" + re.escape(kind) + r" nonce=(?P=nonce)>>",
+        tail,
+        re.DOTALL,
+    )
+    assert match is not None, (
+        f"expected a well-formed <<UNTRUSTED_{kind}>> block with paired nonce right after {heading!r}"
+    )
+    return match.group("body")
 
 
 def test_chat_ai_catalog_is_available_with_baseline_permissions(tmp_path, monkeypatch):
@@ -1562,6 +1608,7 @@ def test_itinvent_transfer_draft_creates_pending_action_without_writing(tmp_path
 
 
 def test_ai_tool_admin_can_target_specific_database(monkeypatch):
+    _patch_ai_tool_database_catalog(monkeypatch)
     tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
     tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
 
@@ -1603,6 +1650,10 @@ def test_ai_tool_admin_can_target_specific_database(monkeypatch):
 
 
 def test_ai_tool_non_admin_cannot_override_database(monkeypatch):
+    # OBJ-ITINVENT must be a VALID catalog entry here: the override has to be
+    # refused because the user is not an admin, not because the database id is
+    # unknown to the test-runtime catalog.
+    _patch_ai_tool_database_catalog(monkeypatch)
     tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
 
     context = _make_tool_execution_context(enabled_tools=["itinvent.equipment.search"], database_id="ITINVENT")
@@ -3551,11 +3602,15 @@ def test_ai_run_prompt_keeps_attachment_metadata_when_extraction_is_empty(tmp_pa
 
     prompt = captured_prompt["user_prompt"]
     assert "Current user request:\nПроверь документ" in prompt
-    assert "Attached file context:\nSource: current message" in prompt
-    assert "File: request.pdf" in prompt
-    assert "MIME: application/pdf" in prompt
-    assert "Caption: Проверь документ" in prompt
-    assert "Extracted text: unavailable" in prompt
+    # A3: attachment metadata lives inside the nonce-delimited untrusted document
+    # block; nothing of it may leak into the trusted part of the prompt.
+    file_section = _untrusted_section(prompt, "Attached file content (untrusted data):", "document")
+    assert file_section.startswith("Source: current message")
+    assert "File: request.pdf" in file_section
+    assert "MIME: application/pdf" in file_section
+    assert "Size bytes:" in file_section
+    assert "Caption: Проверь документ" in file_section
+    assert "Extracted text: unavailable" in file_section
 
 
 def test_ai_run_prompt_uses_file_summary_when_caption_is_empty(tmp_path, monkeypatch):
@@ -3638,13 +3693,18 @@ def test_ai_run_prompt_uses_file_summary_when_caption_is_empty(tmp_path, monkeyp
 
     prompt = captured_prompt["user_prompt"]
     assert "Current user request:\nUser sent file: request.pdf." in prompt
-    assert "Attached file context:\nSource: current message" in prompt
-    assert "File: request.pdf" in prompt
-    assert "Extracted text: unavailable" in prompt
+    file_section = _untrusted_section(prompt, "Attached file content (untrusted data):", "document")
+    assert file_section.startswith("Source: current message")
+    assert "File: request.pdf" in file_section
+    assert "Extracted text: unavailable" in file_section
 
 
 def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_tools_runtime.db")
+    # OBJ-ITINVENT/ITINVENT must resolve as valid database ids; the live env
+    # catalog is empty under pytest and the id would silently degrade to the
+    # default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
 
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
     chat_service_module = importlib.import_module("backend.chat.service")
@@ -3784,7 +3844,13 @@ def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
     assert len(completion_calls) == 3
     assert completion_calls[2]["schema_name"] == completion_calls[1]["schema_name"]
     assert "itinvent.equipment.search" in completion_calls[0]["user_prompt"]
-    assert "Accumulated tool results JSON" in completion_calls[1]["user_prompt"]
+    tool_results_section = _untrusted_section(
+        completion_calls[1]["user_prompt"],
+        "Accumulated tool results (untrusted data):",
+        "tool_result",
+    )
+    assert '"tool_id": "itinvent.equipment.search"' in tool_results_section
+    assert '"database_id": "OBJ-ITINVENT"' in tool_results_section
     assert "matching the provided schema" in completion_calls[0]["system_prompt"]
     assert completion_calls[0]["schema_name"] == "ai_chat_response_with_tools"
     assert completion_calls[1]["schema_name"] == "ai_chat_response_with_tools"
@@ -3809,12 +3875,18 @@ def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
     assert serialized_runs[0]["effective_database_id"] == "OBJ-ITINVENT"
     assert serialized_runs[0]["tool_traces_count"] == 1
     assert serialized_runs[0]["tool_trace_errors_count"] == 0
-    assert "`itinvent.equipment.search`" in messages[-1].body
+    assert "WS-42" in messages[-1].body
+    assert "Ноутбук Lenovo" in messages[-1].body
+    # b07ee31d: internal tool ids must never leak into the user-facing fallback
+    assert "`itinvent.equipment.search`" not in messages[-1].body
     assert messages[-1].body.endswith("Источник: ITinvent / OBJ-ITINVENT")
 
 
 def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_chain.db")
+    # The chained queries must run against ITINVENT; without a catalog entry the
+    # id does not resolve and the run silently degrades to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
     chat_service_module = importlib.import_module("backend.chat.service")
     chat_db = importlib.import_module("backend.chat.db")
@@ -4019,10 +4091,19 @@ def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, mon
     ]
     assert len(completion_calls) == 3
     assert "structured detailed markdown answer in Russian" in completion_calls[0]["user_prompt"]
-    assert "Accumulated tool results JSON" in completion_calls[1]["user_prompt"]
-    assert '"owner_no": 501' in completion_calls[1]["user_prompt"]
-    assert "Accumulated tool results JSON" in completion_calls[2]["user_prompt"]
-    assert '"tool_id": "itinvent.employee.list_equipment"' in completion_calls[2]["user_prompt"]
+    round1_results_section = _untrusted_section(
+        completion_calls[1]["user_prompt"],
+        "Accumulated tool results (untrusted data):",
+        "tool_result",
+    )
+    assert '"owner_no": 501' in round1_results_section
+    round2_results_section = _untrusted_section(
+        completion_calls[2]["user_prompt"],
+        "Accumulated tool results (untrusted data):",
+        "tool_result",
+    )
+    assert '"owner_no": 501' in round2_results_section
+    assert '"tool_id": "itinvent.employee.list_equipment"' in round2_results_section
     assert completion_calls[0]["schema_name"] == "ai_chat_response_with_tools"
     assert completion_calls[2]["schema_name"] == "ai_chat_response_with_tools"
 
@@ -4054,6 +4135,8 @@ def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, mon
 
 def test_ai_chat_tools_chain_employee_search_equipment_report_format_choice(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_report_roundtrip.db")
+    # Same catalog dependency as the other tool-chain tests: ITINVENT must resolve.
+    _patch_ai_tool_database_catalog(monkeypatch)
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
     chat_service_module = importlib.import_module("backend.chat.service")
     chat_db = importlib.import_module("backend.chat.db")
@@ -4282,7 +4365,12 @@ def test_ai_chat_tools_chain_employee_search_equipment_report_format_choice(tmp_
         )
 
     assert len(completion_calls) == 4
-    assert "Accumulated tool results JSON" in completion_calls[2]["user_prompt"]
+    round2_results_section = _untrusted_section(
+        completion_calls[2]["user_prompt"],
+        "Accumulated tool results (untrusted data):",
+        "tool_result",
+    )
+    assert '"tool_id": "itinvent.employee.list_equipment"' in round2_results_section
     assert len(pending_actions) == 1
     action_id = pending_actions[0].id
     sheet_rows: list[int] = []
