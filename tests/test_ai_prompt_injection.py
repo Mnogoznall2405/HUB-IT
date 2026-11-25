@@ -605,8 +605,12 @@ class TestEndToEndInjectionPath:
         main = agent.prompts[0]
         assert "HIGHEST PRIORITY" not in main["user_prompt"]
         assert "UNTRUSTED" in main["system_prompt"]
-        assert "<<UNTRUSTED_document" in main["user_prompt"]
-        assert "<<UNTRUSTED_conversation_summary" in main["user_prompt"]
+        # This scenario has no attachments and no conversation summary yet.
+        # Empty untrusted placeholders must NOT be emitted (A9 conditional
+        # blocks save tokens); wrapping of real content is covered by the
+        # serializer tests and the source-level assembly invariants above.
+        assert "<<UNTRUSTED_document" not in main["user_prompt"]
+        assert "<<UNTRUSTED_conversation_summary" not in main["user_prompt"]
 
 
 # ---------------------------------------------------------------------------

@@ -203,6 +203,13 @@ const MAIL_UNREAD_REFRESH_TTL_MS = 20_000;
 const PUSH_FOREGROUND_NOTIFICATION_EVENT = 'itinvent:push-foreground-notification';
 const CONNECTION_RESTORED_STATUS_MS = 4_200;
 
+// Sidebar navigation is deferred 56 ms so the drawer-close animation can
+// start. The timer lives at module level on purpose: the shell remounts
+// during boot (suspense fallback, protected-route swap, layout registration),
+// and an instance-scoped timer would die with it — swallowing the user's
+// click and leaving the app on the old route until they click again.
+let pendingSidebarNavTimer = null;
+
 export function MainLayoutInner({
   children,
   headerMode = 'default',
@@ -296,7 +303,6 @@ export function MainLayoutInner({
   const [topBannerOffset, setTopBannerOffset] = useState(0);
   const [appBarHeight, setAppBarHeight] = useState(0);
   const notificationsOpenRef = useRef(false);
-  const pendingNavigationTimerRef = useRef(null);
   const pendingNavigationTimeoutRef = useRef(null);
   const unreadCountsRef = useRef(unreadCounts);
   const databaseMetaLoadedRef = useRef(false);
@@ -598,10 +604,9 @@ export function MainLayoutInner({
   useEffect(() => subscribePwaInstallState(setPwaState), []);
 
   useEffect(() => () => {
-    if (pendingNavigationTimerRef.current) {
-      window.clearTimeout(pendingNavigationTimerRef.current);
-      pendingNavigationTimerRef.current = null;
-    }
+    // Deliberately NOT clearing pendingSidebarNavTimer here: the pending
+    // navigation is a user intent and must fire even if this shell instance
+    // is replaced before the 56 ms defer elapses.
     if (pendingNavigationTimeoutRef.current) {
       window.clearTimeout(pendingNavigationTimeoutRef.current);
       pendingNavigationTimeoutRef.current = null;
@@ -1879,9 +1884,9 @@ useEffect(() => {
       return;
     }
 
-    if (pendingNavigationTimerRef.current) {
-      window.clearTimeout(pendingNavigationTimerRef.current);
-      pendingNavigationTimerRef.current = null;
+    if (pendingSidebarNavTimer) {
+      window.clearTimeout(pendingSidebarNavTimer);
+      pendingSidebarNavTimer = null;
     }
     if (pendingNavigationTimeoutRef.current) {
       window.clearTimeout(pendingNavigationTimeoutRef.current);
@@ -1896,9 +1901,9 @@ useEffect(() => {
     });
     setDrawerOpen(false);
 
-    pendingNavigationTimerRef.current = window.setTimeout(() => {
+    pendingSidebarNavTimer = window.setTimeout(() => {
+      pendingSidebarNavTimer = null;
       navigate(targetPath);
-      pendingNavigationTimerRef.current = null;
     }, 56);
     pendingNavigationTimeoutRef.current = window.setTimeout(() => {
       setPendingNavigation(null);

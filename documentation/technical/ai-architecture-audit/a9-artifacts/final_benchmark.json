@@ -1,0 +1,1897 @@
+{
+  "title": "A9/A10 final benchmark — unified artifact",
+  "env_consistency_issues": [],
+  "configs": {
+    "A": {
+      "desc": "upstream main (baseline)",
+      "file": "real_run_fin_A.json",
+      "code_sha": "926dd9f542d578a156ee7239549caf041d38da21",
+      "model": "google/gemini-3.7-flash",
+      "provider": "routerai",
+      "flags": {
+        "AI_JEV_ROUTING": "1",
+        "AI_PERSONAL_MEMORY_ENABLED": "1",
+        "AI_PROMPT_OPTIMIZATION_ENABLED": "0",
+        "AI_RUN_WATCHDOG_ENABLED": "1",
+        "AI_SANDBOX_ENABLED": "0",
+        "AI_SANDBOX_RETENTION_ENABLED": "1",
+        "AI_SUMMARY_BACKGROUND_ENABLED": "0"
+      },
+      "corpus_sha256": "36e3bc85f7b86792f71c1a0df432dc0e2616851cc49273b96d3d61fb798063af",
+      "seed_sha256": "c930397f10e506907043bfcc9b78678a5bf684504a56ada17b8120d2e1427978",
+      "scenarios": 18,
+      "correctness": {
+        "PASS": 15,
+        "FAIL": 3,
+        "NO_CHECK": 0
+      },
+      "llm_calls_total": 65,
+      "jev_calls_total": 18,
+      "tool_calls_total": 47,
+      "tokens_in_total": 370577,
+      "tokens_out_total": 36062,
+      "wall_ms_total": 1427760,
+      "pass_only": {
+        "n": 15,
+        "wall_ms_p50": 84950.0,
+        "wall_ms_p95": 119988.8,
+        "llm_calls_p50": 3.0,
+        "llm_calls_p95": 6.6,
+        "tokens_in_p50": 14339.0,
+        "tokens_in_p95": 44379.8
+      },
+      "fail_scenarios": [
+        "sd_ann_01",
+        "sd_files_01",
+        "sd_acl_scopeall"
+      ]
+    },
+    "B": {
+      "desc": "A9 ON (A10 flags OFF)",
+      "file": "real_run_fin_a9on.json",
+      "code_sha": "93896142ffa9e1e4480e96159f99c0f2fb15674b",
+      "model": "google/gemini-3.7-flash",
+      "provider": "routerai",
+      "flags": {
+        "AI_JEV_ROUTING": "1",
+        "AI_PERSONAL_MEMORY_ENABLED": "1",
+        "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+        "AI_RUN_WATCHDOG_ENABLED": "1",
+        "AI_SANDBOX_ENABLED": "0",
+        "AI_SANDBOX_RETENTION_ENABLED": "1",
+        "AI_SUMMARY_BACKGROUND_ENABLED": "0"
+      },
+      "corpus_sha256": "36e3bc85f7b86792f71c1a0df432dc0e2616851cc49273b96d3d61fb798063af",
+      "seed_sha256": "c930397f10e506907043bfcc9b78678a5bf684504a56ada17b8120d2e1427978",
+      "scenarios": 18,
+      "correctness": {
+        "PASS": 11,
+        "FAIL": 7,
+        "NO_CHECK": 0
+      },
+      "llm_calls_total": 61,
+      "jev_calls_total": 18,
+      "tool_calls_total": 38,
+      "tokens_in_total": 245427,
+      "tokens_out_total": 42457,
+      "wall_ms_total": 944744,
+      "pass_only": {
+        "n": 11,
+        "wall_ms_p50": 29993.0,
+        "wall_ms_p95": 53876.5,
+        "llm_calls_p50": 3.0,
+        "llm_calls_p95": 4.0,
+        "tokens_in_p50": 10147.0,
+        "tokens_in_p95": 15298.5
+      },
+      "fail_scenarios": [
+        "sd_tasks_01",
+        "sd_dir_01",
+        "sd_dir_02",
+        "sd_tasks_02",
+        "sd_ann_01",
+        "sd_files_01",
+        "sd_direct_cmp"
+      ]
+    },
+    "D": {
+      "desc": "B + READ fast path",
+      "file": "real_run_fin_fastpath.json",
+      "code_sha": "93896142ffa9e1e4480e96159f99c0f2fb15674b",
+      "model": "google/gemini-3.7-flash",
+      "provider": "routerai",
+      "flags": {
+        "AI_JEV_ROUTING": "1",
+        "AI_PERSONAL_MEMORY_ENABLED": "1",
+        "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+        "AI_READ_FAST_PATH_ENABLED": "1",
+        "AI_RUN_WATCHDOG_ENABLED": "1",
+        "AI_SANDBOX_ENABLED": "0",
+        "AI_SANDBOX_RETENTION_ENABLED": "1",
+        "AI_SUMMARY_BACKGROUND_ENABLED": "0"
+      },
+      "corpus_sha256": "36e3bc85f7b86792f71c1a0df432dc0e2616851cc49273b96d3d61fb798063af",
+      "seed_sha256": "c930397f10e506907043bfcc9b78678a5bf684504a56ada17b8120d2e1427978",
+      "scenarios": 18,
+      "correctness": {
+        "PASS": 12,
+        "FAIL": 6,
+        "NO_CHECK": 0
+      },
+      "llm_calls_total": 49,
+      "jev_calls_total": 18,
+      "tool_calls_total": 38,
+      "tokens_in_total": 206394,
+      "tokens_out_total": 21257,
+      "wall_ms_total": 572369,
+      "pass_only": {
+        "n": 12,
+        "wall_ms_p50": 18177.5,
+        "wall_ms_p95": 89687.7,
+        "llm_calls_p50": 2.0,
+        "llm_calls_p95": 5.3,
+        "tokens_in_p50": 7490.5,
+        "tokens_in_p95": 30451.1
+      },
+      "fail_scenarios": [
+        "sd_tasks_01",
+        "sd_dir_01",
+        "sd_dir_02",
+        "sd_tasks_02",
+        "sd_emp_dept",
+        "sd_files_01"
+      ]
+    },
+    "E": {
+      "desc": "D + direct read",
+      "file": "real_run_fin_directread.json",
+      "code_sha": "93896142ffa9e1e4480e96159f99c0f2fb15674b",
+      "model": "google/gemini-3.7-flash",
+      "provider": "routerai",
+      "flags": {
+        "AI_DIRECT_READ_ENABLED": "1",
+        "AI_JEV_ROUTING": "1",
+        "AI_PERSONAL_MEMORY_ENABLED": "1",
+        "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+        "AI_READ_FAST_PATH_ENABLED": "1",
+        "AI_RUN_WATCHDOG_ENABLED": "1",
+        "AI_SANDBOX_ENABLED": "0",
+        "AI_SANDBOX_RETENTION_ENABLED": "1",
+        "AI_SUMMARY_BACKGROUND_ENABLED": "0"
+      },
+      "corpus_sha256": "36e3bc85f7b86792f71c1a0df432dc0e2616851cc49273b96d3d61fb798063af",
+      "seed_sha256": "c930397f10e506907043bfcc9b78678a5bf684504a56ada17b8120d2e1427978",
+      "scenarios": 18,
+      "correctness": {
+        "PASS": 16,
+        "FAIL": 2,
+        "NO_CHECK": 0
+      },
+      "llm_calls_total": 41,
+      "jev_calls_total": 18,
+      "tool_calls_total": 28,
+      "tokens_in_total": 157046,
+      "tokens_out_total": 16365,
+      "wall_ms_total": 236451,
+      "pass_only": {
+        "n": 16,
+        "wall_ms_p50": 10071.0,
+        "wall_ms_p95": 21290.0,
+        "llm_calls_p50": 2.0,
+        "llm_calls_p95": 3.2,
+        "tokens_in_p50": 6964.0,
+        "tokens_in_p95": 16079.2
+      },
+      "fail_scenarios": [
+        "sd_ann_01",
+        "sd_files_01"
+      ]
+    },
+    "F": {
+      "desc": "E + memory planner opt",
+      "file": "real_run_fin_planner.json",
+      "code_sha": "93896142ffa9e1e4480e96159f99c0f2fb15674b",
+      "model": "google/gemini-3.7-flash",
+      "provider": "routerai",
+      "flags": {
+        "AI_DIRECT_READ_ENABLED": "1",
+        "AI_JEV_ROUTING": "1",
+        "AI_MEMORY_PLANNER_OPTIMIZATION_ENABLED": "1",
+        "AI_PERSONAL_MEMORY_ENABLED": "1",
+        "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+        "AI_READ_FAST_PATH_ENABLED": "1",
+        "AI_RUN_WATCHDOG_ENABLED": "1",
+        "AI_SANDBOX_ENABLED": "0",
+        "AI_SANDBOX_RETENTION_ENABLED": "1",
+        "AI_SUMMARY_BACKGROUND_ENABLED": "0"
+      },
+      "corpus_sha256": "36e3bc85f7b86792f71c1a0df432dc0e2616851cc49273b96d3d61fb798063af",
+      "seed_sha256": "c930397f10e506907043bfcc9b78678a5bf684504a56ada17b8120d2e1427978",
+      "scenarios": 18,
+      "correctness": {
+        "PASS": 16,
+        "FAIL": 2,
+        "NO_CHECK": 0
+      },
+      "llm_calls_total": 36,
+      "jev_calls_total": 18,
+      "tool_calls_total": 29,
+      "tokens_in_total": 155040,
+      "tokens_out_total": 14822,
+      "wall_ms_total": 229513,
+      "pass_only": {
+        "n": 16,
+        "wall_ms_p50": 9747.5,
+        "wall_ms_p95": 25516.2,
+        "llm_calls_p50": 2.0,
+        "llm_calls_p95": 4.0,
+        "tokens_in_p50": 6640.5,
+        "tokens_in_p95": 18323.5
+      },
+      "fail_scenarios": [
+        "sd_ann_01",
+        "sd_files_01"
+      ]
+    },
+    "G": {
+      "desc": "F + result reuse",
+      "file": "real_run_fin_all.json",
+      "code_sha": "93896142ffa9e1e4480e96159f99c0f2fb15674b",
+      "model": "google/gemini-3.7-flash",
+      "provider": "routerai",
+      "flags": {
+        "AI_DIRECT_READ_ENABLED": "1",
+        "AI_JEV_ROUTING": "1",
+        "AI_MEMORY_PLANNER_OPTIMIZATION_ENABLED": "1",
+        "AI_PERSONAL_MEMORY_ENABLED": "1",
+        "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+        "AI_READ_FAST_PATH_ENABLED": "1",
+        "AI_RUN_RESULT_REUSE_ENABLED": "1",
+        "AI_RUN_WATCHDOG_ENABLED": "1",
+        "AI_SANDBOX_ENABLED": "0",
+        "AI_SANDBOX_RETENTION_ENABLED": "1",
+        "AI_SUMMARY_BACKGROUND_ENABLED": "0"
+      },
+      "corpus_sha256": "36e3bc85f7b86792f71c1a0df432dc0e2616851cc49273b96d3d61fb798063af",
+      "seed_sha256": "c930397f10e506907043bfcc9b78678a5bf684504a56ada17b8120d2e1427978",
+      "scenarios": 18,
+      "correctness": {
+        "PASS": 16,
+        "FAIL": 2,
+        "NO_CHECK": 0
+      },
+      "llm_calls_total": 36,
+      "jev_calls_total": 18,
+      "tool_calls_total": 29,
+      "tokens_in_total": 154892,
+      "tokens_out_total": 14701,
+      "wall_ms_total": 247581,
+      "pass_only": {
+        "n": 16,
+        "wall_ms_p50": 12802.5,
+        "wall_ms_p95": 21883.8,
+        "llm_calls_p50": 2.0,
+        "llm_calls_p95": 3.2,
+        "tokens_in_p50": 6640.5,
+        "tokens_in_p95": 16179.0
+      },
+      "fail_scenarios": [
+        "sd_ann_01",
+        "sd_files_01"
+      ]
+    }
+  },
+  "scenario_matrix": {
+    "sd_tasks_01": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 49144,
+        "tokens_in": 10930,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 41225,
+        "tokens_in": 9742,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": [
+          "tool_result_total: want 8, got [10]"
+        ]
+      },
+      "D": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 53141,
+        "tokens_in": 3721,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": [
+          "tool_result_total: want 8, got [10]"
+        ]
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 5515,
+        "tokens_in": 621,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 4417,
+        "tokens_in": 621,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 4631,
+        "tokens_in": 621,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_dir_01": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 40802,
+        "tokens_in": 20928,
+        "tools": [
+          "itinvent.user.by_name",
+          "itinvent.employee.search",
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "FAIL",
+        "outcome": "degraded",
+        "llm_calls": 2,
+        "wall_ms": 17631,
+        "tokens_in": 12144,
+        "tools": [
+          "itinvent.user.by_name"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "FAIL",
+        "outcome": "degraded",
+        "llm_calls": 4,
+        "wall_ms": 41867,
+        "tokens_in": 26238,
+        "tools": [
+          "itinvent.user.by_name",
+          "itinvent.employee.search",
+          "directory.people.search",
+          "itinvent.user.by_name",
+          "itinvent.employee.search"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 13649,
+        "tokens_in": 13051,
+        "tools": [
+          "itinvent.employee.search",
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 14046,
+        "tokens_in": 13043,
+        "tools": [
+          "itinvent.employee.search",
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 12250,
+        "tokens_in": 13026,
+        "tools": [
+          "itinvent.user.by_name",
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_dir_02": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 18538,
+        "tokens_in": 14339,
+        "tools": [
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "FAIL",
+        "outcome": "degraded",
+        "llm_calls": 4,
+        "wall_ms": 45582,
+        "tokens_in": 25021,
+        "tools": [
+          "directory.people.search",
+          "directory.people.search",
+          "itinvent.user.by_name",
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "FAIL",
+        "outcome": "degraded",
+        "llm_calls": 2,
+        "wall_ms": 28665,
+        "tokens_in": 12229,
+        "tools": [
+          "directory.people.search",
+          "itinvent.user.by_name"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 11869,
+        "tokens_in": 13891,
+        "tools": [
+          "directory.people.search",
+          "itinvent.user.by_name"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 10692,
+        "tokens_in": 13789,
+        "tools": [
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 13355,
+        "tokens_in": 13781,
+        "tools": [
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_tasks_02": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 23348,
+        "tokens_in": 9626,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 37420,
+        "tokens_in": 9741,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": [
+          "tool_result_total: want 2, got [10]"
+        ]
+      },
+      "D": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 47273,
+        "tokens_in": 3725,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": [
+          "tool_result_total: want 2, got [10]"
+        ]
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 8130,
+        "tokens_in": 4425,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 8442,
+        "tokens_in": 4425,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 9556,
+        "tokens_in": 4423,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_ann_01": {
+      "A": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 4,
+        "wall_ms": 111312,
+        "tokens_in": 19357,
+        "tools": [
+          "ai.request_tool_group",
+          "ai.request_tool_group",
+          "kb.articles.search",
+          "kb.articles.search",
+          "chat.conversations.search",
+          "ai.request_tool_group"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 125932,
+        "tokens_in": 11738,
+        "tools": [
+          "ai.request_tool_group",
+          "kb.categories.list",
+          "kb.articles.search",
+          "kb.articles.search"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 62960,
+        "tokens_in": 8949,
+        "tools": [
+          "office.announcements.list"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 4,
+        "wall_ms": 23464,
+        "tokens_in": 16372,
+        "tools": [
+          "ai.request_tool_group",
+          "kb.articles.search",
+          "kb.categories.list"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 18316,
+        "tokens_in": 12063,
+        "tools": [
+          "ai.request_tool_group",
+          "kb.articles.search",
+          "kb.categories.list"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 4,
+        "wall_ms": 25348,
+        "tokens_in": 16433,
+        "tools": [
+          "ai.request_tool_group",
+          "kb.articles.search",
+          "kb.categories.list",
+          "kb.articles.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_direct_neg": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 69433,
+        "tokens_in": 7619,
+        "tools": [],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 27480,
+        "tokens_in": 6931,
+        "tools": [],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 43254,
+        "tokens_in": 6373,
+        "tools": [],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 10411,
+        "tokens_in": 7077,
+        "tools": [],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 9547,
+        "tokens_in": 7077,
+        "tools": [],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 16444,
+        "tokens_in": 7073,
+        "tools": [],
+        "expect_failures": []
+      }
+    },
+    "sd_emp_dept": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 84950,
+        "tokens_in": 14344,
+        "tools": [
+          "itinvent.employee.search",
+          "itinvent.user.by_name",
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 45111,
+        "tokens_in": 13458,
+        "tools": [
+          "itinvent.user.by_name",
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "FAIL",
+        "outcome": "degraded",
+        "llm_calls": 3,
+        "wall_ms": 35195,
+        "tokens_in": 12035,
+        "tools": [
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 17673,
+        "tokens_in": 13423,
+        "tools": [
+          "directory.people.search",
+          "itinvent.user.by_name"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 15052,
+        "tokens_in": 13029,
+        "tools": [
+          "directory.people.search",
+          "itinvent.user.by_name"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 17638,
+        "tokens_in": 13062,
+        "tools": [
+          "directory.people.search",
+          "itinvent.employee.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_emp_phone2": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 124368,
+        "tokens_in": 14105,
+        "tools": [
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 26940,
+        "tokens_in": 13317,
+        "tools": [
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "PASS",
+        "outcome": "degraded",
+        "llm_calls": 7,
+        "wall_ms": 122355,
+        "tokens_in": 40267,
+        "tools": [
+          "directory.people.search",
+          "itinvent.user.by_name",
+          "directory.people.search",
+          "directory.people.search",
+          "itinvent.user.by_name",
+          "directory.people.search",
+          "directory.people.search",
+          "itinvent.user.by_name"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 9731,
+        "tokens_in": 6851,
+        "tools": [
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 9948,
+        "tokens_in": 6204,
+        "tools": [
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 5596,
+        "tokens_in": 6208,
+        "tools": [
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_org_01": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 5,
+        "wall_ms": 106227,
+        "tokens_in": 29393,
+        "tools": [
+          "ai.request_tool_group",
+          "ai.request_tool_group",
+          "directory.people.search",
+          "directory.department.get"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 29704,
+        "tokens_in": 8344,
+        "tools": [
+          "directory.people.search",
+          "directory.department.get"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 21722,
+        "tokens_in": 8608,
+        "tools": [
+          "directory.department.get",
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 17792,
+        "tokens_in": 8607,
+        "tools": [
+          "directory.people.search",
+          "directory.department.get"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 17941,
+        "tokens_in": 7913,
+        "tools": [
+          "directory.people.search",
+          "directory.department.get"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 14365,
+        "tokens_in": 7897,
+        "tools": [
+          "directory.people.search",
+          "directory.department.get"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_tasks_status": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 107275,
+        "tokens_in": 10402,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 25477,
+        "tokens_in": 9440,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 8743,
+        "tokens_in": 4488,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 9639,
+        "tokens_in": 4480,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 9424,
+        "tokens_in": 4481,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 16239,
+        "tokens_in": 4491,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_kb_01": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 6,
+        "wall_ms": 101243,
+        "tokens_in": 20357,
+        "tools": [
+          "kb.articles.search",
+          "kb.articles.search",
+          "kb.articles.search",
+          "kb.articles.search",
+          "kb.articles.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 4,
+        "wall_ms": 45673,
+        "tokens_in": 10147,
+        "tools": [
+          "kb.articles.search",
+          "kb.articles.search"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 7320,
+        "tokens_in": 3859,
+        "tools": [
+          "kb.articles.search"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 7930,
+        "tokens_in": 3863,
+        "tools": [
+          "kb.articles.search"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 4129,
+        "tokens_in": 3150,
+        "tools": [
+          "kb.articles.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 4539,
+        "tokens_in": 3154,
+        "tools": [
+          "kb.articles.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_files_01": {
+      "A": {
+        "correctness": "FAIL",
+        "outcome": "degraded",
+        "llm_calls": 4,
+        "wall_ms": 102269,
+        "tokens_in": 24182,
+        "tools": [
+          "ai.request_tool_group",
+          "ai.request_tool_group",
+          "office.mail.search",
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 9,
+        "wall_ms": 166240,
+        "tokens_in": 25558,
+        "tools": [
+          "ai.request_tool_group",
+          "ai.request_tool_group",
+          "ai.request_tool_group",
+          "ai.request_tool_group",
+          "ai.request_tool_group",
+          "ai.request_tool_group"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 17416,
+        "tokens_in": 8704,
+        "tools": [
+          "ai.request_tool_group"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 20178,
+        "tokens_in": 8704,
+        "tools": [
+          "ai.request_tool_group"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 25546,
+        "tokens_in": 8701,
+        "tools": [
+          "ai.request_tool_group"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "FAIL",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 23848,
+        "tokens_in": 8705,
+        "tools": [
+          "ai.request_tool_group"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_acl_meonly": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 118112,
+        "tokens_in": 12213,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 29993,
+        "tokens_in": 10110,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 4856,
+        "tokens_in": 3602,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 6545,
+        "tokens_in": 3604,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 4267,
+        "tokens_in": 3604,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 4241,
+        "tokens_in": 3602,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_acl_scopeall": {
+      "A": {
+        "correctness": "FAIL",
+        "outcome": "degraded",
+        "llm_calls": 3,
+        "wall_ms": 31726,
+        "tokens_in": 29356,
+        "tools": [
+          "office.tasks.search",
+          "office.tasks.search"
+        ],
+        "expect_failures": [
+          "scope_downgraded: want True for scope=all calls, got False"
+        ]
+      },
+      "B": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 40272,
+        "tokens_in": 10101,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 6302,
+        "tokens_in": 3616,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 3915,
+        "tokens_in": 3614,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 5140,
+        "tokens_in": 3616,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 9726,
+        "tokens_in": 3614,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_acl_foreign": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "degraded",
+        "llm_calls": 8,
+        "wall_ms": 71684,
+        "tokens_in": 79349,
+        "tools": [
+          "office.tasks.search",
+          "office.tasks.search",
+          "office.tasks.search",
+          "office.tasks.search",
+          "office.tasks.search",
+          "office.tasks.search",
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 21655,
+        "tokens_in": 10161,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 15287,
+        "tokens_in": 15703,
+        "tools": [
+          "office.tasks.search",
+          "office.tasks.search",
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 18067,
+        "tokens_in": 15488,
+        "tools": [
+          "office.tasks.search",
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 4,
+        "wall_ms": 25398,
+        "tokens_in": 20158,
+        "tools": [
+          "office.tasks.search",
+          "office.tasks.search",
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 19781,
+        "tokens_in": 15696,
+        "tools": [
+          "office.tasks.search",
+          "office.tasks.search",
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_acl_tasks": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 95484,
+        "tokens_in": 13158,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 50024,
+        "tokens_in": 10385,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 9110,
+        "tokens_in": 4213,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 7419,
+        "tokens_in": 617,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 3935,
+        "tokens_in": 617,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 1,
+        "wall_ms": 4168,
+        "tokens_in": 617,
+        "tools": [
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_direct_cmp": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 68099,
+        "tokens_in": 16484,
+        "tools": [
+          "directory.people.search",
+          "directory.people.search",
+          "itinvent.employee.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "FAIL",
+        "outcome": "degraded",
+        "llm_calls": 6,
+        "wall_ms": 110656,
+        "tokens_in": 31950,
+        "tools": [
+          "directory.people.search",
+          "itinvent.employee.search",
+          "directory.people.search",
+          "itinvent.employee.search",
+          "itinvent.employee.search",
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 4,
+        "wall_ms": 25835,
+        "tokens_in": 22420,
+        "tools": [
+          "itinvent.employee.search",
+          "itinvent.employee.search",
+          "directory.people.search",
+          "directory.people.search",
+          "itinvent.equipment.search_universal"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 3,
+        "wall_ms": 20318,
+        "tokens_in": 14505,
+        "tools": [
+          "itinvent.employee.search",
+          "itinvent.employee.search",
+          "directory.people.search"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 17402,
+        "tokens_in": 14837,
+        "tools": [
+          "directory.people.search",
+          "directory.people.search",
+          "itinvent.employee.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 2,
+        "wall_ms": 17664,
+        "tokens_in": 14861,
+        "tools": [
+          "directory.people.search",
+          "directory.people.search",
+          "itinvent.employee.search"
+        ],
+        "expect_failures": []
+      }
+    },
+    "sd_direct_why": {
+      "A": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 5,
+        "wall_ms": 103746,
+        "tokens_in": 24435,
+        "tools": [
+          "kb.articles.search",
+          "office.tasks.projects",
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "B": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 4,
+        "wall_ms": 57729,
+        "tokens_in": 17139,
+        "tools": [
+          "kb.articles.search",
+          "office.tasks.projects",
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "D": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 4,
+        "wall_ms": 21068,
+        "tokens_in": 17644,
+        "tools": [
+          "kb.articles.search",
+          "office.tasks.projects",
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "E": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 4,
+        "wall_ms": 24206,
+        "tokens_in": 17853,
+        "tools": [
+          "kb.articles.search",
+          "office.tasks.projects",
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      },
+      "F": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 4,
+        "wall_ms": 25871,
+        "tokens_in": 17712,
+        "tools": [
+          "kb.articles.search",
+          "office.tasks.projects",
+          "office.tasks.search",
+          "kb.articles.search"
+        ],
+        "expect_failures": []
+      },
+      "G": {
+        "correctness": "PASS",
+        "outcome": "completed",
+        "llm_calls": 4,
+        "wall_ms": 28192,
+        "tokens_in": 17628,
+        "tools": [
+          "kb.articles.search",
+          "office.tasks.projects",
+          "office.tasks.search"
+        ],
+        "expect_failures": []
+      }
+    }
+  },
+  "f_vs_g": {
+    "shared_scenarios": [
+      "sd_acl_foreign",
+      "sd_acl_meonly",
+      "sd_acl_scopeall",
+      "sd_acl_tasks",
+      "sd_ann_01",
+      "sd_dir_01",
+      "sd_dir_02",
+      "sd_direct_cmp",
+      "sd_direct_neg",
+      "sd_direct_why",
+      "sd_emp_dept",
+      "sd_emp_phone2",
+      "sd_files_01",
+      "sd_kb_01",
+      "sd_org_01",
+      "sd_tasks_01",
+      "sd_tasks_02",
+      "sd_tasks_status"
+    ],
+    "f_only": [],
+    "g_only": [],
+    "per_scenario": {
+      "sd_acl_foreign": {
+        "F": {
+          "llm_calls": 4,
+          "tokens_in": 20158,
+          "wall_ms": 25398,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 3,
+          "tokens_in": 15696,
+          "wall_ms": 19781,
+          "correctness": "PASS"
+        }
+      },
+      "sd_acl_meonly": {
+        "F": {
+          "llm_calls": 1,
+          "tokens_in": 3604,
+          "wall_ms": 4267,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 1,
+          "tokens_in": 3602,
+          "wall_ms": 4241,
+          "correctness": "PASS"
+        }
+      },
+      "sd_acl_scopeall": {
+        "F": {
+          "llm_calls": 1,
+          "tokens_in": 3616,
+          "wall_ms": 5140,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 1,
+          "tokens_in": 3614,
+          "wall_ms": 9726,
+          "correctness": "PASS"
+        }
+      },
+      "sd_acl_tasks": {
+        "F": {
+          "llm_calls": 1,
+          "tokens_in": 617,
+          "wall_ms": 3935,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 1,
+          "tokens_in": 617,
+          "wall_ms": 4168,
+          "correctness": "PASS"
+        }
+      },
+      "sd_ann_01": {
+        "F": {
+          "llm_calls": 3,
+          "tokens_in": 12063,
+          "wall_ms": 18316,
+          "correctness": "FAIL"
+        },
+        "G": {
+          "llm_calls": 4,
+          "tokens_in": 16433,
+          "wall_ms": 25348,
+          "correctness": "FAIL"
+        }
+      },
+      "sd_dir_01": {
+        "F": {
+          "llm_calls": 2,
+          "tokens_in": 13043,
+          "wall_ms": 14046,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 2,
+          "tokens_in": 13026,
+          "wall_ms": 12250,
+          "correctness": "PASS"
+        }
+      },
+      "sd_dir_02": {
+        "F": {
+          "llm_calls": 2,
+          "tokens_in": 13789,
+          "wall_ms": 10692,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 2,
+          "tokens_in": 13781,
+          "wall_ms": 13355,
+          "correctness": "PASS"
+        }
+      },
+      "sd_direct_cmp": {
+        "F": {
+          "llm_calls": 2,
+          "tokens_in": 14837,
+          "wall_ms": 17402,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 2,
+          "tokens_in": 14861,
+          "wall_ms": 17664,
+          "correctness": "PASS"
+        }
+      },
+      "sd_direct_neg": {
+        "F": {
+          "llm_calls": 2,
+          "tokens_in": 7077,
+          "wall_ms": 9547,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 2,
+          "tokens_in": 7073,
+          "wall_ms": 16444,
+          "correctness": "PASS"
+        }
+      },
+      "sd_direct_why": {
+        "F": {
+          "llm_calls": 4,
+          "tokens_in": 17712,
+          "wall_ms": 25871,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 4,
+          "tokens_in": 17628,
+          "wall_ms": 28192,
+          "correctness": "PASS"
+        }
+      },
+      "sd_emp_dept": {
+        "F": {
+          "llm_calls": 2,
+          "tokens_in": 13029,
+          "wall_ms": 15052,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 2,
+          "tokens_in": 13062,
+          "wall_ms": 17638,
+          "correctness": "PASS"
+        }
+      },
+      "sd_emp_phone2": {
+        "F": {
+          "llm_calls": 1,
+          "tokens_in": 6204,
+          "wall_ms": 9948,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 1,
+          "tokens_in": 6208,
+          "wall_ms": 5596,
+          "correctness": "PASS"
+        }
+      },
+      "sd_files_01": {
+        "F": {
+          "llm_calls": 3,
+          "tokens_in": 8701,
+          "wall_ms": 25546,
+          "correctness": "FAIL"
+        },
+        "G": {
+          "llm_calls": 3,
+          "tokens_in": 8705,
+          "wall_ms": 23848,
+          "correctness": "FAIL"
+        }
+      },
+      "sd_kb_01": {
+        "F": {
+          "llm_calls": 1,
+          "tokens_in": 3150,
+          "wall_ms": 4129,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 1,
+          "tokens_in": 3154,
+          "wall_ms": 4539,
+          "correctness": "PASS"
+        }
+      },
+      "sd_org_01": {
+        "F": {
+          "llm_calls": 2,
+          "tokens_in": 7913,
+          "wall_ms": 17941,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 2,
+          "tokens_in": 7897,
+          "wall_ms": 14365,
+          "correctness": "PASS"
+        }
+      },
+      "sd_tasks_01": {
+        "F": {
+          "llm_calls": 1,
+          "tokens_in": 621,
+          "wall_ms": 4417,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 1,
+          "tokens_in": 621,
+          "wall_ms": 4631,
+          "correctness": "PASS"
+        }
+      },
+      "sd_tasks_02": {
+        "F": {
+          "llm_calls": 2,
+          "tokens_in": 4425,
+          "wall_ms": 8442,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 2,
+          "tokens_in": 4423,
+          "wall_ms": 9556,
+          "correctness": "PASS"
+        }
+      },
+      "sd_tasks_status": {
+        "F": {
+          "llm_calls": 2,
+          "tokens_in": 4481,
+          "wall_ms": 9424,
+          "correctness": "PASS"
+        },
+        "G": {
+          "llm_calls": 2,
+          "tokens_in": 4491,
+          "wall_ms": 16239,
+          "correctness": "PASS"
+        }
+      }
+    },
+    "reuse_wins": [
+      "sd_acl_foreign"
+    ]
+  },
+  "note": "pass_only percentiles exclude FAIL/NO_CHECK so wrong answers are never counted as optimization."
+}

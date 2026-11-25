@@ -1,0 +1,853 @@
+{
+  "env": {
+    "AI_JEV_ROUTING": "1",
+    "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+    "AI_SUMMARY_BACKGROUND_ENABLED": "0",
+    "ROUTERAI_MODEL": "google/gemini-3.7-flash",
+    "JEV_MODEL": "(default)",
+    "env_keys_loaded": 449,
+    "registered_tools": 100,
+    "code_root": "C:\\Project\\HUB-IT-a9-wt"
+  },
+  "scenarios": [
+    {
+      "id": "act_01",
+      "category": "ACT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 2387,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.86
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.24
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.17
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.99
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.73
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "directory.people.search",
+        "office.action.mail_send_draft"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3465,
+        "est_in": 3728
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000138726
+      },
+      "answer_len": 50,
+      "answer_head": "Создай черновик письма Иванову о передаче принтера",
+      "result_message": true
+    },
+    {
+      "id": "act_02",
+      "category": "ACT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 962,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.62
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "ai.files.report",
+        "itinvent.equipment.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3451,
+        "est_in": 3536
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000138138
+      },
+      "answer_len": 46,
+      "answer_head": "Сгенерируй Excel-отчёт по оборудованию филиала",
+      "result_message": true
+    },
+    {
+      "id": "act_03",
+      "category": "ACT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 625,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.96
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.58
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.72
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.93
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "directory.people.search",
+        "office.action.task_create_draft"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3455,
+        "est_in": 4471
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000138306
+      },
+      "answer_len": 54,
+      "answer_head": "Поставь задачу Петрову: проверить картриджи до пятницы",
+      "result_message": true
+    },
+    {
+      "id": "act_04",
+      "category": "ACT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 863,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.77
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.97
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.17
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "ai.files.create",
+        "itinvent.equipment.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3427,
+        "est_in": 3529
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013713
+      },
+      "answer_len": 36,
+      "answer_head": "Создай файл CSV со списком принтеров",
+      "result_message": true
+    },
+    {
+      "id": "act_05",
+      "category": "ACT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 788,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.5
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.67
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.87
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.19
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "chat.action.message_send_draft",
+        "directory.people.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3461,
+        "est_in": 4466
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000138558
+      },
+      "answer_len": 47,
+      "answer_head": "Отправь уведомление Сидорову о замене картриджа",
+      "result_message": true
+    },
+    {
+      "id": "act_06",
+      "category": "ACT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 971,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.9
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.25
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.24
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "ai.files.report",
+        "mfu.devices.list"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3437,
+        "est_in": 3530
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013755
+      },
+      "answer_len": 38,
+      "answer_head": "Сделай PDF-отчёт по МФУ в переговорках",
+      "result_message": true
+    },
+    {
+      "id": "act_07",
+      "category": "ACT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 905,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.43
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.85
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.97
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "helpdesk.request_draft"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3443,
+        "est_in": 3743
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137802
+      },
+      "answer_len": 45,
+      "answer_head": "Оформи заявку на закупку 3 картриджей TK-1170",
+      "result_message": true
+    },
+    {
+      "id": "act_08",
+      "category": "ACT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 1047,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.99
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.21
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.59
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.97
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "ai.files.create",
+        "directory.people.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3419,
+        "est_in": 3328
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136794
+      },
+      "answer_len": 43,
+      "answer_head": "Выгрузи список сотрудников логистики в xlsx",
+      "result_message": true
+    },
+    {
+      "id": "act_09",
+      "category": "ACT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 1070,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.84
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.83
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "office.action.task_create_draft"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3457,
+        "est_in": 3724
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013839
+      },
+      "answer_len": 44,
+      "answer_head": "Создай напоминание: инвентаризация в четверг",
+      "result_message": true
+    },
+    {
+      "id": "act_10",
+      "category": "ACT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 1154,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.77
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.65
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.9
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.72
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.75
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "ai.files.report",
+        "chat.action.message_send_draft",
+        "itinvent.equipment.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3443,
+        "est_in": 5475
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137802
+      },
+      "answer_len": 44,
+      "answer_head": "Отправь отчёт по принтерам начальнику отдела",
+      "result_message": true
+    }
+  ],
+  "started_at": "2026-11-24T14:05:25.158812+00:00",
+  "aggregate": {
+    "scenarios": 10,
+    "run_ok": 10,
+    "llm_calls_total": 10,
+    "jev_calls_total": 10,
+    "tool_calls_total": 0,
+    "tokens_in_total": 0,
+    "tokens_out_total": 0,
+    "jev_tokens_total": 34458,
+    "est_in_total": 39530,
+    "cost_usd_total": 0.001379196,
+    "wall_ms_total": 10772,
+    "expected_coverage": [
+      0,
+      19
+    ],
+    "forbidden_violations": 0
+  },
+  "finished_at": "2026-11-24T14:05:36.270596+00:00"
+}

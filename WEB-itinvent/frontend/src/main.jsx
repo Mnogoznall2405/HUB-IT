@@ -16,23 +16,6 @@ import { bindGlobalErrorReporting } from './lib/clientErrorReporting'
 import { initializeDesktopBridge } from './lib/desktopBridge'
 import './index.css'
 
-const MY_FILES_GRANT_DEPLOY_KEY = 'hubit:my-files:grant-download-v2';
-
-const needsMyFilesGrantHardReload = () => {
-  if (typeof window === 'undefined') return false;
-  // The download-grant migration belongs to the file list. Reloading a new
-  // editor window here boots HUB twice before the document can start loading.
-  const pathname = String(window.location.pathname || '');
-  if (pathname !== '/my-files' && pathname !== '/my-files/') return false;
-  try {
-    if (window.sessionStorage.getItem(MY_FILES_GRANT_DEPLOY_KEY) === '1') return false;
-    window.sessionStorage.setItem(MY_FILES_GRANT_DEPLOY_KEY, '1');
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 bindGlobalErrorReporting();
 
 window.addEventListener('vite:preloadError', (event) => {
@@ -89,11 +72,6 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
 
 const startApplication = async () => {
   await initializeDesktopBridge();
-
-  if (needsMyFilesGrantHardReload()) {
-    window.location.reload();
-    return;
-  }
 
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>

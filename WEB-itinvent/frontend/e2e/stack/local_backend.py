@@ -140,6 +140,15 @@ os.environ.update(
         "MAIL_MODULE_ENABLED": "0",
         "MAIL_NOTIFICATION_BACKGROUND_ENABLED": "0",
         "MY_FILES_INLINE_WORKER_ENABLED": "1" if os.environ.get("E2E_FILES_WORKER") == "1" else "0",
+        # Upload caps are production DoS guards: one spec seeds 30 files and a
+        # multi-spec run pushes hundreds through one user on loopback, while the
+        # worker drains the queue on a 1–5 s poll — at production values seeding
+        # stalls on 429 mid-loop. Lift them so seeds are deterministic.
+        "MY_FILES_UPLOAD_LIMIT_PER_USER": "2000",
+        "MY_FILES_UPLOAD_LIMIT_PER_IP": "2000",
+        "MY_FILES_MAX_UPLOADING_PER_USER": "10",
+        "MY_FILES_MAX_ACTIVE_JOBS_PER_USER": "200",
+        "MY_FILES_MAX_ACTIVE_JOBS_GLOBAL": "500",
         "WINDOWS_SSO_ENABLED": "0",
         # The seed users have no second factor; the browser login flow is the
         # contract under test, not the 2FA enrollment wizard. The root .env
@@ -185,12 +194,6 @@ os.environ.update(
         # (5/min) is meant for abuse, not for a serial suite that creates ~20
         # groups in minutes. 60/min is the service-side maximum — still bounded.
         "CHAT_GROUP_CREATE_PER_MINUTE": "60",
-        # my-files suites bulk-seed 20-30 rows via the upload API; the
-        # production per-user active-jobs cap (5) 429s the serial seed before
-        # the inline worker drains. Relax the seed-side caps, still bounded.
-        "MY_FILES_MAX_ACTIVE_JOBS_PER_USER": "60",
-        "MY_FILES_MAX_UPLOADING_PER_USER": "30",
-        "MY_FILES_UPLOAD_LIMIT_PER_USER": "60",
     }
 )
 

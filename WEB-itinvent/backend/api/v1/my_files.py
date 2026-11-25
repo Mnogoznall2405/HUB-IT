@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
@@ -282,17 +282,44 @@ async def list_my_files(
     view: str = Query(default="", max_length=16),
     q: str = Query(default="", max_length=128),
     library_id: str | None = Query(default=None, max_length=64),
+    include: str = Query(default="", max_length=64),
+    limit: int = Query(default=0, ge=0, le=1000),
+    # Keyset cursor embeds the tail row's sort value — a 512-char UTF-8 file
+    # name base64s to ~2.7 KB, so the bound must leave headroom.
+    cursor: str = Query(default="", max_length=4096),
+    sort: str = Query(default="", max_length=16),
+    order: str = Query(default="", max_length=8),
+    type_filter: str = Query(default="", max_length=16),
+    date_filter: str = Query(default="", max_length=16),
+    tz_offset_minutes: int = Query(default=0, ge=-840, le=840),
+    response: Response = None,
+    if_none_match: str | None = Header(default=None),
     current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
 ) -> dict:
     try:
-        return await run_in_threadpool(
+        result = await run_in_threadpool(
             my_files_service.list_files,
             user_id=int(current_user.id),
             folder_id=folder_id,
             view=view,
             query=q,
             library_id=library_id,
+            include=include,
+            if_none_match=if_none_match or "",
+            limit=limit,
+            cursor=cursor,
+            sort=sort,
+            order=order,
+            type_filter=type_filter,
+            date_filter=date_filter,
+            tz_offset_minutes=tz_offset_minutes,
         )
+        etag = str(result.pop("etag", "") or "")
+        if result.get("not_modified"):
+            return Response(status_code=304, headers={"ETag": etag} if etag else None)
+        if etag and response is not None:
+            response.headers["ETag"] = etag
+        return result
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
 

@@ -50,7 +50,8 @@ describe('request ordering in page loaders', () => {
       libraryId: null, myFilesLibrariesAPI: { list: async () => null },
       setLibraries: noop, setCanManageLibraries: noop, setLibraryInfo: noop,
       isTrashView: false, listView: 'all', currentFolderId: null, debouncedSearchQuery: '',
-      isSharedView: false,
+      isSharedView: false, paginatedView: false,
+      locationKey: 'u7|all|||', setNextCursor: noop, setListTotal: noop,
       activeLoadsRef: { current: 0 },
       latestIsCurrentRef: { current: null }, loadAbortRef: { current: null },
       listingsCacheRef: { current: new Map() },
@@ -84,7 +85,8 @@ function bindMyFilesLoader(overrides = {}) {
     LISTINGS_CACHE_TTL_MS: 20_000, LISTINGS_CACHE_MAX: 30,
     authUserKey: 'u7',
     isTrashView: false, isSharedView: false, listView: 'all', libraryId: null,
-    currentFolderId: null, debouncedSearchQuery: '',
+    currentFolderId: null, debouncedSearchQuery: '', paginatedView: false,
+    locationKey: 'u7|all|||', setNextCursor: () => {}, setListTotal: () => {},
     myFilesAPI: {
       listFiles: overrides.listFiles || (async () => ({ items: [] })),
       getQuota: async () => ({}),
@@ -181,7 +183,7 @@ describe('my-files loadData counter and cache', () => {
       beginLoad: result.current,
       applyListingsPayload: (p) => applied.push(p),
       listFiles: () => new Promise((resolve) => { release = resolve; }),
-      extra: { listingsCacheRef: sharedCache, libraryId: 'lib-1' },
+      extra: { listingsCacheRef: sharedCache, libraryId: 'lib-1', locationKey: 'u7|all|lib-1||' },
     });
     const pending = loader();
     await Promise.resolve();
@@ -204,7 +206,7 @@ describe('my-files loadData counter and cache', () => {
       beginLoad: result.current,
       applyListingsPayload: (p) => applied.push(p),
       listFiles: () => new Promise((resolve) => { release = resolve; }),
-      extra: { listingsCacheRef: sharedCache, isTrashView: true },
+      extra: { listingsCacheRef: sharedCache, isTrashView: true, locationKey: 'u7|trash|||' },
     });
     const pending = loader();
     await Promise.resolve();

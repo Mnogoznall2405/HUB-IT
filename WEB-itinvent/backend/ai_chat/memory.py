@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
@@ -19,7 +20,7 @@ from sqlalchemy import delete, func, select, update
 from backend.appdb.db import app_session
 from backend.appdb.models import (AppAiBot, AppAiBotConversation, AppAiMemoryEvent,
     AppAiMemoryFact, AppAiMemoryState, AppAiUserMemory, AppAiUserMemorySource, AppUserSetting)
-from shared.llm import openrouter_client
+from shared.llm import openrouter_client, record_llm_call
 
 logger = logging.getLogger(__name__)
 CANDIDATE_LIMIT = 200
@@ -85,6 +86,18 @@ _WRITE_INTENT_RE = re.compile(
 
 def has_write_intent(text: str) -> bool:
     return bool(_WRITE_INTENT_RE.search(str(text or "")))
+
+
+# A10 §2.4: when the message carries no personal markers at all, the planner's
+# only job is relevance selection — the same keyword overlap the failure
+# fallback already uses. Explicit memory commands always match
+# has_write_intent, so remember/forget/correction requests keep the planner.
+# Default OFF until accepted (AI_MEMORY_PLANNER_OPTIMIZATION_ENABLED=1).
+import os as _os
+
+_PLANNER_OPTIMIZATION_ENABLED = _os.environ.get(
+    "AI_MEMORY_PLANNER_OPTIMIZATION_ENABLED", "0",
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _now():
@@ -293,6 +306,17 @@ def prepare(*, user_id, conversation_id, message_id, seq, text, recent, model,
         # Нечего вспоминать и нет личного утверждения: вызов планировщика ничего не изменит.
         status = "skipped"
         logger.info("ai_memory_planner_skipped user_id=%s", user_id)
+    elif not has_write_intent(text) and _PLANNER_OPTIMIZATION_ENABLED:
+        # Есть факты, но личных маркеров нет — планировщик мог бы лишь выбрать
+        # релевантные факты; заменяем детерминированным пересечением слов
+        # (тот же алгоритм, что и fallback при сбое планировщика).
+        status = "deterministic"
+        words = set(re.findall(r"[\w-]{3,}", text.casefold()))
+        selected_ids = [
+            f["id"] for f in facts
+            if words & set(re.findall(r"[\w-]{3,}", f["content"].casefold()))
+        ][:20]
+        logger.info("ai_memory_planner_deterministic user_id=%s", user_id)
     else:
         status, usage, plan, selected_ids, changed_ids = _plan_and_apply(
             user_id=user_id, conversation_id=conversation_id, message_id=message_id, seq=seq, text=text,
@@ -310,11 +334,16 @@ def _plan_and_apply(*, user_id, conversation_id, message_id, seq, text, recent, 
     plan = MemoryPlan(changes=[], relevant_ids=[])
     selected_ids = []
     try:
+        _planner_started = time.monotonic()
         payload, usage = openrouter_client.complete_json(system_prompt=PLANNER_PROMPT,
             user_prompt=json.dumps({"CURRENT_MESSAGE": text[:4000], "recent_context": recent[-4:],
                 "facts": facts, "changes_allowed": allow_changes and not processed and not old_source and seq > last_seq}, ensure_ascii=False),
             model=model, purpose="chat", temperature=0, max_tokens=1200,
             response_schema=MemoryPlan.model_json_schema(), schema_name="ai_memory_plan", timeout=8)
+        record_llm_call({
+            "call_kind": "memory_planner", "model": model, "outcome": "ok",
+            "usage": usage, "duration_ms": int((time.monotonic() - _planner_started) * 1000),
+        })
         plan = MemoryPlan.model_validate(payload)
         selected_ids = [i for i in plan.relevant_ids if i in {f["id"] for f in facts}]
         if old_source:
@@ -328,6 +357,10 @@ def _plan_and_apply(*, user_id, conversation_id, message_id, seq, text, recent, 
     except Exception as exc:
         # Do not log text, provider response or exceptions containing user content.
         logger.warning("ai_memory_plan_failed user_id=%s error_type=%s", user_id, type(exc).__name__)
+        record_llm_call({
+            "call_kind": "memory_planner", "model": model, "outcome": "failed",
+            "usage": None, "error_type": type(exc).__name__,
+        })
         words = set(re.findall(r"[\w-]{3,}", text.casefold()))
         selected_ids = [f["id"] for f in facts if words & set(re.findall(r"[\w-]{3,}", f["content"].casefold()))]
     return status, usage, plan, selected_ids, changed_ids
@@ -362,8 +395,20 @@ def _finish_prepare(*, user_id, conversation_id, safe, usage, status, plan, sele
 
 
 def summarize(previous, messages, *, model):
-    payload, usage = openrouter_client.complete_json(system_prompt=SUMMARY_PROMPT,
-        user_prompt=json.dumps({"previous_summary": previous[:6000], "messages": messages}, ensure_ascii=False),
-        model=model, purpose="chat", temperature=0, max_tokens=1500,
-        response_schema=ConversationSummary.model_json_schema(), schema_name="ai_conversation_summary", timeout=10)
+    _summary_started = time.monotonic()
+    try:
+        payload, usage = openrouter_client.complete_json(system_prompt=SUMMARY_PROMPT,
+            user_prompt=json.dumps({"previous_summary": previous[:6000], "messages": messages}, ensure_ascii=False),
+            model=model, purpose="chat", temperature=0, max_tokens=1500,
+            response_schema=ConversationSummary.model_json_schema(), schema_name="ai_conversation_summary", timeout=10)
+    except Exception as exc:
+        record_llm_call({
+            "call_kind": "summary", "model": model, "outcome": "failed",
+            "usage": None, "error_type": type(exc).__name__,
+        })
+        raise
+    record_llm_call({
+        "call_kind": "summary", "model": model, "outcome": "ok",
+        "usage": usage, "duration_ms": int((time.monotonic() - _summary_started) * 1000),
+    })
     return ConversationSummary.model_validate(payload).summary, usage

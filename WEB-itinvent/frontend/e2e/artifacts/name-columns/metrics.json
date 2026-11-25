@@ -2,87 +2,6 @@
   "w1024": {
     "viewport": 1024,
     "docOverflow": 0,
-    "panelWidth": 927,
-    "rowWidth": 925,
-    "gridCols": [
-      40,
-      533.406,
-      160,
-      96,
-      48
-    ],
-    "nameColWidth": 533.406,
-    "nameCellWidth": 533,
-    "nameTextWidth": 175,
-    "iconsWidth": 20,
-    "cellWidths": [
-      40,
-      533,
-      0,
-      160,
-      96,
-      48,
-      158
-    ],
-    "visibleSortLabels": [
-      "my-files-sort-updated",
-      "my-files-sort-size"
-    ],
-    "readability": [
-      {
-        "name": "Инструкция IT-invent бот.docx",
-        "textWidth": 175,
-        "fullTextWidth": 175,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
-      },
-      {
-        "name": "Новый акт.docx",
-        "textWidth": 90,
-        "fullTextWidth": 90,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
-      },
-      {
-        "name": "Очень длинное название документа для проверки обрезания текста в колонке названия файлового менеджера.xlsx",
-        "textWidth": 489,
-        "fullTextWidth": 676,
-        "clipRatio": 0.72,
-        "icons": 1,
-        "iconsWidth": 20
-      },
-      {
-        "name": "Подбор рабочего персонала НЗ (5).xlsx",
-        "textWidth": 228,
-        "fullTextWidth": 228,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
-      },
-      {
-        "name": "Приказ по повышению уровня ИБ ЗСПП.pdf",
-        "textWidth": 258,
-        "fullTextWidth": 258,
-        "clipRatio": 1,
-        "icons": 2,
-        "iconsWidth": 35
-      },
-      {
-        "name": "check_in_and_present_work.docx",
-        "textWidth": 182,
-        "fullTextWidth": 182,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
-      }
-    ],
-    "headerColsMatchRow": true
-  },
-  "w1024-details": {
-    "viewport": 1024,
-    "docOverflow": 0,
     "panelWidth": 932,
     "rowWidth": 930,
     "gridCols": [
@@ -94,7 +13,7 @@
     ],
     "nameColWidth": 538,
     "nameCellWidth": 538,
-    "nameTextWidth": 175,
+    "nameTextWidth": 182,
     "iconsWidth": 20,
     "cellWidths": [
       40,
@@ -110,6 +29,14 @@
       "my-files-sort-size"
     ],
     "readability": [
+      {
+        "name": "check_in_and_present_work.docx",
+        "textWidth": 182,
+        "fullTextWidth": 182,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
       {
         "name": "Инструкция IT-invent бот.docx",
         "textWidth": 175,
@@ -149,7 +76,40 @@
         "clipRatio": 1,
         "icons": 2,
         "iconsWidth": 35
-      },
+      }
+    ],
+    "headerColsMatchRow": true
+  },
+  "w1024-details": {
+    "viewport": 1024,
+    "docOverflow": 0,
+    "panelWidth": 932,
+    "rowWidth": 930,
+    "gridCols": [
+      40,
+      538,
+      160,
+      96,
+      48
+    ],
+    "nameColWidth": 538,
+    "nameCellWidth": 538,
+    "nameTextWidth": 182,
+    "iconsWidth": 20,
+    "cellWidths": [
+      40,
+      538,
+      0,
+      160,
+      96,
+      48,
+      158
+    ],
+    "visibleSortLabels": [
+      "my-files-sort-updated",
+      "my-files-sort-size"
+    ],
+    "readability": [
       {
         "name": "check_in_and_present_work.docx",
         "textWidth": 182,
@@ -157,6 +117,46 @@
         "clipRatio": 1,
         "icons": 1,
         "iconsWidth": 20
+      },
+      {
+        "name": "Инструкция IT-invent бот.docx",
+        "textWidth": 175,
+        "fullTextWidth": 175,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
+      {
+        "name": "Новый акт.docx",
+        "textWidth": 90,
+        "fullTextWidth": 90,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
+      {
+        "name": "Очень длинное название документа для проверки обрезания текста в колонке названия файлового менеджера.xlsx",
+        "textWidth": 494,
+        "fullTextWidth": 676,
+        "clipRatio": 0.73,
+        "icons": 1,
+        "iconsWidth": 20
+      },
+      {
+        "name": "Подбор рабочего персонала НЗ (5).xlsx",
+        "textWidth": 228,
+        "fullTextWidth": 228,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
+      {
+        "name": "Приказ по повышению уровня ИБ ЗСПП.pdf",
+        "textWidth": 258,
+        "fullTextWidth": 258,
+        "clipRatio": 1,
+        "icons": 2,
+        "iconsWidth": 35
       }
     ],
     "headerColsMatchRow": true
@@ -175,7 +175,7 @@
     ],
     "nameColWidth": 542,
     "nameCellWidth": 542,
-    "nameTextWidth": 175,
+    "nameTextWidth": 182,
     "iconsWidth": 20,
     "cellWidths": [
       40,
@@ -191,6 +191,14 @@
       "my-files-sort-size"
     ],
     "readability": [
+      {
+        "name": "check_in_and_present_work.docx",
+        "textWidth": 182,
+        "fullTextWidth": 182,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
       {
         "name": "Инструкция IT-invent бот.docx",
         "textWidth": 175,
@@ -230,14 +238,6 @@
         "clipRatio": 1,
         "icons": 2,
         "iconsWidth": 35
-      },
-      {
-        "name": "check_in_and_present_work.docx",
-        "textWidth": 182,
-        "fullTextWidth": 182,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
       }
     ],
     "headerColsMatchRow": true
@@ -254,7 +254,7 @@
     ],
     "nameColWidth": 494,
     "nameCellWidth": 494,
-    "nameTextWidth": 175,
+    "nameTextWidth": 182,
     "iconsWidth": 20,
     "cellWidths": [
       40,
@@ -267,6 +267,14 @@
     ],
     "visibleSortLabels": [],
     "readability": [
+      {
+        "name": "check_in_and_present_work.docx",
+        "textWidth": 182,
+        "fullTextWidth": 182,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
       {
         "name": "Инструкция IT-invent бот.docx",
         "textWidth": 175,
@@ -306,14 +314,6 @@
         "clipRatio": 1,
         "icons": 2,
         "iconsWidth": 35
-      },
-      {
-        "name": "check_in_and_present_work.docx",
-        "textWidth": 182,
-        "fullTextWidth": 182,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
       }
     ],
     "headerColsMatchRow": true
@@ -333,7 +333,7 @@
     ],
     "nameColWidth": 480,
     "nameCellWidth": 480,
-    "nameTextWidth": 175,
+    "nameTextWidth": 182,
     "iconsWidth": 20,
     "cellWidths": [
       40,
@@ -350,6 +350,14 @@
       "my-files-sort-size"
     ],
     "readability": [
+      {
+        "name": "check_in_and_present_work.docx",
+        "textWidth": 182,
+        "fullTextWidth": 182,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
       {
         "name": "Инструкция IT-invent бот.docx",
         "textWidth": 175,
@@ -389,14 +397,6 @@
         "clipRatio": 1,
         "icons": 2,
         "iconsWidth": 35
-      },
-      {
-        "name": "check_in_and_present_work.docx",
-        "textWidth": 182,
-        "fullTextWidth": 182,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
       }
     ],
     "headerColsMatchRow": true
@@ -414,7 +414,7 @@
     ],
     "nameColWidth": 412,
     "nameCellWidth": 412,
-    "nameTextWidth": 175,
+    "nameTextWidth": 182,
     "iconsWidth": 20,
     "cellWidths": [
       40,
@@ -429,6 +429,14 @@
       "my-files-sort-updated"
     ],
     "readability": [
+      {
+        "name": "check_in_and_present_work.docx",
+        "textWidth": 182,
+        "fullTextWidth": 182,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
       {
         "name": "Инструкция IT-invent бот.docx",
         "textWidth": 175,
@@ -468,14 +476,6 @@
         "clipRatio": 1,
         "icons": 2,
         "iconsWidth": 35
-      },
-      {
-        "name": "check_in_and_present_work.docx",
-        "textWidth": 182,
-        "fullTextWidth": 182,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
       }
     ],
     "headerColsMatchRow": true
@@ -495,7 +495,7 @@
     ],
     "nameColWidth": 714,
     "nameCellWidth": 714,
-    "nameTextWidth": 175,
+    "nameTextWidth": 182,
     "iconsWidth": 20,
     "cellWidths": [
       40,
@@ -512,6 +512,14 @@
       "my-files-sort-size"
     ],
     "readability": [
+      {
+        "name": "check_in_and_present_work.docx",
+        "textWidth": 182,
+        "fullTextWidth": 182,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
       {
         "name": "Инструкция IT-invent бот.docx",
         "textWidth": 175,
@@ -551,14 +559,6 @@
         "clipRatio": 1,
         "icons": 2,
         "iconsWidth": 35
-      },
-      {
-        "name": "check_in_and_present_work.docx",
-        "textWidth": 182,
-        "fullTextWidth": 182,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
       }
     ],
     "headerColsMatchRow": true
@@ -577,7 +577,7 @@
     ],
     "nameColWidth": 542,
     "nameCellWidth": 542,
-    "nameTextWidth": 175,
+    "nameTextWidth": 182,
     "iconsWidth": 20,
     "cellWidths": [
       40,
@@ -593,6 +593,14 @@
       "my-files-sort-size"
     ],
     "readability": [
+      {
+        "name": "check_in_and_present_work.docx",
+        "textWidth": 182,
+        "fullTextWidth": 182,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
       {
         "name": "Инструкция IT-invent бот.docx",
         "textWidth": 175,
@@ -632,14 +640,6 @@
         "clipRatio": 1,
         "icons": 2,
         "iconsWidth": 35
-      },
-      {
-        "name": "check_in_and_present_work.docx",
-        "textWidth": 182,
-        "fullTextWidth": 182,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
       }
     ],
     "headerColsMatchRow": true
@@ -659,7 +659,7 @@
     ],
     "nameColWidth": 1034,
     "nameCellWidth": 1034,
-    "nameTextWidth": 175,
+    "nameTextWidth": 182,
     "iconsWidth": 20,
     "cellWidths": [
       40,
@@ -676,6 +676,14 @@
       "my-files-sort-size"
     ],
     "readability": [
+      {
+        "name": "check_in_and_present_work.docx",
+        "textWidth": 182,
+        "fullTextWidth": 182,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
       {
         "name": "Инструкция IT-invent бот.docx",
         "textWidth": 175,
@@ -715,14 +723,6 @@
         "clipRatio": 1,
         "icons": 2,
         "iconsWidth": 35
-      },
-      {
-        "name": "check_in_and_present_work.docx",
-        "textWidth": 182,
-        "fullTextWidth": 182,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
       }
     ],
     "headerColsMatchRow": true
@@ -742,7 +742,7 @@
     ],
     "nameColWidth": 714,
     "nameCellWidth": 714,
-    "nameTextWidth": 175,
+    "nameTextWidth": 182,
     "iconsWidth": 20,
     "cellWidths": [
       40,
@@ -759,6 +759,14 @@
       "my-files-sort-size"
     ],
     "readability": [
+      {
+        "name": "check_in_and_present_work.docx",
+        "textWidth": 182,
+        "fullTextWidth": 182,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
       {
         "name": "Инструкция IT-invent бот.docx",
         "textWidth": 175,
@@ -798,14 +806,6 @@
         "clipRatio": 1,
         "icons": 2,
         "iconsWidth": 35
-      },
-      {
-        "name": "check_in_and_present_work.docx",
-        "textWidth": 182,
-        "fullTextWidth": 182,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
       }
     ],
     "headerColsMatchRow": true
@@ -826,7 +826,7 @@
     ],
     "nameColWidth": 562,
     "nameCellWidth": 562,
-    "nameTextWidth": 175,
+    "nameTextWidth": 182,
     "iconsWidth": 20,
     "cellWidths": [
       40,
@@ -843,6 +843,14 @@
       "my-files-sort-size"
     ],
     "readability": [
+      {
+        "name": "check_in_and_present_work.docx",
+        "textWidth": 182,
+        "fullTextWidth": 182,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
       {
         "name": "Инструкция IT-invent бот.docx",
         "textWidth": 175,
@@ -882,14 +890,6 @@
         "clipRatio": 1,
         "icons": 2,
         "iconsWidth": 35
-      },
-      {
-        "name": "check_in_and_present_work.docx",
-        "textWidth": 182,
-        "fullTextWidth": 182,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
       }
     ],
     "headerColsMatchRow": true
@@ -919,6 +919,14 @@
     ],
     "visibleSortLabels": [],
     "readability": [
+      {
+        "name": "check_in_and_present_work.docx",
+        "textWidth": 192,
+        "fullTextWidth": 208,
+        "clipRatio": 0.92,
+        "icons": 1,
+        "iconsWidth": 20
+      },
       {
         "name": "Инструкция IT-invent бот.docx",
         "textWidth": 192,
@@ -958,14 +966,6 @@
         "clipRatio": 0.59,
         "icons": 2,
         "iconsWidth": 35
-      },
-      {
-        "name": "check_in_and_present_work.docx",
-        "textWidth": 192,
-        "fullTextWidth": 208,
-        "clipRatio": 0.92,
-        "icons": 1,
-        "iconsWidth": 20
       }
     ],
     "headerColsMatchRow": true
@@ -973,28 +973,39 @@
   "w768": {
     "viewport": 768,
     "docOverflow": 0,
-    "panelWidth": 541,
-    "rowWidth": 539,
+    "panelWidth": 671,
+    "rowWidth": 669,
     "gridCols": [
       40,
-      418.609,
+      381.391,
+      160,
       48
     ],
-    "nameColWidth": 418.609,
-    "nameCellWidth": 419,
-    "nameTextWidth": 175,
+    "nameColWidth": 381.391,
+    "nameCellWidth": 381,
+    "nameTextWidth": 182,
     "iconsWidth": 20,
     "cellWidths": [
       40,
-      419,
+      381,
       0,
-      0,
+      160,
       0,
       48,
       0
     ],
-    "visibleSortLabels": [],
+    "visibleSortLabels": [
+      "my-files-sort-updated"
+    ],
     "readability": [
+      {
+        "name": "check_in_and_present_work.docx",
+        "textWidth": 182,
+        "fullTextWidth": 182,
+        "clipRatio": 1,
+        "icons": 1,
+        "iconsWidth": 20
+      },
       {
         "name": "Инструкция IT-invent бот.docx",
         "textWidth": 175,
@@ -1013,9 +1024,9 @@
       },
       {
         "name": "Очень длинное название документа для проверки обрезания текста в колонке названия файлового менеджера.xlsx",
-        "textWidth": 375,
+        "textWidth": 337,
         "fullTextWidth": 676,
-        "clipRatio": 0.55,
+        "clipRatio": 0.5,
         "icons": 1,
         "iconsWidth": 20
       },
@@ -1034,14 +1045,6 @@
         "clipRatio": 1,
         "icons": 2,
         "iconsWidth": 35
-      },
-      {
-        "name": "check_in_and_present_work.docx",
-        "textWidth": 182,
-        "fullTextWidth": 182,
-        "clipRatio": 1,
-        "icons": 1,
-        "iconsWidth": 20
       }
     ],
     "headerColsMatchRow": true

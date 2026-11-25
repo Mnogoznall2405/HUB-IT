@@ -1141,6 +1141,8 @@ class AppMyFile(AppBase):
         Index("ix_app_my_files_share_token_hash", "share_token_hash"),
         Index("ix_app_my_files_original_sha256", "original_sha256"),
         Index("ix_app_my_files_folder", "folder_id"),
+        Index("ix_app_my_files_owner_live_folder", "owner_user_id", "deleted_at", "folder_id", "created_at"),
+        Index("ix_app_my_files_owner_quota_cover", "owner_user_id", "deleted_at", "status", "expires_at", "original_size_bytes"),
         schema=APP_SCHEMA,
     )
 
@@ -1236,6 +1238,7 @@ class AppMyFileCollaborator(AppBase):
     added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="edit", server_default="edit")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class AppMyFileFolderCollaborator(AppBase):
@@ -1252,6 +1255,7 @@ class AppMyFileFolderCollaborator(AppBase):
     added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="edit", server_default="edit")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class AppMyFileLibrary(AppBase):
@@ -1291,6 +1295,7 @@ class AppMyFileLibraryMember(AppBase):
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="edit", server_default="edit")
     added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class AppMyFileVersion(AppBase):
