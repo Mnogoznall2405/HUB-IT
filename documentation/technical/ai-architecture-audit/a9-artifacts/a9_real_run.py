@@ -837,7 +837,13 @@ for idx, scenario in enumerate(scenarios, 1):
             outcome = "failed"
 
         # --- correctness ---------------------------------------------------
-        checks = bool(expected or forbidden or required_facts or forbidden_facts or expect)
+        # A11 c3: an explicit expected outcome class (refusal/clarification/not_found)
+        # is itself a check — otherwise sec scenarios with empty expect={} degrade
+        # to NO_CHECK and their verdicts are never measured.
+        checks = bool(
+            expected or forbidden or required_facts or forbidden_facts or expect
+            or expect.get("outcome") or scenario.get("expected_outcome")
+        )
         # A11 v3 BLOCKED: the scenario depends on an external data source
         # (ITINVENT SQL, Exchange, AD, 1C) that is unreachable in the contour —
         # the expected tool was called but errored with connectivity hints.
