@@ -9454,20 +9454,24 @@ class AiChatService:
                 tool_results.append(expansion_payload)
                 round_traces.append(expansion_trace)
             tool_started_at = time.perf_counter()
-            # A11 P5: no-progress dedup, scoped by the server-side tool-effect
-            # classification (cycle-2 P1). Only pure read lookups are deduped:
-            # repeating a search with identical args cannot yield new data,
-            # but artifacts (regenerate a file), deliveries (resend), actions
-            # and unclassified tools may be repeated intentionally — blocking
-            # them broke legitimate retries. Pagination/corrected args differ
-            # in args and pass through regardless.
+            # A11 P5/§4: no-progress dedup with mutation-aware invalidation.
+            # Per-effect semantics:
+            #   read     — identical re-search cannot yield new data WHILE the
+            #              underlying state is unchanged; signatures are
+            #              invalidated after any successful state-changing
+            #              execution so read-after-mutation always re-fetches.
+            #   artifact/delivery/action — an identical repeat would double-
+            #              create a file, double-send a message or duplicate a
+            #              draft card: deduped for the whole run.
+            # Error retries pass through (only ok results are recorded);
+            # pagination/arg fixes differ in args and pass through regardless.
             fresh_calls: list[dict[str, Any]] = []
             for call in tool_calls:
                 signature = (
                     _normalize_text(call.get("tool_id")),
                     json.dumps(call.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str),
                 )
-                if signature in executed_call_signatures and tool_effect(call.get("tool_id")) == "read":
+                if signature in executed_call_signatures:
                     tool_results.append({
                         "tool_id": call.get("tool_id"),
                         "ok": False,
@@ -9499,11 +9503,23 @@ class AiChatService:
                 tool_results.extend(real_results)
                 round_traces.extend(real_traces)
                 for trace, result in zip(real_traces, real_results):
-                    if result.get("ok") and tool_effect(trace.get("tool_id")) == "read":
-                        executed_call_signatures.add((
-                            _normalize_text(trace.get("tool_id")),
-                            json.dumps(trace.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str),
-                        ))
+                    if not result.get("ok"):
+                        continue
+                    effect = tool_effect(trace.get("tool_id"))
+                    executed_call_signatures.add((
+                        _normalize_text(trace.get("tool_id")),
+                        json.dumps(trace.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str),
+                    ))
+                    if effect in ("artifact", "action", "unknown"):
+                        # State-changing execution: earlier read results may be
+                        # stale now (file appeared in storage, memory written,
+                        # object mutated). Read-after-mutation must re-fetch —
+                        # drop read signatures only; action/delivery signatures
+                        # stay so double-send/double-create protection holds.
+                        executed_call_signatures = {
+                            sig for sig in executed_call_signatures
+                            if tool_effect(sig[0]) != "read"
+                        }
             _log_ai_run_timing(
                 "tools",
                 tool_started_at,
