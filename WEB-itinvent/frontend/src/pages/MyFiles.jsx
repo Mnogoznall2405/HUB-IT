@@ -401,6 +401,7 @@ export default function MyFiles() {
     }
     setNextCursor('');
     setListTotal(null);
+    setLoadingMore(false);
   }, [locationKey]);
   const applyListingsPayload = useCallback(({ filesPayload, quotaPayload, foldersPayload, locationKey: appliedKey }) => {
     if (appliedKey !== undefined) setRowsKey(appliedKey);
@@ -529,8 +530,8 @@ export default function MyFiles() {
       listingsCacheRef.current.set(cacheKey, {
         t: Date.now(),
         etag: listingEtag,
-        hasLibrary: (Array.isArray(filesPayload?.items) ? filesPayload.items : [])
-          .some((item) => item?.library_id),
+        hasLibrary: [filesPayload?.items, filesPayload?.folders]
+          .some((list) => (Array.isArray(list) ? list : []).some((item) => item?.library_id)),
         payload: { filesPayload, quotaPayload, foldersPayload },
       });
       if (listingsCacheRef.current.size > LISTINGS_CACHE_MAX) {
@@ -630,7 +631,10 @@ export default function MyFiles() {
     if (!paginatedView || !nextCursor || state.inFlight || rowsStale || pendingPageRef.current) return;
     const pageKey = locationKey;
     const controller = new AbortController();
-    pageFetchRef.current = { inFlight: true, key: pageKey, controller };
+    // Identity, not key equality: after A→B→A a stale fetch and the fresh one
+    // share the same pageKey — comparing records can't confuse them.
+    const record = { inFlight: true, key: pageKey, controller };
+    pageFetchRef.current = record;
     setLoadingMore(true);
     try {
       const page = await myFilesAPI.listFiles({
@@ -647,7 +651,7 @@ export default function MyFiles() {
         cursor: nextCursor,
         signal: controller.signal,
       });
-      if (!latestIsCurrentRef.current() || pageFetchRef.current.key !== pageKey) return;
+      if (!latestIsCurrentRef.current() || pageFetchRef.current !== record) return;
       const cursorUsed = nextCursor;
       const s = scrollStateRef.current;
       const remaining = document.documentElement.scrollHeight - window.scrollY - window.innerHeight;
@@ -665,25 +669,35 @@ export default function MyFiles() {
       if (error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return;
       const status = Number(error?.response?.status || error?.status || 0);
       if (status === 401 || status === 403 || status === 404) {
-        // Access revoked mid-scroll: the already-loaded rows may be forbidden
-        // too — evict the cache entry, drop selection/cursor, and clear the
-        // listing so nothing from the revoked scope stays on screen.
+        // Access revoked mid-scroll: evict the failed context's cache entry —
+        // always correct — but wipe visible state only while that context is
+        // still on screen. A late denial from a previous folder must not blank
+        // the listing the user already navigated to.
         listingsCacheRef.current.delete(pageKey);
-        setExtraSelectedRows([]);
-        setSelectedKeys(new Set());
-        setNextCursor('');
-        setListTotal(null);
-        applyListingsPayload({
-          filesPayload: { items: [], folders: [], breadcrumbs: [] },
-          quotaPayload: null,
-          foldersPayload: { items: [] },
-          locationKey: pageKey,
-        });
+        if (pageFetchRef.current === record) {
+          setExtraSelectedRows([]);
+          setSelectedKeys(new Set());
+          setNextCursor('');
+          setListTotal(null);
+          applyListingsPayload({
+            filesPayload: { items: [], folders: [], breadcrumbs: [] },
+            quotaPayload: null,
+            foldersPayload: { items: [] },
+            locationKey: pageKey,
+          });
+        }
       }
-      notifyApiError(error, 'Не удалось загрузить следующую страницу файлов.', { dedupeMode: 'recent' });
+      if (pageFetchRef.current === record) {
+        notifyApiError(error, 'Не удалось загрузить следующую страницу файлов.', { dedupeMode: 'recent' });
+      }
     } finally {
-      if (pageFetchRef.current.key === pageKey) pageFetchRef.current = { inFlight: false, key: '' };
-      setLoadingMore(false);
+      // Only the still-tracked fetch owns the flag: after a context switch the
+      // effect already reset both, and this finally must not clear the flag of
+      // a page fetch the new context may have started.
+      if (pageFetchRef.current === record) {
+        pageFetchRef.current = { inFlight: false, key: '' };
+        setLoadingMore(false);
+      }
     }
   }, [applyListingsPayload, commitFetchedPage, currentFolderId, dateFilter, libraryId, listView, locationKey, nextCursor, notifyApiError, paginatedView, rowsStale, schedulePendingPageFlush, sortDir, sortField, typeFilter]);
 

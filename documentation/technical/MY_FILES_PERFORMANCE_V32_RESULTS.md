@@ -102,3 +102,15 @@ Zero API calls; grid is already virtualized (`VirtualFileGrid`/`VirtualFolderGri
 - `search_type`/`view_toggle` settled figures are structural/cosmetic floors, not regressions — decomposition above.
 - The scroll stash holds a page at most ~150–300 ms beyond the gesture; a user parked at the very end still gets the page via the idle flush, and the floor clause fires when the gesture decelerates — no starvation path (verified: reaching end while fast still commits on wrap-stop).
 - The +150-row append commit itself (~40–140 ms) is bounded by the monolithic page component; splitting the rows pane into a memoized subtree would shrink it further — flagged as a follow-up, out of stabilization scope.
+
+## Post-review defect pass (pre-merge)
+
+A focused audit after the V3.2 acceptance found and fixed five point defects; all are correctness fixes that do not touch the hot paths measured above:
+
+- **ETag subtree walk** (`_listing_etag_locked`): descendants were collected but never pushed onto the stack, so a folder listing's tag only covered one level — writes two or more levels deep left the tag unchanged. Replaced with a `seen`-guarded DFS; covered by a 6-level chain test plus a corrupted-`parent_id` cycle test.
+- **ETag `include=quota`**: for a folder-scoped listing the tag ignored writes outside the subtree, but the returned quota is owner-wide — a size write / create / delete / expiry in a sibling folder left the tag stale. The fingerprint now carries the owner-wide file aggregate (count, max `updated_at`, byte sum — the sum catches raw size writes that skip `updated_at`) plus the in-scope expired count.
+- **`hasLibrary` cache flag**: only looked at `items`, missing payloads that merged library *folders* — a membership revocation could repaint a folder-only library hit from cache. The flag now covers `folders` too; regression test revokes access with a folders-only payload.
+- **Late `loadNextPage` errors**: a slow 401/403/404 from context A wiped rows/selection/cursor of current context B, and its `finally` cleared the new context's `loadingMore`. The wipe and the error toast are now gated on fetch-record identity (`pageFetchRef.current === record`) — key equality alone collides on A → B → A, where a stale and a fresh fetch share `pageKey`. Cache eviction stays unconditional (the failed context's entry is always stale). Regression tests: a late 403 from A leaves B's rows/selection/cursor untouched; after A → B → A a stale same-key response neither merges nor releases the fresh fetch's slot.
+- **Alembic**: verified — `origin/main` is the merge base; the three heads on main are pre-existing, this branch adds a single head `20261124_0179` on the `0177→0178→0179` chain.
+
+Re-validation on the build containing these fixes (`results-v32-fix.csv`, n=8/scenario): `open_route` settled 677 ms / `nav_retries` 0 / 3 API calls; `nav_back` 120 ms / 0 requests — the table above holds. Frontend: `MyFiles.test.jsx` 46/46, `requestOrdering.regression.test.jsx` 17/17 (harness context updated for the new `loadData` names). Backend `tests/test_my_files_*`: same green set as before, same 4 pre-existing env failures.

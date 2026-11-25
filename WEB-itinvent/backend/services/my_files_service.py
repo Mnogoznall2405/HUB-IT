@@ -889,9 +889,15 @@ class MyFilesService:
             ).all():
                 children_map.setdefault(parent, []).append(fid)
             file_folder_ids = [folder]
+            seen = {folder}
             stack = [folder]
             while stack:
-                file_folder_ids.extend(children_map.get(stack.pop(), []))
+                for child in children_map.get(stack.pop(), []):
+                    if child in seen:
+                        continue
+                    seen.add(child)
+                    file_folder_ids.append(child)
+                    stack.append(child)
             file_scope.append(AppMyFile.folder_id.in_(file_folder_ids))
         # Root view (folder_scoped, no folder): every root folder renders a
         # recursive subtree count, so a file anywhere under the owner moves
@@ -915,6 +921,32 @@ class MyFilesService:
             ).where(AppMyFileFolder.owner_user_id == owner)
         ).one()
         extras: list[Any] = [expired]
+        if "quota" in include_parts:
+            # The quota block is owner-wide: used_bytes sums every live file of
+            # the owner, so a folder-scoped listing still changes its payload on
+            # writes in sibling folders — the tag must cover the full scope plus
+            # the byte total itself (updated_at alone misses raw size writes).
+            quota_scope = file_scope if not (folder_scoped and folder) else [
+                AppMyFile.owner_user_id == owner
+            ]
+            extras.extend(
+                session.execute(
+                    select(
+                        func.count(AppMyFile.id),
+                        func.max(AppMyFile.updated_at),
+                        func.coalesce(func.sum(AppMyFile.original_size_bytes), 0),
+                    ).where(*quota_scope)
+                ).one()
+            )
+            extras.append(
+                session.execute(
+                    select(func.count(AppMyFile.id)).where(
+                        *quota_scope,
+                        AppMyFile.expires_at.is_not(None),
+                        AppMyFile.expires_at <= now,
+                    )
+                ).scalar() or 0
+            )
         if self._collab_tables_present(session):
             file_ids_scope = select(AppMyFile.id).where(*file_scope)
             extras.extend(

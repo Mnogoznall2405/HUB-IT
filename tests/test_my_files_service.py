@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from backend.appdb.db import app_session, ensure_app_schema_initialized
-from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFileDownloadGrant, AppMyFilePreview, AppUser
+from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFileDownloadGrant, AppMyFileFolder, AppMyFilePreview, AppUser
 from backend.models.auth import User
 from backend.services import my_files_service as mfs
 from backend.services.my_files_service import (
@@ -1998,6 +1998,70 @@ def test_listing_etag_covers_nested_subtree_counts_and_query_context(tmp_path):
     q2 = service.list_files(user_id=7, query="direct")["etag"]
     assert q1 != q2
     assert q1 == service.list_files(user_id=7, query="  Deep  ")["etag"]
+
+
+def test_listing_etag_covers_deep_subtree_and_survives_cycles(tmp_path):
+    service = _new_service(tmp_path)
+    # Chain six levels deep — the fingerprint walk must reach every level,
+    # not just direct children.
+    chain = [service.create_folder(actor=_user(), name="L1")]
+    for depth in range(2, 7):
+        chain.append(
+            service.create_folder(actor=_user(), name=f"L{depth}", parent_id=chain[-1]["id"])
+        )
+
+    top_etag = service.list_files(user_id=7, folder_id=chain[0]["id"])["etag"]
+    _etag_pending(service, "deepest.txt", folder_id=chain[-1]["id"])
+    assert service.list_files(user_id=7, folder_id=chain[0]["id"])["etag"] != top_etag
+
+    # Corrupted parent_id forming a cycle must not hang or crash the walk.
+    url = _sqlite_url(tmp_path / "app.db")
+    with app_session(url) as session:
+        session.get(AppMyFileFolder, chain[-1]["id"]).parent_id = chain[0]["id"]
+    cycled = service.list_files(user_id=7, folder_id=chain[0]["id"])
+    assert cycled["etag"]
+    before = cycled["etag"]
+    _etag_pending(service, "cycled.txt", folder_id=chain[2]["id"])
+    assert service.list_files(user_id=7, folder_id=chain[0]["id"])["etag"] != before
+
+
+def test_listing_etag_quota_covers_writes_in_other_folders(tmp_path):
+    service = _new_service(tmp_path)
+    url = _sqlite_url(tmp_path / "app.db")
+    folder_a = service.create_folder(actor=_user(), name="A")
+    folder_b = service.create_folder(actor=_user(), name="B")
+
+    # The returned quota is owner-wide — a folder-scoped listing with
+    # include=quota must revalidate on writes anywhere under the owner.
+    def folder_etag():
+        return service.list_files(user_id=7, folder_id=folder_a["id"], include="quota")["etag"]
+
+    etag = folder_etag()
+
+    # Create in a different folder.
+    other = _etag_pending(service, "other.txt", folder_id=folder_b["id"])
+    etag_after_create = folder_etag()
+    assert etag_after_create != etag
+
+    # Direct size write (no updated_at stamp) still moves the tag via the sum.
+    with app_session(url) as session:
+        session.get(AppMyFile, other["id"]).original_size_bytes += 12345
+    etag_after_resize = folder_etag()
+    assert etag_after_resize != etag_after_create
+
+    # Soft-delete in the other folder frees the quota — tag must rotate.
+    service.delete_file(file_id=other["id"], user_id=7)
+    etag_after_delete = folder_etag()
+    assert etag_after_delete != etag_after_resize
+
+    # A file expiring in the other folder drops out of the usage sum.
+    expiring = _etag_pending(service, "expiring.txt", folder_id=folder_b["id"])
+    etag_before_expiry = folder_etag()
+    with app_session(url) as session:
+        session.get(AppMyFile, expiring["id"]).expires_at = (
+            datetime.now(timezone.utc) - timedelta(hours=1)
+        )
+    assert folder_etag() != etag_before_expiry
 
 
 def test_list_files_paginates_with_server_sort_filters_and_total(tmp_path):
