@@ -433,6 +433,26 @@ else:
 bot_no_tools = _mk_bot(actor, "bot_no_tools", [])
 bot_all = _mk_bot(actor, "bot_all_tools", ALL_TOOL_IDS)
 
+# Per-scenario actors (ACL checks): every seeded user gets bot access so a
+# scenario can run as bench_reader / bench_me_only / bench_tasks etc.
+_seed_users: dict[str, dict] = {}
+if _truth and isinstance(_truth.get("users"), dict):
+    for _uname, _urow in _truth["users"].items():
+        _u = user_service.get_by_username(_uname)
+        if _u:
+            _seed_users[_uname] = _u
+    with grant_session(DB_URL) as _db:
+        _existing = {
+            (row.bot_id, row.user_id)
+            for row in _db.query(AppAiBotAccess.bot_id, AppAiBotAccess.user_id).all()
+        }
+        for _bot in (bot_no_tools, bot_all):
+            for _u in _seed_users.values():
+                if (_bot["id"], int(_u["id"])) in _existing:
+                    continue
+                _db.add(AppAiBotAccess(
+                    bot_id=_bot["id"], user_id=int(_u["id"]), allowed=True, updated_by=1))
+
 _FLAG_KEYS = sorted(
     k for k in os.environ
     if k.startswith("AI_") and (k.endswith("_ENABLED") or k in {"AI_JEV_ROUTING", "AI_SANDBOX_ENABLED"})
@@ -470,7 +490,7 @@ def _dump():
     out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _attempt(conversation_id: str, trigger_id: str):
+def _attempt(conversation_id: str, trigger_id: str, current_user_id: int):
     """One scenario attempt; returns (calls_start, jev_start, exception or None)."""
     calls_start, jev_start = len(LLM_CALLS), len(JEV_CALLS)
     t0 = time.perf_counter()
@@ -479,7 +499,7 @@ def _attempt(conversation_id: str, trigger_id: str):
         ai_service.queue_run_for_message(
             conversation_id=conversation_id,
             trigger_message_id=trigger_id,
-            current_user_id=int(actor["id"]),
+            current_user_id=current_user_id,
         )
         ai_service.process_next_run()
     except Exception as exc:  # noqa: BLE001
@@ -499,24 +519,27 @@ for idx, scenario in enumerate(scenarios, 1):
     forbidden = list(scenario.get("forbidden") or [])
     required_facts = [str(f) for f in (scenario.get("required_facts") or []) if str(f).strip()]
     bot = bot_no_tools if category == "CHAT" else bot_all
+    # §8 ACL: a scenario may pin a different seeded user as the actor.
+    scn_actor = _seed_users.get(str(scenario.get("actor") or "")) or actor
 
     attempt_no = 0
     entry = None
     while True:
         attempt_no += 1
-        conv = ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+        conv = ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(scn_actor["id"]))
         seq = 0
         if category == "LONGCTX":
             # Real multi-turn history, not a one-line summary.
             for i in range(1, 21):
                 seq += 1
-                _send(conv["id"], int(actor["id"]), seq,
+                _send(conv["id"], int(scn_actor["id"]), seq,
                       f"История {i}: обсуждали оборудование в кабинете 201, картриджи HP и заявки склада.")
         seq += 1
         trigger_id = f"msg-{conv['id']}-{seq}"
-        _send(conv["id"], int(actor["id"]), seq, prompt)
+        _send(conv["id"], int(scn_actor["id"]), seq, prompt)
 
-        calls_start, jev_start, harness_exc, wall_ms = _attempt(conv["id"], trigger_id)
+        calls_start, jev_start, harness_exc, wall_ms = _attempt(
+            conv["id"], trigger_id, int(scn_actor["id"]))
         recs = LLM_CALLS[calls_start:]
         jevs = JEV_CALLS[jev_start:]
         run_row = _run_row_for_trigger(conv["id"], trigger_id)
@@ -604,6 +627,7 @@ for idx, scenario in enumerate(scenarios, 1):
             "id": sid,
             "category": category,
             "prompt": prompt,
+            "actor": (scn_actor.get("username") if isinstance(scn_actor, dict) else None),
             "attempt": attempt_no,
             "outcome": outcome,
             "correctness": correctness,
