@@ -60,11 +60,11 @@ _parser.add_argument("--corpus", default="")
 _parser.add_argument("--provider", choices=("routerai", "openrouter"), default="routerai")
 _parser.add_argument("--provider-retries", type=int, default=1,
                     help="re-run a scenario on a fresh conversation when ALL failures are provider-side")
-add_argument("--resume", choices=("0", "1"), default="0",
-             help="reuse completed/degraded entries from the existing out file; "
-                  "re-run only failed or missing scenarios (hash-verified)")
-add_argument("--failfast", type=int, default=5,
-             help="abort after N consecutive provider-failed scenarios (0=never)")
+_parser.add_argument("--resume", choices=("0", "1"), default="0",
+                     help="reuse completed/degraded entries from the existing out file; "
+                          "re-run only failed or missing scenarios (hash-verified)")
+_parser.add_argument("--failfast", type=int, default=5,
+                     help="abort after N consecutive provider-failed scenarios (0=never)")
 
 _parser.add_argument("--set", dest="flag_overrides", action="append", default=[],
                     metavar="KEY=VALUE", help="pin arbitrary env flags (repeatable)")
