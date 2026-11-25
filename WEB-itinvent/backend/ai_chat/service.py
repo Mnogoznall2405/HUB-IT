@@ -357,7 +357,7 @@ AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "- Exact inventory numbers, serial numbers, hardware serials, MAC addresses, hostnames or domains: "
     "use equipment search first, then equipment card for a single concrete device.\n"
     "- When the user asks about online/offline status of a computer by its hostname (e.g., 'TMN-IT-0009') or network name: "
-    "use itinvent.equipment.online_status with hostname argument, NOT inv_no.\n"
+    "use itinvent.computers.search with the hostname, then itinvent.computers.get for details; never use inv_no for online status.\n"
     "- Employee or department questions: use employee search, then employee equipment list.\n"
     "- For employee equipment comparison with the connected 1C warehouse, resolve the employee with "
     "itinvent.employee.search, then call itinvent.employee.list_equipment with compare_1c=true. "
@@ -381,9 +381,10 @@ AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "- Consume, write off or stock quantity changes: resolve exact consumable first, then use a draft action tool. "
     "Draft action tools only create confirmation cards; they do not modify ITinvent.\n"
     "- Use type/status/branch/location directory tools to clarify canonical labels before asking the user.\n"
-    "- When the user asks 'which computer belongs to [employee]' or 'what device is assigned to [name]': use itinvent.user.computer with the employee name.\n"
-    "- To resolve a person's identity by name, surname, or login before equipment lookup: use itinvent.user.by_name first.\n"
-    "- For questions like 'where does [name] work' or 'find employee [name]': use itinvent.user.by_name.\n"
+    "- When the user asks 'which computer belongs to [employee]' or 'what device is assigned to [name]': use itinvent.employee.search to resolve the owner, then itinvent.employee.list_equipment with the OWNER_NO.\n"
+    "- itinvent.user.by_name / itinvent.employee.search are ONLY for employees as ITinvent equipment owners (OWNER_NO resolution before equipment operations). "
+    "For corporate contacts — phone, e-mail, position, office room, absence — NEVER use them: the authoritative source is the company phonebook (directory.people.search in the directory group). "
+    "ITinvent is not a phonebook: it knows only employees who own equipment, and its contact fields may be outdated.\n"
     "- COMPUTER/OUTLOOK SEARCH: for 'где архив', 'где PST', 'где outlook' followed by an identifier (email-like login such as kozlovskii.me, surname or file name) call itinvent.computers.search with field='outlook'.\n"
     "- Examples: 'где архив kozlovskii.me', 'где PST Иванова', 'где лежит archive.pst', 'outlook на компьютере Петрова'.\n"
     "- PROFILE / WORKSTATION SEARCH: for 'где профиль', 'на каком компьютере сидит', 'за каким ПК' followed by a surname or login call itinvent.computers.search with field='profiles' (profile folders) or field='user' (who is logged in); open one result with itinvent.computers.get for uptime, pending reboot, disks and all PST files.\n"
@@ -990,12 +991,13 @@ def _keyword_routed_groups(trigger_text: str, *, available_groups: set[str]) -> 
         "мфу",
         "сканер",
         "ибп",
-        "телефон",
         "компьютер",
         "профил",
         "филиал",
         "локаци",
-        "сотрудник",
+        # A11: «телефон» and «сотрудник» removed — they hijacked corporate
+        # phonebook/directory queries into the itinvent group (D3). JEV
+        # disambiguates equipment-vs-people with the group questions.
         # Common ITinvent verbs
         "найди инв",
         "найди серийник",
@@ -1030,6 +1032,7 @@ def _keyword_routed_groups(trigger_text: str, *, available_groups: set[str]) -> 
         "напомнан",
         "анонс",
         "новост",
+        "объявлен",
     )
     if AI_TOOL_GROUP_OFFICE in available_groups:
         for keyword in office_keywords:
@@ -1132,15 +1135,16 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
     AI_TOOL_GROUP_OFFICE: {
         "question": (
             "Нужна ли работа с корпоративной почтой, задачами, проектами, комментариями, "
-            "рабочим днём или анонсами (Office/почта/задачи)?"
+            "рабочим днём, объявлениями или новостями компании (Office/почта/задачи/объявления)?"
         ),
         "true_label": (
             "да — «напиши письмо начальнику»; «покажи мои задачи»; «создай задачу на завтра»; "
-            "«прочитай последние письма»; «что у меня сегодня по работе»"
+            "«прочитай последние письма»; «что у меня сегодня по работе»; «покажи последние объявления»; "
+            "«что нового в компании»; «что объявляли про отпуск»"
         ),
         "false_label": (
             "нет — «найди принтер в ITinvent»; «пингани хост»; «сделай xlsx-файл» без отправки "
-            "по почте; «расскажи анекдот»"
+            "по почте; «расскажи анекдот»; «инструкция по настройке VPN» (это база знаний, не объявления)"
         ),
     },
     AI_TOOL_GROUP_FILES: {
@@ -1216,7 +1220,8 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
         ),
         "false_label": (
             "нет — «найди конкретное устройство» (ITinvent); «отправь письмо»; "
-            "«создай задачу»; приветствия и болтовня"
+            "«создай задачу»; приветствия и болтовня; «покажи последние объявления» и «что нового "
+            "в компании» (это office-объявления, не статьи); «новости компании»"
         ),
     },
     AI_TOOL_GROUP_CHAT: {
@@ -1236,30 +1241,32 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
     AI_TOOL_GROUP_SELF: {
         "question": (
             "Спрашивает ли сотрудник о СЕБЕ — своей технике, своём компьютере, своей учётной записи/пароле, "
-            "своей заявке на закупку техники — или хочет создать обращение (заявку) в IT-отдел?"
+            "своих личных файлах в хранилище «Мои файлы», своей заявке на закупку техники — "
+            "или хочет создать обращение (заявку) в IT-отдел?"
         ),
         "true_label": (
             "да — «что за мной числится»; «почему тормозит мой компьютер»; «когда мне менять пароль»; "
             "«не пускает в систему»; «создай заявку в IT, не печатает принтер»; «вызови айтишника»; "
-            "«где моя заявка на ноутбук»"
+            "«где моя заявка на ноутбук»; «найди мой файл»; «покажи мои файлы»; «пришли мне мой документ»"
         ),
         "false_label": (
             "нет — вопросы о технике или учётке ДРУГОГО сотрудника («что числится за Ивановым»); "
-            "«найди статью»; «напиши письмо»; «привет»"
+            "«найди статью»; «напиши письмо»; «сделай файл-отчёт» (это создание файла, не поиск своих); «привет»"
         ),
     },
     AI_TOOL_GROUP_DIRECTORY: {
         "question": (
-            "Нужен ли справочник сотрудников или оргструктура: телефон, e-mail, должность, кабинет коллеги, "
-            "кто в отпуске/на больничном, кто руководитель подразделения?"
+            "Нужен ли справочник сотрудников или оргструктура: найти человека по имени, телефон, e-mail, "
+            "должность, кабинет коллеги, кто в отпуске/на больничном, кто руководитель подразделения?"
         ),
         "true_label": (
-            "да — «телефон Петрова»; «кто бухгалтер по зарплате»; «Иванова в отпуске?»; "
+            "да — «телефон Петрова»; «найди сотрудника Иванова»; «какой email у Смирновой»; "
+            "«кто бухгалтер по зарплате»; «Иванова в отпуске?»; «в каком кабинете сидит Петров»; "
             "«кто руководитель бухгалтерии»; «кто отсутствует в отделе продаж»"
         ),
         "false_label": (
-            "нет — «что числится за Петровым» (ITinvent); «пароль Петрова» (AD); «напиши Петрову в чате» (chat); "
-            "вопросы о себе (self)"
+            "нет — «что числится за Петровым» (ITinvent); «какое оборудование у Иванова» (ITinvent); "
+            "«пароль Петрова» (AD); «напиши Петрову в чате» (chat); вопросы о себе (self)"
         ),
     },
     AI_TOOL_GROUP_WAREHOUSE: {

@@ -313,6 +313,17 @@ def _send(conversation_id: str, sender_id: int, seq: int, body: str):
         session.add(msg)
 
 
+def _max_conv_seq(conversation_id: str) -> int:
+    with chat_db.chat_session(DB_URL) as session:
+        row = (
+            session.query(chat_models.ChatMessage.conversation_seq)
+            .filter(chat_models.ChatMessage.conversation_id == conversation_id)
+            .order_by(chat_models.ChatMessage.conversation_seq.desc())
+            .first()
+        )
+        return int(row[0]) if row and row[0] is not None else 0
+
+
 def _run_row_for_trigger(conversation_id: str, trigger_message_id: str) -> dict:
     """The run THIS scenario queued — matched by trigger_message_id, never
     just 'latest in conversation' (retries can interleave)."""
@@ -588,7 +599,9 @@ for idx, scenario in enumerate(scenarios, 1):
         _buid = bot.get("bot_user_id") if isinstance(bot, dict) else getattr(bot, "bot_user_id", None)
         bot_user_id = int(_buid or 0) or None
         for turn_text in turn_texts:
-            seq += 1
+            # The bot's own answers occupy seq values too — always continue
+            # after the current max instead of counting user turns only.
+            seq = _max_conv_seq(conv["id"]) + 1
             trigger_id = f"msg-{conv['id']}-{seq}"
             _send(conv["id"], int(scn_actor["id"]), seq, turn_text)
             _cs, _js, turn_exc, turn_wall = _attempt(
