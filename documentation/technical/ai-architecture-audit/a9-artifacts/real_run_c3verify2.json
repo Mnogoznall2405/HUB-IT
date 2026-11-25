@@ -1,0 +1,6125 @@
+{
+  "env": {
+    "label": "real",
+    "code_sha": "2a3fba3fcf4cdc47e18d27307d7262ac96d19aeb",
+    "corpus_sha256": "84cb26ad2e9a3fb56681d3e07f05f2ae973201327c53986b8977dbba7a7e22aa",
+    "seed_sha256": "075887ec83a8f0ff618d26b4c71cbf86845307e0c1c395ea81f6ec83e880c61a",
+    "AI_JEV_ROUTING": "1",
+    "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+    "AI_SUMMARY_BACKGROUND_ENABLED": "0",
+    "ROUTERAI_MODEL": "google/gemini-3.7-flash",
+    "OPENROUTER_MODEL": null,
+    "JEV_MODEL": "(default)",
+    "provider": "routerai",
+    "flags": {
+      "AI_JEV_ROUTING": "1",
+      "AI_PERSONAL_MEMORY_ENABLED": "1",
+      "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+      "AI_RUN_WATCHDOG_ENABLED": "1",
+      "AI_SANDBOX_ENABLED": "0",
+      "AI_SANDBOX_RETENTION_ENABLED": "1",
+      "AI_SUMMARY_BACKGROUND_ENABLED": "0"
+    },
+    "env_keys_loaded": 449,
+    "registered_tools": 100,
+    "code_root": "C:\\Project\\HUB-IT-a10-rel",
+    "harness": "a9_real_run.py v2",
+    "actor": "bench_actor",
+    "seeded": true
+  },
+  "ground_truth": {
+    "employees_total": 100,
+    "departments": [
+      "Бенч-Отдел-01",
+      "Бенч-Отдел-02",
+      "Бенч-Отдел-03",
+      "Бенч-Отдел-04",
+      "Бенч-Отдел-05",
+      "Бенч-Отдел-06",
+      "Бенч-Отдел-07",
+      "Бенч-Отдел-08",
+      "Бенч-Отдел-09",
+      "Бенч-Отдел-10"
+    ],
+    "employee_names": [
+      "Бенч Сотрудник 001",
+      "Бенч Сотрудник 002",
+      "Бенч Сотрудник 003",
+      "Бенч Сотрудник 004",
+      "Бенч Сотрудник 005",
+      "Бенч Сотрудник 006",
+      "Бенч Сотрудник 007",
+      "Бенч Сотрудник 008",
+      "Бенч Сотрудник 009",
+      "Бенч Сотрудник 010",
+      "Бенч Сотрудник 011",
+      "Бенч Сотрудник 012",
+      "Бенч Сотрудник 013",
+      "Бенч Сотрудник 014",
+      "Бенч Сотрудник 015",
+      "Бенч Сотрудник 016",
+      "Бенч Сотрудник 017",
+      "Бенч Сотрудник 018",
+      "Бенч Сотрудник 019",
+      "Бенч Сотрудник 020",
+      "Бенч Сотрудник 021",
+      "Бенч Сотрудник 022",
+      "Бенч Сотрудник 023",
+      "Бенч Сотрудник 024",
+      "Бенч Сотрудник 025",
+      "Бенч Сотрудник 026",
+      "Бенч Сотрудник 027",
+      "Бенч Сотрудник 028",
+      "Бенч Сотрудник 029",
+      "Бенч Сотрудник 030",
+      "Бенч Сотрудник 031",
+      "Бенч Сотрудник 032",
+      "Бенч Сотрудник 033",
+      "Бенч Сотрудник 034",
+      "Бенч Сотрудник 035",
+      "Бенч Сотрудник 036",
+      "Бенч Сотрудник 037",
+      "Бенч Сотрудник 038",
+      "Бенч Сотрудник 039",
+      "Бенч Сотрудник 040",
+      "Бенч Сотрудник 041",
+      "Бенч Сотрудник 042",
+      "Бенч Сотрудник 043",
+      "Бенч Сотрудник 044",
+      "Бенч Сотрудник 045",
+      "Бенч Сотрудник 046",
+      "Бенч Сотрудник 047",
+      "Бенч Сотрудник 048",
+      "Бенч Сотрудник 049",
+      "Бенч Сотрудник 050",
+      "Бенч Сотрудник 051",
+      "Бенч Сотрудник 052",
+      "Бенч Сотрудник 053",
+      "Бенч Сотрудник 054",
+      "Бенч Сотрудник 055",
+      "Бенч Сотрудник 056",
+      "Бенч Сотрудник 057",
+      "Бенч Сотрудник 058",
+      "Бенч Сотрудник 059",
+      "Бенч Сотрудник 060",
+      "Бенч Сотрудник 061",
+      "Бенч Сотрудник 062",
+      "Бенч Сотрудник 063",
+      "Бенч Сотрудник 064",
+      "Бенч Сотрудник 065",
+      "Бенч Сотрудник 066",
+      "Бенч Сотрудник 067",
+      "Бенч Сотрудник 068",
+      "Бенч Сотрудник 069",
+      "Бенч Сотрудник 070",
+      "Бенч Сотрудник 071",
+      "Бенч Сотрудник 072",
+      "Бенч Сотрудник 073",
+      "Бенч Сотрудник 074",
+      "Бенч Сотрудник 075",
+      "Бенч Сотрудник 076",
+      "Бенч Сотрудник 077",
+      "Бенч Сотрудник 078",
+      "Бенч Сотрудник 079",
+      "Бенч Сотрудник 080",
+      "Бенч Сотрудник 081",
+      "Бенч Сотрудник 082",
+      "Бенч Сотрудник 083",
+      "Бенч Сотрудник 084",
+      "Бенч Сотрудник 085",
+      "Бенч Сотрудник 086",
+      "Бенч Сотрудник 087",
+      "Бенч Сотрудник 088",
+      "Бенч Сотрудник 089",
+      "Бенч Сотрудник 090",
+      "Бенч Сотрудник 091",
+      "Бенч Сотрудник 092",
+      "Бенч Сотрудник 093",
+      "Бенч Сотрудник 094",
+      "Бенч Сотрудник 095",
+      "Бенч Сотрудник 096",
+      "Бенч Сотрудник 097",
+      "Бенч Сотрудник 098",
+      "Бенч Сотрудник 099",
+      "Бенч Сотрудник 100"
+    ],
+    "employee_by_code": {
+      "BENCH-0001": {
+        "employee_code": "BENCH-0001",
+        "full_name": "Бенч Сотрудник 001",
+        "display_name": "Бенч Сотрудник 001",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0001",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench001@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "101",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-001"
+      },
+      "BENCH-0002": {
+        "employee_code": "BENCH-0002",
+        "full_name": "Бенч Сотрудник 002",
+        "display_name": "Бенч Сотрудник 002",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0002",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench002@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "102",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-002"
+      },
+      "BENCH-0003": {
+        "employee_code": "BENCH-0003",
+        "full_name": "Бенч Сотрудник 003",
+        "display_name": "Бенч Сотрудник 003",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0003",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench003@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "103",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-003"
+      },
+      "BENCH-0004": {
+        "employee_code": "BENCH-0004",
+        "full_name": "Бенч Сотрудник 004",
+        "display_name": "Бенч Сотрудник 004",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0004",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench004@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "104",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-004"
+      },
+      "BENCH-0005": {
+        "employee_code": "BENCH-0005",
+        "full_name": "Бенч Сотрудник 005",
+        "display_name": "Бенч Сотрудник 005",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0005",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench005@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "105",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-005"
+      },
+      "BENCH-0006": {
+        "employee_code": "BENCH-0006",
+        "full_name": "Бенч Сотрудник 006",
+        "display_name": "Бенч Сотрудник 006",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0006",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench006@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "106",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-006"
+      },
+      "BENCH-0007": {
+        "employee_code": "BENCH-0007",
+        "full_name": "Бенч Сотрудник 007",
+        "display_name": "Бенч Сотрудник 007",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0007",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench007@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "107",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-007"
+      },
+      "BENCH-0008": {
+        "employee_code": "BENCH-0008",
+        "full_name": "Бенч Сотрудник 008",
+        "display_name": "Бенч Сотрудник 008",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0008",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench008@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "108",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-008"
+      },
+      "BENCH-0009": {
+        "employee_code": "BENCH-0009",
+        "full_name": "Бенч Сотрудник 009",
+        "display_name": "Бенч Сотрудник 009",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0009",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench009@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "109",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-009"
+      },
+      "BENCH-0010": {
+        "employee_code": "BENCH-0010",
+        "full_name": "Бенч Сотрудник 010",
+        "display_name": "Бенч Сотрудник 010",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0010",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench010@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "110",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-010"
+      },
+      "BENCH-0011": {
+        "employee_code": "BENCH-0011",
+        "full_name": "Бенч Сотрудник 011",
+        "display_name": "Бенч Сотрудник 011",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0011",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench011@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "111",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-011"
+      },
+      "BENCH-0012": {
+        "employee_code": "BENCH-0012",
+        "full_name": "Бенч Сотрудник 012",
+        "display_name": "Бенч Сотрудник 012",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0012",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench012@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "112",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-012"
+      },
+      "BENCH-0013": {
+        "employee_code": "BENCH-0013",
+        "full_name": "Бенч Сотрудник 013",
+        "display_name": "Бенч Сотрудник 013",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0013",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench013@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "113",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-013"
+      },
+      "BENCH-0014": {
+        "employee_code": "BENCH-0014",
+        "full_name": "Бенч Сотрудник 014",
+        "display_name": "Бенч Сотрудник 014",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0014",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench014@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "114",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-014"
+      },
+      "BENCH-0015": {
+        "employee_code": "BENCH-0015",
+        "full_name": "Бенч Сотрудник 015",
+        "display_name": "Бенч Сотрудник 015",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0015",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench015@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "115",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-015"
+      },
+      "BENCH-0016": {
+        "employee_code": "BENCH-0016",
+        "full_name": "Бенч Сотрудник 016",
+        "display_name": "Бенч Сотрудник 016",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0016",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench016@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "116",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-016"
+      },
+      "BENCH-0017": {
+        "employee_code": "BENCH-0017",
+        "full_name": "Бенч Сотрудник 017",
+        "display_name": "Бенч Сотрудник 017",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0017",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench017@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "117",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-017"
+      },
+      "BENCH-0018": {
+        "employee_code": "BENCH-0018",
+        "full_name": "Бенч Сотрудник 018",
+        "display_name": "Бенч Сотрудник 018",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0018",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench018@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "118",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-018"
+      },
+      "BENCH-0019": {
+        "employee_code": "BENCH-0019",
+        "full_name": "Бенч Сотрудник 019",
+        "display_name": "Бенч Сотрудник 019",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0019",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench019@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "119",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-019"
+      },
+      "BENCH-0020": {
+        "employee_code": "BENCH-0020",
+        "full_name": "Бенч Сотрудник 020",
+        "display_name": "Бенч Сотрудник 020",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0020",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench020@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "120",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-020"
+      },
+      "BENCH-0021": {
+        "employee_code": "BENCH-0021",
+        "full_name": "Бенч Сотрудник 021",
+        "display_name": "Бенч Сотрудник 021",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0021",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench021@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "121",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-021"
+      },
+      "BENCH-0022": {
+        "employee_code": "BENCH-0022",
+        "full_name": "Бенч Сотрудник 022",
+        "display_name": "Бенч Сотрудник 022",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0022",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench022@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "122",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-022"
+      },
+      "BENCH-0023": {
+        "employee_code": "BENCH-0023",
+        "full_name": "Бенч Сотрудник 023",
+        "display_name": "Бенч Сотрудник 023",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0023",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench023@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "123",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-023"
+      },
+      "BENCH-0024": {
+        "employee_code": "BENCH-0024",
+        "full_name": "Бенч Сотрудник 024",
+        "display_name": "Бенч Сотрудник 024",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0024",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench024@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "124",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-024"
+      },
+      "BENCH-0025": {
+        "employee_code": "BENCH-0025",
+        "full_name": "Бенч Сотрудник 025",
+        "display_name": "Бенч Сотрудник 025",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0025",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench025@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "125",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-025"
+      },
+      "BENCH-0026": {
+        "employee_code": "BENCH-0026",
+        "full_name": "Бенч Сотрудник 026",
+        "display_name": "Бенч Сотрудник 026",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0026",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench026@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "126",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-026"
+      },
+      "BENCH-0027": {
+        "employee_code": "BENCH-0027",
+        "full_name": "Бенч Сотрудник 027",
+        "display_name": "Бенч Сотрудник 027",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0027",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench027@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "127",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-027"
+      },
+      "BENCH-0028": {
+        "employee_code": "BENCH-0028",
+        "full_name": "Бенч Сотрудник 028",
+        "display_name": "Бенч Сотрудник 028",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0028",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench028@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "128",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-028"
+      },
+      "BENCH-0029": {
+        "employee_code": "BENCH-0029",
+        "full_name": "Бенч Сотрудник 029",
+        "display_name": "Бенч Сотрудник 029",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0029",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench029@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "129",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-029"
+      },
+      "BENCH-0030": {
+        "employee_code": "BENCH-0030",
+        "full_name": "Бенч Сотрудник 030",
+        "display_name": "Бенч Сотрудник 030",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0030",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench030@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "130",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-030"
+      },
+      "BENCH-0031": {
+        "employee_code": "BENCH-0031",
+        "full_name": "Бенч Сотрудник 031",
+        "display_name": "Бенч Сотрудник 031",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0031",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench031@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "131",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-031"
+      },
+      "BENCH-0032": {
+        "employee_code": "BENCH-0032",
+        "full_name": "Бенч Сотрудник 032",
+        "display_name": "Бенч Сотрудник 032",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0032",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench032@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "132",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-032"
+      },
+      "BENCH-0033": {
+        "employee_code": "BENCH-0033",
+        "full_name": "Бенч Сотрудник 033",
+        "display_name": "Бенч Сотрудник 033",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0033",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench033@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "133",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-033"
+      },
+      "BENCH-0034": {
+        "employee_code": "BENCH-0034",
+        "full_name": "Бенч Сотрудник 034",
+        "display_name": "Бенч Сотрудник 034",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0034",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench034@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "134",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-034"
+      },
+      "BENCH-0035": {
+        "employee_code": "BENCH-0035",
+        "full_name": "Бенч Сотрудник 035",
+        "display_name": "Бенч Сотрудник 035",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0035",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench035@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "135",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-035"
+      },
+      "BENCH-0036": {
+        "employee_code": "BENCH-0036",
+        "full_name": "Бенч Сотрудник 036",
+        "display_name": "Бенч Сотрудник 036",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0036",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench036@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "136",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-036"
+      },
+      "BENCH-0037": {
+        "employee_code": "BENCH-0037",
+        "full_name": "Бенч Сотрудник 037",
+        "display_name": "Бенч Сотрудник 037",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0037",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench037@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "137",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-037"
+      },
+      "BENCH-0038": {
+        "employee_code": "BENCH-0038",
+        "full_name": "Бенч Сотрудник 038",
+        "display_name": "Бенч Сотрудник 038",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0038",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench038@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "138",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-038"
+      },
+      "BENCH-0039": {
+        "employee_code": "BENCH-0039",
+        "full_name": "Бенч Сотрудник 039",
+        "display_name": "Бенч Сотрудник 039",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0039",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench039@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "139",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-039"
+      },
+      "BENCH-0040": {
+        "employee_code": "BENCH-0040",
+        "full_name": "Бенч Сотрудник 040",
+        "display_name": "Бенч Сотрудник 040",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0040",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench040@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "140",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-040"
+      },
+      "BENCH-0041": {
+        "employee_code": "BENCH-0041",
+        "full_name": "Бенч Сотрудник 041",
+        "display_name": "Бенч Сотрудник 041",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0041",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench041@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "141",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-041"
+      },
+      "BENCH-0042": {
+        "employee_code": "BENCH-0042",
+        "full_name": "Бенч Сотрудник 042",
+        "display_name": "Бенч Сотрудник 042",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0042",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench042@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "142",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-042"
+      },
+      "BENCH-0043": {
+        "employee_code": "BENCH-0043",
+        "full_name": "Бенч Сотрудник 043",
+        "display_name": "Бенч Сотрудник 043",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0043",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench043@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "143",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-043"
+      },
+      "BENCH-0044": {
+        "employee_code": "BENCH-0044",
+        "full_name": "Бенч Сотрудник 044",
+        "display_name": "Бенч Сотрудник 044",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0044",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench044@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "144",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-044"
+      },
+      "BENCH-0045": {
+        "employee_code": "BENCH-0045",
+        "full_name": "Бенч Сотрудник 045",
+        "display_name": "Бенч Сотрудник 045",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0045",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench045@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "145",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-045"
+      },
+      "BENCH-0046": {
+        "employee_code": "BENCH-0046",
+        "full_name": "Бенч Сотрудник 046",
+        "display_name": "Бенч Сотрудник 046",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0046",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench046@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "146",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-046"
+      },
+      "BENCH-0047": {
+        "employee_code": "BENCH-0047",
+        "full_name": "Бенч Сотрудник 047",
+        "display_name": "Бенч Сотрудник 047",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0047",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench047@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "147",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-047"
+      },
+      "BENCH-0048": {
+        "employee_code": "BENCH-0048",
+        "full_name": "Бенч Сотрудник 048",
+        "display_name": "Бенч Сотрудник 048",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0048",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench048@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "148",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-048"
+      },
+      "BENCH-0049": {
+        "employee_code": "BENCH-0049",
+        "full_name": "Бенч Сотрудник 049",
+        "display_name": "Бенч Сотрудник 049",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0049",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench049@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "149",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-049"
+      },
+      "BENCH-0050": {
+        "employee_code": "BENCH-0050",
+        "full_name": "Бенч Сотрудник 050",
+        "display_name": "Бенч Сотрудник 050",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0050",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench050@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "150",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-050"
+      },
+      "BENCH-0051": {
+        "employee_code": "BENCH-0051",
+        "full_name": "Бенч Сотрудник 051",
+        "display_name": "Бенч Сотрудник 051",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0051",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench051@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "151",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-051"
+      },
+      "BENCH-0052": {
+        "employee_code": "BENCH-0052",
+        "full_name": "Бенч Сотрудник 052",
+        "display_name": "Бенч Сотрудник 052",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0052",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench052@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "152",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-052"
+      },
+      "BENCH-0053": {
+        "employee_code": "BENCH-0053",
+        "full_name": "Бенч Сотрудник 053",
+        "display_name": "Бенч Сотрудник 053",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0053",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench053@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "153",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-053"
+      },
+      "BENCH-0054": {
+        "employee_code": "BENCH-0054",
+        "full_name": "Бенч Сотрудник 054",
+        "display_name": "Бенч Сотрудник 054",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0054",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench054@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "154",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-054"
+      },
+      "BENCH-0055": {
+        "employee_code": "BENCH-0055",
+        "full_name": "Бенч Сотрудник 055",
+        "display_name": "Бенч Сотрудник 055",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0055",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench055@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "155",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-055"
+      },
+      "BENCH-0056": {
+        "employee_code": "BENCH-0056",
+        "full_name": "Бенч Сотрудник 056",
+        "display_name": "Бенч Сотрудник 056",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0056",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench056@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "156",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-056"
+      },
+      "BENCH-0057": {
+        "employee_code": "BENCH-0057",
+        "full_name": "Бенч Сотрудник 057",
+        "display_name": "Бенч Сотрудник 057",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0057",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench057@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "157",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-057"
+      },
+      "BENCH-0058": {
+        "employee_code": "BENCH-0058",
+        "full_name": "Бенч Сотрудник 058",
+        "display_name": "Бенч Сотрудник 058",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0058",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench058@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "158",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-058"
+      },
+      "BENCH-0059": {
+        "employee_code": "BENCH-0059",
+        "full_name": "Бенч Сотрудник 059",
+        "display_name": "Бенч Сотрудник 059",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0059",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench059@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "159",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-059"
+      },
+      "BENCH-0060": {
+        "employee_code": "BENCH-0060",
+        "full_name": "Бенч Сотрудник 060",
+        "display_name": "Бенч Сотрудник 060",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0060",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench060@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "160",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-060"
+      },
+      "BENCH-0061": {
+        "employee_code": "BENCH-0061",
+        "full_name": "Бенч Сотрудник 061",
+        "display_name": "Бенч Сотрудник 061",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0061",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench061@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "161",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-061"
+      },
+      "BENCH-0062": {
+        "employee_code": "BENCH-0062",
+        "full_name": "Бенч Сотрудник 062",
+        "display_name": "Бенч Сотрудник 062",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0062",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench062@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "162",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-062"
+      },
+      "BENCH-0063": {
+        "employee_code": "BENCH-0063",
+        "full_name": "Бенч Сотрудник 063",
+        "display_name": "Бенч Сотрудник 063",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0063",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench063@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "163",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-063"
+      },
+      "BENCH-0064": {
+        "employee_code": "BENCH-0064",
+        "full_name": "Бенч Сотрудник 064",
+        "display_name": "Бенч Сотрудник 064",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0064",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench064@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "164",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-064"
+      },
+      "BENCH-0065": {
+        "employee_code": "BENCH-0065",
+        "full_name": "Бенч Сотрудник 065",
+        "display_name": "Бенч Сотрудник 065",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0065",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench065@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "165",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-065"
+      },
+      "BENCH-0066": {
+        "employee_code": "BENCH-0066",
+        "full_name": "Бенч Сотрудник 066",
+        "display_name": "Бенч Сотрудник 066",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0066",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench066@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "166",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-066"
+      },
+      "BENCH-0067": {
+        "employee_code": "BENCH-0067",
+        "full_name": "Бенч Сотрудник 067",
+        "display_name": "Бенч Сотрудник 067",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0067",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench067@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "167",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-067"
+      },
+      "BENCH-0068": {
+        "employee_code": "BENCH-0068",
+        "full_name": "Бенч Сотрудник 068",
+        "display_name": "Бенч Сотрудник 068",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0068",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench068@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "168",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-068"
+      },
+      "BENCH-0069": {
+        "employee_code": "BENCH-0069",
+        "full_name": "Бенч Сотрудник 069",
+        "display_name": "Бенч Сотрудник 069",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0069",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench069@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "169",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-069"
+      },
+      "BENCH-0070": {
+        "employee_code": "BENCH-0070",
+        "full_name": "Бенч Сотрудник 070",
+        "display_name": "Бенч Сотрудник 070",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0070",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench070@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "170",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-070"
+      },
+      "BENCH-0071": {
+        "employee_code": "BENCH-0071",
+        "full_name": "Бенч Сотрудник 071",
+        "display_name": "Бенч Сотрудник 071",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0071",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench071@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "171",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-071"
+      },
+      "BENCH-0072": {
+        "employee_code": "BENCH-0072",
+        "full_name": "Бенч Сотрудник 072",
+        "display_name": "Бенч Сотрудник 072",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0072",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench072@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "172",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-072"
+      },
+      "BENCH-0073": {
+        "employee_code": "BENCH-0073",
+        "full_name": "Бенч Сотрудник 073",
+        "display_name": "Бенч Сотрудник 073",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0073",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench073@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "173",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-073"
+      },
+      "BENCH-0074": {
+        "employee_code": "BENCH-0074",
+        "full_name": "Бенч Сотрудник 074",
+        "display_name": "Бенч Сотрудник 074",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0074",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench074@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "174",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-074"
+      },
+      "BENCH-0075": {
+        "employee_code": "BENCH-0075",
+        "full_name": "Бенч Сотрудник 075",
+        "display_name": "Бенч Сотрудник 075",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0075",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench075@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "175",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-075"
+      },
+      "BENCH-0076": {
+        "employee_code": "BENCH-0076",
+        "full_name": "Бенч Сотрудник 076",
+        "display_name": "Бенч Сотрудник 076",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0076",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench076@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "176",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-076"
+      },
+      "BENCH-0077": {
+        "employee_code": "BENCH-0077",
+        "full_name": "Бенч Сотрудник 077",
+        "display_name": "Бенч Сотрудник 077",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0077",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench077@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "177",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-077"
+      },
+      "BENCH-0078": {
+        "employee_code": "BENCH-0078",
+        "full_name": "Бенч Сотрудник 078",
+        "display_name": "Бенч Сотрудник 078",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0078",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench078@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "178",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-078"
+      },
+      "BENCH-0079": {
+        "employee_code": "BENCH-0079",
+        "full_name": "Бенч Сотрудник 079",
+        "display_name": "Бенч Сотрудник 079",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0079",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench079@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "179",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-079"
+      },
+      "BENCH-0080": {
+        "employee_code": "BENCH-0080",
+        "full_name": "Бенч Сотрудник 080",
+        "display_name": "Бенч Сотрудник 080",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0080",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench080@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "180",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-080"
+      },
+      "BENCH-0081": {
+        "employee_code": "BENCH-0081",
+        "full_name": "Бенч Сотрудник 081",
+        "display_name": "Бенч Сотрудник 081",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0081",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench081@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "181",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-081"
+      },
+      "BENCH-0082": {
+        "employee_code": "BENCH-0082",
+        "full_name": "Бенч Сотрудник 082",
+        "display_name": "Бенч Сотрудник 082",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0082",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench082@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "182",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-082"
+      },
+      "BENCH-0083": {
+        "employee_code": "BENCH-0083",
+        "full_name": "Бенч Сотрудник 083",
+        "display_name": "Бенч Сотрудник 083",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0083",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench083@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "183",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-083"
+      },
+      "BENCH-0084": {
+        "employee_code": "BENCH-0084",
+        "full_name": "Бенч Сотрудник 084",
+        "display_name": "Бенч Сотрудник 084",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0084",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench084@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "184",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-084"
+      },
+      "BENCH-0085": {
+        "employee_code": "BENCH-0085",
+        "full_name": "Бенч Сотрудник 085",
+        "display_name": "Бенч Сотрудник 085",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0085",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench085@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "185",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-085"
+      },
+      "BENCH-0086": {
+        "employee_code": "BENCH-0086",
+        "full_name": "Бенч Сотрудник 086",
+        "display_name": "Бенч Сотрудник 086",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0086",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench086@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "186",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-086"
+      },
+      "BENCH-0087": {
+        "employee_code": "BENCH-0087",
+        "full_name": "Бенч Сотрудник 087",
+        "display_name": "Бенч Сотрудник 087",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0087",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench087@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "187",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-087"
+      },
+      "BENCH-0088": {
+        "employee_code": "BENCH-0088",
+        "full_name": "Бенч Сотрудник 088",
+        "display_name": "Бенч Сотрудник 088",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0088",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench088@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "188",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-088"
+      },
+      "BENCH-0089": {
+        "employee_code": "BENCH-0089",
+        "full_name": "Бенч Сотрудник 089",
+        "display_name": "Бенч Сотрудник 089",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0089",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench089@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "189",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-089"
+      },
+      "BENCH-0090": {
+        "employee_code": "BENCH-0090",
+        "full_name": "Бенч Сотрудник 090",
+        "display_name": "Бенч Сотрудник 090",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0090",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench090@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "190",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-090"
+      },
+      "BENCH-0091": {
+        "employee_code": "BENCH-0091",
+        "full_name": "Бенч Сотрудник 091",
+        "display_name": "Бенч Сотрудник 091",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0091",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench091@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "191",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-091"
+      },
+      "BENCH-0092": {
+        "employee_code": "BENCH-0092",
+        "full_name": "Бенч Сотрудник 092",
+        "display_name": "Бенч Сотрудник 092",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0092",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench092@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "192",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-092"
+      },
+      "BENCH-0093": {
+        "employee_code": "BENCH-0093",
+        "full_name": "Бенч Сотрудник 093",
+        "display_name": "Бенч Сотрудник 093",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0093",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench093@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "193",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-093"
+      },
+      "BENCH-0094": {
+        "employee_code": "BENCH-0094",
+        "full_name": "Бенч Сотрудник 094",
+        "display_name": "Бенч Сотрудник 094",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0094",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench094@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "194",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-094"
+      },
+      "BENCH-0095": {
+        "employee_code": "BENCH-0095",
+        "full_name": "Бенч Сотрудник 095",
+        "display_name": "Бенч Сотрудник 095",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0095",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench095@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "195",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-095"
+      },
+      "BENCH-0096": {
+        "employee_code": "BENCH-0096",
+        "full_name": "Бенч Сотрудник 096",
+        "display_name": "Бенч Сотрудник 096",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0096",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench096@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "196",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-096"
+      },
+      "BENCH-0097": {
+        "employee_code": "BENCH-0097",
+        "full_name": "Бенч Сотрудник 097",
+        "display_name": "Бенч Сотрудник 097",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0097",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench097@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "197",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-097"
+      },
+      "BENCH-0098": {
+        "employee_code": "BENCH-0098",
+        "full_name": "Бенч Сотрудник 098",
+        "display_name": "Бенч Сотрудник 098",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0098",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench098@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "198",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-098"
+      },
+      "BENCH-0099": {
+        "employee_code": "BENCH-0099",
+        "full_name": "Бенч Сотрудник 099",
+        "display_name": "Бенч Сотрудник 099",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0099",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench099@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "199",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-099"
+      },
+      "BENCH-0100": {
+        "employee_code": "BENCH-0100",
+        "full_name": "Бенч Сотрудник 100",
+        "display_name": "Бенч Сотрудник 100",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0100",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench100@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "200",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-100"
+      }
+    },
+    "employees": [
+      {
+        "employee_code": "BENCH-0001",
+        "full_name": "Бенч Сотрудник 001",
+        "display_name": "Бенч Сотрудник 001",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0001",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench001@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "101",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-001"
+      },
+      {
+        "employee_code": "BENCH-0002",
+        "full_name": "Бенч Сотрудник 002",
+        "display_name": "Бенч Сотрудник 002",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0002",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench002@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "102",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-002"
+      },
+      {
+        "employee_code": "BENCH-0003",
+        "full_name": "Бенч Сотрудник 003",
+        "display_name": "Бенч Сотрудник 003",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0003",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench003@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "103",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-003"
+      },
+      {
+        "employee_code": "BENCH-0004",
+        "full_name": "Бенч Сотрудник 004",
+        "display_name": "Бенч Сотрудник 004",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0004",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench004@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "104",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-004"
+      },
+      {
+        "employee_code": "BENCH-0005",
+        "full_name": "Бенч Сотрудник 005",
+        "display_name": "Бенч Сотрудник 005",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0005",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench005@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "105",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-005"
+      },
+      {
+        "employee_code": "BENCH-0006",
+        "full_name": "Бенч Сотрудник 006",
+        "display_name": "Бенч Сотрудник 006",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0006",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench006@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "106",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-006"
+      },
+      {
+        "employee_code": "BENCH-0007",
+        "full_name": "Бенч Сотрудник 007",
+        "display_name": "Бенч Сотрудник 007",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0007",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench007@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "107",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-007"
+      },
+      {
+        "employee_code": "BENCH-0008",
+        "full_name": "Бенч Сотрудник 008",
+        "display_name": "Бенч Сотрудник 008",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0008",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench008@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "108",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-008"
+      },
+      {
+        "employee_code": "BENCH-0009",
+        "full_name": "Бенч Сотрудник 009",
+        "display_name": "Бенч Сотрудник 009",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0009",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench009@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "109",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-009"
+      },
+      {
+        "employee_code": "BENCH-0010",
+        "full_name": "Бенч Сотрудник 010",
+        "display_name": "Бенч Сотрудник 010",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0010",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench010@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "110",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-010"
+      },
+      {
+        "employee_code": "BENCH-0011",
+        "full_name": "Бенч Сотрудник 011",
+        "display_name": "Бенч Сотрудник 011",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0011",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench011@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "111",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-011"
+      },
+      {
+        "employee_code": "BENCH-0012",
+        "full_name": "Бенч Сотрудник 012",
+        "display_name": "Бенч Сотрудник 012",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0012",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench012@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "112",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-012"
+      },
+      {
+        "employee_code": "BENCH-0013",
+        "full_name": "Бенч Сотрудник 013",
+        "display_name": "Бенч Сотрудник 013",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0013",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench013@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "113",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-013"
+      },
+      {
+        "employee_code": "BENCH-0014",
+        "full_name": "Бенч Сотрудник 014",
+        "display_name": "Бенч Сотрудник 014",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0014",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench014@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "114",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-014"
+      },
+      {
+        "employee_code": "BENCH-0015",
+        "full_name": "Бенч Сотрудник 015",
+        "display_name": "Бенч Сотрудник 015",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0015",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench015@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "115",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-015"
+      },
+      {
+        "employee_code": "BENCH-0016",
+        "full_name": "Бенч Сотрудник 016",
+        "display_name": "Бенч Сотрудник 016",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0016",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench016@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "116",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-016"
+      },
+      {
+        "employee_code": "BENCH-0017",
+        "full_name": "Бенч Сотрудник 017",
+        "display_name": "Бенч Сотрудник 017",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0017",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench017@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "117",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-017"
+      },
+      {
+        "employee_code": "BENCH-0018",
+        "full_name": "Бенч Сотрудник 018",
+        "display_name": "Бенч Сотрудник 018",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0018",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench018@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "118",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-018"
+      },
+      {
+        "employee_code": "BENCH-0019",
+        "full_name": "Бенч Сотрудник 019",
+        "display_name": "Бенч Сотрудник 019",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0019",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench019@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "119",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-019"
+      },
+      {
+        "employee_code": "BENCH-0020",
+        "full_name": "Бенч Сотрудник 020",
+        "display_name": "Бенч Сотрудник 020",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0020",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench020@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "120",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-020"
+      },
+      {
+        "employee_code": "BENCH-0021",
+        "full_name": "Бенч Сотрудник 021",
+        "display_name": "Бенч Сотрудник 021",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0021",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench021@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "121",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-021"
+      },
+      {
+        "employee_code": "BENCH-0022",
+        "full_name": "Бенч Сотрудник 022",
+        "display_name": "Бенч Сотрудник 022",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0022",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench022@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "122",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-022"
+      },
+      {
+        "employee_code": "BENCH-0023",
+        "full_name": "Бенч Сотрудник 023",
+        "display_name": "Бенч Сотрудник 023",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0023",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench023@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "123",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-023"
+      },
+      {
+        "employee_code": "BENCH-0024",
+        "full_name": "Бенч Сотрудник 024",
+        "display_name": "Бенч Сотрудник 024",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0024",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench024@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "124",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-024"
+      },
+      {
+        "employee_code": "BENCH-0025",
+        "full_name": "Бенч Сотрудник 025",
+        "display_name": "Бенч Сотрудник 025",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0025",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench025@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "125",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-025"
+      },
+      {
+        "employee_code": "BENCH-0026",
+        "full_name": "Бенч Сотрудник 026",
+        "display_name": "Бенч Сотрудник 026",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0026",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench026@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "126",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-026"
+      },
+      {
+        "employee_code": "BENCH-0027",
+        "full_name": "Бенч Сотрудник 027",
+        "display_name": "Бенч Сотрудник 027",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0027",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench027@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "127",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-027"
+      },
+      {
+        "employee_code": "BENCH-0028",
+        "full_name": "Бенч Сотрудник 028",
+        "display_name": "Бенч Сотрудник 028",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0028",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench028@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "128",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-028"
+      },
+      {
+        "employee_code": "BENCH-0029",
+        "full_name": "Бенч Сотрудник 029",
+        "display_name": "Бенч Сотрудник 029",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0029",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench029@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "129",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-029"
+      },
+      {
+        "employee_code": "BENCH-0030",
+        "full_name": "Бенч Сотрудник 030",
+        "display_name": "Бенч Сотрудник 030",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0030",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench030@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "130",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-030"
+      },
+      {
+        "employee_code": "BENCH-0031",
+        "full_name": "Бенч Сотрудник 031",
+        "display_name": "Бенч Сотрудник 031",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0031",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench031@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "131",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-031"
+      },
+      {
+        "employee_code": "BENCH-0032",
+        "full_name": "Бенч Сотрудник 032",
+        "display_name": "Бенч Сотрудник 032",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0032",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench032@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "132",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-032"
+      },
+      {
+        "employee_code": "BENCH-0033",
+        "full_name": "Бенч Сотрудник 033",
+        "display_name": "Бенч Сотрудник 033",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0033",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench033@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "133",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-033"
+      },
+      {
+        "employee_code": "BENCH-0034",
+        "full_name": "Бенч Сотрудник 034",
+        "display_name": "Бенч Сотрудник 034",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0034",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench034@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "134",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-034"
+      },
+      {
+        "employee_code": "BENCH-0035",
+        "full_name": "Бенч Сотрудник 035",
+        "display_name": "Бенч Сотрудник 035",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0035",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench035@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "135",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-035"
+      },
+      {
+        "employee_code": "BENCH-0036",
+        "full_name": "Бенч Сотрудник 036",
+        "display_name": "Бенч Сотрудник 036",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0036",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench036@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "136",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-036"
+      },
+      {
+        "employee_code": "BENCH-0037",
+        "full_name": "Бенч Сотрудник 037",
+        "display_name": "Бенч Сотрудник 037",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0037",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench037@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "137",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-037"
+      },
+      {
+        "employee_code": "BENCH-0038",
+        "full_name": "Бенч Сотрудник 038",
+        "display_name": "Бенч Сотрудник 038",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0038",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench038@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "138",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-038"
+      },
+      {
+        "employee_code": "BENCH-0039",
+        "full_name": "Бенч Сотрудник 039",
+        "display_name": "Бенч Сотрудник 039",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0039",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench039@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "139",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-039"
+      },
+      {
+        "employee_code": "BENCH-0040",
+        "full_name": "Бенч Сотрудник 040",
+        "display_name": "Бенч Сотрудник 040",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0040",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench040@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "140",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-040"
+      },
+      {
+        "employee_code": "BENCH-0041",
+        "full_name": "Бенч Сотрудник 041",
+        "display_name": "Бенч Сотрудник 041",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0041",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench041@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "141",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-041"
+      },
+      {
+        "employee_code": "BENCH-0042",
+        "full_name": "Бенч Сотрудник 042",
+        "display_name": "Бенч Сотрудник 042",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0042",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench042@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "142",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-042"
+      },
+      {
+        "employee_code": "BENCH-0043",
+        "full_name": "Бенч Сотрудник 043",
+        "display_name": "Бенч Сотрудник 043",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0043",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench043@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "143",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-043"
+      },
+      {
+        "employee_code": "BENCH-0044",
+        "full_name": "Бенч Сотрудник 044",
+        "display_name": "Бенч Сотрудник 044",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0044",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench044@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "144",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-044"
+      },
+      {
+        "employee_code": "BENCH-0045",
+        "full_name": "Бенч Сотрудник 045",
+        "display_name": "Бенч Сотрудник 045",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0045",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench045@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "145",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-045"
+      },
+      {
+        "employee_code": "BENCH-0046",
+        "full_name": "Бенч Сотрудник 046",
+        "display_name": "Бенч Сотрудник 046",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0046",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench046@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "146",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-046"
+      },
+      {
+        "employee_code": "BENCH-0047",
+        "full_name": "Бенч Сотрудник 047",
+        "display_name": "Бенч Сотрудник 047",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0047",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench047@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "147",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-047"
+      },
+      {
+        "employee_code": "BENCH-0048",
+        "full_name": "Бенч Сотрудник 048",
+        "display_name": "Бенч Сотрудник 048",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0048",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench048@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "148",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-048"
+      },
+      {
+        "employee_code": "BENCH-0049",
+        "full_name": "Бенч Сотрудник 049",
+        "display_name": "Бенч Сотрудник 049",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0049",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench049@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "149",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-049"
+      },
+      {
+        "employee_code": "BENCH-0050",
+        "full_name": "Бенч Сотрудник 050",
+        "display_name": "Бенч Сотрудник 050",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0050",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench050@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "150",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-050"
+      },
+      {
+        "employee_code": "BENCH-0051",
+        "full_name": "Бенч Сотрудник 051",
+        "display_name": "Бенч Сотрудник 051",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0051",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench051@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "151",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-051"
+      },
+      {
+        "employee_code": "BENCH-0052",
+        "full_name": "Бенч Сотрудник 052",
+        "display_name": "Бенч Сотрудник 052",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0052",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench052@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "152",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-052"
+      },
+      {
+        "employee_code": "BENCH-0053",
+        "full_name": "Бенч Сотрудник 053",
+        "display_name": "Бенч Сотрудник 053",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0053",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench053@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "153",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-053"
+      },
+      {
+        "employee_code": "BENCH-0054",
+        "full_name": "Бенч Сотрудник 054",
+        "display_name": "Бенч Сотрудник 054",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0054",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench054@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "154",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-054"
+      },
+      {
+        "employee_code": "BENCH-0055",
+        "full_name": "Бенч Сотрудник 055",
+        "display_name": "Бенч Сотрудник 055",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0055",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench055@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "155",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-055"
+      },
+      {
+        "employee_code": "BENCH-0056",
+        "full_name": "Бенч Сотрудник 056",
+        "display_name": "Бенч Сотрудник 056",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0056",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench056@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "156",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-056"
+      },
+      {
+        "employee_code": "BENCH-0057",
+        "full_name": "Бенч Сотрудник 057",
+        "display_name": "Бенч Сотрудник 057",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0057",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench057@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "157",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-057"
+      },
+      {
+        "employee_code": "BENCH-0058",
+        "full_name": "Бенч Сотрудник 058",
+        "display_name": "Бенч Сотрудник 058",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0058",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench058@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "158",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-058"
+      },
+      {
+        "employee_code": "BENCH-0059",
+        "full_name": "Бенч Сотрудник 059",
+        "display_name": "Бенч Сотрудник 059",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0059",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench059@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "159",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-059"
+      },
+      {
+        "employee_code": "BENCH-0060",
+        "full_name": "Бенч Сотрудник 060",
+        "display_name": "Бенч Сотрудник 060",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0060",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench060@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "160",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-060"
+      },
+      {
+        "employee_code": "BENCH-0061",
+        "full_name": "Бенч Сотрудник 061",
+        "display_name": "Бенч Сотрудник 061",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0061",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench061@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "161",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-061"
+      },
+      {
+        "employee_code": "BENCH-0062",
+        "full_name": "Бенч Сотрудник 062",
+        "display_name": "Бенч Сотрудник 062",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0062",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench062@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "162",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-062"
+      },
+      {
+        "employee_code": "BENCH-0063",
+        "full_name": "Бенч Сотрудник 063",
+        "display_name": "Бенч Сотрудник 063",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0063",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench063@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "163",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-063"
+      },
+      {
+        "employee_code": "BENCH-0064",
+        "full_name": "Бенч Сотрудник 064",
+        "display_name": "Бенч Сотрудник 064",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0064",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench064@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "164",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-064"
+      },
+      {
+        "employee_code": "BENCH-0065",
+        "full_name": "Бенч Сотрудник 065",
+        "display_name": "Бенч Сотрудник 065",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0065",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench065@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "165",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-065"
+      },
+      {
+        "employee_code": "BENCH-0066",
+        "full_name": "Бенч Сотрудник 066",
+        "display_name": "Бенч Сотрудник 066",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0066",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench066@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "166",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-066"
+      },
+      {
+        "employee_code": "BENCH-0067",
+        "full_name": "Бенч Сотрудник 067",
+        "display_name": "Бенч Сотрудник 067",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0067",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench067@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "167",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-067"
+      },
+      {
+        "employee_code": "BENCH-0068",
+        "full_name": "Бенч Сотрудник 068",
+        "display_name": "Бенч Сотрудник 068",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0068",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench068@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "168",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-068"
+      },
+      {
+        "employee_code": "BENCH-0069",
+        "full_name": "Бенч Сотрудник 069",
+        "display_name": "Бенч Сотрудник 069",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0069",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench069@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "169",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-069"
+      },
+      {
+        "employee_code": "BENCH-0070",
+        "full_name": "Бенч Сотрудник 070",
+        "display_name": "Бенч Сотрудник 070",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0070",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench070@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "170",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-070"
+      },
+      {
+        "employee_code": "BENCH-0071",
+        "full_name": "Бенч Сотрудник 071",
+        "display_name": "Бенч Сотрудник 071",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0071",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench071@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "171",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-071"
+      },
+      {
+        "employee_code": "BENCH-0072",
+        "full_name": "Бенч Сотрудник 072",
+        "display_name": "Бенч Сотрудник 072",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0072",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench072@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "172",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-072"
+      },
+      {
+        "employee_code": "BENCH-0073",
+        "full_name": "Бенч Сотрудник 073",
+        "display_name": "Бенч Сотрудник 073",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0073",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench073@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "173",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-073"
+      },
+      {
+        "employee_code": "BENCH-0074",
+        "full_name": "Бенч Сотрудник 074",
+        "display_name": "Бенч Сотрудник 074",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0074",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench074@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "174",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-074"
+      },
+      {
+        "employee_code": "BENCH-0075",
+        "full_name": "Бенч Сотрудник 075",
+        "display_name": "Бенч Сотрудник 075",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0075",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench075@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "175",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-075"
+      },
+      {
+        "employee_code": "BENCH-0076",
+        "full_name": "Бенч Сотрудник 076",
+        "display_name": "Бенч Сотрудник 076",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0076",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench076@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "176",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-076"
+      },
+      {
+        "employee_code": "BENCH-0077",
+        "full_name": "Бенч Сотрудник 077",
+        "display_name": "Бенч Сотрудник 077",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0077",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench077@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "177",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-077"
+      },
+      {
+        "employee_code": "BENCH-0078",
+        "full_name": "Бенч Сотрудник 078",
+        "display_name": "Бенч Сотрудник 078",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0078",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench078@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "178",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-078"
+      },
+      {
+        "employee_code": "BENCH-0079",
+        "full_name": "Бенч Сотрудник 079",
+        "display_name": "Бенч Сотрудник 079",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0079",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench079@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "179",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-079"
+      },
+      {
+        "employee_code": "BENCH-0080",
+        "full_name": "Бенч Сотрудник 080",
+        "display_name": "Бенч Сотрудник 080",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0080",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench080@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "180",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-080"
+      },
+      {
+        "employee_code": "BENCH-0081",
+        "full_name": "Бенч Сотрудник 081",
+        "display_name": "Бенч Сотрудник 081",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0081",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench081@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "181",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-081"
+      },
+      {
+        "employee_code": "BENCH-0082",
+        "full_name": "Бенч Сотрудник 082",
+        "display_name": "Бенч Сотрудник 082",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0082",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench082@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "182",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-082"
+      },
+      {
+        "employee_code": "BENCH-0083",
+        "full_name": "Бенч Сотрудник 083",
+        "display_name": "Бенч Сотрудник 083",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0083",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench083@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "183",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-083"
+      },
+      {
+        "employee_code": "BENCH-0084",
+        "full_name": "Бенч Сотрудник 084",
+        "display_name": "Бенч Сотрудник 084",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0084",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench084@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "184",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-084"
+      },
+      {
+        "employee_code": "BENCH-0085",
+        "full_name": "Бенч Сотрудник 085",
+        "display_name": "Бенч Сотрудник 085",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0085",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench085@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "185",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-085"
+      },
+      {
+        "employee_code": "BENCH-0086",
+        "full_name": "Бенч Сотрудник 086",
+        "display_name": "Бенч Сотрудник 086",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0086",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench086@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "186",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-086"
+      },
+      {
+        "employee_code": "BENCH-0087",
+        "full_name": "Бенч Сотрудник 087",
+        "display_name": "Бенч Сотрудник 087",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0087",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench087@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "187",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-087"
+      },
+      {
+        "employee_code": "BENCH-0088",
+        "full_name": "Бенч Сотрудник 088",
+        "display_name": "Бенч Сотрудник 088",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0088",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench088@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "188",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-088"
+      },
+      {
+        "employee_code": "BENCH-0089",
+        "full_name": "Бенч Сотрудник 089",
+        "display_name": "Бенч Сотрудник 089",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0089",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench089@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "189",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-089"
+      },
+      {
+        "employee_code": "BENCH-0090",
+        "full_name": "Бенч Сотрудник 090",
+        "display_name": "Бенч Сотрудник 090",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0090",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench090@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "190",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-090"
+      },
+      {
+        "employee_code": "BENCH-0091",
+        "full_name": "Бенч Сотрудник 091",
+        "display_name": "Бенч Сотрудник 091",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          {
+            "value": "+7-000-0091",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench091@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "191",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-091"
+      },
+      {
+        "employee_code": "BENCH-0092",
+        "full_name": "Бенч Сотрудник 092",
+        "display_name": "Бенч Сотрудник 092",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          {
+            "value": "+7-000-0092",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench092@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "192",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-092"
+      },
+      {
+        "employee_code": "BENCH-0093",
+        "full_name": "Бенч Сотрудник 093",
+        "display_name": "Бенч Сотрудник 093",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          {
+            "value": "+7-000-0093",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench093@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "193",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-093"
+      },
+      {
+        "employee_code": "BENCH-0094",
+        "full_name": "Бенч Сотрудник 094",
+        "display_name": "Бенч Сотрудник 094",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          {
+            "value": "+7-000-0094",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench094@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "194",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-094"
+      },
+      {
+        "employee_code": "BENCH-0095",
+        "full_name": "Бенч Сотрудник 095",
+        "display_name": "Бенч Сотрудник 095",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          {
+            "value": "+7-000-0095",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench095@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "195",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-095"
+      },
+      {
+        "employee_code": "BENCH-0096",
+        "full_name": "Бенч Сотрудник 096",
+        "display_name": "Бенч Сотрудник 096",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          {
+            "value": "+7-000-0096",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench096@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "196",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-096"
+      },
+      {
+        "employee_code": "BENCH-0097",
+        "full_name": "Бенч Сотрудник 097",
+        "display_name": "Бенч Сотрудник 097",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          {
+            "value": "+7-000-0097",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench097@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "197",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-097"
+      },
+      {
+        "employee_code": "BENCH-0098",
+        "full_name": "Бенч Сотрудник 098",
+        "display_name": "Бенч Сотрудник 098",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          {
+            "value": "+7-000-0098",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench098@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "198",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-098"
+      },
+      {
+        "employee_code": "BENCH-0099",
+        "full_name": "Бенч Сотрудник 099",
+        "display_name": "Бенч Сотрудник 099",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          {
+            "value": "+7-000-0099",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench099@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "199",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-099"
+      },
+      {
+        "employee_code": "BENCH-0100",
+        "full_name": "Бенч Сотрудник 100",
+        "display_name": "Бенч Сотрудник 100",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          {
+            "value": "+7-000-0100",
+            "kind": "рабочий"
+          }
+        ],
+        "work_emails": [
+          {
+            "value": "bench100@bench.local",
+            "kind": "рабочий"
+          }
+        ],
+        "office_room": "200",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-100"
+      }
+    ],
+    "org_node_ids": [
+      "bench-dept-01",
+      "bench-dept-02",
+      "bench-dept-03",
+      "bench-dept-04",
+      "bench-dept-05",
+      "bench-dept-06",
+      "bench-dept-07",
+      "bench-dept-08",
+      "bench-dept-09",
+      "bench-dept-10",
+      "bench-person-0001",
+      "bench-person-0002",
+      "bench-person-0003",
+      "bench-person-0004",
+      "bench-person-0005",
+      "bench-person-0006",
+      "bench-person-0007",
+      "bench-person-0008",
+      "bench-person-0009",
+      "bench-person-0010",
+      "bench-person-0011",
+      "bench-person-0012",
+      "bench-person-0013",
+      "bench-person-0014",
+      "bench-person-0015",
+      "bench-person-0016",
+      "bench-person-0017",
+      "bench-person-0018",
+      "bench-person-0019",
+      "bench-person-0020",
+      "bench-person-0021",
+      "bench-person-0022",
+      "bench-person-0023",
+      "bench-person-0024",
+      "bench-person-0025",
+      "bench-person-0026",
+      "bench-person-0027",
+      "bench-person-0028",
+      "bench-person-0029",
+      "bench-person-0030",
+      "bench-person-0031",
+      "bench-person-0032",
+      "bench-person-0033",
+      "bench-person-0034",
+      "bench-person-0035",
+      "bench-person-0036",
+      "bench-person-0037",
+      "bench-person-0038",
+      "bench-person-0039",
+      "bench-person-0040",
+      "bench-person-0041",
+      "bench-person-0042",
+      "bench-person-0043",
+      "bench-person-0044",
+      "bench-person-0045",
+      "bench-person-0046",
+      "bench-person-0047",
+      "bench-person-0048",
+      "bench-person-0049",
+      "bench-person-0050",
+      "bench-person-0051",
+      "bench-person-0052",
+      "bench-person-0053",
+      "bench-person-0054",
+      "bench-person-0055",
+      "bench-person-0056",
+      "bench-person-0057",
+      "bench-person-0058",
+      "bench-person-0059",
+      "bench-person-0060",
+      "bench-person-0061",
+      "bench-person-0062",
+      "bench-person-0063",
+      "bench-person-0064",
+      "bench-person-0065",
+      "bench-person-0066",
+      "bench-person-0067",
+      "bench-person-0068",
+      "bench-person-0069",
+      "bench-person-0070",
+      "bench-person-0071",
+      "bench-person-0072",
+      "bench-person-0073",
+      "bench-person-0074",
+      "bench-person-0075",
+      "bench-person-0076",
+      "bench-person-0077",
+      "bench-person-0078",
+      "bench-person-0079",
+      "bench-person-0080",
+      "bench-person-0081",
+      "bench-person-0082",
+      "bench-person-0083",
+      "bench-person-0084",
+      "bench-person-0085",
+      "bench-person-0086",
+      "bench-person-0087",
+      "bench-person-0088",
+      "bench-person-0089",
+      "bench-person-0090",
+      "bench-person-0091",
+      "bench-person-0092",
+      "bench-person-0093",
+      "bench-person-0094",
+      "bench-person-0095",
+      "bench-person-0096",
+      "bench-person-0097",
+      "bench-person-0098",
+      "bench-person-0099",
+      "bench-person-0100"
+    ],
+    "users": {
+      "bench_admin": {
+        "id": 3,
+        "username": "bench_admin"
+      },
+      "bench_reader": {
+        "id": 4,
+        "username": "bench_reader"
+      },
+      "bench_me_only": {
+        "id": 5,
+        "username": "bench_me_only"
+      },
+      "bench_tasks": {
+        "id": 6,
+        "username": "bench_tasks"
+      },
+      "bench_nomfu": {
+        "id": 7,
+        "username": "bench_nomfu"
+      },
+      "bench_actor": {
+        "id": 8,
+        "username": "bench_actor"
+      }
+    },
+    "employee_users": {
+      "bench_emp001": {
+        "id": 9,
+        "username": "bench_emp001",
+        "full_name": "Бенч Сотрудник 001"
+      },
+      "bench_emp002": {
+        "id": 10,
+        "username": "bench_emp002",
+        "full_name": "Бенч Сотрудник 002"
+      },
+      "bench_emp003": {
+        "id": 11,
+        "username": "bench_emp003",
+        "full_name": "Бенч Сотрудник 003"
+      },
+      "bench_emp004": {
+        "id": 12,
+        "username": "bench_emp004",
+        "full_name": "Бенч Сотрудник 004"
+      },
+      "bench_emp005": {
+        "id": 13,
+        "username": "bench_emp005",
+        "full_name": "Бенч Сотрудник 005"
+      },
+      "bench_emp006": {
+        "id": 14,
+        "username": "bench_emp006",
+        "full_name": "Бенч Сотрудник 006"
+      },
+      "bench_emp007": {
+        "id": 15,
+        "username": "bench_emp007",
+        "full_name": "Бенч Сотрудник 007"
+      },
+      "bench_emp008": {
+        "id": 16,
+        "username": "bench_emp008",
+        "full_name": "Бенч Сотрудник 008"
+      },
+      "bench_emp009": {
+        "id": 17,
+        "username": "bench_emp009",
+        "full_name": "Бенч Сотрудник 009"
+      },
+      "bench_emp010": {
+        "id": 18,
+        "username": "bench_emp010",
+        "full_name": "Бенч Сотрудник 010"
+      }
+    },
+    "tasks_created": 100,
+    "actor_open_tasks": 8,
+    "announcements": 20,
+    "kb_docs": [
+      "bench-kb-001",
+      "bench-kb-002",
+      "bench-kb-003",
+      "bench-kb-004",
+      "bench-kb-005",
+      "bench-kb-006",
+      "bench-kb-007",
+      "bench-kb-008",
+      "bench-kb-009",
+      "bench-kb-010"
+    ],
+    "kb_articles": [
+      {
+        "id": "bench-kba-vpn",
+        "title": "Бенч-KB: Настройка VPN для удалённой работы",
+        "facts": [
+          "vpn.bench.local",
+          "1443",
+          "7101"
+        ],
+        "code": "vpn"
+      },
+      {
+        "id": "bench-kba-password",
+        "title": "Бенч-KB: Сброс пароля учётной записи",
+        "facts": [
+          "selfservice.bench.local",
+          "90",
+          "7102"
+        ],
+        "code": "password"
+      },
+      {
+        "id": "bench-kba-cartridge",
+        "title": "Бенч-KB: Замена картриджа в МФУ",
+        "facts": [
+          "10%",
+          "105",
+          "7103"
+        ],
+        "code": "cartridge"
+      },
+      {
+        "id": "bench-kba-vacation",
+        "title": "Бенч-KB: Как оформить отпуск",
+        "facts": [
+          "14",
+          "208",
+          "7104"
+        ],
+        "code": "vacation"
+      },
+      {
+        "id": "bench-kba-newcomer",
+        "title": "Бенч-KB: Выдача оборудования новому сотруднику",
+        "facts": [
+          "BenchBook Pro",
+          "110",
+          "7105"
+        ],
+        "code": "newcomer"
+      },
+      {
+        "id": "bench-kba-mailquota",
+        "title": "Бенч-KB: Увеличение квоты почтового ящика",
+        "facts": [
+          "2048",
+          "4096",
+          "7106"
+        ],
+        "code": "mailquota"
+      },
+      {
+        "id": "bench-kba-wifi",
+        "title": "Бенч-KB: Подключение к корпоративному Wi-Fi",
+        "facts": [
+          "BENCH-CORP",
+          "BENCH-GUEST",
+          "7107"
+        ],
+        "code": "wifi"
+      },
+      {
+        "id": "bench-kba-laptoprepair",
+        "title": "Бенч-KB: Ремонт ноутбука",
+        "facts": [
+          "BenchBook Air",
+          "5",
+          "7108"
+        ],
+        "code": "laptoprepair"
+      }
+    ],
+    "trap_announcements": 3,
+    "my_files": [
+      "bench-file-001",
+      "bench-file-002",
+      "bench-file-003",
+      "bench-file-004",
+      "bench-file-005",
+      "bench-file-006",
+      "bench-file-007",
+      "bench-file-008",
+      "bench-file-009",
+      "bench-file-010",
+      "bench-file-011",
+      "bench-file-012",
+      "bench-file-013",
+      "bench-file-014",
+      "bench-file-015",
+      "bench-file-016",
+      "bench-file-017",
+      "bench-file-018",
+      "bench-file-019",
+      "bench-file-020",
+      "bench-file-021",
+      "bench-file-022",
+      "bench-file-023",
+      "bench-file-024",
+      "bench-file-025",
+      "bench-file-026",
+      "bench-file-027",
+      "bench-file-028",
+      "bench-file-029",
+      "bench-file-030"
+    ],
+    "special_files": [
+      {
+        "id": "bench-special-001",
+        "name": "акт-приёма-передачи-ноутбука.txt"
+      },
+      {
+        "id": "bench-special-002",
+        "name": "отчёт-за-май.txt"
+      },
+      {
+        "id": "bench-special-003",
+        "name": "договор-поставки-2024.txt"
+      },
+      {
+        "id": "bench-special-004",
+        "name": "презентация-проекта.txt"
+      },
+      {
+        "id": "bench-special-005",
+        "name": "акт-сверки.txt"
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "cpx_10",
+      "category": "COMPLEX",
+      "prompt": "Найди человека по телефону +7-000-0010",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "result_type": "SUCCESS",
+      "expected_outcome": "success",
+      "expected_tool_errors": [],
+      "run": {
+        "id": "39945b2d-b701-4925-8110-657f6a6ae22d",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "55b67145-6c60-42fa-a02f-25c42770513b",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "55b67145-6c60-42fa-a02f-25c42770513b",
+        "sender_ok": true,
+        "len": 341,
+        "head": "По номеру телефона +7-000-0010 найден сотрудник **Бенч Сотрудник 010**.\n\n## Информация о сотруднике\n- **ФИО**: Бенч Сотрудник 010\n- **Должность**: инженер\n- **Подразделение**: Бенч-Отдел-10\n- **Кабинет**: 110\n- **Рабочее место**: WP-010\n- **Рабочий телефон**: +7-000-0010\n- **Email**: bench010@bench.",
+        "body": "По номеру телефона +7-000-0010 найден сотрудник **Бенч Сотрудник 010**.\n\n## Информация о сотруднике\n- **ФИО**: Бенч Сотрудник 010\n- **Должность**: инженер\n- **Подразделение**: Бенч-Отдел-10\n- **Кабинет**: 110\n- **Рабочее место**: WP-010\n- **Рабочий телефон**: +7-000-0010\n- **Email**: bench010@bench.local\n\nИсточник: KB / 1c_zup_address_book"
+      },
+      "tools": {
+        "proposed": [
+          "directory.people.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "directory.people.search",
+            "args": {
+              "query": "+7-000-0010"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 6,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 1,
+            "result_count": 1,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "directory.people.search"
+        ],
+        "expected_hit": [
+          "directory.people.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "Бенч Сотрудник 010"
+        ],
+        "found": [
+          "Бенч Сотрудник 010"
+        ],
+        "missing": [],
+        "forbidden": [],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.79
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.93
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          }
+        }
+      ],
+      "wall_ms": 8633,
+      "tokens": {
+        "llm_in": 7285,
+        "llm_out": 379,
+        "jev_total": 5639,
+        "est_in": 6553,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 2
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "cpx_22",
+      "category": "COMPLEX",
+      "prompt": "Покажи мне всех руководителей групп",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "degraded",
+      "correctness": "PARTIAL",
+      "result_type": "PARTIAL",
+      "expected_outcome": "success",
+      "expected_tool_errors": [
+        {
+          "tool_id": "directory.people.search",
+          "error": "Invalid tool arguments for directory.people.search: limit: Input should be less than or equal to 15"
+        }
+      ],
+      "run": {
+        "id": "ae68f955-d601-4b5f-bb37-8087209575ee",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "64315f80-fc83-4208-bba2-99063d04fa26",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "64315f80-fc83-4208-bba2-99063d04fa26",
+        "sender_ok": true,
+        "len": 277,
+        "head": "## Результат\n- справочник: ошибка — Invalid tool arguments for directory.people.search: limit: Input should be less than or equal to 15\n- справочник, показано: 15, всего: 20, результат усечён\n- справочник, показано: 5, всего: 20, результат усечён\n\nИсточник: ITinvent / ITINVENT",
+        "body": "## Результат\n- справочник: ошибка — Invalid tool arguments for directory.people.search: limit: Input should be less than or equal to 15\n- справочник, показано: 15, всего: 20, результат усечён\n- справочник, показано: 5, всего: 20, результат усечён\n\nИсточник: ITinvent / ITINVENT"
+      },
+      "tools": {
+        "proposed": [
+          "directory.people.search",
+          "directory.people.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "directory.people.search",
+            "args": {
+              "query": "руководитель группы",
+              "limit": 50
+            },
+            "state": "error",
+            "error": "Invalid tool arguments for directory.people.search: limit: Input should be less than or equal to 15",
+            "latency_ms": null,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": null,
+            "result_count": null,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "directory.people.search",
+            "args": {
+              "query": "руководитель группы",
+              "limit": 15
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 3,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 20,
+            "result_count": 15,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "directory.people.search",
+            "args": {
+              "query": "руководитель группы",
+              "limit": 15,
+              "offset": 15
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 2,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 20,
+            "result_count": 5,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "directory.people.search",
+          "directory.people.search",
+          "directory.people.search"
+        ],
+        "expected_hit": [
+          "directory.people.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [],
+        "found": [],
+        "missing": [],
+        "forbidden": [],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [
+          "OpenRouterClientError: LLM returned invalid JSON payload.",
+          "OpenRouterClientError: LLM returned invalid JSON payload."
+        ],
+        "tool": [
+          {
+            "tool_id": "directory.people.search",
+            "error": "Invalid tool arguments for directory.people.search: limit: Input should be less than or equal to 15"
+          }
+        ],
+        "harness": null
+      },
+      "llm_calls": 5,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.54
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.91
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.14
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          }
+        }
+      ],
+      "wall_ms": 52874,
+      "tokens": {
+        "llm_in": 8073,
+        "llm_out": 256,
+        "jev_total": 5645,
+        "est_in": 17029,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": [
+        "tool_error",
+        "llm_error:app",
+        "llm_error:app"
+      ]
+    },
+    {
+      "id": "ms_16",
+      "category": "MULTISTEP",
+      "prompt": "Найди файл договор и скажи его размер",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "result_type": "SUCCESS",
+      "expected_outcome": "success",
+      "expected_tool_errors": [],
+      "run": {
+        "id": "7c3091db-234c-49e3-9568-51941787d54b",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "a49952d4-96fb-4724-b93c-6668446d1e56",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "a49952d4-96fb-4724-b93c-6668446d1e56",
+        "sender_ok": true,
+        "len": 256,
+        "head": "Найден 1 файл по запросу «договор». Размер файла составляет 0.01 МБ (~10 КБ).\n\n## Найденный файл\n\n| Имя файла | Папка | Размер | Дата изменения |\n|---|---|---|---|\n| договор-поставки-2024.txt | — | 0.01 МБ (~10 КБ) | 25.11.2026 16:41 |\n\nИсточник: Мои файлы",
+        "body": "Найден 1 файл по запросу «договор». Размер файла составляет 0.01 МБ (~10 КБ).\n\n## Найденный файл\n\n| Имя файла | Папка | Размер | Дата изменения |\n|---|---|---|---|\n| договор-поставки-2024.txt | — | 0.01 МБ (~10 КБ) | 25.11.2026 16:41 |\n\nИсточник: Мои файлы"
+      },
+      "tools": {
+        "proposed": [
+          "me.files.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "me.files.search",
+            "args": {
+              "query": "договор"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 29,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 1,
+            "result_count": 1,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "me.files.search"
+        ],
+        "expected_hit": [
+          "me.files.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "договор-поставки-2024"
+        ],
+        "found": [
+          "договор-поставки-2024"
+        ],
+        "missing": [],
+        "forbidden": [],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.02
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.17
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.89
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          }
+        }
+      ],
+      "wall_ms": 33991,
+      "tokens": {
+        "llm_in": 7796,
+        "llm_out": 955,
+        "jev_total": 5631,
+        "est_in": 7125,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 2
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "act_11",
+      "category": "ACT",
+      "prompt": "Подготовь заявку в ИТ: не работает принтер в кабинете 112",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "result_type": "SUCCESS",
+      "expected_outcome": "success",
+      "expected_tool_errors": [],
+      "run": {
+        "id": "c5d201a4-5d79-49ed-9540-9c92f3ef731d",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "f970ee9d-86d2-43e0-8613-42155f59c554",
+        "intent_mode": "act",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "f970ee9d-86d2-43e0-8613-42155f59c554",
+        "sender_ok": true,
+        "len": 359,
+        "head": "Черновик заявки в ИТ-службу подготовлен.\n\n## Параметры заявки\n- **Тема:** Заявка в IT: Не работает принтер в кабинете 112\n- **Получатель:** it@zsgp.ru\n- **Категория:** Принтер / МФУ\n- **Описание:** Не работает принтер в кабинете 112\n\nДля отправки заявки подтвердите действие в карточке ниже — письмо ",
+        "body": "Черновик заявки в ИТ-службу подготовлен.\n\n## Параметры заявки\n- **Тема:** Заявка в IT: Не работает принтер в кабинете 112\n- **Получатель:** it@zsgp.ru\n- **Категория:** Принтер / МФУ\n- **Описание:** Не работает принтер в кабинете 112\n\nДля отправки заявки подтвердите действие в карточке ниже — письмо уйдёт в службу поддержки только после вашего подтверждения."
+      },
+      "tools": {
+        "proposed": [
+          "helpdesk.request_draft"
+        ],
+        "executed": [
+          {
+            "tool_id": "helpdesk.request_draft",
+            "args": {
+              "title": "Не работает принтер в кабинете 112",
+              "description": "Не работает принтер в кабинете 112",
+              "category": "printer",
+              "urgent": false,
+              "include_computer_info": false
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 36,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": null,
+            "result_count": null,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "helpdesk.request_draft"
+        ],
+        "expected_hit": [
+          "helpdesk.request_draft"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [],
+        "found": [],
+        "missing": [],
+        "forbidden": [],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {
+          "pending_action": "mail_send",
+          "no_mutation": true
+        },
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.32
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.85
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.97
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.23
+          }
+        }
+      ],
+      "wall_ms": 12204,
+      "tokens": {
+        "llm_in": 16238,
+        "llm_out": 881,
+        "jev_total": 5673,
+        "est_in": 15753,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 2
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "ctx_10",
+      "category": "CONTEXT",
+      "prompt": "",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "result_type": "SUCCESS",
+      "expected_outcome": "success",
+      "expected_tool_errors": [],
+      "run": {
+        "id": "9145324d-02ee-427d-95d5-0bc3ce04c159",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "db885ce2-d5f9-49cb-889d-dd93193e7cc8",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "db885ce2-d5f9-49cb-889d-dd93193e7cc8",
+        "sender_ok": true,
+        "len": 234,
+        "head": "Должность сотрудника Бенч Сотрудник 070 — **инженер**.\n\n## Информация о сотруднике\n- **ФИО:** Бенч Сотрудник 070\n- **Должность:** инженер\n- **Подразделение:** Бенч-Отдел-10\n- **Кабинет:** 170\n\nИсточник: Справочник сотрудников (1С:ЗУП)",
+        "body": "Должность сотрудника Бенч Сотрудник 070 — **инженер**.\n\n## Информация о сотруднике\n- **ФИО:** Бенч Сотрудник 070\n- **Должность:** инженер\n- **Подразделение:** Бенч-Отдел-10\n- **Кабинет:** 170\n\nИсточник: Справочник сотрудников (1С:ЗУП)"
+      },
+      "tools": {
+        "proposed": [
+          "directory.people.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "directory.people.search",
+            "args": {
+              "query": "+7-000-0070"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 1,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 1,
+            "result_count": 1,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "directory.people.search"
+        ],
+        "expected_hit": [
+          "directory.people.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "инженер"
+        ],
+        "found": [
+          "инженер"
+        ],
+        "missing": [],
+        "forbidden": [],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 2,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.91
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.95
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          }
+        },
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.28
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.79
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.22
+          }
+        }
+      ],
+      "wall_ms": 21973,
+      "tokens": {
+        "llm_in": 10792,
+        "llm_out": 1308,
+        "jev_total": 11547,
+        "est_in": 9616,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": []
+    }
+  ],
+  "started_at": "2026-11-25T16:41:58.402429+00:00",
+  "finished_at": "2026-11-25T16:44:08.328384+00:00",
+  "aggregate": {
+    "scenarios": 5,
+    "outcomes": {
+      "completed": 4,
+      "degraded": 1,
+      "failed": 0
+    },
+    "correctness": {
+      "PASS": 4,
+      "FAIL": 0,
+      "PARTIAL": 1,
+      "NO_CHECK": 0,
+      "BLOCKED": 0
+    },
+    "result_types": {
+      "SUCCESS": 4,
+      "CORRECT_CLARIFICATION": 0,
+      "CORRECT_REFUSAL": 0,
+      "CORRECT_NOT_FOUND": 0,
+      "PARTIAL": 1,
+      "FAILED": 0,
+      "BLOCKED": 0
+    },
+    "llm_calls_total": 14,
+    "jev_calls_total": 6,
+    "tool_calls_executed_total": 7,
+    "tokens_in_total": 50184,
+    "tokens_out_total": 3779,
+    "usage_missing_calls": 0,
+    "jev_tokens_total": 34135,
+    "est_in_total": 56076,
+    "cost_usd_total": 0.0,
+    "cost_missing_calls": 12,
+    "wall_ms_total": 129675,
+    "expected_coverage": [
+      5,
+      5
+    ],
+    "forbidden_violations": 0,
+    "provider_error_scenarios": 0,
+    "app_error_scenarios": 1,
+    "fast_path_hits": 0,
+    "direct_read_hits": 0
+  }
+}
