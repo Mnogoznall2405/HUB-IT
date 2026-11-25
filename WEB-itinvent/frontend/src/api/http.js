@@ -71,6 +71,11 @@ const REFRESH_NETWORK_RETRY_DELAY_MS = 500;
 const REFRESH_CLAIM_POLL_MS = 150;
 const REFRESH_CLAIM_WAIT_MS = 12_000;
 const REFRESH_LOCK_NAME = 'hubit.auth.refresh';
+// A sibling's localStorage epoch write reaches this page asynchronously: a tab
+// entering the lock right behind a just-released rotation can read a stale
+// epoch and pay for a redundant rotation, burning the replay allowance.
+const REFRESH_EPOCH_PROPAGATION_MS = 400;
+const REFRESH_EPOCH_PROPAGATION_POLL_MS = 25;
 
 const readRefreshMarker = (key) => {
   try {
@@ -146,11 +151,21 @@ const performRefreshRequest = async () => {
   }
 };
 
+const waitForFreshSiblingEpoch = async () => {
+  const deadline = Date.now() + REFRESH_EPOCH_PROPAGATION_MS;
+  while (Date.now() < deadline) {
+    if (siblingRefreshedRecently()) return true;
+    await new Promise((resolve) => { setTimeout(resolve, REFRESH_EPOCH_PROPAGATION_POLL_MS); });
+  }
+  return siblingRefreshedRecently();
+};
+
 const refreshAuthSessionLocked = async () => {
   // NOTE: a tab that waited on the lock longer than the epoch window performs
   // a redundant — but legitimate — rotation of the *current* cookie, never a
   // replay. The epoch only dedupes the common fast case.
   if (siblingRefreshedRecently()) return skippedRefreshResponse();
+  if (await waitForFreshSiblingEpoch()) return skippedRefreshResponse();
   const response = await performRefreshRequest();
   markRefreshEpoch();
   return response;
@@ -176,6 +191,9 @@ const refreshAuthSessionUnlocked = async () => {
   }
   markRefreshClaim();
   try {
+    // The claim only narrows the check-then-POST race; a just-finished sibling
+    // rotation may not have propagated here yet, so absorb that lag too.
+    if (await waitForFreshSiblingEpoch()) return skippedRefreshResponse();
     const response = await performRefreshRequest();
     markRefreshEpoch();
     return response;

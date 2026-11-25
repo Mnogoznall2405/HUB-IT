@@ -23,7 +23,10 @@ export default defineConfig({
   workers: 1,
   use: {
     ...base.use,
-    baseURL: `http://127.0.0.1:${FRONTEND_PORT}`,
+    // localhost (not 127.0.0.1): Chrome rejects IP-literal WebAuthn RP IDs,
+    // and trusted-device registration is exercised via a CDP virtual
+    // authenticator (WEBAUTHN_RP_ID=localhost on the p0 backend).
+    baseURL: `http://localhost:${FRONTEND_PORT}`,
   },
   webServer: [
     {
@@ -34,9 +37,10 @@ export default defineConfig({
       reuseExistingServer: false,
     },
     {
-      command: `npx vite --port ${FRONTEND_PORT} --strictPort --host 127.0.0.1`,
+      // --host binds IPv4+IPv6 so `localhost` resolves whichever stack wins.
+      command: `npx vite --port ${FRONTEND_PORT} --strictPort --host`,
       cwd: FRONTEND_ROOT,
-      url: `http://127.0.0.1:${FRONTEND_PORT}`,
+      url: `http://localhost:${FRONTEND_PORT}`,
       timeout: 120_000,
       reuseExistingServer: false,
       env: {

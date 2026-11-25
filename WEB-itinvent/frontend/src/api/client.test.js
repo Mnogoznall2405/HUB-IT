@@ -151,7 +151,9 @@ describe('apiClient auth response interceptor', () => {
     const protectedRequest = getRejectedHandler()({
       response: { status: 401 }, config: { url: '/auth/me' },
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The coordinator absorbs cross-tab epoch propagation (~400ms worst case)
+    // before posting — wait for the shared POST rather than a single tick.
+    await vi.waitFor(() => expect(apiClientMock.post.mock.calls.length).toBe(1), { timeout: 3000 });
     const refreshCount = apiClientMock.post.mock.calls.length;
     completions.forEach((resolve) => resolve({ data: { session_id: 'session-1' } }));
     expect(refreshCount).toBe(1);

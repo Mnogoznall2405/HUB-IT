@@ -199,6 +199,17 @@ test('FE-0059/0083: multi-tab refresh — single-flight rotation, потеря �
     refreshCount += 1;
     await route.continue();
   });
+  // Эпоха от интерактивного входа (verify-2fa) живёт 10s и shared на весь
+  // context — если сетап быстрее окна, все вкладки легитимно пропустят
+  // refresh и счётчик будет 0. Чистим маркеры, чтобы фаза гарантированно
+  // требовала реальной ротации (та же техника, что и в финальной фазе теста).
+  await page1.evaluate(() => {
+    window.localStorage.removeItem('hubit.auth.refresh_epoch');
+    window.localStorage.removeItem('hubit.auth.refresh_claim');
+  });
+  // Маркеры — shared per-origin storage; удаление должно успеть распространиться
+  // во все вкладки до их 401.
+  await page1.waitForTimeout(300);
 
   // Одновременный 401 в трёх вкладках на первый запрос /chat/conversations.
   for (const p of pages) {
@@ -216,7 +227,13 @@ test('FE-0059/0083: multi-tab refresh — single-flight rotation, потеря �
   for (const p of pages) {
     await p.getByTestId('chat-sidebar-list-scroll').waitFor({ state: 'visible', timeout: 30_000 });
   }
-  // Single-flight: ровно одна ротация на все три вкладки.
+  // Single-flight: ровно одна ротация на все три вкладки. Координатор до
+  // ~400ms поглощает лаг распространения epoch — sidebar может появиться
+  // раньше POST, поэтому ждём саму ротацию, а не один тик.
+  await expect.poll(() => refreshCount, { timeout: 15_000 }).toBe(1);
+  // Дубли гонки (если бы dedup сломался) прилетели бы в пределах ~1s —
+  // даём окно и проверяем, что ротация осталась одиночной.
+  await page1.waitForTimeout(1500);
   expect(refreshCount).toBe(1);
 
   // Потеря ответа refresh (transport abort) — сессия НЕ разрушается.
@@ -268,4 +285,153 @@ test('FE-0059/0083: multi-tab refresh — single-flight rotation, потеря �
   // Разлогин в одной вкладке очищает shared localStorage.user.
   const sharedUser = await page2.evaluate(() => window.localStorage.getItem('user'));
   expect(sharedUser).toBeNull();
+});
+
+// ---------- FE-0198 strict trusted-device ----------
+
+const addVirtualAuthenticator = async (page) => {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("WebAuthn.enable");
+  const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    options: {
+      protocol: "ctap2",
+      transport: "internal",
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+  return { cdp, authenticatorId };
+};
+
+const registerButton = (dialog) => dialog.getByRole("button", { name: /Через Windows Hello|Запомнить/ });
+const skipButton = (dialog) => dialog.getByRole("button", { name: "Не сейчас" });
+const continueButton = (dialog) => dialog.getByRole("button", { name: "Продолжить" });
+
+// Пост-логин лендинг зависит от onboarding: /about («Перейти в HUB») либо
+// сразу оболочка приложения. Дожидаемся любого и входим в HUB при необходимости.
+// 앞쪽 테스트가 시드 계정 3개의 2FA를 모두 등록하므로, strict 테스트는 전용
+// 시드 e2e_td(등록 안 됨)와 e2e_user(누구도 등록하지 않음)를 쓴다.
+const TD_USER = { user: "e2e_td", pass: "e2e-local-td-pass" };
+const TD_USER2 = { user: "e2e_user", pass: "e2e-local-user-pass" };
+
+const enterHub = async (page) => {
+  const main = page.getByTestId("main-layout-content");
+  const hub = page.getByRole("button", { name: "Перейти в HUB" }).first();
+  await main.or(hub).first().waitFor({ state: "visible", timeout: 30_000 });
+  if (!(await main.isVisible().catch(() => false))) await hub.click();
+  await expect(main).toBeVisible({ timeout: 30_000 });
+};
+
+test("FE-0198 strict: обязательный trusted-device prompt — регистрация, ошибки, reload, повторный вход", async ({ page, context }) => {
+  test.setTimeout(180_000);
+  // Loopback is in the stand's internal CIDRs (rate-limit exemption); the
+  // required trusted-device prompt is external-only. Peer 127.0.0.1 is a
+  // trusted proxy, so a forwarded public IP classifies the session external.
+  await context.setExtraHTTPHeaders({ "x-forwarded-for": "203.0.113.51" });
+  const { cdp, authenticatorId } = await addVirtualAuthenticator(page);
+  const { secret } = await enrollTotpViaApi(TD_USER);
+
+  // 1) Логин → REQUIRED prompt обязан появиться (0 discoverable devices, external).
+  await page.goto("/login");
+  await fillCredentials(page, TD_USER);
+  await submitTotpVerify(page, secret);
+  const dialog = page.getByTestId("login-remember-device-dialog");
+  await dialog.waitFor({ state: "visible", timeout: 20_000 }); // FAIL если диалог не появился
+
+  // Hold удерживает /login, экземпляр Login жив, приложение не смонтировано.
+  expect(page.url()).toContain("/login");
+  await expect(page.getByTestId("main-layout-content")).toHaveCount(0);
+  await expect(registerButton(dialog)).toBeVisible();
+  // Required + supported: 'Не сейчас' скрыт политикой.
+  await expect(skipButton(dialog)).toBeHidden();
+  // Escape не закрывает обязательный диалог.
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(500);
+  await expect(dialog).toBeVisible();
+
+  // 2) Reload во время обязательного prompt: сессия уже зафиксирована —
+  // /login честно редиректит на пост-логин страницу (сессия не теряется).
+  await page.reload();
+  await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 30_000 });
+  // Авторизованный вход в HUB доступен — значит reload не разлогинил.
+  await enterHub(page);
+  // Новый вход — required prompt появляется снова (устройств всё ещё 0).
+  await context.clearCookies();
+  await page.evaluate(() => window.localStorage.clear());
+  await page.goto("/login");
+  await page.getByTestId("password-auth-form").waitFor({ state: "visible", timeout: 15_000 });
+  await fillCredentials(page, TD_USER);
+  await submitTotpVerify(page, secret);
+  await dialog.waitFor({ state: "visible", timeout: 20_000 });
+
+  // 3) Ошибка регистрации: бэкенд отклонил verify → ошибка в диалоге, остаёмся на /login.
+  await page.route("**/api/v1/auth/trusted-devices/register/verify", (route) =>
+    route.fulfill({ status: 400, contentType: "application/json", body: '{"detail":"synthetic verify failure"}' }));
+  await dialog.locator("#trusted-device-label").fill("E2E device");
+  await registerButton(dialog).click();
+  await expect(dialog.locator("text=synthetic verify failure")).toBeVisible({ timeout: 15_000 });
+  await expect(dialog).toBeVisible();
+  expect(page.url()).toContain("/login");
+  await page.unroute("**/api/v1/auth/trusted-devices/register/verify");
+
+  // 4) Успешная регистрация через виртуальный аутентификатор → диалог закрыт → редирект с /login.
+  await registerButton(dialog).click();
+  await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 30_000 });
+  await enterHub(page);
+  const devices = await page.evaluate(async () => {
+    const r = await fetch("/api/v1/auth/trusted-devices", { credentials: "include" });
+    return r.ok ? r.json() : { error: r.status };
+  });
+  expect(Array.isArray(devices) ? devices.length : -1).toBeGreaterThanOrEqual(1);
+
+  // 5) Reload в приложении — сессия жива.
+  await page.reload();
+  await expect(page.getByTestId("main-layout-content")).toBeVisible({ timeout: 30_000 });
+  expect(page.url()).not.toContain("/login");
+
+  // 6) Повторный вход: >0 discoverable devices → OPTIONAL prompt, 'Не сейчас' доступен.
+  // Зарегистрированный passkey в аутентификаторе включает авто-вход на /login —
+  // подменяем его свежим аутентификатором без resident credentials для ручного входа.
+  await cdp.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId });
+  await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    options: {
+      protocol: "ctap2",
+      transport: "internal",
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+  // Access-token живёт в localStorage — одного clearCookies мало для разлогина.
+  await context.clearCookies();
+  await page.evaluate(() => window.localStorage.clear());
+  await page.goto("/login");
+  await fillCredentials(page, TD_USER);
+  await submitTotpVerify(page, secret);
+  await dialog.waitFor({ state: "visible", timeout: 20_000 });
+  await expect(skipButton(dialog)).toBeVisible();
+  await skipButton(dialog).click();
+  await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 30_000 });
+});
+
+test("FE-0198 strict: unsupported WebAuthn — required-подсказка, 'Продолжить' по политике", async ({ page, context }) => {
+  await context.setExtraHTTPHeaders({ "x-forwarded-for": "203.0.113.52" });
+  const { secret } = await enrollTotpViaApi(TD_USER2);
+  // Без виртуального аутентификатора WebAuthn недоступен headless.
+  await page.goto("/login");
+  await fillCredentials(page, TD_USER2);
+  await submitTotpVerify(page, secret);
+  const dialog = page.getByTestId("login-remember-device-dialog");
+  // e2e_user: 0 discoverable devices → required-подсказка, но режим unsupported.
+  await dialog.waitFor({ state: "visible", timeout: 20_000 });
+  expect(page.url()).toContain("/login");
+  await expect(page.getByTestId("main-layout-content")).toHaveCount(0);
+  // Unsupported: только 'Продолжить' — регистрационной кнопки нет.
+  await expect(continueButton(dialog)).toBeVisible();
+  await expect(registerButton(dialog)).toHaveCount(0);
+  await continueButton(dialog).click();
+  await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 30_000 });
 });
