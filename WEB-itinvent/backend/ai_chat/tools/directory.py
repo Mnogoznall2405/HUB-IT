@@ -74,6 +74,11 @@ class PeopleSearchArgs(BaseModel):
     department: Optional[str] = Field(default=None, max_length=200, description="Exact department name to filter by")
     absent_only: bool = Field(default=False, description="Only people who are absent now (vacation, sick leave, trip)")
     limit: int = Field(default=10, ge=1, le=MAX_PEOPLE)
+    # cpx_22: pagination was unreachable — the service supports offset but the
+    # schema forbade it, so "show ALL leaders" hard-failed with validation
+    # errors instead of paging. limit stays small (LLM context economy);
+    # offset makes the rest reachable in follow-up calls.
+    offset: int = Field(default=0, ge=0, description="Skip this many matches for pagination (use with the same query when the user needs rows beyond the limit)")
 
     @field_validator("query", "department", mode="before")
     @classmethod
@@ -115,6 +120,8 @@ class PeopleSearchTool(AiTool):
         kwargs: dict[str, Any] = {}
         if args.department:
             kwargs["department"] = args.department
+        if int(args.offset or 0) > 0:
+            kwargs["offset"] = int(args.offset)
         try:
             payload = address_book_service.search(
                 args.query or "",

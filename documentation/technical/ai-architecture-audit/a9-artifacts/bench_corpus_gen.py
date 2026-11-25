@@ -253,7 +253,7 @@ add("READ", prompt="Что у меня нового: письма, задачи,
 add("READ", prompt="Есть ли инструкция, что делать при блокировке учётки?",
     expected_tools=["kb.articles.search"], required_facts=["7102"])
 add("READ", prompt="Найди бенч сотрудника по фамилии",
-    expect={},
+    expect={}, expected_outcome="clarification",
     note="underspecified (all share the surname) — expect clarification or bounded list, not hallucination")
 
 # =============================================================================
@@ -685,7 +685,7 @@ for s in scenarios:
 # write corpus
 # =============================================================================
 meta = {
-    "version": "a11-v5",
+    "version": "a11-v6",
     "generator": "bench_corpus_gen.py",
     "categories": {k: v for k, v in sorted(_counter.items())},
     "total": len(scenarios),

@@ -1,6 +1,6 @@
 {
  "meta": {
-  "version": "a11-v5",
+  "version": "a11-v6",
   "generator": "bench_corpus_gen.py",
   "categories": {
    "ACT": 20,
@@ -1331,6 +1331,7 @@
    "forbidden_facts": [],
    "expect": {},
    "prompt": "Найди бенч сотрудника по фамилии",
+   "expected_outcome": "clarification",
    "note": "underspecified (all share the surname) — expect clarification or bounded list, not hallucination"
   },
   {
