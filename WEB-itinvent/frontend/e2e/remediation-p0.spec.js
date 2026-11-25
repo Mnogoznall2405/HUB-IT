@@ -287,6 +287,123 @@ test('FE-0059/0083: multi-tab refresh — single-flight rotation, потеря �
   expect(sharedUser).toBeNull();
 });
 
+// ---------- FE-0059 strict lost rotation response ----------
+
+test('FE-0059 strict: ротация закоммичена на сервере, ответ потерян — retry внутри grace восстанавливает, после grace — дефинитивный отказ', async ({ page, context }) => {
+  test.setTimeout(120_000);
+  const REFRESH_USER = { user: 'e2e_refresh', pass: 'e2e-local-refresh-pass' };
+  const { secret } = await enrollTotpViaApi(REFRESH_USER);
+  await page.goto('/login');
+  await fillCredentials(page, REFRESH_USER);
+  await submitTotpVerify(page, secret);
+  await waitAuthed(page);
+  await page.goto('/chat');
+  await page.getByTestId('chat-sidebar-list-scroll').waitFor({ state: 'visible', timeout: 30_000 });
+
+  const clearRefreshMarkers = () => page.evaluate(() => {
+    window.localStorage.removeItem('hubit.auth.refresh_epoch');
+    window.localStorage.removeItem('hubit.auth.refresh_claim');
+  });
+  // Первый GET conversations после reload отвечает 401 → клиентский refresh.
+  const armConversation401 = async () => {
+    let fired = false;
+    await page.route('**/api/v1/chat/conversations**', async (route) => {
+      if (fired || route.request().method() !== 'GET') {
+        await route.continue();
+        return;
+      }
+      fired = true;
+      await route.fulfill({ status: 401, contentType: 'application/json', body: '{"detail":"expired"}' });
+    });
+  };
+  // Настоящая «потеря ответа»: ротация выполняется НАПРЯМУЮ на бэкенде отдельным
+  // request-контекстом с текущей refresh-cookie страницы. Бэкенд коммитит новую
+  // пару, но страница её не получает — cookie jar держит уже consumed-токен.
+  const rotateServerSide = async () => {
+    const jar = await context.cookies();
+    const refreshCookie = jar.find((c) => c.name === 'itinvent_refresh_token');
+    expect(refreshCookie, 'refresh cookie в jar').toBeTruthy();
+    const api = await request.newContext({
+      baseURL: BACKEND,
+      extraHTTPHeaders: { Cookie: `itinvent_refresh_token=${refreshCookie.value}` },
+    });
+    const rotated = await api.post('/api/v1/auth/refresh');
+    expect(rotated.status()).toBe(200);
+    const setCookie = rotated.headers()['set-cookie'] || '';
+    expect(setCookie).toContain('itinvent_refresh_token');
+    await api.dispose();
+    return Date.now();
+  };
+
+  // --- Сценарий A: ротация на сервере закоммичена, ответ клиенту потерян,
+  // клиент ретраит ВНУТРИ grace (3s на стенде) — grace-serve возвращает ту же
+  // пару и сессия остаётся живой.
+  await rotateServerSide();
+  // Login-эпоха (<10s) замаскировала бы transport-ветку — чистим маркеры.
+  await clearRefreshMarkers();
+  let gracePosts = 0;
+  await page.route('**/api/v1/auth/refresh', async (route) => {
+    gracePosts += 1;
+    await route.continue();
+  });
+  await armConversation401();
+  await page.reload();
+  // Ровно один клиентский POST — grace-serve старого jti (первая подача).
+  await expect.poll(() => gracePosts, { timeout: 15_000 }).toBe(1);
+  await expect(page.getByTestId('chat-sidebar-list-scroll')).toBeVisible({ timeout: 30_000 });
+  // Жизнеспособность новой сессии: чистый reload без подмен — /auth/me 200,
+  // приложение грузится, пользователь не разлогинен.
+  await page.unroute('**/api/v1/chat/conversations**');
+  await page.unroute('**/api/v1/auth/refresh');
+  await page.reload();
+  await expect(page.getByTestId('chat-sidebar-list-scroll')).toBeVisible({ timeout: 30_000 });
+  const meOk = await page.evaluate(async () => (await fetch('/api/v1/auth/me', { credentials: 'include' })).ok);
+  expect(meOk).toBe(true);
+
+  // --- Сценарий B: ротация закоммичена, ответ потерян, реальный POST только
+  // ПОСЛЕ истечения grace → дефинитивный отказ (ограничение протокола).
+  const committedAt = await rotateServerSide();
+  // Свежая эпоха сценария A (<10s) заставила бы lock-путь честно пропустить
+  // refresh — чистим маркеры, чтобы клиент реально шёл на бэкенд.
+  await clearRefreshMarkers();
+  let abortedPosts = 0;
+  await page.route('**/api/v1/auth/refresh', async (route) => {
+    // Клиентский POST и его 500ms-retry теряются в транспорте — до бэкенда
+    // не доходят, grace-hit не тратится (так «ответ потерян» остаётся потерянным).
+    abortedPosts += 1;
+    await route.abort();
+  });
+  await armConversation401();
+  await page.reload();
+  // Ждём пока клиентский retry сгорит и grace (10s на стенде) истечёт от
+  // момента коммита ротации.
+  await expect.poll(() => abortedPosts, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
+  const graceLeft = 11_000 - (Date.now() - committedAt);
+  if (graceLeft > 0) await page.waitForTimeout(graceLeft);
+  // Transport-потери — не дефинитивный отказ: logout НЕ должен был произойти.
+  expect(page.url()).not.toContain('/login');
+  expect(await page.evaluate(() => window.localStorage.getItem('user') !== null)).toBe(true);
+
+  // Grace истёк: реальный POST со старой cookie → revoked_jti → дефинитивный 401.
+  // Маркер эпохи после двойной потери стоит в будущем (+10s) — чистим, чтобы
+  // запрос дошёл до бэкенда и показал настоящий ответ протокола.
+  await page.unroute('**/api/v1/auth/refresh');
+  await page.unroute('**/api/v1/chat/conversations**');
+  await clearRefreshMarkers();
+  let finalPosts = 0;
+  await page.route('**/api/v1/auth/refresh', async (route) => {
+    finalPosts += 1;
+    await route.continue();
+  });
+  await armConversation401();
+  await page.reload();
+  await expect.poll(() => finalPosts, { timeout: 15_000 }).toBe(1);
+  await expect(page).toHaveURL(/\/login/, { timeout: 30_000 });
+  expect(await page.evaluate(() => window.localStorage.getItem('user'))).toBeNull();
+  // Ограничение протокола: rotated-пара на сервере жива, но клиент её никогда
+  // не получил — восстановление невозможно без ослабления replay-защиты.
+});
+
 // ---------- FE-0198 strict trusted-device ----------
 
 const addVirtualAuthenticator = async (page) => {

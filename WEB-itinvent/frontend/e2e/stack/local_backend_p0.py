@@ -32,6 +32,11 @@ os.environ.setdefault("WEBAUTHN_ORIGIN", "http://localhost:5199")
 # secrets key; the default stack never exercises it (policy=off). Test-only
 # Fernet key — not a real credential.
 os.environ["MAIL_CREDENTIALS_KEY"] = "DWPV3jjPspHRz4ux5EFBqHLPHY6TkDbEXGeADj4VW9w="
+# Short rotation grace so the lost-response E2E can cross the boundary inside
+# a test timeout, yet comfortably above the page's reload+boot latency needed
+# to land a replay inside the window. Multi-tab single-flight never replays
+# (siblings skip via the epoch marker), so nothing else cares.
+os.environ["REFRESH_ROTATION_GRACE_SECONDS"] = "10"
 
 # Earlier tests in the P0 spec enroll all three seed users for 2FA, so the
 # strict trusted-device test needs a dedicated still-unenrolled account.
@@ -56,11 +61,22 @@ def _seed_with_td_user() -> None:
             full_name="E2E Trusted",
             email="e2e_td@example.com",
         )
+    # Dedicated user for the FE-0059 lost-rotation-response spec: it must
+    # enroll 2FA itself, like every other browser test in this file.
+    if user_service.get_by_username("e2e_refresh") is None:
+        user_service.create_user(
+            "e2e_refresh",
+            password="e2e-local-refresh-pass",
+            role="operator",
+            full_name="E2E Refresh",
+            email="e2e_refresh@example.com",
+        )
     now = datetime.now(timezone.utc)
     with app_session() as session:
-        row = session.scalars(select(AppUser).where(AppUser.username == "e2e_td")).one()
-        if row.about_onboarding_completed_at is None:
-            row.about_onboarding_completed_at = now
+        for name in ("e2e_td", "e2e_refresh"):
+            row = session.scalars(select(AppUser).where(AppUser.username == name)).one()
+            if row.about_onboarding_completed_at is None:
+                row.about_onboarding_completed_at = now
 
 
 local_backend._seed = _seed_with_td_user
