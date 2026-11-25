@@ -23,9 +23,9 @@
   "byTier": {
    "IMPLEMENTED": 260,
    "REJECTED": 49,
-   "PARTIALLY_FIXED": 2,
+   "PARTIALLY_FIXED": 1,
    "OPEN": 5,
-   "VERIFIED_FIXED": 7,
+   "VERIFIED_FIXED": 8,
    "BLOCKED": 1
   },
   "total": 324,
@@ -34,7 +34,7 @@
    "rejected": 49,
    "open": 5
   },
-  "integrationSha": "e68ab6a0",
+  "integrationSha": "79093cb0",
   "revisedAt": "2026-11-24"
  },
  "issues": [
@@ -551,9 +551,10 @@
    "commit": "e4532f81",
    "note": "PR #31 fix/networks-mobile-render: mobile card lists in EquipmentTab/SocketsTab render in 100-card chunks + \"Показать ещё\" (existing render-window convention); desktop virtualization untouched. Tests +3. PR open.",
    "verification": {
-    "tier": "PARTIALLY_FIXED",
+    "tier": "VERIFIED_FIXED",
     "inIntegration": true,
-    "basis": "chunk-рендеринг реализован, но нагрузка 10k портов не измерена на стенде"
+    "basis": "Измерено на прод-билде, 10k портов + 10k розеток + 40 устройств, Playwright/CDP. Мобильный: settle 20.8s→1.9s, DOM-узлы 180591→2393 (~75x), heap 662→52MB (~12x), long-tasks 19.4s/5шт (max 10.3s)→0, scroll p95 183→34ms; показывается 100 карточек + «Показать ещё». Десктопный паритет (~900 узлов, виртуализация без изменений). Бенч: .gate-tmp/fe0023-bench.cjs + serve-prod.mjs на HUB-IT-final.",
+    "evidence": "gate-tmp FE-0023 A/B benchmark 926dd9f5 vs final"
    }
   },
   {
