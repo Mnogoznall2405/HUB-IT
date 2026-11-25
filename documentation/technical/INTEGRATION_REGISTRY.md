@@ -18,9 +18,12 @@
   op-based versioned recents sync (`{ops, base_version, clear}` + legacy
   `{sticker_ids}` bump-head merge), `chat/db.py`, `chat/models.py`,
   `chat/schemas.py`, `telegram_sticker_service.py`.
-- Миграции `20261124_0178_chat_sticker_favorites` +
-  `20261124_0179_chat_recent_sticker_sync_state` (down-цепь на
-  `20261124_0177_ai_summary_llm_checkpoint`).
+- Миграции `20261124_0180_chat_sticker_favorites` +
+  `20261124_0181_chat_recent_sticker_sync_state`. Исходно в PR #69 они были
+  `0178`/`0179` с down-цепью на `20261124_0177_ai_summary_llm_checkpoint`;
+  после merge `origin/main` (`af485f22`, PR #68) эти номера заняты My Files,
+  поэтому sticker-цепь перенумерована в `0180`/`0181` (+ `0182` для op-batch)
+  и стыкуется к `20261124_0179_my_files_member_updated_at`.
 - Frontend: unified scoped sticker store (`lib/chatStickerStore.js`),
   `ChatStickerSuggestions`, `ChatStickerManageDialog`, переработанный
   `TelegramStickersTab`, `stickerSearchIndex`, `api/chatStickers.js`,
@@ -45,7 +48,7 @@ chat-batch логика композера живёт в `useChatComposerSending
 
 | Проверка | Результат |
 |---|---|
-| Alembic heads | **один head `20261124_0179`**; цепь 0179→0178→0177→0176 цела, merge-revision не потребовался |
+| Alembic heads (на merge-кандидате `e6aa9251`, до post-main перенумерации) | **один head `20261124_0179`**; цепь 0179→0178→0177→0176 была цела, merge-revision не потребовался |
 | Миграции 0178+0179 (sqlite, runpy) | upgrade: `chat_user_favorite_stickers`, `chat_user_recent_stickers`, `chat_user_recent_sticker_state`, колонка `position`, unique/индексы — все созданы; downgrade чистый |
 | Backend pytest | `test_chat_sticker_favorites.py` (root+backend) + `test_chat_migrations_scope_independent.py` — **92/92 PASS**; `test_chat_telegram_stickers.py` + `test_chat_attachment_sticker_preview.py` — **28/28 PASS** |
 | Frontend unit | **278/278 PASS**: TelegramStickersTab, chatStickerStore, chatStickers api, ChatStickerSuggestions, ChatStickerManageDialog, ChatThread, ChatComposer.behavior, stickerSearchIndex.perf (211) + chat-batch сьюты chatRegressionFlows/useReadReceipts/useChatComposerSending(×2) (67) |
@@ -107,8 +110,9 @@ prod-сборка + `vite preview`, backend через decoy.
   `{items, version}` без повторного применения и без bump'а версии.
   История, а не один last-id: повторяемый пакет не обязан быть последней
   записью — между ним и retry мог лечь пакет другого устройства. Новая
-  миграция `20261125_0180_chat_recent_sticker_op_batch` (idempotent,
-  create-if-missing в реальной схеме `chat`/`public`).
+  миграция `20261125_0182_chat_recent_sticker_op_batch` (idempotent,
+  create-if-missing в реальной схеме `chat`/`public`; до post-main
+  перенумерации значилась как `20261125_0180`).
 - **PG-гейт выполнен** на изолированном portable PostgreSQL 17
   (`127.0.0.1:55433`, scratch-кластер `pg-v31-data`): новый файл
   `tests/test_pg_sticker_gate.py` — scratch-БД `stgt_*`, chat-scope
@@ -141,9 +145,29 @@ prod-сборка + `vite preview`, backend через decoy.
 | `WEB-itinvent/backend/tests/test_chat_sticker_favorites.py` | **29/29 PASS** — +5 новых: 3 lost-response сценария (replay после чужого clear, replay clear после чужого bump, параллельные flush'и одного журнала), version не ре-bump'ится, legacy-без-batch-id совместимость |
 | `tests/test_pg_sticker_gate.py` на PG 17 scratch | **2/2 PASS** (upgrade/dedup/concurrent/downgrade/re-upgrade) |
 | Sticker + scope suites (root `tests/`) | `test_chat_sticker_favorites` 15/15, `test_chat_telegram_stickers` 26/26, `test_chat_attachment_sticker_preview` 2/2, `test_chat_migrations_scope_independent` 55/55 |
-| Alembic heads | один head `20261125_0180` |
+| Alembic heads | на момент follow-up — один head `20261125_0180`; после merge main/PR #68 и перенумерации — `20261125_0182` |
 | Frontend unit | `chatStickerStore.test.js` 24/24 (включая 3 новых batchId-теста: стабильность на retry, ротация на новых ops, один id у параллельных flush'ей) + `chatStickers.test.js` 17/17 |
 | E2E login без `MAIL_CREDENTIALS_KEY` | `POST /api/v1/auth/login` → `authenticated` на e2e-стеке |
+
+#### Post-main merge `af485f22`: перенумерация sticker chain
+
+После merge `origin/main` в `integration/frontend-remediation` фактически
+обнаружено дублирование **самих revision id** `20261124_0178` и
+`20261124_0179` (My Files PR #68 и Sticker V2), а не только имён файлов.
+Финальная линейная цепь:
+
+`20261118_0176 → 20261124_0177 (A8) → 20261124_0178 (my_files indexes) →
+20261124_0179 (my_files member updated_at) → 20261124_0180
+(chat_sticker_favorites) → 20261124_0181 (chat_recent_sticker_sync_state) →
+20261125_0182 (chat_recent_sticker_op_batch)`.
+
+`alembic heads` после перенумерации — единственный `20261125_0182`. Scratch
+БД, уже прошедшие старые sticker `0178–0180`, содержат устаревший
+`system.alembic_version` и не переносятся; для gate используются только свежие
+scratch-БД. Повторный PG17-gate после перенумерации: **4/4 PASS** — fresh
+upgrade→head, upgrade с `0177`, upgrade с My Files-side `0179` с сохранением
+pre-existing install row, op-batch dedup/concurrency, sticker-only downgrade
+`0182→0179` и re-upgrade.
 
 Известная проблема окружения (не связана с изменениями): Playwright-прогон
 в этом worktree падает белой страницей — vite dep-optimizer генерирует

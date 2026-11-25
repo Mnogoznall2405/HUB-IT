@@ -1,7 +1,7 @@
 """Add applied op-batch id history to the per-user recents-sync state.
 
-Revision ID: 20261125_0180
-Revises: 20261124_0179
+Revision ID: 20261125_0182
+Revises: 20261124_0181
 Create Date: 2026-11-25 10:00:00.000000
 
 ``chat_user_recent_sticker_state.applied_op_batch_ids`` stores a JSON array
@@ -25,8 +25,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20261125_0180"
-down_revision = "20261124_0179"
+revision = "20261125_0182"
+down_revision = "20261124_0181"
 branch_labels = None
 depends_on = None
 

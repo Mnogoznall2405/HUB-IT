@@ -869,6 +869,10 @@ class TelegramStickerService:
                 ),
             )
             .where(or_(*(ChatMessageAttachment.file_name.like(pattern) for pattern in patterns)))
+            # Only server-side sticker messages confer the entitlement. A user
+            # upload may control file_name, but files_meta_json cannot assign
+            # media_kind='sticker' (covered by the upload regression tests).
+            .where(ChatMessageAttachment.media_kind == "sticker")
             .distinct()
         ).scalars()
         # Extract the real sticker id from each matched file name and keep only

@@ -179,23 +179,26 @@ barrel import in `a7359e78` (all 147 other files already used the barrel form).
 
 ## 6. Migrations
 
-Chain state at assembly (re-verified now): **single head `20261125_0180`**,
-183 revisions, no missing down-revisions, no orphans, one pre-existing historical
-merge revision. Sticker chain: `0176 → 0177 (A8, main) → 0178 favorites →
-0179 recents sync state → 0180 op-batch dedup` — no merge-revision needed.
+Chain state after the post-main consolidation merge (`af485f22`): **single head
+`20261125_0182`**, no missing down-revisions, no orphans, one pre-existing
+historical merge revision. Full chain tail: `0176 → 0177 (A8) → 0178 (my-files
+indexes) → 0179 (my-files member updated_at) → 0180 sticker favorites →
+0181 recents sync state → 0182 op-batch dedup` — no merge-revision needed.
+The earlier assembly-time numbering (`0180` for op-batch) was renumbered because
+PR #68 occupied revision ids 0178/0179.
 
 | Scenario | Evidence | Result |
 |---|---|---|
 | Fresh schema upgrade→head (sqlite) | 30/30 sticker migration tests | **PASS** |
-| Upgrade with 0176/0177 already applied | `test_chat_migrations_scope_independent` 55/55 incl. per-revision upgrade/downgrade matrices for 0178/0179/0180 | **PASS** |
+| Upgrade with 0176/0177 already applied | `test_chat_migrations_scope_independent` 55/55 incl. per-revision upgrade/downgrade matrices for 0180/0181/0182 | **PASS** |
 | Scope independence (all/app/chat, legacy `public` routing) | scope suite 55/55; migrations are create-if-missing idempotent and never skip on `itinvent_scope` | **PASS** |
 | Real PostgreSQL 17.6 chain check | 16/16 checks (fresh schema, upgrade with 0177 applied, scope all/app/chat, rollback-compat) — `db20042c` | **PASS** |
-| PG17 isolated-cluster gate | `tests/test_pg_sticker_gate.py` scratch `stgt_*` DB on `127.0.0.1:55433`: upgrade→head, replay no-op under FOR UPDATE, two racing threads serialize to versions 2/3, downgrade→0177, re-upgrade | **2/2 PASS** |
+| PG17 isolated-cluster gate | `tests/test_pg_sticker_gate.py` scratch `stgt_*` DB on `127.0.0.1:55433`: fresh upgrade→head, upgrade paths from 0177 and My Files-side 0179 with a preserved pre-existing sticker install row, replay no-op under FOR UPDATE, two racing threads serialize to versions 2/3, sticker-only downgrade→0179, re-upgrade | **4/4 PASS** |
 | Rerun/idempotency | re-upgrade after downgrade clean on both sqlite and PG | **PASS** |
 | Alembic graph integrity (now) | `gate_check.py`: single head, 183/183 head ancestors, no orphans | **PASS** |
 
 Production processes never apply migrations; release-time explicit command per
-the PM2 runbook. Downgrade path 0180→0177 verified on sqlite and PG17 (rollback plan §11).
+the PM2 runbook. Sticker-only downgrade path 0182→0179 verified on PG17; full-chain sqlite rollback coverage reaches 0177 (rollback plan §11).
 
 ## 7. Performance A/B
 
@@ -247,13 +250,13 @@ cold_nav_login p95 2/30 outlier samples (~1.4 s) and route-transition p95 tails
 
 Gate verdict: **PASS** with one LOW finding.
 
-- **F-1 (LOW): attachment filename forgery on entitlement leg-3.** On the third
-  entitlement leg the attachment filename presented to the user can be forged
-  by the sender-side metadata. Impact limited to display/social-engineering
-  surface — no content or ACL bypass: entitlement checks themselves hold.
-  Recommendation documented: sanitize/verify the filename server-side at the
-  entitlement boundary and prefer server-recorded metadata over client-echoed
-  values. Accepted as a post-release hardening item; does not block the gate.
+- **F-1 (LOW, fixed in consolidation): attachment filename forgery on
+  entitlement leg-3.** The third entitlement leg previously trusted the
+  user-controlled attachment filename shape. The final consolidation requires
+  the server-side `media_kind='sticker'` marker as well as the server-written
+  `sticker-{id}--{pack}` filename shape; regression coverage proves that a
+  forged upload filename does not grant favorite/recents entitlement and that
+  clients cannot self-assign `media_kind='sticker'`.
 - No auth/session surface regressions: auth-batch (#48) and refresh-coordination
   (#29) changes are covered by the auth vitest suites and the auth-guards e2e
   (incl. the new viewer-seed admin-area bounce test).
@@ -362,7 +365,7 @@ menu; spec-level stabilization in `address-book`, `chat-open-desktop`,
 
 ### Release order (hard requirement)
 
-1. **Alembic first:** apply migrations to head (`20261125_0180`) per the PM2
+1. **Alembic first:** apply migrations to head (`20261125_0182`) per the PM2
    runbook — production processes never self-migrate. The new ORM reads
    `applied_op_batch_ids` in SELECT, so code without the column fails: migration
    strictly before/with backend.
@@ -376,9 +379,10 @@ menu; spec-level stabilization in `address-book`, `chat-open-desktop`,
 
 - Code: revert the consolidation merge commit(s) on main (`git revert -m 1`),
   republish frontend, restart backend via the standard scripts.
-- DB: alembic downgrade path **verified** — `20261125_0180 → 0177` downgrade +
-  re-upgrade exercised on sqlite and on the isolated PG17 cluster
-  (`test_pg_sticker_gate` 2/2). Downgrade removes only sticker-V2 additive
+- DB: alembic downgrade path **verified** — sticker-only
+  `20261125_0182 → 20261124_0179` downgrade + re-upgrade exercised on the
+  isolated PG17 cluster (`test_pg_sticker_gate` 4/4); full-chain downgrade to
+  0177 remains covered by the sqlite migration matrix. Downgrade removes only sticker-V2 additive
   tables/columns (`chat_user_favorite_stickers`, `chat_user_recent_sticker*`,
   `position`, `applied_op_batch_ids`); no pre-existing data touched.
 - The migrations are additive-only; keeping them in place while rolling back
