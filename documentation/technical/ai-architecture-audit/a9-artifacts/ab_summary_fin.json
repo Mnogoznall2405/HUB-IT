@@ -8,8 +8,8 @@
       "failed": 0
     },
     "correctness": {
-      "PASS": 10,
-      "FAIL": 8,
+      "PASS": 11,
+      "FAIL": 7,
       "NO_CHECK": 0
     },
     "llm_calls_total": 61,
@@ -98,5 +98,5 @@
     "tokens_in_total": 154892,
     "exit": 0
   },
-  "_note": "Config C (A9 ON + A10 OFF) is identical to B on the merged tree — A10 flags default OFF; B's numbers serve for C."
+  "_note": "Config C (A9 ON + A10 OFF) is identical to B on the merged tree — A10 flags default OFF; B's numbers serve for C. correctness recomputed post-hoc with final expect semantics (postfix_expect.py)."
 }
