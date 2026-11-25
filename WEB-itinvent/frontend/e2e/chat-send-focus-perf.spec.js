@@ -14,12 +14,17 @@
 //     ChatStickerSuggestions path (suspect a).
 //   * E2E_FOCUS_RUNS — sample count (default 40).
 //   * E2E_FOCUS_VIEWPORTS — comma list, e.g. "1440x900,988x838".
+//   * E2E_FOCUS_ATTRIB=1 — per-commit attribution: histogram of rendered
+//     fibers (PerformedWork) by component name + region counters
+//     (dock/composer/thread/none by DOM containment). Fiber names are
+//     minified in production builds — run attribution in dev mode
+//     (without E2E_BUILD=1); commit composition is branch-identical.
 // Run: E2E_LOCAL=1 E2E_BUILD=1 npx playwright test e2e/chat-send-focus-perf.spec.js
 import { test, expect } from '@playwright/test';
 import crypto from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 
-/* global window, document, performance, PerformanceObserver, XMLHttpRequest, fetch, process */
+/* global window, document, performance, PerformanceObserver, XMLHttpRequest, fetch, process, Element */
 
 const U1 = process.env.E2E_USERNAME || 'e2e_admin';
 const P1 = process.env.E2E_PASSWORD || 'e2e_admin_pass';
@@ -29,6 +34,8 @@ const DOCK_MODE = process.env.E2E_FOCUS_DOCK_MODE || (process.env.E2E_FOCUS_DOCK
 const DOCK_WARM = DOCK_MODE === 'warm';
 const DOCK_OPEN = DOCK_MODE === 'open';
 const EMOJI_TEXT = process.env.E2E_FOCUS_EMOJI_TEXT === '1';
+const ATTRIB = process.env.E2E_FOCUS_ATTRIB === '1';
+const NWALK = process.env.E2E_FOCUS_NWALK === '1';
 const VIEWPORTS = (process.env.E2E_FOCUS_VIEWPORTS || '1440x900')
   .split(',')
   .map((s) => {
@@ -42,9 +49,36 @@ test.skip(process.env.E2E_LOCAL !== '1', 'focused bench needs the local stack: r
 test.describe.configure({ mode: 'serial' });
 test.use({ actionTimeout: 20_000 });
 
-const installHook = () => {
+const installHook = ({ attrib, nwalk } = {}) => {
   window.__perf = { t0: null, commits: [], longTasks: [], profiles: {}, requests: [] };
   window.__longTasks = window.__perf.longTasks;
+  // Читаемое имя fiber'а: function/memo/forwardRef — по type, иначе по тэгу.
+  // В production-сборке имена минифицированы — атрибуцию гоняем в dev-режиме.
+  const fiberName = (f) => {
+    const t = f.type;
+    if (typeof t === 'string') return `<${t}>`;
+    if (typeof t === 'function') return t.displayName || t.name || 'anonymous';
+    if (t && typeof t === 'object') {
+      const inner = t.type;
+      if (typeof inner === 'function') return inner.displayName || inner.name || 'anonymous';
+      if (inner && typeof inner === 'object' && typeof inner.render === 'function') {
+        return inner.render.displayName || inner.render.name || 'forwardRef';
+      }
+      if (typeof t.render === 'function') return t.render.displayName || t.render.name || 'forwardRef';
+      return 'objectType';
+    }
+    switch (f.tag) {
+      case 3: return 'HostRoot';
+      case 7: return 'Fragment';
+      case 8: return 'Mode';
+      case 9: return 'ContextConsumer';
+      case 10: return 'ContextProvider';
+      case 12: return 'Profiler';
+      case 13: return 'Suspense';
+      case 22: return 'Offscreen';
+      default: return `tag${f.tag}`;
+    }
+  };
   const hook = {
     renderers: new Map(),
     listeners: {},
@@ -57,6 +91,84 @@ const installHook = () => {
     supportsFiber: true,
     getFiberRoots() { return new Set(); },
     onCommitFiberRoot(id, root) {
+      if (nwalk) {
+        window.__perf.commits.push({ t: performance.now(), rendered: 0, threadRendered: 0 });
+        return;
+      }
+
+      let rendered = 0;
+      let threadRendered = 0;
+      const names = attrib ? Object.create(null) : null;
+      const regions = attrib ? { dock: 0, composer: 0, thread: 0, none: 0 } : null;
+      let pickerAncestry = null;
+      try {
+        const seen = new Set();
+        const thread = document.querySelector('[data-testid="chat-thread-scroll"]');
+        const dock = attrib ? document.querySelector('[data-testid="chat-emoji-dock"]') : null;
+        const composer = attrib ? document.querySelector('[data-testid="chat-composer-dock"]') : null;
+        // DFS с наследованием региона: композитный fiber относится к региону
+        // ближайшего host-предка (dock/composer/thread — непересекающиеся
+        // поддеревья; приоритет dock > composer > thread на случай вложенности).
+        const stack = [[root.current, 0]];
+        while (stack.length && seen.size < 100000) {
+          const entry = stack.pop();
+          const f = entry[0];
+          if (!f || seen.has(f)) continue;
+          seen.add(f);
+          let region = entry[1];
+          if (attrib && f.stateNode instanceof Element) {
+            if (dock && dock.contains(f.stateNode)) region = 2;
+            else if (composer && composer.contains(f.stateNode)) region = 3;
+            else if (thread && thread.contains(f.stateNode)) region = 1;
+          }
+          if (f.flags & 1) {
+            rendered += 1;
+            if (thread && f.stateNode instanceof Element && thread.contains(f.stateNode)) threadRendered += 1;
+            if (attrib) {
+              const name = fiberName(f);
+              if (name) names[name] = (names[name] || 0) + 1;
+              if (region === 2) regions.dock += 1;
+              else if (region === 3) regions.composer += 1;
+              else if (region === 1) regions.thread += 1;
+              else regions.none += 1;
+              // Ancestry chain of key picker internals: decides whether the
+              // render comes from above (memo breach) or from picker-internal
+              // state. '*' marks ancestors carrying PerformedWork this commit.
+              if ((name === 'PickerContextProvider' || name === 'EmojiList') && !pickerAncestry) {
+                const chain = [];
+                let cur = f.return;
+                let guard = 0;
+                while (cur && guard < 60) {
+                  guard += 1;
+                  const an = fiberName(cur);
+                  if (an && !an.startsWith('<') && !an.startsWith('tag')) {
+                    chain.push(an + ((cur.flags & 1) ? '*' : ''));
+                  }
+                  cur = cur.return;
+                }
+                pickerAncestry = chain;
+              }
+            }
+          }
+          if (f.child) stack.push([f.child, region]);
+          if (f.sibling) stack.push([f.sibling, region]);
+        }
+      } catch { rendered = -1; }
+      const rec = { t: performance.now(), rendered, threadRendered };
+      if (attrib) {
+        rec.names = names;
+        rec.regions = regions;
+        if (pickerAncestry) rec.pickerAncestry = pickerAncestry;
+      }
+      window.__perf.commits.push(rec);
+    },
+    onCommitFiberUnmount() {},
+    onScheduleFiberRoot() {},
+  };
+  // Совместимость со старой схемой без region-наследования: не-attrib прогоны
+  // ходят по плоскому стеку, как раньше (те же накладные расходы).
+  if (!attrib && !nwalk) {
+    hook.onCommitFiberRoot = function onCommitFiberRootPlain(id, root) {
       let rendered = 0;
       let threadRendered = 0;
       try {
@@ -76,10 +188,8 @@ const installHook = () => {
         }
       } catch { rendered = -1; }
       window.__perf.commits.push({ t: performance.now(), rendered, threadRendered });
-    },
-    onCommitFiberUnmount() {},
-    onScheduleFiberRoot() {},
-  };
+    };
+  }
   Object.defineProperty(window, '__REACT_DEVTOOLS_GLOBAL_HOOK__', { value: hook });
   try {
     new PerformanceObserver((list) => {
@@ -124,13 +234,24 @@ const waitMark = async (page, predSrc, timeout = 8000) => {
 const windowStats = (page, t0) => page.evaluate((t) => {
   const cs = window.__perf.commits.filter((c) => c.t >= t - 2 && c.t <= t + 4000);
   const reqs = window.__perf.requests.filter((r) => r.t >= t - 2 && r.t <= t + 4000);
-  return {
+  const out = {
     commits: cs.length,
     rendered: cs.reduce((s, c) => s + Math.max(0, c.rendered), 0),
     threadRendered: cs.reduce((s, c) => s + Math.max(0, c.threadRendered || 0), 0),
     longTasks: window.__perf.longTasks.filter((lt) => lt.start >= t - 2 && lt.start <= t + 4000).length,
     requests: reqs.map((r) => ({ m: `${r.method} ${r.url}`, dur: r.dur == null ? null : Math.round(r.dur * 10) / 10 })),
   };
+  if (cs.some((c) => c.names)) {
+    const names = Object.create(null);
+    const regions = { dock: 0, composer: 0, thread: 0, none: 0 };
+    cs.forEach((c) => {
+      if (c.names) Object.keys(c.names).forEach((n) => { names[n] = (names[n] || 0) + c.names[n]; });
+      if (c.regions) Object.keys(regions).forEach((r) => { regions[r] += c.regions[r] || 0; });
+    });
+    out.names = names;
+    out.regions = regions;
+  }
+  return out;
 }, t0);
 
 const stats = (values) => {
@@ -169,7 +290,7 @@ for (const vp of VIEWPORTS) {
     const res = { viewport: vp, measuredAt: new Date().toISOString(), dock: DOCK_MODE, emojiText: EMOJI_TEXT, scenarios: {} };
 
     const ctx = await browser.newContext({ viewport: vp });
-    await ctx.addInitScript(installHook);
+    await ctx.addInitScript(installHook, { attrib: ATTRIB, nwalk: NWALK });
     const page = await ctx.newPage();
     await apiLogin(page);
     await openChat(page);
@@ -219,6 +340,7 @@ for (const vp of VIEWPORTS) {
     // ── typing_echo control: x → echo в поле ──
     {
       const samples = [];
+      const windows = [];
       for (let i = 0; i < Math.min(RUNS, 25); i += 1) {
         // При открытом доке (overlay) composer может быть перекрыт — focus()
         // без hit-проверки; клик оставлен для закрытых режимов.
@@ -229,22 +351,53 @@ for (const vp of VIEWPORTS) {
         const ready = await waitMark(page, `() => document.querySelector('[data-testid="chat-composer-textarea"]')?.value?.includes('x')`, 3000);
         const kt0 = await page.evaluate(() => window.__perf.keyT0 ?? performance.now() - 20);
         samples.push(ready - kt0);
+        if (ATTRIB) windows.push(await windowStats(page, kt0));
         await composer.fill('');
+        // fill('') — тоже keystroke-like обновление композера; окно следующего
+        // замера начинается после него, пересечения нет.
+        if (ATTRIB) await page.waitForTimeout(120);
       }
       res.scenarios.typing_echo_ms = stats(samples);
+      if (ATTRIB && windows.length) {
+        // Агрегат по окнам набора текста: медиана rendered/regions на окно +
+        // суммарная гистограмма имён для выявления повторяющихся рендеров.
+        res.scenarios.typing_attrib = {
+          rendered: stats(windows.map((w) => w.rendered)),
+          regionsMedian: {
+            dock: stats(windows.map((w) => w.regions?.dock ?? 0)).p50,
+            composer: stats(windows.map((w) => w.regions?.composer ?? 0)).p50,
+            thread: stats(windows.map((w) => w.regions?.thread ?? 0)).p50,
+            none: stats(windows.map((w) => w.regions?.none ?? 0)).p50,
+          },
+          namesTotal: windows.reduce((acc, w) => {
+            Object.keys(w.names || {}).forEach((n) => { acc[n] = (acc[n] || 0) + w.names[n]; });
+            return acc;
+          }, {}),
+          windows: windows.length,
+        };
+      }
       console.log(`[focus] typing done p50=${res.scenarios.typing_echo_ms.p50} p95=${res.scenarios.typing_echo_ms.p95}`);
     }
 
     // ── send_echo: fill → t0 → Enter → пузырь ──
+    let profilesBeforeSend = null;
     {
       const samples = [];
       let sendTimeouts = 0;
+      // Snapshot profiler counters before the measured send loop: a diff
+      // afterwards proves whether the hidden dock subtree REALLY re-renders
+      // per send (Profiler.onRender fires only when the wrapped tree updates),
+      // unlike raw PerformedWork flags, which stay stale below memo bailouts.
+      profilesBeforeSend = await page.evaluate(() => JSON.parse(JSON.stringify(window.__perf.profiles || {})));
       for (let i = 0; i < RUNS; i += 1) {
         const text = EMOJI_TEXT
           ? `perf-send-${i}-${Date.now().toString(36)} 🙂`
           : `perf-send-${i}-${Date.now().toString(36)}`;
         await composer.fill(text);
-        const t0 = await page.evaluate(() => performance.now());
+        const t0 = await page.evaluate((first) => {
+          if (first) window.__perf.firstSendT0 = performance.now();
+          return performance.now();
+        }, i === 2);
         await page.keyboard.press('Enter');
         const bound = 10000;
         const ready = await waitMark(page, `() => [...document.querySelectorAll('[data-testid="chat-thread-scroll"] [data-message-id]')].some((el) => el.textContent.includes(${JSON.stringify(text)}))`, bound);
@@ -272,12 +425,55 @@ for (const vp of VIEWPORTS) {
         threadRendered: s.threadRendered,
         longTasks: s.longTasks,
         requests: s.requests,
+        ...(s.regions ? { regions: s.regions } : {}),
       }));
+      if (ATTRIB) {
+        res.scenarios.send_attrib = {
+          regionsMedian: {
+            dock: stats(samples.map((s) => s.regions?.dock ?? 0)).p50,
+            composer: stats(samples.map((s) => s.regions?.composer ?? 0)).p50,
+            thread: stats(samples.map((s) => s.regions?.thread ?? 0)).p50,
+            none: stats(samples.map((s) => s.regions?.none ?? 0)).p50,
+          },
+          namesTotal: samples.reduce((acc, s) => {
+            Object.keys(s.names || {}).forEach((n) => { acc[n] = (acc[n] || 0) + s.names[n]; });
+            return acc;
+          }, {}),
+        };
+      }
       console.log(`[focus] send done p50=${res.scenarios.send_echo_ms.p50} p95=${res.scenarios.send_echo_ms.p95} stickerReqs=${stickerReqs} reqs=${allReqs}`);
       console.log(`[focus] send samples: ${samples.map((s) => Math.round(s.ms)).join(',')}`);
     }
 
-    const suffix = `${DOCK_MODE === 'warm' ? '-dock' : ''}${DOCK_OPEN ? '-dockopen' : ''}${EMOJI_TEXT ? '-emoji' : ''}`;
+    if (ATTRIB) {
+      // TEMP-проба стабильности пропов memo-границ (useTempPropProbe):
+      // какие пропы меняют identity между рендерами дока/вкладки.
+      res.propChanges = await page.evaluate(() => window.__perf.propChanges || null);
+      const profilesAfter = await page.evaluate(() => window.__perf.profiles || null);
+      res.profiles = profilesAfter;
+      res.profilesSendDiff = Object.keys(profilesAfter || {}).reduce((acc, k) => {
+        const b = (profilesBeforeSend || {})[k] || { mount: 0, update: 0, actual: 0, base: 0 };
+        const a = profilesAfter[k];
+        acc[k] = { mount: a.mount - b.mount, update: a.update - b.update, actual: a.actual - b.actual };
+        return acc;
+      }, {});
+      // Покоммитный таймлайн: окно первого send-замера — точная атрибуция,
+      // что рендерится синхронно с echo, а что в хвосте (refresh/reorder).
+      const firstT0 = await page.evaluate(() => window.__perf.firstSendT0 ?? null);
+      res.commitsDump = await page.evaluate((t0) => {
+        if (!t0) return null;
+        return window.__perf.commits
+          .filter((c) => c.t >= t0 - 2 && c.t <= t0 + 1500)
+          .map((c) => ({
+            dt: Math.round((c.t - t0) * 10) / 10,
+            rendered: c.rendered,
+            regions: c.regions,
+            names: c.names,
+            pickerAncestry: c.pickerAncestry || null,
+          }));
+      }, firstT0);
+    }
+    const suffix = `${DOCK_MODE === 'warm' ? '-dock' : ''}${DOCK_OPEN ? '-dockopen' : ''}${EMOJI_TEXT ? '-emoji' : ''}${ATTRIB ? '-attrib' : ''}`;
     writeFileSync(`${SHOTS}/perf-send-focus-${vp.width}x${vp.height}${suffix}.json`, JSON.stringify(res, null, 2));
     console.log('send-focus:', JSON.stringify(res.scenarios.send_echo_ms));
     await ctx.close();
