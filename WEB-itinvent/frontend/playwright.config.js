@@ -37,7 +37,12 @@ if (LOCAL) {
 
 const BACKEND_PORT = process.env.E2E_BACKEND_PORT || '18001';
 const FRONTEND_PORT = process.env.E2E_FRONTEND_PORT || '5174';
-const frontendBuildDir = fileURLToPath(new URL('../../output/e2e-frontend-built', import.meta.url));
+// Parallel gate worktrees share this file: E2E_BUILD_OUTDIR isolates the
+// built bundle per run so one gate's `vite preview` cannot lock another's
+// output directory (default unchanged).
+const frontendBuildDir = process.env.E2E_BUILD_OUTDIR
+  ? process.env.E2E_BUILD_OUTDIR
+  : fileURLToPath(new URL('../../output/e2e-frontend-built', import.meta.url));
 
 const localWebServers = [
   {
