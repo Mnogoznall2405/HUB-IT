@@ -29,10 +29,32 @@ vi.mock('../../lib/platform', () => ({
   isNativeShellRuntime: () => false,
 }));
 
+// Several chat api modules import `apiClient` from '../http' directly, bypassing
+// `client`; stub it so nothing escapes to real XHR in jsdom.
+vi.mock('../../api/http', () => ({
+  default: {
+    get: vi.fn().mockRejectedValue(new Error('api stub')),
+    post: vi.fn().mockRejectedValue(new Error('api stub')),
+    put: vi.fn().mockRejectedValue(new Error('api stub')),
+    delete: vi.fn().mockRejectedValue(new Error('api stub')),
+    patch: vi.fn().mockRejectedValue(new Error('api stub')),
+    interceptors: {
+      request: { use: vi.fn(), eject: vi.fn() },
+      response: { use: vi.fn(), eject: vi.fn() },
+    },
+  },
+}));
+
 vi.mock('../../api/client', () => ({
   chatAPI: {
     getHealth: vi.fn().mockResolvedValue({ ok: true }),
     getConversations: mockListConversations,
+    getConversation: vi.fn(async (id) => {
+      const { items = [] } = await mockListConversations();
+      const found = items.find((item) => String(item?.id) === String(id));
+      if (!found) throw new Error('not found');
+      return found;
+    }),
     ensureNotesConversation: vi.fn().mockResolvedValue(null),
     listAiBots: vi.fn().mockResolvedValue({ items: [] }),
     listChatFolders: vi.fn().mockResolvedValue({ folders: [], conversation_ids_by_folder: {} }),
@@ -72,12 +94,29 @@ vi.mock('./ChatShellLayout', () => ({
   ),
 }));
 
+const { findElementPropDeep } = vi.hoisted(() => {
+  // `threadPane` is a composite element (Provider > Box > ChatThread), so the
+  // active conversation id lives on a nested child, not on the root props.
+  const walk = (node, propName) => {
+    if (!node || typeof node !== 'object' || !node.props) return undefined;
+    if (node.props[propName] !== undefined) return node.props[propName];
+    const children = node.props.children;
+    const list = Array.isArray(children) ? children : [children];
+    for (const child of list) {
+      const found = walk(child, propName);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+  return { findElementPropDeep: walk };
+});
+
 vi.mock('./ChatPageDesktopLayout', () => ({
   default: ({ sidebarPane, threadPane, resolvedMobileView, gridTemplateColumns }) => (
     <div
       data-testid="chat-page-desktop-layout"
       data-has-sidebar={sidebarPane ? 'true' : 'false'}
-      data-active-conversation={threadPane?.props?.activeConversationId || ''}
+      data-active-conversation={findElementPropDeep(threadPane, 'activeConversationId') || ''}
       data-mobile-view={resolvedMobileView}
       data-grid={gridTemplateColumns}
     />

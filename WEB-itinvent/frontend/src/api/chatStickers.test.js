@@ -1,18 +1,22 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiClientMock = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
   delete: vi.fn(),
+  put: vi.fn(),
 }));
 
 vi.mock('./http', () => ({ default: apiClientMock }));
 
 import {
+  cancelRecentStickersSync,
   chatStickersAPI,
   invalidateStickerPacksCache,
   peekStickerPacksCache,
   primeStickerPacksCache,
+  resolveStickerScope,
+  scheduleRecentStickersSync,
 } from './chatStickers';
 
 describe('chatStickersAPI', () => {
@@ -203,5 +207,119 @@ describe('chatStickersAPI', () => {
 
     expect(peekStickerPacksCache({ userId: 'user-a' })).toBeNull();
     expect(peekStickerPacksCache({ userId: 'user-b' })).toBeNull();
+  });
+});
+
+// Дебаунс-очередь синка «недавних»: таймер хранит scope-маркер и
+// flush-коллбэк, а перед запросом повторно проверяет scope (БД) и
+// сессию — ушедший контекст не должен дотянуться до сети.
+describe('recent stickers sync queue', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    invalidateStickerPacksCache();
+    window.localStorage.clear();
+    window.localStorage.setItem('user', JSON.stringify({ id: 7 }));
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    cancelRecentStickersSync();
+    vi.useRealTimers();
+  });
+
+  it('runs the flush after the debounce when the session is unchanged', async () => {
+    const flush = vi.fn().mockResolvedValue({ ok: true });
+    scheduleRecentStickersSync(
+      { userId: 7, scopeKey: resolveStickerScope({ userId: 7 }) },
+      flush,
+    );
+
+    await vi.advanceTimersByTimeAsync(1600);
+
+    expect(flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the queued flush when the user switched mid-debounce', async () => {
+    const flush = vi.fn();
+    scheduleRecentStickersSync(
+      { userId: 7, scopeKey: resolveStickerScope({ userId: 7 }) },
+      flush,
+    );
+
+    window.localStorage.setItem('user', JSON.stringify({ id: 8 }));
+    await vi.advanceTimersByTimeAsync(1600);
+
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('drops the queued flush when selected_database changed mid-debounce', async () => {
+    window.localStorage.setItem('selected_database', 'ITINVENT');
+    const flush = vi.fn();
+    scheduleRecentStickersSync(
+      { userId: 7, scopeKey: resolveStickerScope({ userId: 7 }) },
+      flush,
+    );
+
+    window.localStorage.setItem('selected_database', 'MSK-ITINVENT');
+    await vi.advanceTimersByTimeAsync(1600);
+
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('drops the queued flush when the session user is gone', async () => {
+    const flush = vi.fn();
+    scheduleRecentStickersSync(
+      { userId: 7, scopeKey: resolveStickerScope({ userId: 7 }) },
+      flush,
+    );
+
+    window.localStorage.removeItem('user');
+    await vi.advanceTimersByTimeAsync(1600);
+
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('cancelRecentStickersSync stops the pending flush (invalidate path)', async () => {
+    const flush = vi.fn();
+    const scopeKey = resolveStickerScope({ userId: 7 });
+    scheduleRecentStickersSync({ userId: 7, scopeKey }, flush);
+
+    cancelRecentStickersSync(scopeKey);
+    await vi.advanceTimersByTimeAsync(1600);
+
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('keeps the pending flush when cancel is called for a foreign scope', async () => {
+    const flush = vi.fn();
+    scheduleRecentStickersSync(
+      { userId: 7, scopeKey: resolveStickerScope({ userId: 7 }) },
+      flush,
+    );
+
+    cancelRecentStickersSync('8::default');
+    await vi.advanceTimersByTimeAsync(1600);
+
+    expect(flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('a later schedule for another scope replaces the stale pending', async () => {
+    const flushA = vi.fn();
+    const flushB = vi.fn();
+    scheduleRecentStickersSync(
+      { userId: 7, scopeKey: resolveStickerScope({ userId: 7 }) },
+      flushA,
+    );
+    window.localStorage.setItem('user', JSON.stringify({ id: 8 }));
+    scheduleRecentStickersSync(
+      { userId: 8, scopeKey: resolveStickerScope({ userId: 8 }) },
+      flushB,
+    );
+
+    await vi.advanceTimersByTimeAsync(1600);
+
+    // Pending A был вытеснен ещё на этапе schedule — до его flush дело не дошло.
+    expect(flushA).not.toHaveBeenCalled();
+    expect(flushB).toHaveBeenCalledTimes(1);
   });
 });

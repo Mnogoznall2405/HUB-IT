@@ -65,6 +65,8 @@ describe('Telegram-style composer interactions', () => {
   });
   it('exposes expanded state on the emoji toggle and the mention listbox', () => {
     render(<Fixture emojiPickerOpen />);
+    // Открытое preview (popover) превращает кнопку в «Закрепить» — pinned
+    // док даёт «Закрыть»: имя нестабильно, поэтому ищем по testid.
     expect(screen.getByTestId('chat-composer-emoji-button')).toHaveAttribute('aria-expanded', 'true');
     fireEvent.change(input(), { target: { value: '@' } });
     expect(input()).toHaveAttribute('aria-expanded', 'true');

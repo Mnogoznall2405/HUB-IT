@@ -118,6 +118,7 @@ const ChatDesktopEmojiPopover = memo(function ChatDesktopEmojiPopover({
           onSendSticker={onSendSticker}
           currentUserId={currentUserId}
           onClose={onCloseEmojiPicker}
+          visible={emojiPopoverVisible}
         />
       </Suspense>
       </Box>

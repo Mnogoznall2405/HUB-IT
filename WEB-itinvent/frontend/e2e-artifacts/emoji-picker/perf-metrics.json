@@ -1,11 +1,11 @@
 {
   "viewport": "1440x900",
-  "coldVisibleMs": 198,
-  "coldUsefulMs": 324,
-  "warmUsefulMs": 227,
-  "tabSwitchToStickersMs": 143,
-  "tabSwitchBackToEmojiMs": 144,
+  "coldVisibleMs": 168,
+  "coldUsefulMs": 367,
+  "warmUsefulMs": 170,
+  "tabSwitchToStickersMs": 263,
+  "tabSwitchBackToEmojiMs": 184,
   "apiRequestsOnColdOpen": 0,
-  "stickerPackRequestsOnWarmOpen": 0,
-  "measuredAt": "2026-11-24T05:29:34.446Z"
+  "stickerPackRequestsOnWarmOpen": 1,
+  "measuredAt": "2026-11-24T12:08:19.271Z"
 }
