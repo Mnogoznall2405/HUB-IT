@@ -1,429 +1,376 @@
 # FINAL RELEASE GATE REPORT — integration/frontend-remediation
 
-Date of assembly: 2026-11-25 (UTC+5). Gate orchestator: release-gate sweep on worktree
-`.codex_tmp/integ-fr`. This report consolidates all prior gate evidence for the
-consolidation PR `integration/frontend-remediation` → `main`.
+Date of final acceptance: 2026-11-25 (UTC+5). Worktree: `.codex_tmp/integ-fr`.
+This document replaces the earlier interim gate report. It covers the final acceptance
+pass requested after the integration branch had already been assembled.
 
-Verdict up front: **conditional GO** — conditions in the final section.
+## Verdict up front
+
+**Code-gate verdict for the acceptance baseline: GO**, with the explicit caveats below.
+
+**Release-vehicle verdict: PR #73 is superseded/closed.** During this acceptance pass
+`origin/main` moved externally from `af485f22` to `4d4dba1f` through **PR #75**
+(`release: unified HUB-IT release candidate (42 remediation PRs + Sticker V2 + main integration)`),
+and PR #73 was closed unmerged at 2026-11-25 11:52:58Z. Therefore this report is a
+branch-local final acceptance record for `integration/frontend-remediation`, not approval
+to merge the already-closed PR over current main. If this branch is still intended as a
+release source, it needs a fresh diff/rebase review against `4d4dba1f`; otherwise use the
+already merged PR #75/main release line.
+
+No production deploy, restart, migration or merge was performed by this gate.
 
 ---
 
-## 1. Exact SHAs
+## 1. Exact SHAs and acceptance scope
 
-| Ref | SHA | Commit date | Subject |
-|-----|-----|-------------|---------|
-| Baseline `main` (merge-base) | `926dd9f542d578a156ee7239549caf041d38da21` | 2026-11-24 15:09:30 +0500 | Merge pull request #26 from Mnogoznall2405/perf/a8-ai-latency |
-| Candidate tip at RC fixation | `a50ad10c1c615670fa59f5eda428498f7703ce37` | 2026-11-25 09:49:15 +0500 | test(migration): PG sticker gate on isolated PG17 + follow-up docs |
-| Candidate tip at gate assembly (code-final) | `5a7cb5e1` — parent `609572ac8dd19d4c0beb470fce4f702f540da966` | 2026-11-25 +0500 | test(gate): release e2e module sweep (the only commits after it are this documentation set) |
-| Key merge commit (feature) | `e6aa9251` | 2026-11-24 | Merge pull request #69 (feat/chat-sticker-system-v2) into integration/frontend-remediation |
-
-- Merge-base `origin/main` ∩ candidate = `926dd9f5…` (main-at-fixation is fully contained).
-- Candidate is **121 commits ahead** of the baseline (75 non-merge + 46 merge).
-- Diff `926dd9f5...HEAD` (code-final tip `5a7cb5e1`): **410 files, +33 646 / −2 238**; within `WEB-itinvent/frontend`: **391 files, +29 493 / −2 210** (both counts include the sweep commit's regenerated screenshot/metrics artifacts and preserved run logs).
-
-### ⚠ Movement of `origin/main` after RC fixation
-
-At RC fixation (2026-11-25 ~10:17) `origin/main` was `926dd9f5`. Since then main
-advanced to `f90e1b16aa75e14850bf178b3cc16bd2bae7ea9d`:
-
-- **PR #70** `perf/a9-ai-token-budget` — merged (`a0f7cf9f`)
-- **PR #71** `perf/a10-ai-llm-rounds` — merged (`6b8812c6`)
-- **PR #68** `perf/my-files-v3` — merged (`a59bedbc`) — this was one of the
-  "deferred open" PRs at fixation; it is **no longer open**. The consolidation
-  merge must expect overlap in the my-files area (both branches touch listing/
-  virtualization/cache code) and re-run the my-files vitest/e2e subset after the
-  merge into main.
-
-None of the new main commits are contained in the candidate; the gate evidence
-below is measured against baseline `926dd9f5`. The consolidation merge itself is
-out of scope of this report (no merge, no deploy performed).
-
-## 2. PR inventory
-
-### Integrated into the candidate (verified ancestors of the tip)
-
-42 branch merges in total: 24 audit batch PRs (#44–#67, `fix/voice-batch` … `fix/evidence-batch`),
-9 chained/single database/account/networks branches (#35–#43), 9 single-fix PRs
-(#23, #27–#34) — plus feature PR #69. Full per-merge table
-with merge SHAs and one-line scopes: [INTEGRATION_REGISTRY.md](INTEGRATION_REGISTRY.md). Batch PRs target
-`main` on GitHub and remain open there even though their content is integrated
-(#44–#67, #23, #27–#34, #38–#43); PR #45 (`fix/chat-batch`) content merged via `9a6e167f`;
-PR #69 (`feat/chat-sticker-system-v2`) content merged via `e6aa9251`, PR still open against main.
-
-### Open agreed PRs NOT integrated at fixation — deferred
-
-| PR | Branch | State at fixation | State at assembly |
-|----|--------|-------------------|-------------------|
-| #68 | perf/my-files-v3 | open, deferred | **merged to main `a59bedbc`** — no longer deferred; see §1 warning |
-| #10 | fix/fe-0064-task-editor-safe-paste | open, deferred | still open, deferred (post-consolidation decision) |
-| #15 | docs/ai-architecture-audit | open, deferred (docs-only) | still open, deferred |
-| #9 | audit/frontend-2026-11-22 | open, deferred (audit report) | still open, deferred |
-
-## 3. Module matrix (E2E sweep + walkthrough evidence)
-
-Route-level evidence comes from two independent harnesses run on the candidate tip
-with production builds against the seeded throwaway stack:
-
-- **`e2e/release-smoke.spec.js`** (this gate, new): one real login, then every main
-  navigation route must render without RouteErrorBoundary, uncaught pageerror or
-  unexpected console error. Result: **31/31 routes PASS** — 28 clean renders,
-  3 degraded-by-environment (see below), 0 failures. (36 s, build mode.)
-- **`e2e/human-walkthrough.spec.js`** artifacts (13:08–13:14 same day): 33 route
-  JSON reports — `pageErrors: 0`, internal `api5xx: 0` on every route; console
-  noise limited to handled upstream-failure reports on surfaces whose upstreams
-  are deliberately unseeded.
-
-| Module | Route(s) | Status | Notes |
-|--------|----------|--------|-------|
-| Auth / shell | login, `/dashboard`, `/menu`, `/settings`, `/profile` | **verified** | release-smoke renders; auth-guards spec refreshed (viewer seed) |
-| Feed | `/feed` | **verified** | renders |
-| Tasks | `/tasks` | **verified** | renders; tasks-write spec hardened |
-| Tickets | `/tickets` | **verified** | renders |
-| Chat | `/chat` | **verified** | renders + feature specs 21/21 (emoji-picker 15 + stickers-v2 6) |
-| Mail | `/mail` | **verified-shell / feature env-blocked** | page renders and mounts; mail backend off on local stack (MAIL_MODULE_ENABLED=0) — feature-level mail stays env-blocked by design |
-| My Files | `/my-files` | **verified** | renders; editor/history/workspace/admin specs hardened |
-| Database (SQL Server) | `/database` | **degraded env** | shell renders; upstream SQL Server absent → handled 500s recorded, no crash |
-| Networks | `/networks` | **verified** | renders |
-| VCS | `/vcs` | **verified** | renders |
-| MFU | `/mfu` | **verified** | renders |
-| Monitoring | `/monitoring` | **verified** | renders |
-| Computers | `/computers` | **verified** | renders |
-| Scan center | `/scan-center` | **degraded env** | shell renders; scan server not part of local stack → handled 404s recorded |
-| Voice | `/voice` | **verified** | renders |
-| DLP / file-egress | `/file-egress` | **verified** | renders |
-| Statistics | `/statistics` | **verified** | renders |
-| Address book | `/address-book` | **verified** | renders (spec re-stabilized: banner dismiss, gutter hover) |
-| Company structure | `/company-structure` | **verified** | renders |
-| Warehouse 1C | `/warehouse-1c` | **verified-shell** | renders; 1C upstream absent by design |
-| IT requests/objects | `/it/requests`, `/it/objects` | **verified** | renders |
-| Construction | `/construction` | **verified** | renders |
-| Docflow | `/docflow` | **verified** | renders; spec updated to shared-payload architecture |
-| Passwords | `/passwords` | **verified** | renders |
-| Groups access | `/groups-access` | **verified** | renders |
-| Help | `/help` | **verified** | renders |
-| Admin | `/admin` | **verified** | renders |
-| AI chat | (inside `/chat`, ИИ tab) | **verified** | walkthrough exercised AI tab; backend AI suites unchanged vs baseline |
-| Calls (LiveKit) | in-chat | **env-blocked in build mode** | harness limitation, not product defect — see §9 |
-| Inventory | — | not in scope | no inventory-surface changes in this branch |
-
-"degraded" means: the route shell renders real content, the failures are handled
-application-level reports of deliberately unseeded upstreams (SQL Server, scan
-server, 1C, Exchange). They are recorded, never silently dropped.
-
-## 4. Backend results (comparative gate, run 2026-11-25 morning)
-
-Full-suite comparative run `pytest tests WEB-itinvent/backend/tests -q
---continue-on-collection-errors`, baseline worktree vs candidate worktree,
-identical environment, JUnit-diffed (`gate_diff.txt`):
-
-| | total | passed | failed | error | skipped |
-|---|---|---|---|---|---|
-| Baseline `926dd9f5` | 6702 | 6543 | 71 | 11 | 77 |
-| Candidate | 6728 | **6570** | 70 | 10 | 78 |
-
-- **0 new failures attributable to the branch.** 79 failing/erroring tests are
-  shared between both sides with identical signatures — environment-gated
-  (`telegram`/`pandas` modules absent, SQL Server unreachable, chat module
-  disabled in env, `MY_FILES_SHARE_TOKEN_KEY` unset, push endpoint unresolvable).
-- 1 initial status change detected: `test_onlyoffice_branding::test_transient_read_failure_is_retried_before_branding_is_applied`
-  (passed→failed) — timing/clock-dependent signature (`.clock` freeze comparison);
-  triaged as flake-under-shared-load, not a code regression: the onlyoffice render
-  path is untouched by the branch (no diff in `onlyoffice*` between baseline and candidate).
-- 2 newly passing on candidate (`test_api_event_loop_not_blocked` change-password,
-  `test_my_files_office_e2e` parallel duplicate callbacks).
-- 28 tests exist only on candidate — all passing except the PG-gate collection
-  skip (requires the isolated PG17 cluster; passes when the cluster is up, §6).
-- **1 repo defect found and fixed by the gate:** `scripts/_migration_safety.py`
-  had been deleted by a cleanup commit on main — restored in `5bae5bfb`;
-  `test_migrate_safe_replace_scripts` went from collection-error (baseline) to
-  5/5 passing (candidate).
-- **10 remaining env-gated collection errors** on candidate (11 on baseline — the
-  delta is the restored migration_safety module), all import-time optional
-  dependencies absent from the gate host, identical in signature to baseline.
-
-## 5. Frontend results
-
-### vitest (flags-ON, full suite, committed gate evidence)
-
-| Result | Count |
-|---|---|
-| Test files | 718 passed / 4 failed (722) |
-| Tests | **5223 passed** / 5 failed / 2 skipped (5230) |
-| Duration | 651 s |
-
-The 5 failures in 4 files, all triaged:
-
-| Failure | Disposition |
-|---|---|
-| `ChatPageContent.smoke.test.jsx` (1) | **fixed** — test-only fix in `1a2a7a0b`: mock-boundary escape through unstubbed `api/http`, `activeConversationId` probe needed recursion after the emoji-dock refactor, missing `getConversation` stub. Verified 4/4 in the follow-up run. |
-| `ChatCommon.test.jsx` sticker-pack (1) | **flaky-under-load** — passes standalone and in the flags-off rerun; parallel-worker timing on a loaded host |
-| `CompanyStructure.test.jsx` semantic-map (1) | **flaky-under-load** — same attribution |
-| `Database.test.jsx` ×2 (QR-link tab, mobile control strip) | **deterministic, pre-existing** — flag-independent, identical in the earlier gate run; all files in that render path unchanged from `origin/main`. Not introduced by this branch; needs a separate triage task (GO condition #3). |
-
-Flags-OFF rerun of the same 9 previously-failing files: **181/183 pass** — only
-the same 2 deterministic Database tests fail, confirming flag-independence.
-
-### eslint
-
-Scoped lint: **0 errors**, 1207 warnings — pre-existing `no-unused-vars` class,
-config unchanged vs `origin/main`.
-
-### Production build
-
-`vite build` to an isolated outDir: **OK** (1m05s). Bundle deltas vs baseline:
-assets total 23.66→23.75 MB (+0.4 %), ChatPageContent chunk +4.1 KB.
-Additionally a deterministic dev-mode codegen defect was found and fixed:
-deep `@mui/material/Box` import became its own broken optimizeDeps entry under
-esbuild 0.27.7 (`createTheme_default is not a function`) — replaced with the
-barrel import in `a7359e78` (all 147 other files already used the barrel form).
-
-## 6. Migrations
-
-Chain state after the post-main consolidation merge (`af485f22`): **single head
-`20261125_0182`**, no missing down-revisions, no orphans, one pre-existing
-historical merge revision. Full chain tail: `0176 → 0177 (A8) → 0178 (my-files
-indexes) → 0179 (my-files member updated_at) → 0180 sticker favorites →
-0181 recents sync state → 0182 op-batch dedup` — no merge-revision needed.
-The earlier assembly-time numbering (`0180` for op-batch) was renumbered because
-PR #68 occupied revision ids 0178/0179.
-
-| Scenario | Evidence | Result |
+| Ref | SHA | Meaning |
 |---|---|---|
-| Fresh schema upgrade→head (sqlite) | 30/30 sticker migration tests | **PASS** |
-| Upgrade with 0176/0177 already applied | `test_chat_migrations_scope_independent` 55/55 incl. per-revision upgrade/downgrade matrices for 0180/0181/0182 | **PASS** |
-| Scope independence (all/app/chat, legacy `public` routing) | scope suite 55/55; migrations are create-if-missing idempotent and never skip on `itinvent_scope` | **PASS** |
-| Real PostgreSQL 17.6 chain check | 16/16 checks (fresh schema, upgrade with 0177 applied, scope all/app/chat, rollback-compat) — `db20042c` | **PASS** |
-| PG17 isolated-cluster gate | `tests/test_pg_sticker_gate.py` scratch `stgt_*` DB on `127.0.0.1:55433`: fresh upgrade→head, upgrade paths from 0177 and My Files-side 0179 with a preserved pre-existing sticker install row, replay no-op under FOR UPDATE, two racing threads serialize to versions 2/3, sticker-only downgrade→0179, re-upgrade | **4/4 PASS** |
-| Rerun/idempotency | re-upgrade after downgrade clean on both sqlite and PG | **PASS** |
-| Alembic graph integrity (now) | `gate_check.py`: single head, 183/183 head ancestors, no orphans | **PASS** |
+| Baseline at start of acceptance | `af485f22c71264bc81eafb797538736c5f8a0553` | `origin/main` merge-base used for comparison |
+| Remote integration branch before this pass | `6983328e9dcb9a7d2eac8c228bcbc8be2c07b850` | PR #73 head before local acceptance fixes |
+| Final code tip after acceptance fixes | `4483485c72e065d8f279f687ecf4f05b8a78ef79` | Last product/test-code commit before this documentation commit |
+| External current main discovered during the pass | `4d4dba1ffa5a3f8e8d7345bbcb2929a7d12e7e9b` | Result of PR #75; not the perf baseline |
 
-Production processes never apply migrations; release-time explicit command per
-the PM2 runbook. Sticker-only downgrade path 0182→0179 verified on PG17; full-chain sqlite rollback coverage reaches 0177 (rollback plan §11).
+Additional local commits on top of `6983328e`:
 
-## 7. Performance A/B
-
-Full tables and harness notes:
-[`WEB-itinvent/frontend/e2e-artifacts/release-gate-perf/REPORT.md`](../../WEB-itinvent/frontend/e2e-artifacts/release-gate-perf/REPORT.md).
-Baseline `926dd9f5` vs candidate `1a2a7a0b`, production builds, isolated
-outDirs/ports/state per side, identical seed, alternating A/B order, n=30–40.
-
-### Verdicts
-
-- **Global gate:** no systematic p50 regression >10 % anywhere. Cold-start paint
-  improved (FCP/LCP 276→164 ms, −41 %), netBytes −33 % with more, smaller
-  requests — neutral/positive. No heap leak delta (durability probe 20×5).
-- **Chat regression 1440×900:** emoji pinned open **−32 % p50** (faster),
-  receive −12 %, typing −10 %. send_echo p95 +31.8 % in the first run **not
-  reproduced** on the candidate rerun (p95 172 ms) — contention tail.
-- **Send-focus modes:** dock-off faster on candidate (−14 % send p50);
-  dock-open no delta (+1.5 % p95).
-
-### Flagged finding — warm-dock send/typing cost (accepted with follow-up)
-
-Direction consistent across two reversed-order A/B pairs: on the **dock-warm**
-path only (dock opened then closed, panel keep-mounted under `display:none`):
-
-- send_echo p50 **+25.5 % / +41.2 %** in the two warm pairs (~25–40 ms tail);
-- typing_echo warm +25.6/+32.8 %;
-- round-1 warm sends rendered **+17.8 % nodes/commit** vs baseline (47 574 vs 40 404).
-
-Root cause identified structurally: `ChatComposer` now mounts
-`ChatStickerSuggestions` (+246 lines) computing `getTrailingEmojiToken` per
-keystroke; the rewritten `TelegramStickersTab` (+1040 lines) is keep-mounted
-with the dock — the `visible` prop already skips hidden work, but the first-open
-mount cost stays resident. `dock=open` shows no delta and `dock=off` is faster,
-so the cost is isolated to the warm-dock path.
-
-**Disposition: accepted, NOT fixed in this release — explicit design decision.**
-The keep-alive dock surface is a deliberate UX trade (instant reopen, no catalog
-refetch). Documented follow-up for future work: defer index/suggestion work
-until the first emoji token appears, memoize the hidden sticker tab; verify on a
-quiet machine.
-
-### Environmental tails (documented, not product)
-
-cold_nav_login p95 2/30 outlier samples (~1.4 s) and route-transition p95 tails
-(+50–100 ms with p50 ≤ +8 %) — shared-machine contention (parallel gate runs);
-`route_my-files` one 15 s marker-timeout sample on BOTH sides.
-
-## 8. Security
-
-Gate verdict: **PASS** with one LOW finding.
-
-- **F-1 (LOW, fixed in consolidation): attachment filename forgery on
-  entitlement leg-3.** The third entitlement leg previously trusted the
-  user-controlled attachment filename shape. The final consolidation requires
-  the server-side `media_kind='sticker'` marker as well as the server-written
-  `sticker-{id}--{pack}` filename shape; regression coverage proves that a
-  forged upload filename does not grant favorite/recents entitlement and that
-  clients cannot self-assign `media_kind='sticker'`.
-- No auth/session surface regressions: auth-batch (#48) and refresh-coordination
-  (#29) changes are covered by the auth vitest suites and the auth-guards e2e
-  (incl. the new viewer-seed admin-area bounce test).
-
-## 9. E2E sweep results (this gate, 2026-11-25, candidate tip)
-
-Command: `E2E_LOCAL=1 E2E_BUILD=1 npx playwright test` on the seeded throwaway
-stack (custom ports 18021/5224 to coexist with the parallel foreign agent stack;
-backend booted through the `stab_backend.py`/`stab_python.cmd` decoys so foreign
-process-kill sweeps cannot match it; `E2E_HUB_DATA_DIR` outside the deep worktree
-against MAX_PATH). 31 tests, 1 worker, production build.
-
-| Spec | Result | Notes |
+| SHA | Subject | Purpose |
 |---|---|---|
-| `release-smoke.spec.js` (new) | **1/1 PASS** | 31/31 routes render; matrix in §3 |
-| `chat-emoji-picker.spec.js` | **15/15 PASS** | incl. sticker delivery A→B over WebSocket, Escape/pinned-dock regressions, perf-probe, dark theme, grid screenshots |
-| `chat-stickers-v2.spec.js` | **6/6 PASS** | favorites, recents persistence, search, suggestions, manage dialog DnD, cross-user isolation |
-| `chat-recents-ops.spec.js` (new) | **1 fail → fixed, see below** | test-isolation defect, not a product defect |
-| `chat-calls-layout.spec.js` | 8 fails — **harness env-blocked** | see below |
+| `7bf261a3` | `fix(database): stabilize mobile tabs and QR deep-link tests` | TASK 1 fix |
+| `472c5826` | `fix(tasks): safe paste in task editor (PR #10)` | apply deferred PR #10 |
+| `9c19ae23` | `test(auth): wait for cross-tab refresh propagation` | stabilize an auth test around intentional cross-tab timing |
+| `4483485c` | `fix(chat): keep AI action clicks inside card` | fix mobile AI action-card click propagation exposed by E2E |
 
-### chat-recents-ops — root cause and fix
+The four code/test commits touch exactly 9 files: `client.test.js`, `ChatBubble.jsx`,
+`ChatThread.test.jsx`, `MobileCreateDescriptionEditor.jsx` + test, `Database.test.jsx`,
+`DatabasePageHeader.jsx`, and `taskRichText.js` + test. Diff versus the remote integration
+head before this pass: **9 files, +235/−20**.
 
-Failure: `expect(hijacked.items).not.toContain(s2)` — s2 present in the rail.
-The hijacked-batch replay was **correctly** not reapplied (version did not bump —
-the dedup invariant held). The false premise: the seeded test pack has exactly
-three stickers and earlier serial specs (`chat-emoji-picker` sends stickers as the
-same user) leave them in the same user's recents rail, so `s2` pre-existed.
-Fix: the spec now resets the rail with its own `clear` batch first
-(deterministic empty start). Server code correct — no product change.
-
-### chat-calls-layout — harness limitation, not a product defect
-
-All 8 tests fail waiting for the remote tile. Root cause: the spec stubs
-livekit-client by intercepting `**/node_modules/.vite/deps/livekit-client.js*` —
-a URL that exists only in `vite dev`. In the production build livekit is bundled
-(`assets/livekit-client.esm-*.js`), the interception never fires, the real
-client cannot reach `wss://livekit.invalid`, and no remote participant appears.
-This is the spec's own documented constraint ("so this stub works against
-`vite dev`, not against a built bundle"). Disposition: env-blocked in build
-mode; dev-mode verification in the addendum below. The same constraint applies
-to `chat-calls.spec.js` — worth a follow-up harness improvement (stub the
-hashed prod chunk) if call-layout coverage in build mode is ever required.
-
-### Additional same-day sweep evidence (predecessor run, artifacts committed)
-
-- `human-walkthrough` 33/33 routes — zero pageerrors, zero internal 5xx (§3).
-- `my-files-compact-ux` + `my-files-name-columns` artifact regeneration — all
-  screenshots/metrics refreshed after the visually-hidden live-region fix.
-- `chat-sidebar-modes` artifact regeneration (12 screenshots).
-- `address-book`, `employee-*` screenshot sets refreshed.
-
-### Working-tree fixes included in this sweep commit
-
-Real defect class found by the sweep — MUI `sx` treats numeric `width/height ≤ 1`
-as a **percentage**, not pixels: visually-hidden live regions at `width: 1` were
-1 %-sized and could extend scroll regions / leak layout. Fixed to `'1px'` /
-`m: '-1px'` in 7 files: `ChatDialogs.jsx`, `TelegramStickersTab.jsx`,
-`MailQuickReplyBar.jsx`, `MyFilesListItems.jsx` (+`m`), `AddressBook.jsx`,
-`CompanyStructureChart.jsx`, `DatabaseEmployeeSearchFallback.jsx`.
-
-Test-harness hardening (same commit): e2e stack gains `e2e_joiner`/`e2e_viewer`
-seed users, `MY_FILES_SHARE_TOKEN_KEY`, `CHAT_SCHEDULED_MESSAGES_ENABLED`,
-serial-seed rate-cap relaxation; `auth-guards` uses the viewer for the
-admin-area bounce (operators legitimately carry `scan.tasks`);
-`chat-groups` uses the onboarded joiner + bootstrap retry; `docflow-absences`
-rewritten to the shared-payload architecture; `equipment-qr-print` row-click
-menu; spec-level stabilization in `address-book`, `chat-open-desktop`,
-`chat-state-regressions`, `my-files-editor-*`, `tasks-write`, `my-files-admin`,
-`human-walkthrough`, `chat-regression-perf` (state-dir aware). Decoy shim
-`stab_backend.py` re-execs `local_backend.py` (no drift) + `stab_python.cmd`.
-
-## 10. Regression log (defects found during the gates → root cause → disposition)
-
-| # | Defect | Root cause | Fix / disposition |
-|---|---|---|---|
-| 1 | Escape did not close the pinned emoji dock | sticker-suggestions strip swallowed Escape before the close chain | `pickerOpen` gating (`7777bdf5`); e2e PASS |
-| 2 | `emoji_pinned` open +27–39 % | duplicate hidden-tab mounts + catalog fetch in emoji scenarios | unified scoped store + pickerOpen (`2810b2c4`, `7777bdf5`) → −28/−40 % vs control |
-| 3 | send_echo p95 +40 % first-gate tail | not the sticker path (0 sticker requests); dock-ordering + shared host | noise attribution proven by focused bench; see §7 for the residual warm-dock cost decision |
-| 4 | duplicate alembic revision 0177 | A8 work took 0177 on main | renumbered sticker chain to 0178/0179 (`db20042c`) |
-| 5 | `CHAT_REVISIONS == 22` test failure | count stale after A8+stickers | updated to 23 |
-| 6 | stale aria-label in `ChatComposer.behavior` | pinned mode renames the button label | expectation updated |
-| 7 | recents stale-list resurrect across devices | snapshot-PUT could not distinguish "my changes" from "full state" | op-based versioned protocol (`dfd73112`) + 9 backend + 7 frontend regression cases |
-| 8 | lost-response retry could reapply a batch | no idempotency key on the op journal | `op_batch_id` bounded-history dedup, migration 0180 (`d16e008d`) |
-| 9 | send-focus bench failed at 988 px with open dock | overlay dock intercepts pointer events over composer | measure via `focus()` in dock=open mode |
-| 10 | baseline worktree login 400 | `.env` untracked → `MAIL_CREDENTIALS_KEY` absent in worktrees | seed test-only key in `local_backend.py` |
-| 11 | `scripts/_migration_safety.py` missing | deleted by a cleanup commit on main | restored (`5bae5bfb`); 5/5 tests pass |
-| 12 | dev-mode white page in worktrees | deep `@mui/material/Box` import → broken optimizeDeps chunk under esbuild 0.27.7 | barrel import (`a7359e78`) |
-| 13 | MUI sx visually-hidden regions mis-sized | numeric `width: 1` is a percentage in sx, not px | `'1px'`/`'-1px'` in 7 files (this sweep commit) |
-| 14 | `chat-recents-ops` false failure | shared-rail pollution in serial sweep | spec isolation fix (this sweep commit) |
-| 15 | `chat-calls-layout` fails in build mode | livekit stub intercepts a dev-only URL | documented harness limitation; dev-mode check §9-addendum |
-| 16 | initial backend status change in onlyoffice branding retry test | timing/clock-freeze sensitivity under shared load | triaged flake; render path untouched by branch |
-
-## 11. Remaining limitations, release order, rollback
-
-### Known limitations (accepted)
-
-- Mail/scan/SQL-Server/1C surfaces verified at shell level only on the local
-  stack — feature verification requires the real environment.
-- `Database.test.jsx` ×2 deterministic failures are pre-existing on main and
-  still open (not caused by this branch).
-- Warm-dock send/typing cost accepted by design decision (§7) with a documented
-  optimization follow-up.
-- Call-layout e2e coverage is dev-mode-only until the stub learns the prod chunk.
-- `origin/main` advanced after fixation (PR #68/#70/#71) — the consolidation
-  merge must re-verify the my-files overlap surface.
-
-### Release order (hard requirement)
-
-1. **Alembic first:** apply migrations to head (`20261125_0182`) per the PM2
-   runbook — production processes never self-migrate. The new ORM reads
-   `applied_op_batch_ids` in SELECT, so code without the column fails: migration
-   strictly before/with backend.
-2. **Backend restart second** — sticker clients depend on it: the new server
-   fully serves old clients (legacy `sticker_ids` merge retained), while a new
-   client on an old server degrades to legacy mode without errors. **BACKEND
-   BEFORE FRONTEND.**
-3. **Frontend publish last** (`scripts/iis/publish_frontend_iis.ps1`).
-
-### Rollback plan
-
-- Code: revert the consolidation merge commit(s) on main (`git revert -m 1`),
-  republish frontend, restart backend via the standard scripts.
-- DB: alembic downgrade path **verified** — sticker-only
-  `20261125_0182 → 20261124_0179` downgrade + re-upgrade exercised on the
-  isolated PG17 cluster (`test_pg_sticker_gate` 4/4); full-chain downgrade to
-  0177 remains covered by the sqlite migration matrix. Downgrade removes only sticker-V2 additive
-  tables/columns (`chat_user_favorite_stickers`, `chat_user_recent_sticker*`,
-  `position`, `applied_op_batch_ids`); no pre-existing data touched.
-- The migrations are additive-only; keeping them in place while rolling back
-  code is also safe (old code never reads the new tables/columns).
-
-## 12. GO / NO-GO
-
-**Conditional GO.** The candidate is releasable once these conditions are met:
-
-1. **Env fixes for CI flags** — the flags-on full vitest run needs a quiet
-   machine window (or worker tuning) so the two load-flaky suites
-   (`ChatCommon`, `CompanyStructure`) are not noise-failed in CI; both pass
-   standalone and flags-off.
-2. **Deferred-PR decision** — explicit owner decision on #10
-   (task-editor-safe-paste), #15 (docs), #9 (audit report). Note PR #68 has
-   already landed on main — the consolidation merge must be conflict-aware in
-   the my-files surface and re-run the my-files vitest/e2e subset after merging.
-3. **`Database.test.jsx` triage** — the 2 deterministic pre-existing failures
-   need an owner (not a blocker for this branch, but currently invisible in CI
-   noise; either fix or quarantine with a tracked issue).
-4. **Warm-dock cost acceptance** — product owner signs off the documented
-   +25–40 ms warm-dock send/typing tail as the accepted price of the keep-alive
-   dock (follow-up optimization already specified).
-5. Release order per §11 is enforced: alembic → backend → frontend.
-
-No NO-GO items. All blockers found during the gates are either fixed in-branch
-or explicitly dispositioned above.
+Diff versus the original baseline `af485f22`: **377 files, +33 808/−2 202**; the branch is
+129 commits ahead of that baseline. The heads have since diverged from current main because
+PR #75 merged a separate release-candidate line.
 
 ---
 
-### Addendum — dev-mode verification of env-blocked specs (2026-11-25)
+## 2. TASK 1 — Database mobile failures
 
-Follow-up run in dev mode (`E2E_LOCAL=1` without `E2E_BUILD`, same seeded
-stack/ports) after the isolation fix:
+### Reproduction and comparison
 
-| Spec | Result |
-|---|---|
-| `chat-calls-layout.spec.js` | **8/8 PASS** — confirms the build-mode failures were purely the dev-only-stub harness limitation; the call window layout (expand/floating/spotlight/fullscreen/PiP/drag-reload) works on the candidate |
-| `chat-recents-ops.spec.js` | **1/1 PASS** — op-batch idempotency contract verified end-to-end at the HTTP boundary: lost-response same-batch replay returns current state without reapply or version bump, foreign overlapping batches apply and serialize, late replays never resurrect |
+The fresh flags-on suite initially failed only in `Database.test.jsx` (2 tests). The same
+focused file passed on baseline main, so this was treated as an integration regression rather
+than pre-existing noise.
 
-Final sweep tally: **31/31 sweep tests green** (release-smoke 1,
-emoji-picker 15, stickers-v2 6, recents-ops 1, calls-layout 8, plus the
-walkthrough/route evidence) with the only build-mode failures fully attributed
-to the documented harness constraint.
+### Root cause and fix
+
+1. **Mobile tabs overflow/hand-off regression.** The mobile Database header used a wrapper
+   around MUI `Tab`; wrapper props did not reliably carry the final tab styling/behaviour in
+   the integrated layout. Fixed by passing the mobile `sx` directly to `Tab` in
+   `WEB-itinvent/frontend/src/pages/database/DatabasePageHeader.jsx`.
+2. **QR deep-link test timing.** The test asserted intermediate UI state too rigidly while
+   the scan/QR deep-link flow was still settling. The test was made deterministic with proper
+   async waiting in `WEB-itinvent/frontend/src/pages/Database.test.jsx`; no production QR
+   logic was changed.
+
+### Evidence
+
+- Focused `src/pages/Database.test.jsx`: **62/62 PASS**.
+- The full flags-on suite after the fix no longer failed in Database.
+
+---
+
+## 3. TASK 2 — deferred PR disposition
+
+### PR #10 — applied
+
+PR #10 was applied as local commit `472c5826`.
+
+What it adds:
+
+- `sanitizeEditorPasteHtml` in `WEB-itinvent/frontend/src/pages/tasks/taskRichText.js`;
+- paste interception in `MobileCreateDescriptionEditor.jsx`;
+- scripts, inline event handlers and unsafe hrefs are removed;
+- allowed basic formatting is preserved.
+
+Evidence: focused task rich-text/editor tests **14/14 PASS**.
+
+### PR #9 — not merged, intentionally deferred/superseded
+
+Inventory: roughly **254 files** of historical frontend-audit evidence/report payload. The
+audit was produced against a pre-remediation tree; key signoff/backlog files do not match the
+current post-remediation state. Merging it verbatim would create a stale audit sign-off and
+obsolete evidence in the release documentation tree. Decision: **do not merge**; preserve the
+decision here and in `INTEGRATION_REGISTRY.md`.
+
+### PR #15 — not merged, intentionally deferred/superseded
+
+Inventory: a separate `documentation/technical/ai-architecture-audit/` tree. It has no direct
+path conflicts, but its recommendations predate the AI remediation/implementation work already
+present in the integration branch (A1–A11 reports and code). Merging it unchanged would mix an
+outdated roadmap with current architecture documentation. Decision: **do not merge**; if still
+needed, it requires a manual documentation rewrite against current main.
+
+---
+
+## 4. TASK 3 — frontend/backend regression evidence
+
+### 4.1 Frontend flags-on vitest
+
+Environment flags:
+
+```text
+VITE_CHAT_ENABLED=1
+VITE_CHAT_WS_ENABLED=1
+VITE_TASK_DISCUSSION_CHAT_ENABLED=1
+```
+
+Acceptance sequence:
+
+1. Before the auth-test stabilization: **721/722 files PASS**, **5244 passed + 2 skipped / 5247**;
+   only `src/api/client.test.js` failed in the shared-refresh test.
+2. Diagnosis showed test timing around the intentional asynchronous cross-tab refresh
+   propagation in `src/api/http.js`, not a product regression. The test was changed to await
+   propagation; no production auth code was changed (`9c19ae23`).
+3. Focused `src/api/client.test.js`: **265/265 PASS**.
+4. Full flags-on run at `9c19ae23`: **722/722 files PASS**, **5245 passed + 2 skipped / 5247**, **0 failed**.
+5. After the final AI-card commit `4483485c`, one full rerun exposed two intermittent
+   `Tasks.test.jsx` tab-race failures under the full parallel suite. The same file then passed
+   focused **45/45**. A final full rerun at the final code tip passed cleanly:
+   **722/722 files PASS**, **5245 passed + 2 skipped / 5247**, **0 failed**, 275.44 s.
+   The intervening Tasks failures are therefore classified as a rare parallel-suite timing
+   flake, not a product regression; no production Tasks code was changed.
+
+Focused final regression coverage also includes:
+
+- `ChatThread.test.jsx`: **96/96 PASS** after the AI action-card fix.
+
+### 4.2 Backend targeted regression
+
+Targeted backend subset: **134/134 PASS in 76.39 s**.
+
+Breakdown:
+
+| Suite | Tests |
+|---|---:|
+| root `tests/test_chat_sticker_favorites.py` | 18 |
+| `WEB-itinvent/backend/tests/test_chat_sticker_favorites.py` | 29 |
+| `tests/test_chat_telegram_stickers.py` | 26 |
+| `tests/test_chat_attachment_sticker_preview.py` | 2 |
+| `tests/test_chat_migrations_scope_independent.py` | 55 |
+| `tests/test_pg_sticker_gate.py` | 4 |
+
+The PG sticker gate ran against the isolated PostgreSQL 17 scratch cluster on
+`127.0.0.1:55433`, not production. Result: **4/4 PASS**.
+
+### 4.3 Backend collection sanity
+
+Candidate collection:
+
+- **6808 tests collected**
+- **10 collection errors in 23.52 s**
+
+Baseline `af485f22` collection:
+
+- **6779 tests collected**
+- **11 collection errors in 48.95 s**
+
+The remaining common errors are environment-gated/legacy collection classes, primarily
+Telegram token requirements, chat/Redis readiness, FS egress/voice/work legacy imports. The
+only difference in the error sets is baseline-only `tests/test_migrate_safe_replace_scripts.py`,
+whose collection defect is fixed in the integration branch. Thus collection sanity is improved,
+not regressed: **+29 collectable tests, −1 collection error** versus baseline.
+
+These are collection facts, not a claim that all 6808 backend tests were executed.
+
+---
+
+## 5. TASK 4 — E2E acceptance
+
+E2E evidence was produced on local isolated stacks with production frontend builds where the
+harness supports them. No production service or database was touched.
+
+### 5.1 Final-code smoke/reliability runs
+
+After commit `4483485c` and a fresh production candidate build:
+
+- `e2e/release-smoke.spec.js`: **1/1 PASS**, 53.6 s.
+  - 31 routes exercised.
+  - 29 routes rendered normally.
+  - `/database` and `/scan-center` were explicitly classified as documented degraded upstream
+    surfaces because the local harness does not seed those upstream APIs; the release-smoke
+    assertion still passed according to its intended degraded-surface policy.
+- `e2e/chat-ai-reliability.spec.js`: **8/8 PASS**, 48.8 s.
+  - Includes the previously failing `draft actions remain usable in a narrow dark layout`.
+
+### 5.2 Chat/module sweep evidence
+
+Earlier in the same acceptance pass, before the final small AI-card click fix:
+
+- chat AI drafts/mail-open: **3/3 PASS** (`chat-ai-drafts` 1, `chat-ai-mail-open` 2);
+- chat emoji/sticker/recents module sweep: **25/25 PASS** total:
+  - `chat-emoji-picker` 15,
+  - `chat-stickers-v2` 6,
+  - `chat-recents-ops` 1,
+  - plus the AI drafts/mail-open tests counted in the module command;
+- My Files fixture-backed acceptance in dev mode: **60/60 PASS**.
+
+The subsequent `4483485c` change is confined to event propagation inside the AI action card;
+it does not affect sticker/emoji rendering or My Files. The directly affected AI reliability
+spec was rerun at the final code tip and passed **8/8**.
+
+### 5.3 Real E2E failure found and fixed
+
+Fresh failure before the fix:
+
+- `chat-ai-reliability.spec.js`: **8 passed / 1 failed**;
+- failing test: `draft actions remain usable in a narrow dark layout`;
+- after clicking `Изменить`, the expected dialog `Редактировать письмо` did not appear;
+- error context showed the ordinary message context menu instead (`Ответить`, `Закрепить`,
+  `Копировать текст`, …).
+
+Root cause: on compact/mobile layouts the bubble surface itself has click/long-press handling
+that opens the message menu. Clicks inside the AI action card bubbled to that surface, so the
+message menu raced/covered the mail editor.
+
+Fix in `4483485c`:
+
+- `WEB-itinvent/frontend/src/components/chat/ChatBubble.jsx` treats the AI action card as its
+  own interactive surface and stops click/pointer/touch propagation there;
+- `ChatThread.test.jsx` now renders the office-mail action in compact mobile mode and asserts
+  that `onEditAction` fires while `onOpenMessageMenu` does not.
+
+Validation:
+
+- focused unit file **96/96 PASS**;
+- AI reliability E2E **8/8 PASS** at final code.
+
+---
+
+## 6. TASK 5 — comparative performance gate
+
+### 6.1 Scope and honesty note
+
+The performance A/B harness compared:
+
+- baseline `af485f22c71264bc81eafb797538736c5f8a0553`;
+- candidate `9c19ae232ba70eea87a0768b6a04e9dfa4bae2d4`.
+
+The later commit `4483485c` was created after E2E triage. It only adds event propagation
+isolation to the AI action card and a unit assertion; none of the measured performance
+scenarios render or click AI action cards. Therefore the measured performance evidence is
+representative for the final code, but strictly speaking the large comparison matrix was
+executed at `9c19ae23`, before that final event-only fix.
+
+The comparison baseline is **not** current main `4d4dba1f`; current main appeared later through
+PR #75. This is a deliberate scope limitation of the acceptance run, not an omission.
+
+### 6.2 Method
+
+- separate baseline and candidate worktrees;
+- production frontend builds;
+- isolated backend/frontend ports and state;
+- copied/patched perf harness files into baseline because they did not exist there naturally;
+- alternating baseline/candidate measurement groups;
+- n=20 for compared samples;
+- no parallel builds inside a measurement pair.
+
+### 6.3 Results
+
+#### Global/cold navigation
+
+| Metric | baseline p50 | candidate p50 | delta | p95 note |
+|---|---:|---:|---:|---|
+| `cold_nav_login_ms` | 700 ms | 702 ms | +0.3% | 716→714 ms (−0.3%) |
+| `cold_login_dashboard_ms` | 1227 ms | 1097 ms | −10.6% | 1286→1212 ms (−5.8%) |
+| `cold_total_ms` | 1974 ms | 1846 ms | −6.5% | 2099→1954 ms (−6.9%) |
+| `file_list_load` | 489.7 ms | 479.3 ms | −2.1% | no adverse p95 regression |
+| `search_echo_ms` | 20.4 ms | 19.5 ms | −4.4% | no adverse p95 regression |
+
+#### Chat regression
+
+| Metric | baseline p50 | candidate p50 | delta | p95 |
+|---|---:|---:|---:|---|
+| `conv_switch` | 703.3 ms | 707.7 ms | +0.6% | +5.6%, below 10% threshold |
+| `send_echo_ms` | 176.5 ms | 91.3 ms | −48.3% | 202.6→129.4 ms (−36.1%) |
+| `emoji_pinned` | 193.3 ms | 163.7 ms | −15.3% | improved |
+
+#### Send-focus, dock off
+
+| Metric | baseline p50 | candidate p50 | delta | p95 |
+|---|---:|---:|---:|---|
+| `typing_echo_ms` | 21.8 ms | 24.0 ms | +10.1% (~+2.2 ms) | −9.2% |
+| `send_echo_ms` | 70.4 ms | 76.0 ms | +8.0% (~+5.6 ms) | −10.6% |
+
+The dock-off p50 increases are small absolute values, do not exceed the p95 regression gate,
+and are outweighed by the warm-dock improvements below.
+
+#### Send-focus, warm dock
+
+| Metric | baseline p50 | candidate p50 | delta | p95 |
+|---|---:|---:|---:|---|
+| `typing_echo_ms` | 36.9 ms | 28.2 ms | −23.6% | −40.5% |
+| `send_echo_ms` | 127.2 ms | 81.8 ms | −35.7% | 160.8→95.5 ms (−40.6%) |
+
+Rendered-node counts in the warm-dock scenario also dropped materially (roughly p50 33 446 →
+19 029 nodes; commits p50 12 → 7). The warm-dock send regression identified in the earlier
+interim report is eliminated on the measured candidate.
+
+### 6.4 Perf verdict
+
+**PASS**: no measured p95 regression above the 10% acceptance threshold; critical warm-dock
+send path improved substantially. Caveats: shared Windows host timings, harness baseline
+`af485f22` rather than post-PR#75 main, and matrix measured before the final event-only AI-card
+commit as described above.
+
+---
+
+## 7. Security-sensitive changes
+
+### Task editor paste sanitization
+
+PR #10 closes a stored-HTML/XSS-adjacent paste path in the mobile task description editor. The
+sanitizer strips scripts, inline event handlers and unsafe links while preserving basic allowed
+formatting. Focused tests passed **14/14**.
+
+### Sticker migration/security tests
+
+The integration branch retains the renumbered sticker migrations and salvaged security HTTP
+tests. Targeted migration/sticker backend tests are included in the **134/134 PASS** subset.
+
+---
+
+## 8. Repository/PR state
+
+- PR #73 (`integration/frontend-remediation` → `main`) is **closed, unmerged**; its recorded
+  head remains `6983328e` from before the final acceptance commits.
+- PR #75 is **merged** into main at 2026-11-25 11:51:41Z; base was `af485f22`, head
+  `d008cf602da317433cc44e282c006b1ee5fd9d02`, resulting in main `4d4dba1f`.
+- Therefore the exact branch accepted here is not automatically the current release line.
+  Any further release decision must compare this branch with the PR #75 content already in
+  `4d4dba1f`.
+
+---
+
+## 9. Remaining risks / not proven
+
+1. **No rebase acceptance onto `4d4dba1f`.** This gate did not re-run the matrix against the
+   post-PR#75 main because that external movement was discovered late and PR #73 was already
+   closed.
+2. **No full backend suite execution.** Collection sanity and targeted regression were run;
+   the complete 6808-test backend corpus was not executed.
+3. **Shared-host perf noise.** The measurements are comparative and repeated, but still local
+   Windows harness numbers, not production telemetry.
+4. **Perf matrix predates the final event-only commit.** The final AI-card fix is outside all
+   measured scenarios, but strict SHA equality for the perf matrix is not claimed.
+5. **PR #9/#15 remain unmerged.** That is an explicit documented decision, not forgotten work.
+
+---
+
+## 10. Final recommendation
+
+1. Treat the code acceptance of `integration/frontend-remediation` as **GO relative to
+   `af485f22`**, based on frontend/backend/E2E/perf evidence above.
+2. Do **not** resurrect or merge PR #73 blindly: it is closed, and main already advanced via
+   PR #75. If the branch still contains unique required deltas, open a fresh comparison/review
+   against `4d4dba1f` and run only the delta-driven checks.
+3. If PR #75 is the accepted release line, use this report as supplementary evidence for the
+   overlapping integration content, not as a direct approval of every line currently in main.
+4. Deploy remains out of scope for this gate and requires the normal explicit release/deploy
+   procedure.

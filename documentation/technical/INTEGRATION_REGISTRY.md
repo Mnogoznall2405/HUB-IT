@@ -254,3 +254,32 @@ PG17; `5bae5bfb` восстановление `scripts/_migration_safety.py`;
 `a7359e78` barrel-импорт Box; `1a2a7a0b` frontend release gate —
 RC inventory + smoke-test triage fixes; `609572ac` release perf A/B;
 `5a7cb5e1` release e2e module sweep (release-smoke 31/31 routes PASS).
+
+---
+
+## Final acceptance addendum — 2026-11-25
+
+Кодовый tip финального acceptance: `4483485c` (`integration/frontend-remediation`; до docs-коммита). Baseline сравнения на старте acceptance: `origin/main` `af485f22`. Во время прогона `origin/main` внешне ушёл в `4d4dba1f` через merge PR #75, а PR #73 был закрыт владельцем без merge; это зафиксировано как изменение release-vehicle, а не как регрессия кода.
+
+### Дополнительные коммиты поверх `6983328e`
+
+| SHA | Что вошло | Проверка |
+|---|---|---|
+| `7bf261a3` | Database mobile tabs/QR deep-link: прямой `sx` на mobile `Tab` + детерминированные ожидания в тесте | focused `Database.test.jsx` 62/62 PASS |
+| `472c5826` | PR #10 `1d93d28b`: sanitize HTML paste в mobile task editor (`dompurify`, allowlist, повторная проверка href) | focused task rich-text/editor 14/14 PASS |
+| `9c19ae23` | Синхронизация auth refresh test с intentional cross-tab propagation window | focused `client.test.js` 265/265 PASS |
+| `4483485c` | AI action card на mobile не пробрасывает click/long-press в bubble menu | focused `ChatThread.test.jsx` 96/96 PASS; AI reliability narrow dark E2E PASS |
+
+### Deferred PR decision
+
+- **PR #10** — применён отдельным коммитом `472c5826` с атрибуцией `(PR #10)`; сам PR на GitHub остаётся open как исходный side-PR.
+- **PR #9** — не merged: 254 файла исторического аудита против pre-remediation main `9879be04`; перенос как есть создал бы устаревший audit sign-off поверх уже исправленной кодовой базы. Решение: defer/superseded, финальное состояние фиксируется в `FINAL_RELEASE_GATE_REPORT.md`.
+- **PR #15** — не merged: архитектурный AI-аудит/roadmap от 2026-11-23 путь-конфликтов не имеет, но содержание superseded уже приземлёнными отчётами/работами A1–A11; перенос без переписывания противоречил бы текущему состоянию.
+
+### Финальные проверки, добавленные к реестру
+
+- Flags-on frontend vitest на финальном кодовом tip `4483485c`: **722/722 files, 5245 passed + 2 skipped / 5247, 0 failed** (275.44 s). Промежуточный rerun поймал два редких parallel-timing падения `Tasks.test.jsx`; focused файл затем **45/45 PASS**, финальный полный rerun зелёный.
+- Backend targeted regression на `9c19ae23`/перед `4483485c` (backend не менялся): **134/134 PASS**, включая PG17 isolated sticker gate **4/4**.
+- Backend collection sanity: candidate **6808 collected / 10 env-legacy errors**; baseline `af485f22` **6779 collected / 11 errors**. Единственная разница в error-set — baseline-only `test_migrate_safe_replace_scripts.py`, дефект исправлен в integration; остальные ошибки одинаковые environment/legacy-gated.
+- E2E: release-smoke **1/1 PASS** (31 route: 29 render + 2 documented degraded upstream surfaces), chat emoji/sticker/recents **25/25 PASS** до final AI-card fix, My Files fixture harness в dev mode **60/60 PASS**, AI chat reliability после fix **8/8 PASS**; AI drafts/mail-open **3/3 PASS**.
+- Perf A/B production builds, alternating sides, n=20/scenario: no p95 regression >10%; warm-dock send улучшился `127.2→81.8 ms` p50 и `160.8→95.5 ms` p95. Подробности — в gate report.
