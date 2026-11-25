@@ -1,0 +1,254 @@
+{
+  "env": {
+    "AI_JEV_ROUTING": "0",
+    "AI_SUMMARY_BACKGROUND_ENABLED": "0",
+    "AI_INPUT_BUDGET_TOKENS": 32000,
+    "AI_MODEL_CONTEXT_WINDOW": 32000,
+    "AI_CONTEXT_DB_MESSAGE_WINDOW": 20,
+    "registered_tools": 100
+  },
+  "scenarios": [
+    {
+      "scenario": "chat_no_tools_1msg",
+      "calls": [
+        {
+          "est_system_tokens": 1572,
+          "est_user_tokens": 656,
+          "est_total_tokens": 2228,
+          "system_blocks": {
+            "other": 764,
+            "guide_answer_style": 416,
+            "guide_understanding": 393
+          },
+          "user_blocks": {
+            "bot_title": 6,
+            "rolling_summary": 44,
+            "conversation_history": 58,
+            "personal_memory": 35,
+            "task_state": 50,
+            "memory_status": 68,
+            "current_request": 10,
+            "active_draft": 53,
+            "file_context": 37,
+            "kb_context": 37,
+            "template_candidates": 41,
+            "template_flag": 9,
+            "answer_instructions": 124,
+            "other": 57,
+            "current_request_tail": 25
+          }
+        }
+      ],
+      "call_count": 1
+    },
+    {
+      "scenario": "read_itinvent_tools_1msg",
+      "calls": [
+        {
+          "est_system_tokens": 1572,
+          "est_user_tokens": 664,
+          "est_total_tokens": 2236,
+          "system_blocks": {
+            "other": 764,
+            "guide_answer_style": 416,
+            "guide_understanding": 393
+          },
+          "user_blocks": {
+            "bot_title": 6,
+            "rolling_summary": 44,
+            "conversation_history": 60,
+            "personal_memory": 35,
+            "task_state": 50,
+            "memory_status": 68,
+            "current_request": 13,
+            "active_draft": 53,
+            "file_context": 37,
+            "kb_context": 37,
+            "template_candidates": 41,
+            "template_flag": 9,
+            "answer_instructions": 124,
+            "other": 57,
+            "current_request_tail": 27
+          }
+        }
+      ],
+      "call_count": 1
+    },
+    {
+      "scenario": "act_all_tools_1msg",
+      "calls": [
+        {
+          "est_system_tokens": 1572,
+          "est_user_tokens": 5158,
+          "est_total_tokens": 6730,
+          "system_blocks": {
+            "other": 764,
+            "guide_answer_style": 416,
+            "guide_understanding": 393
+          },
+          "user_blocks": {
+            "bot_title": 5,
+            "rolling_summary": 44,
+            "conversation_history": 65,
+            "personal_memory": 35,
+            "task_state": 50,
+            "memory_status": 68,
+            "current_request": 18,
+            "active_draft": 53,
+            "file_context": 37,
+            "kb_context": 37,
+            "template_candidates": 41,
+            "template_flag": 9,
+            "answer_instructions": 124,
+            "other": 92,
+            "tool_specs_files": 374,
+            "guide_files": 363,
+            "tool_specs_office": 875,
+            "guide_office": 613,
+            "tool_specs_kb": 342,
+            "guide_kb": 196,
+            "tool_specs_chat": 199,
+            "guide_chat": 56,
+            "tool_specs_self": 726,
+            "guide_self": 370,
+            "tool_specs_directory": 228,
+            "guide_directory": 101,
+            "current_request_tail": 32
+          }
+        }
+      ],
+      "call_count": 1
+    },
+    {
+      "scenario": "all_tools_60msg",
+      "calls": [
+        {
+          "est_system_tokens": 1572,
+          "est_user_tokens": 6144,
+          "est_total_tokens": 7716,
+          "system_blocks": {
+            "other": 764,
+            "guide_answer_style": 416,
+            "guide_understanding": 393
+          },
+          "user_blocks": {
+            "bot_title": 5,
+            "rolling_summary": 707,
+            "conversation_history": 385,
+            "personal_memory": 35,
+            "task_state": 50,
+            "memory_status": 68,
+            "current_request": 19,
+            "active_draft": 53,
+            "file_context": 37,
+            "kb_context": 37,
+            "template_candidates": 41,
+            "template_flag": 9,
+            "answer_instructions": 124,
+            "other": 92,
+            "tool_specs_files": 374,
+            "guide_files": 363,
+            "tool_specs_office": 875,
+            "guide_office": 613,
+            "tool_specs_kb": 342,
+            "guide_kb": 196,
+            "tool_specs_chat": 199,
+            "guide_chat": 56,
+            "tool_specs_self": 726,
+            "guide_self": 370,
+            "tool_specs_directory": 228,
+            "guide_directory": 101,
+            "current_request_tail": 33
+          }
+        }
+      ],
+      "call_count": 1
+    },
+    {
+      "scenario": "act_tool_round_followup",
+      "calls": [
+        {
+          "est_system_tokens": 1572,
+          "est_user_tokens": 5138,
+          "est_total_tokens": 6710,
+          "system_blocks": {
+            "other": 764,
+            "guide_answer_style": 416,
+            "guide_understanding": 393
+          },
+          "user_blocks": {
+            "bot_title": 5,
+            "rolling_summary": 44,
+            "conversation_history": 58,
+            "personal_memory": 35,
+            "task_state": 50,
+            "memory_status": 68,
+            "current_request": 11,
+            "active_draft": 53,
+            "file_context": 37,
+            "kb_context": 37,
+            "template_candidates": 41,
+            "template_flag": 9,
+            "answer_instructions": 124,
+            "other": 92,
+            "tool_specs_files": 374,
+            "guide_files": 363,
+            "tool_specs_office": 875,
+            "guide_office": 613,
+            "tool_specs_kb": 342,
+            "guide_kb": 196,
+            "tool_specs_chat": 199,
+            "guide_chat": 56,
+            "tool_specs_self": 726,
+            "guide_self": 370,
+            "tool_specs_directory": 228,
+            "guide_directory": 101,
+            "current_request_tail": 25
+          }
+        },
+        {
+          "est_system_tokens": 1468,
+          "est_user_tokens": 5532,
+          "est_total_tokens": 7000,
+          "system_blocks": {
+            "other": 660,
+            "guide_answer_style": 416,
+            "guide_understanding": 393
+          },
+          "user_blocks": {
+            "bot_title": 5,
+            "rolling_summary": 44,
+            "conversation_history": 58,
+            "personal_memory": 35,
+            "task_state": 50,
+            "memory_status": 68,
+            "current_request": 11,
+            "active_draft": 53,
+            "file_context": 37,
+            "kb_context": 37,
+            "template_candidates": 41,
+            "template_flag": 9,
+            "answer_instructions": 124,
+            "other": 315,
+            "tool_specs_files": 374,
+            "guide_files": 363,
+            "tool_specs_office": 875,
+            "guide_office": 613,
+            "tool_specs_kb": 342,
+            "guide_kb": 196,
+            "tool_specs_chat": 199,
+            "guide_chat": 56,
+            "tool_specs_self": 726,
+            "guide_self": 370,
+            "tool_specs_directory": 228,
+            "guide_directory": 101,
+            "current_request_tail": 25,
+            "tool_results": 122,
+            "running_summary": 48
+          }
+        }
+      ],
+      "call_count": 2
+    }
+  ]
+}

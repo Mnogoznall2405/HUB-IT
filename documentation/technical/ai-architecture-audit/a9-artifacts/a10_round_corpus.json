@@ -1,0 +1,178 @@
+{
+  "count": 16,
+  "scenarios": [
+    {
+      "id": "a10_direct_01",
+      "category": "DIRECT",
+      "prompt": "Какой мой рабочий телефон?",
+      "expected_tools": [
+        "me.account.status"
+      ],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "zero-LLM self-service",
+      "expect_fast_path": true
+    },
+    {
+      "id": "a10_direct_02",
+      "category": "DIRECT",
+      "prompt": "Какое оборудование за мной числится?",
+      "expected_tools": [
+        "me.equipment"
+      ],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "zero-LLM self-service",
+      "expect_fast_path": true
+    },
+    {
+      "id": "a10_direct_03",
+      "category": "DIRECT",
+      "prompt": "Когда истекает мой пароль?",
+      "expected_tools": [
+        "ad.user.password_status"
+      ],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "zero-LLM self-service",
+      "expect_fast_path": true
+    },
+    {
+      "id": "a10_direct_04",
+      "category": "DIRECT",
+      "prompt": "Покажи мои активные задачи",
+      "expected_tools": [
+        "office.tasks.search"
+      ],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "zero-LLM self-service",
+      "expect_fast_path": true
+    },
+    {
+      "id": "a10_fast_01",
+      "category": "FASTPATH",
+      "prompt": "Найди сотрудника по фамилии Иванов",
+      "expected_tools": [
+        "directory.people.search"
+      ],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "1 LLM expected",
+      "expect_fast_path": true
+    },
+    {
+      "id": "a10_fast_02",
+      "category": "FASTPATH",
+      "prompt": "Сколько у нас принтеров с низким тонером?",
+      "expected_tools": [
+        "mfu.devices.low_toner"
+      ],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "1 LLM expected",
+      "expect_fast_path": true
+    },
+    {
+      "id": "a10_fast_03",
+      "category": "FASTPATH",
+      "prompt": "Покажи список филиалов",
+      "expected_tools": [
+        "itinvent.directory.branches"
+      ],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "1 LLM expected",
+      "expect_fast_path": true
+    },
+    {
+      "id": "a10_fast_04",
+      "category": "FASTPATH",
+      "prompt": "Какие у меня открытые заявки в 1С?",
+      "expected_tools": [
+        "me.it_requests"
+      ],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "1 LLM expected",
+      "expect_fast_path": true
+    },
+    {
+      "id": "a10_multi_01",
+      "category": "MULTI",
+      "prompt": "Покажи моё оборудование и мои активные задачи одним ответом",
+      "expected_tools": [
+        "me.equipment",
+        "office.tasks.search"
+      ],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "parallel reads, no fast path"
+    },
+    {
+      "id": "a10_multi_02",
+      "category": "MULTI",
+      "prompt": "Найди принтер в кабинете 204 и проверь его статус",
+      "expected_tools": [],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "dependent reads"
+    },
+    {
+      "id": "a10_amb_01",
+      "category": "AMBIG",
+      "prompt": "Что у нас с оргтехникой?",
+      "expected_tools": [],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "vague — no fast path"
+    },
+    {
+      "id": "a10_amb_02",
+      "category": "AMBIG",
+      "prompt": "Какой телефон? Найди и сравни",
+      "expected_tools": [],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "ambiguous"
+    },
+    {
+      "id": "a10_mem_01",
+      "category": "MEMORY",
+      "prompt": "Запомни: я предпочитаю отчёты в формате docx",
+      "expected_tools": [],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "planner must run"
+    },
+    {
+      "id": "a10_mem_02",
+      "category": "MEMORY",
+      "prompt": "Забудь всё, что ты знаешь про мой отдел",
+      "expected_tools": [],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "planner must run"
+    },
+    {
+      "id": "a10_act_01",
+      "category": "ACT",
+      "prompt": "Отправь Иванову письмо с темой 'Тест A10' и текстом 'Проверка'",
+      "expected_tools": [],
+      "required_facts": [],
+      "forbidden": [
+        "office.action.mail_send"
+      ],
+      "note": "draft only — no real send"
+    },
+    {
+      "id": "a10_reuse_01",
+      "category": "REUSE",
+      "prompt": "Найди оборудование Иванова, а потом покажи ещё раз то же самое списком",
+      "expected_tools": [],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "duplicate calls may reuse"
+    }
+  ]
+}

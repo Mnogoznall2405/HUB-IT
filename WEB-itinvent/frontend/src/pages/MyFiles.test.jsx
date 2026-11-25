@@ -762,6 +762,280 @@ describe('MyFiles page', () => {
     await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith('file-1', { folderId: 'folder-7' }));
   });
 
+  it('appends the next keyset page without duplicating the boundary row', async () => {
+    mockListFiles
+      .mockResolvedValueOnce({
+        items: [readyFile],
+        folders: [],
+        breadcrumbs: [],
+        folder: null,
+        next_cursor: 'cursor-1',
+        total: 2,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          readyFile,
+          { ...readyFile, id: 'file-2', original_file_name: 'second.txt', download_file_name: 'second.txt' },
+        ],
+        folders: [],
+        breadcrumbs: [],
+        folder: null,
+        next_cursor: null,
+        total: 2,
+      });
+    renderPage();
+    await screen.findByText('report.txt');
+    await screen.findByText('second.txt');
+    expect(screen.getAllByText('report.txt')).toHaveLength(1);
+    expect(mockListFiles).toHaveBeenCalledTimes(2);
+    expect(mockListFiles).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'cursor-1' }));
+  });
+
+  it('select-all-N covers files past the loaded pages so bulk delete reaches them', async () => {
+    const unloadedFile = { ...readyFile, id: 'file-9', original_file_name: 'unseen.bin', download_file_name: 'unseen.bin' };
+    mockListFiles
+      .mockResolvedValueOnce({ items: [readyFile], folders: [], breadcrumbs: [], folder: null, next_cursor: null, total: 2 })
+      .mockResolvedValue({ items: [readyFile, unloadedFile], folders: [], breadcrumbs: [], folder: null, total: 2 });
+    renderPage();
+    await screen.findByText('report.txt');
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    fireEvent.click(await screen.findByTestId('my-files-select-all-set'));
+    const bar = await screen.findByTestId('my-files-selection-bar');
+    await waitFor(() => expect(bar).toHaveTextContent('Выбрано: 2'));
+
+    fireEvent.click(screen.getByTestId('my-files-bulk-delete'));
+    fireEvent.click(await screen.findByTestId('my-files-confirm-action'));
+    await waitFor(() => {
+      expect(mockDeleteFile).toHaveBeenCalledWith('file-1');
+      expect(mockDeleteFile).toHaveBeenCalledWith('file-9');
+    });
+  });
+
+  it('makes the already-rendered rows inert while the next folder loads', async () => {
+    let resolveFolder;
+    mockListFiles.mockImplementation(({ folderId } = {}) => (folderId
+      ? new Promise((resolve) => { resolveFolder = resolve; })
+      : Promise.resolve({
+        items: [readyFile],
+        folders: [{ id: 'folder-1', name: 'Документы', parent_id: null }],
+        breadcrumbs: [],
+        folder: null,
+      })));
+    renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-folder-folder-1'));
+
+    // Old rows stay on screen but become inert until the new payload lands:
+    // the attribute — not just pointer-events — removes them from focus order.
+    await waitFor(() => expect(screen.getByTestId('my-files-list-panel').inert).toBe(true));
+    expect(screen.getByText('report.txt')).toBeInTheDocument();
+
+    await act(async () => resolveFolder({
+      items: [], folders: [], breadcrumbs: [{ id: 'folder-1', name: 'Документы' }],
+      folder: { id: 'folder-1', name: 'Документы' },
+    }));
+    await waitFor(() => expect(screen.getByTestId('my-files-list-panel').inert).toBe(false));
+  });
+
+  it('clears rows, selection and cursor when the next page request is revoked', async () => {
+    let rejectPage;
+    mockListFiles
+      .mockResolvedValueOnce({
+        items: [readyFile], folders: [], breadcrumbs: [], folder: null,
+        next_cursor: 'cursor-1', total: 2,
+      })
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectPage = reject; }));
+    renderPage();
+    await screen.findByText('report.txt');
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    await screen.findByTestId('my-files-selection-bar');
+    await waitFor(() => expect(mockListFiles).toHaveBeenCalledTimes(2));
+
+    const denied = new Error('forbidden');
+    denied.response = { status: 403 };
+    await act(async () => rejectPage(denied));
+
+    // Rows already loaded may be forbidden too — everything is dropped.
+    await waitFor(() => expect(screen.queryByText('report.txt')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('my-files-selection-bar')).not.toBeInTheDocument();
+  });
+
+  it('keeps the new folder intact when a revoked page of the previous one lands late', async () => {
+    let rejectPage;
+    mockListFiles.mockImplementation(({ folderId, cursor } = {}) => {
+      if (folderId === 'folder-1') {
+        return Promise.resolve({
+          items: [{ ...readyFile, id: 'in-f1', original_file_name: 'inside.txt', download_file_name: 'inside.txt' }],
+          folders: [], breadcrumbs: [{ id: 'folder-1', name: 'Папка' }],
+          folder: { id: 'folder-1', name: 'Папка' }, total: 1,
+        });
+      }
+      if (cursor) return new Promise((_, reject) => { rejectPage = reject; });
+      return Promise.resolve({
+        items: [readyFile],
+        folders: [{ id: 'folder-1', name: 'Папка', parent_id: null }],
+        breadcrumbs: [], folder: null, next_cursor: 'cursor-1', total: 3,
+      });
+    });
+    renderPage();
+    await screen.findByText('report.txt');
+    // The keyset prefetch for cursor-1 is now in flight (held by rejectPage).
+    await waitFor(() => expect(mockListFiles).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'cursor-1' })));
+
+    fireEvent.click(screen.getByTestId('my-files-folder-folder-1'));
+    await screen.findByText('inside.txt');
+
+    // The previous context's page denies late — it must not wipe the folder
+    // the user already navigated to.
+    const denied = new Error('forbidden');
+    denied.response = { status: 403 };
+    await act(async () => rejectPage(denied));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+
+    expect(screen.getByText('inside.txt')).toBeInTheDocument();
+  });
+
+  it('ignores a stale page response after A → B → A even though the key matches', async () => {
+    const pageFetches = [];
+    mockListFiles.mockImplementation(({ folderId, cursor } = {}) => {
+      if (folderId === 'folder-1') {
+        return Promise.resolve({
+          items: [{ ...readyFile, id: 'in-f1', original_file_name: 'inside.txt', download_file_name: 'inside.txt' }],
+          folders: [], breadcrumbs: [{ id: 'folder-1', name: 'Папка' }],
+          folder: { id: 'folder-1', name: 'Папка' }, total: 1,
+        });
+      }
+      if (cursor) return new Promise((resolve) => pageFetches.push(resolve));
+      return Promise.resolve({
+        items: [readyFile],
+        folders: [{ id: 'folder-1', name: 'Папка', parent_id: null }],
+        breadcrumbs: [], folder: null, next_cursor: 'cursor-1', total: 3,
+      });
+    });
+    renderPage();
+    await screen.findByText('report.txt');
+    // Page prefetch #1 for the root context is in flight (held by the test —
+    // a fetch whose abort never reaches it, the worst stale-response case).
+    await waitFor(() => expect(pageFetches).toHaveLength(1));
+
+    fireEvent.click(screen.getByTestId('my-files-folder-folder-1'));
+    await screen.findByText('inside.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-nav-drive'));
+    await screen.findByText('report.txt');
+    // Back on A a fresh prefetch (#2) owns the fetch slot under the same key.
+    await waitFor(() => expect(pageFetches).toHaveLength(2));
+
+    // #1 lands late: identical pageKey, but the tracked record is #2's —
+    // the page must not merge and the flag must stay owned by #2.
+    await act(async () => pageFetches[0]({
+      items: [{ ...readyFile, id: 'stale-1', original_file_name: 'stale.txt', download_file_name: 'stale.txt' }],
+      next_cursor: '', total: 4,
+    }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    expect(screen.queryByText('stale.txt')).not.toBeInTheDocument();
+
+    // #2 still commits — the slot was never handed back by the stale fetch.
+    await act(async () => pageFetches[1]({
+      items: [{ ...readyFile, id: 'fresh-1', original_file_name: 'fresh.txt', download_file_name: 'fresh.txt' }],
+      next_cursor: '', total: 4,
+    }));
+    await screen.findByText('fresh.txt');
+  });
+
+  it('does not repaint a cached recent payload that merged library documents', async () => {
+    const libFile = {
+      ...readyFile, id: 'lib-hit', original_file_name: 'shared.docx',
+      download_file_name: 'shared.docx', library_id: 'lib-1', library_name: 'Общая',
+    };
+    mockListFiles.mockImplementation(({ view } = {}) => Promise.resolve(
+      view === 'recent'
+        ? { items: [libFile], folders: [], breadcrumbs: [], folder: null }
+        : { items: [], folders: [], breadcrumbs: [], folder: null },
+    ));
+    renderPage('/?view=recent');
+    await screen.findByText('shared.docx');
+
+    fireEvent.click(screen.getByTestId('my-files-nav-drive'));
+    await waitFor(() => expect(screen.queryByText('shared.docx')).not.toBeInTheDocument());
+
+    let resolveRecent;
+    mockListFiles.mockImplementationOnce(() => new Promise((resolve) => { resolveRecent = resolve; }));
+    fireEvent.click(screen.getByTestId('my-files-nav-recent'));
+
+    // Membership may have been revoked while away — the cached library row
+    // must not repaint ahead of the revalidation response.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    expect(screen.queryByText('shared.docx')).not.toBeInTheDocument();
+
+    await act(async () => resolveRecent({ items: [libFile], folders: [], breadcrumbs: [], folder: null }));
+    await screen.findByText('shared.docx');
+  });
+
+  it('does not repaint a cached recent payload that holds only library folders', async () => {
+    const libFolder = {
+      id: 'lib-fold-1', name: 'Общий архив', parent_id: null, file_count: 4,
+      library_id: 'lib-1', library_name: 'Общая', my_role: 'view',
+    };
+    mockListFiles.mockImplementation(({ view } = {}) => Promise.resolve(
+      view === 'recent'
+        ? { items: [], folders: [libFolder], breadcrumbs: [], folder: null }
+        : { items: [], folders: [], breadcrumbs: [], folder: null },
+    ));
+    renderPage('/?view=recent');
+    await screen.findByText('Общий архив');
+
+    fireEvent.click(screen.getByTestId('my-files-nav-drive'));
+    await waitFor(() => expect(screen.queryByText('Общий архив')).not.toBeInTheDocument());
+
+    let resolveRecent;
+    mockListFiles.mockImplementationOnce(() => new Promise((resolve) => { resolveRecent = resolve; }));
+    fireEvent.click(screen.getByTestId('my-files-nav-recent'));
+
+    // Folder-only library hit: the cached row must still wait for revalidation.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+    expect(screen.queryByText('Общий архив')).not.toBeInTheDocument();
+
+    await act(async () => resolveRecent({ items: [], folders: [libFolder], breadcrumbs: [], folder: null }));
+    await screen.findByText('Общий архив');
+  });
+
+  it('drops an in-flight select-all payload when the folder changes first', async () => {
+    let resolveAll;
+    mockListFiles.mockImplementation(({ folderId, limit } = {}) => {
+      if (folderId === 'folder-1') {
+        return Promise.resolve({
+          items: [{ ...readyFile, id: 'in-f1', original_file_name: 'inside.txt', download_file_name: 'inside.txt' }],
+          folders: [], breadcrumbs: [{ id: 'folder-1', name: 'Папка' }],
+          folder: { id: 'folder-1', name: 'Папка' }, total: 1,
+        });
+      }
+      if (!limit) return new Promise((resolve) => { resolveAll = resolve; });
+      return Promise.resolve({
+        items: [readyFile],
+        folders: [{ id: 'folder-1', name: 'Папка', parent_id: null }],
+        breadcrumbs: [], folder: null, next_cursor: null, total: 3,
+      });
+    });
+    renderPage();
+    await screen.findByText('report.txt');
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    fireEvent.click(await screen.findByTestId('my-files-select-all-set'));
+
+    // Navigate before the materialization resolves, then let it land.
+    fireEvent.click(screen.getByTestId('my-files-folder-folder-1'));
+    await waitFor(() => expect(mockListFiles).toHaveBeenCalledWith(expect.objectContaining({ folderId: 'folder-1' })));
+    await act(async () => resolveAll({
+      items: [readyFile, { ...readyFile, id: 'x-2' }, { ...readyFile, id: 'x-3' }],
+      folders: [], breadcrumbs: [], folder: null, total: 3,
+    }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+
+    // Selected ids from the previous context must not reach the new folder's bar.
+    expect(screen.queryByTestId('my-files-selection-bar')).not.toBeInTheDocument();
+  });
+
   it('switches to grid view and shows folder file counts', async () => {
     mockListFiles.mockResolvedValue({
       items: [readyFile],

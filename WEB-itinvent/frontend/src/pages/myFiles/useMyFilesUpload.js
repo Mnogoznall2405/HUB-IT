@@ -62,8 +62,8 @@ export function useMyFilesUpload({
     if (fileInputRef.current) fileInputRef.current.value = '';
     if (folderInputRef.current) folderInputRef.current.value = '';
   }, []);
-  const userKey = getStoredUserKey();
   const [accountEpoch, setAccountEpoch] = useState(0);
+  const userKey = useMemo(() => getStoredUserKey(), [accountEpoch]);
   const accountSession = useMemo(() => captureBrowserAccountSession(), [userKey, accountEpoch]);
   const dropContext = useMemo(
     () => ({ accountSession, canWrite, currentFolderId, libraryId, isSpecialView, uploading }),
@@ -83,9 +83,10 @@ export function useMyFilesUpload({
     setDragActive(false);
     if (previousDropContextRef.current !== dropContext) {
       setUploadDialogOpen(false);
-      setPendingUploadFiles([]);
-      setPendingFolderFiles([]);
-      setUploadTargetFolderId(null);
+      // Empty-array resets still commit a render — skip them when nothing is staged.
+      setPendingUploadFiles((prev) => (prev.length ? [] : prev));
+      setPendingFolderFiles((prev) => (prev.length ? [] : prev));
+      setUploadTargetFolderId((prev) => (prev === null ? prev : null));
       resetFileInputs();
     }
     previousDropContextRef.current = dropContext;

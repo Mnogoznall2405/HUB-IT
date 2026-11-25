@@ -74,9 +74,13 @@ export const getFileVisualMeta = (item) => {
   return FILE_TYPE_META.file;
 };
 
+const FILE_TYPE_KEY_BY_META = new Map(
+  Object.entries(FILE_TYPE_META).map(([key, meta]) => [meta, key]),
+);
+
 export const getFileTypeKey = (item) => {
   const meta = getFileVisualMeta(item);
-  return Object.keys(FILE_TYPE_META).find((key) => FILE_TYPE_META[key] === meta) || 'file';
+  return FILE_TYPE_KEY_BY_META.get(meta) || 'file';
 };
 
 export const getFileVisualColors =(theme, meta) => {

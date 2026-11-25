@@ -22,24 +22,24 @@
           "slack": 4
         },
         {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 55
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
           "slack": 4
         },
         {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 37
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
           "slack": 4
         },
         {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 41
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
@@ -174,12 +174,12 @@
           "slack": 4
         },
         {
-          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
-          "slack": 10
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         },
         {
-          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
-          "slack": 3
+          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
+          "slack": 4
         }
       ],
       "logicalWidth": 512
@@ -225,7 +225,6 @@
   },
   "menus": {
     "fileTopLevel": [
-      "Просмотр",
       "Скачать",
       "Поделиться",
       "Организовать",

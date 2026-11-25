@@ -380,12 +380,58 @@ def _schema_has_open_objects(value: Any) -> bool:
 
 def _usage_dict(completion: Any, *, model: str) -> dict[str, Any]:
     usage = getattr(completion, "usage", None)
+    # Prompt-cache accounting differs by provider: OpenAI-compatible exposes
+    # prompt_tokens_details.cached_tokens, OpenRouter may report
+    # prompt_cache_hit_tokens/prompt_cache_miss_tokens.
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached_tokens = int(
+        getattr(details, "cached_tokens", 0)
+        or getattr(usage, "prompt_cache_hit_tokens", 0)
+        or 0
+    )
+    # Provider-dependent cache-write accounting (Anthropic-style
+    # cache_creation_input_tokens, OpenRouter prompt_cache_write_tokens);
+    # None means "provider did not report", not "zero".
+    cache_write_raw = (
+        getattr(usage, "cache_creation_input_tokens", None)
+        or getattr(usage, "prompt_cache_write_tokens", None)
+    )
+    finish_reason = None
+    try:
+        choices = getattr(completion, "choices", None) or []
+        if choices:
+            finish_reason = getattr(choices[0], "finish_reason", None)
+    except Exception:
+        finish_reason = None
     return {
         "model": model,
         "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
         "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
         "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+        "cached_tokens": cached_tokens,
+        "cache_write_tokens": int(cache_write_raw) if cache_write_raw is not None else None,
+        "finish_reason": finish_reason,
     }
+
+
+_LLM_CALL_LOG_LOCK = threading.Lock()
+
+
+def record_llm_call(record: dict[str, Any]) -> None:
+    """Append one per-call telemetry line when the artifact sink is configured.
+
+    Sizes/ids/usage only — never prompt or payload content. Concurrent
+    writers are serialized; failures never break the caller.
+    """
+    path = str(read_env("AI_LLM_CALL_LOG_FILE", "") or "").strip()
+    if not path:
+        return
+    try:
+        with _LLM_CALL_LOG_LOCK:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except OSError:
+        logger.debug("llm call log write failed: %s", path)
 
 
 def _normalize_user_content(user_prompt: str = "", user_content: UserContent | None = None) -> UserContent:
@@ -492,6 +538,7 @@ class OpenRouterClient:
         if deadline is None:
             deadline = time.monotonic() + max(1.0, DEFAULT_RETRY_WALL_BUDGET_SEC)
         for attempt in range(1, attempts + 1):
+            self._thread_local.transport_attempts = attempt
             try:
                 return call()
             except Exception as exc:
@@ -772,7 +819,13 @@ class OpenRouterClient:
                 text_field=stream_text_field,
             )
             if streamed is not None:
+                streamed[1]["streaming_used"] = True
+                streamed[1]["streaming_fallback"] = False
+                streamed[1]["transport_attempts"] = int(
+                    getattr(self._thread_local, "transport_attempts", 1) or 1
+                )
                 return streamed
+            self._thread_local.streaming_fallback = True
 
         def _request_with_transient_retry(*, use_schema: bool, use_response_healing: bool):
             return self._with_transient_retry(
@@ -812,7 +865,11 @@ class OpenRouterClient:
             logger.warning("RouterAI completion returned no response: model=%s", resolved_model)
             raise OpenRouterClientError("Failed to call RouterAI: empty response.")
         payload = _extract_json_payload(_extract_completion_text(completion))
-        return payload, _usage_dict(completion, model=resolved_model)
+        usage = _usage_dict(completion, model=resolved_model)
+        usage["transport_attempts"] = int(getattr(self._thread_local, "transport_attempts", 1) or 1)
+        usage["streaming_fallback"] = bool(getattr(self._thread_local, "streaming_fallback", False))
+        self._thread_local.streaming_fallback = False
+        return payload, usage
 
     def complete_vision(
         self,

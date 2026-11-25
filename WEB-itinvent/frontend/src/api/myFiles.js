@@ -251,14 +251,37 @@ const createUploadSessionWithCapacityRetry = async ({ file, retentionDays, folde
 export const myFilesRetentionOptions = RETENTION_OPTIONS;
 
 export const myFilesAPI = {
-  listFiles: async ({ folderId = null, view = '', q = '', libraryId = null, signal } = {}) => {
+  listFiles: async ({
+    folderId = null, view = '', q = '', libraryId = null, include = '', ifNoneMatch = '',
+    limit = 0, cursor = '', sort = '', order = '', typeFilter = '', dateFilter = '', tzOffset = null, signal,
+  } = {}) => {
     const params = {};
     if (folderId) params.folder_id = folderId;
     if (libraryId) params.library_id = libraryId;
     if (view) params.view = view;
     if (q) params.q = q;
-    const response = await apiClient.get('/my-files', { params, signal });
-    return response.data;
+    if (include) params.include = include;
+    if (limit > 0) params.limit = limit;
+    if (cursor) params.cursor = cursor;
+    if (sort) params.sort = sort;
+    if (order) params.order = order;
+    if (typeFilter) params.type_filter = typeFilter;
+    if (dateFilter) params.date_filter = dateFilter;
+    if (tzOffset !== null && tzOffset !== undefined) params.tz_offset_minutes = tzOffset;
+    const response = await apiClient.get('/my-files', {
+      params,
+      signal,
+      headers: ifNoneMatch ? { 'If-None-Match': ifNoneMatch } : undefined,
+      // 304 answers a revalidation — treat it as a successful empty body.
+      validateStatus: (status) => (status >= 200 && status < 300) || status === 304,
+    });
+    if (response.status === 304) {
+      return { __notModified: true, __etag: response.headers?.etag || ifNoneMatch };
+    }
+    const data = response.data || {};
+    const etag = response.headers?.etag;
+    if (etag) data.__etag = etag;
+    return data;
   },
   listFolders: async ({ libraryId = null, signal } = {}) => {
     const response = await apiClient.get('/my-files/folders', { params: libraryId ? { library_id: libraryId } : {}, signal });
