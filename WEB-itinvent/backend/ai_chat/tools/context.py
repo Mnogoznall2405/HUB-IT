@@ -426,7 +426,8 @@ def resolve_effective_database_id(
     user_payload: dict[str, Any] | None,
     explicit_database_id: str | None = None,
 ) -> str | None:
-    explicit = normalize_database_id(explicit_database_id)
+    raw_explicit = _normalize_text(explicit_database_id)
+    explicit = normalize_database_id(raw_explicit)
     user = user_payload if isinstance(user_payload, dict) else {}
     role = _normalize_text(user.get("role")).lower()
     raw_assigned = _normalize_text(user.get("assigned_database")) or _normalize_text(
@@ -437,7 +438,10 @@ def resolve_effective_database_id(
         # Fail closed: a dangling assignment (renamed/removed DB) must not fall
         # through to explicit/pinned — that would hand the user another DB.
         return assigned_database
-    if explicit:
+    if raw_explicit:
+        # A11 P0 fail-closed: an explicitly requested database either resolves
+        # or denies (None downstream) — never silently substituted by
+        # pinned/default/first-available.
         return explicit
     user_id = int(user.get("id") or 0)
     if user_id > 0:
@@ -541,10 +545,21 @@ class AiToolExecutionContext:
         return targets
 
     def resolve_tool_database_id(self, requested_database_id: object = None) -> str | None:
-        requested = normalize_database_id(requested_database_id)
+        # A11 P0: fail-closed explicit database selection. ``normalize_database_id``
+        # collapses "absent" and "unknown" into the same None — an explicit but
+        # invalid database_id used to fall through to the current database
+        # silently (fail-open substitution). Raw input is inspected first:
+        #   - absent/empty   -> current effective database (implicit context);
+        #   - explicit valid -> permission-checked use;
+        #   - explicit junk  -> None (controlled denial downstream), never a
+        #     silent swap to another database.
+        raw_requested = _normalize_text(requested_database_id)
         current = normalize_database_id(self.effective_database_id)
-        if not requested:
+        if not raw_requested:
             return current
+        requested = normalize_database_id(raw_requested)
+        if not requested:
+            return None
         if not self.is_admin:
             return requested if current and requested == current else None
         if self.multi_db_mode == AI_TOOL_MULTI_DB_MODE_ADMIN:
