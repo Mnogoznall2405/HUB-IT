@@ -279,7 +279,6 @@ export default function MyFiles() {
     return () => window.clearTimeout(timer);
   }, [searchQuery]);
   const [bulkBusy, setBulkBusy] = useState(false);
-  const [bulkProgress, setBulkProgress] = useState(null);
   const [viewMode, setViewMode] = useState(() => (
     window.localStorage.getItem('my-files-view') === 'grid' ? 'grid' : 'list'
   ));
@@ -541,18 +540,6 @@ export default function MyFiles() {
     } catch (error) {
       if (!isCurrent()) return;
       const status = Number(error?.response?.status || error?.status || 0);
-      if (currentFolderId && [403, 404, 410].includes(status)) {
-        // Deep-link to a deleted or foreign folder: drop ?folder= instead of
-        // leaving it to fail again on every refresh.
-        listingsCacheRef.current.delete(cacheKey);
-        notifyWarning('Папка недоступна или была удалена. Открыт корневой раздел.', { source: 'my-files-folder', dedupeMode: 'none' });
-        setSearchParams((previous) => {
-          const next = new URLSearchParams(previous);
-          next.delete('folder');
-          return next;
-        }, { replace: true });
-        return;
-      }
       if (status === 401 || status === 403 || status === 404) {
         // Access revoked or object gone: evict the cached payload and clear
         // what is on screen so forbidden rows can't linger or resurface later.
@@ -575,9 +562,6 @@ export default function MyFiles() {
         setRefreshing(false);
       }
     }
-<<<<<<< HEAD
-  }, [applyListingsPayload, authUserKey, beginLoad, currentFolderId, debouncedSearchQuery, isSharedView, isTrashView, libraryId, listView, notifyApiError, notifyWarning, setSearchParams]);
-=======
   }, [applyListingsPayload, beginLoad, currentFolderId, dateFilter, debouncedSearchQuery, isSharedView, isTrashView, libraryId, listView, locationKey, notifyApiError, paginatedView, sortDir, sortField, typeFilter]);
 
   // Keyset page fetch: appends the next slice without re-entering loadData's
@@ -741,7 +725,6 @@ export default function MyFiles() {
     onScroll();
     return () => window.removeEventListener('scroll', onScroll);
   }, [flushPendingPage, loadNextPage, nextCursor, paginatedView, rowsStale]);
->>>>>>> origin/main
 
   const postMutationLoadData = useCallback(
     (opts) => { listingsCacheRef.current.clear(); return loadData(opts); },
@@ -784,6 +767,16 @@ export default function MyFiles() {
     setSearchParams({ view: 'shared' }, { replace: true });
   }, [searchParams, setSearchParams]);
 
+  // Link for collaborators (?edit=<file id>): open the editor once and drop the parameter.
+  useEffect(() => {
+    const fileId = String(searchParams.get('edit') || '');
+    if (!fileId || !officeStatus.enabled) return;
+    setOfficeEditorFile({ id: fileId });
+    const next = new URLSearchParams(searchParams);
+    next.delete('edit');
+    setSearchParams(next, { replace: true });
+  }, [officeStatus.enabled, searchParams, setSearchParams]);
+
   const isOfficeEditable = useCallback((item) => {
     if (!officeStatus.enabled || !item) return false;
     if (!READY_STATUSES.has(String(item.status || '').toLowerCase())) return false;
@@ -813,8 +806,6 @@ export default function MyFiles() {
     } else {
       const tab = window.open(`${buildEditorUrl(fileId)}${suffix}`, '_blank');
       if (tab) {
-        // Same-origin editor tab: drop the opener like 'noopener' while keeping the handle for the popup-blocked check.
-        tab.opener = null;
         editorTabOpenedRef.current = true;
         return;
       }
@@ -822,18 +813,6 @@ export default function MyFiles() {
     setOfficeEditorCompare(compare);
     setOfficeEditorFile(file);
   }, []);
-
-  // Link for collaborators (?edit=<file id>): it goes through the regular open
-  // path, so the preferred window (new tab / Desktop second window / in-window
-  // fallback) and the double-open guard apply to deep links too.
-  useEffect(() => {
-    const fileId = String(searchParams.get('edit') || '');
-    if (!fileId || !officeStatus.enabled) return;
-    void openOfficeEditor({ id: fileId });
-    const next = new URLSearchParams(searchParams);
-    next.delete('edit');
-    setSearchParams(next, { replace: true });
-  }, [officeStatus.enabled, openOfficeEditor, searchParams, setSearchParams]);
 
   // The list shows what was saved in the editor tab as soon as the user comes back to it.
   useEffect(() => {
@@ -1706,12 +1685,8 @@ export default function MyFiles() {
   const selectionContextKey = `${authUserKey}|${isTrashView ? 'trash' : listView}|${libraryId || ''}|${currentFolderId || ''}|${debouncedSearchQuery}|${typeFilter}|${dateFilter}`;
   useEffect(() => {
     clearSelection();
-<<<<<<< HEAD
-  }, [currentFolderId, viewParam, libraryId, debouncedSearchQuery, typeFilter, dateFilter, clearSelection]);
-=======
     selectAllAbortRef.current?.abort();
   }, [selectionContextKey, clearSelection]);
->>>>>>> origin/main
 
   // A fresh selection or a navigation wins over an entry pinned via «Сведения».
   useEffect(() => {
@@ -1944,7 +1919,6 @@ export default function MyFiles() {
       danger: true,
       action: async () => {
         setBulkBusy(true);
-        setBulkProgress({ done: 0, total: count });
         let done = 0;
         const failed = [];
         const removedIds = new Set();
@@ -1953,23 +1927,21 @@ export default function MyFiles() {
           for (const folder of foldersToDelete) {
             try {
               await myFilesAPI.deleteFolder(folder.id);
+              done += 1;
               collectFolderSubtreeIds(folder.id).forEach((id) => removedIds.add(id));
             } catch {
               failed.push(`папка «${folder.name || folder.id}»`);
             }
-            done += 1;
-            setBulkProgress({ done, total: count });
           }
           for (const file of filesToDelete) {
             try {
               await myFilesAPI.deleteFile(file.id);
+              done += 1;
               removedIds.add(String(file.id));
               removedFileIds.add(String(file.id));
             } catch {
               failed.push(`файл «${getMyFileName(file)}»`);
             }
-            done += 1;
-            setBulkProgress({ done, total: count });
           }
           if (removedIds.size > 0) {
             listingsCacheRef.current.clear();
@@ -1990,7 +1962,6 @@ export default function MyFiles() {
           }
           clearSelection();
         } finally {
-          setBulkProgress(null);
           setBulkBusy(false);
         }
       },
@@ -1998,20 +1969,11 @@ export default function MyFiles() {
   }, [adjustListTotal, bulkBusy, clearSelection, collectFolderSubtreeIds, notifySuccess, notifyWarning, refreshQuota, selectedFiles, selectedFolders, selectedKeys.size]);
 
   const handleBulkDownload = useCallback(async () => {
-    if (selectedFiles.length === 0 || bulkBusy) return;
-    setBulkBusy(true);
-    setBulkProgress({ done: 0, total: selectedFiles.length });
-    try {
-      // Залп из десятков загрузок браузер режет, а серверу вреден: качаем по одному.
-      for (const file of selectedFiles) {
-        await handleDownload(file);
-        setBulkProgress((current) => (current ? { ...current, done: current.done + 1 } : current));
-      }
-    } finally {
-      setBulkProgress(null);
-      setBulkBusy(false);
+    if (selectedFiles.length === 0) return;
+    for (const file of selectedFiles) {
+      void handleDownload(file);
     }
-  }, [bulkBusy, handleDownload, selectedFiles]);
+  }, [handleDownload, selectedFiles]);
 
   const openBulkMoveDialog = useCallback(() => {
     setMoveDialog({ open: true, kind: 'bulk', id: '', targetFolderId: '' });
@@ -2023,7 +1985,6 @@ export default function MyFiles() {
     const filesToMove = selectedFiles;
     const count = foldersToMove.length + filesToMove.length;
     setBulkBusy(true);
-    setBulkProgress({ done: 0, total: count });
     let done = 0;
     const failed = [];
     const movedFileIds = new Set();
@@ -2032,22 +1993,20 @@ export default function MyFiles() {
       for (const folder of foldersToMove) {
         try {
           await myFilesAPI.updateFolder(folder.id, { parentId: targetFolderId });
+          done += 1;
           movedFolderIds.add(String(folder.id));
         } catch {
           failed.push(`папка «${folder.name || folder.id}»`);
         }
-        done += 1;
-        setBulkProgress({ done, total: count });
       }
       for (const file of filesToMove) {
         try {
           await myFilesAPI.updateFile(file.id, { folderId: targetFolderId });
+          done += 1;
           movedFileIds.add(String(file.id));
         } catch {
           failed.push(`файл «${getMyFileName(file)}»`);
         }
-        done += 1;
-        setBulkProgress({ done, total: count });
       }
       if (movedFileIds.size > 0 || movedFolderIds.size > 0) listingsCacheRef.current.clear();
       if (movedFolderIds.size > 0) {
@@ -2081,7 +2040,6 @@ export default function MyFiles() {
         );
       }
     } finally {
-      setBulkProgress(null);
       setBulkBusy(false);
     }
   }, [adjustListTotal, bulkBusy, clearSelection, currentFolderId, isSpecialView, notifySuccess, notifyWarning, selectedFiles, selectedFolders, selectedKeys.size]);
@@ -2792,8 +2750,8 @@ export default function MyFiles() {
                   bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.24 : 0.12),
                 }}
               >
-                <Typography variant="body2" sx={{ fontWeight: 700 }} aria-live="polite">
-                  {bulkProgress ? `Выполняется: ${bulkProgress.done} из ${bulkProgress.total}` : `Выбрано: ${selectedKeys.size}`}
+                <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                  Выбрано: {selectedKeys.size}
                 </Typography>
                 {paginatedView && listTotal != null && listTotal > items.length ? (
                   <Button
@@ -3736,18 +3694,6 @@ export default function MyFiles() {
           <DialogTitle>{confirmState?.title || 'Подтвердите действие'}</DialogTitle>
           <DialogContent>
             <Typography variant="body2">{confirmState?.body || ''}</Typography>
-            {bulkProgress ? (
-              <Box sx={{ mt: 1.5 }}>
-                <LinearProgress
-                  variant="determinate"
-                  value={Math.min(100, Math.round((bulkProgress.done / Math.max(1, bulkProgress.total)) * 100))}
-                  aria-label="Прогресс массовой операции"
-                />
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-                  {`Выполнено: ${bulkProgress.done} из ${bulkProgress.total}`}
-                </Typography>
-              </Box>
-            ) : null}
           </DialogContent>
           <DialogActions>
             <Button onClick={() => setConfirmState(null)} disabled={confirmBusy}>Отмена</Button>
