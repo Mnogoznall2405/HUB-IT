@@ -2,9 +2,15 @@
 
 Jev is a non-generative decision model: it takes a ``state`` plus a map of
 typed questions and returns calibrated answers (probabilities/confidence)
-instead of text. Transport is the OpenRouter System One endpoint
-``POST {base}/systemone`` (https://openrouter.ai/api/v1/systemone); RouterAI
-lists the model but does not proxy this endpoint.
+instead of text. Transport is the System One endpoint
+``POST {base}/systemone``, proxied by both OpenRouter
+(https://openrouter.ai/api/v1/systemone) and RouterAI
+(https://routerai.ru/api/v1/systemone).
+
+Provider resolution is paired (API key + base URL come from the same
+prefix), in order: ``JEV_*`` → ``ROUTERAI_*`` → ``OPENROUTER_*``. Set
+``JEV_API_KEY``/``JEV_BASE_URL`` to pin Jev to a specific provider when
+several are configured.
 """
 from __future__ import annotations
 
@@ -176,20 +182,40 @@ class JevClient:
         return bool(self._resolve_api_key())
 
     def get_status(self) -> dict[str, Any]:
+        key = self._resolve_api_key()
+        provider = next(
+            (p.lower() for p in ("JEV", "ROUTERAI", "OPENROUTER") if read_env(f"{p}_API_KEY")),
+            "unconfigured",
+        )
         return {
-            "configured": self.is_configured(),
-            "provider": "openrouter-systemone",
+            "configured": bool(key),
+            "provider": f"{provider}-systemone",
             "base_url": self._resolve_base_url(),
             "model": self._resolve_model(""),
         }
 
     def _resolve_api_key(self) -> str:
-        return str(read_env("JEV_API_KEY") or read_env("OPENROUTER_API_KEY") or "").strip()
+        """First configured key wins: JEV → ROUTERAI → OPENROUTER."""
+        for prefix in ("JEV", "ROUTERAI", "OPENROUTER"):
+            key = str(read_env(f"{prefix}_API_KEY") or "").strip()
+            if key:
+                return key
+        return ""
 
     def _resolve_base_url(self) -> str:
-        raw = str(
-            read_env("JEV_BASE_URL") or read_env("OPENROUTER_BASE_URL") or DEFAULT_JEV_BASE_URL
-        ).strip().rstrip("/")
+        """Base URL of the provider that owns the resolved key; when no key
+        is configured the first *_BASE_URL in the same order applies."""
+        raw = ""
+        for prefix in ("JEV", "ROUTERAI", "OPENROUTER"):
+            if read_env(f"{prefix}_API_KEY"):
+                raw = str(read_env(f"{prefix}_BASE_URL") or "").strip()
+                break
+        if not raw:
+            for prefix in ("JEV", "ROUTERAI", "OPENROUTER"):
+                raw = str(read_env(f"{prefix}_BASE_URL") or "").strip()
+                if raw:
+                    break
+        raw = (raw or DEFAULT_JEV_BASE_URL).rstrip("/")
         if raw.lower().endswith(JEV_SYSTEMONE_PATH):
             raw = raw[: -len(JEV_SYSTEMONE_PATH)].rstrip("/")
         if not raw.lower().endswith("/v1"):

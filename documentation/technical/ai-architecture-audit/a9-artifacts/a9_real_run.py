@@ -1,21 +1,37 @@
 # -*- coding: utf-8 -*-
-"""A9 real-LLM benchmark: drive AiChatService end-to-end on sqlite with the
-REAL provider (RouterAI) and REAL Jev over the quality corpus.
+"""A9/A10 real-LLM benchmark (v2): drive AiChatService end-to-end on sqlite
+with the REAL provider and REAL Jev over a scenario corpus.
+
+v2 fixes (A10 cycle 2 §1):
+  * run success = ai_bot_runs.status == 'completed' AND a real assistant
+    message linked via result_json.result_message_id — never "last message
+    in the conversation" (that could be the user's own trigger text);
+  * executed tool calls are read from result_json.tool_traces (DB truth)
+    and kept separate from model-PROPOSED tool_calls seen on the wire;
+  * fnmatch wildcard resolution for expected_tools / forbidden;
+  * required_facts substring-checked against the real answer;
+  * calls whose usage is missing are reported, not silently counted as 0;
+  * provider errors (HTTP status/quota/timeout) are separated from
+    application errors; outcomes split completed / degraded / failed plus
+    a correctness verdict;
+  * incremental dump after every scenario (a killed run loses nothing);
+  * --set KEY=VALUE pins arbitrary AI_* flags for A/B configs;
+  * --provider-retries N re-runs a scenario whose ONLY failure class is
+    provider-side, on a fresh conversation.
 
 Run from the candidate worktree:
     $env:APP_ENV='development'; $env:JWT_SECRET_KEY='x'*32
     python documentation/technical/ai-architecture-audit/a9-artifacts/a9_real_run.py `
-        --label a9real_jev1 --jev 1 --env C:\Project\HUB-IT-main\.env [--limit N]
+        --label a10on --provider openrouter --set AI_READ_FAST_PATH_ENABLED=1
 
-Baseline: copy this file into the baseline worktree's a9-artifacts and run it
-there with the same arguments (ROOT is resolved from the script location).
-
-Never prints secrets. Provider keys are loaded from --env into os.environ only
-for names not already set (test DB URLs etc. win).
+Never prints secrets. Provider keys are loaded from --env into os.environ
+only for names not already set (test DB URLs etc. win).
 """
 import argparse
+import fnmatch
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -36,6 +52,14 @@ _parser.add_argument("--limit", type=int, default=0)
 _parser.add_argument("--ids", default="")
 _parser.add_argument("--corpus", default="")
 _parser.add_argument("--provider", choices=("routerai", "openrouter"), default="routerai")
+_parser.add_argument("--provider-retries", type=int, default=1,
+                    help="re-run a scenario on a fresh conversation when ALL failures are provider-side")
+_parser.add_argument("--set", dest="flag_overrides", action="append", default=[],
+                    metavar="KEY=VALUE", help="pin arbitrary env flags (repeatable)")
+_parser.add_argument("--seed", action="store_true",
+                    help="seed the synthetic bench contour (bench_seed.py) before running")
+_parser.add_argument("--actor", default="bench_actor",
+                    help="seeded username to run scenarios as (requires --seed)")
 _parser.add_argument("--out", default="")
 _args = _parser.parse_args()
 LABEL = _args.label
@@ -50,10 +74,7 @@ os.environ["CHAT_DATABASE_URL"] = DB_URL
 os.environ["CHAT_ENABLED"] = "1"
 os.environ["AI_JEV_ROUTING"] = _args.jev
 os.environ["AI_SUMMARY_BACKGROUND_ENABLED"] = "0"
-if _args.a9 == "on":
-    os.environ["AI_PROMPT_OPTIMIZATION_ENABLED"] = "1"
-else:
-    os.environ["AI_PROMPT_OPTIMIZATION_ENABLED"] = "0"
+os.environ["AI_PROMPT_OPTIMIZATION_ENABLED"] = "1" if _args.a9 == "on" else "0"
 os.environ.pop("AI_LLM_CALL_LOG_FILE", None)
 # Sandbox + external endpoints must not be reachable from the bench.
 os.environ["AI_SANDBOX_ENABLED"] = "0"
@@ -76,6 +97,12 @@ if _args.provider == "openrouter":
     # (same gateway code path: key/base_url resolve dynamically per call).
     for _k in ("ROUTERAI_API_KEY", "ROUTERAI_BASE_URL", "ROUTERAI_MODEL"):
         os.environ.pop(_k, None)
+
+# Explicit flag overrides last — they are the point of an A/B run.
+for _kv in _args.flag_overrides:
+    _k, sep, _v = _kv.partition("=")
+    if sep and _k.strip():
+        os.environ[_k.strip()] = _v.strip()
 
 import conftest  # tests/conftest.py helpers  # noqa: E402
 import backend.config as backend_config  # noqa: E402
@@ -137,6 +164,18 @@ _est_tokens = getattr(ai_chat_module, "_estimated_tokens", lambda s: len(str(s))
 
 _real_complete_json = _orc.complete_json
 
+_PROVIDER_ERROR_HINTS = re.compile(
+    r"(402|429|5\d\d|insufficient|balance|rate.?limit|quota|timeout|timed out|"
+    r"connection|connect error|ssl|certificate|econn|eai_again|temporar|"
+    r"unavailable|overload|gateway|http)",
+    re.IGNORECASE,
+)
+
+
+def _classify_error(text: str) -> str:
+    """'provider' for transport/quota/rate-limit errors, 'app' otherwise."""
+    return "provider" if _PROVIDER_ERROR_HINTS.search(str(text or "")) else "app"
+
 
 def _recording_complete_json(**kwargs):
     t0 = time.perf_counter()
@@ -163,7 +202,7 @@ def _recording_complete_json(**kwargs):
         }
         calls = payload.get("tool_calls") if isinstance(payload, dict) else None
         rec["tool_calls"] = [
-            {"tool_id": (c or {}).get("tool_id"), "args_keys": sorted((c or {}).get("args") or {})}
+            {"tool_id": (c or {}).get("tool_id"), "args": dict((c or {}).get("args") or {})}
             for c in (calls or [])
             if isinstance(c, dict)
         ]
@@ -172,6 +211,7 @@ def _recording_complete_json(**kwargs):
     except Exception as exc:  # noqa: BLE001 — record and re-raise
         rec["ok"] = False
         rec["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        rec["error_class"] = _classify_error(rec["error"])
         raise
     finally:
         rec["duration_ms"] = int((time.perf_counter() - t0) * 1000)
@@ -219,6 +259,7 @@ if _jev_client is not None:
                 "ok": False,
                 "duration_ms": int((time.perf_counter() - t0) * 1000),
                 "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                "error_class": _classify_error(f"{type(exc).__name__}: {exc}"),
             })
             raise
 
@@ -266,35 +307,90 @@ def _send(conversation_id: str, sender_id: int, seq: int, body: str):
         session.add(msg)
 
 
-def _last_run(conversation_id: str) -> dict:
+def _run_row_for_trigger(conversation_id: str, trigger_message_id: str) -> dict:
+    """The run THIS scenario queued — matched by trigger_message_id, never
+    just 'latest in conversation' (retries can interleave)."""
     with grant_session(DB_URL) as db:
-        run = (
+        q = (
             db.query(AppAiBotRun)
             .filter(AppAiBotRun.conversation_id == conversation_id)
             .order_by(AppAiBotRun.created_at.desc())
-            .first()
         )
+        runs = q.all()
+        run = None
+        for candidate in runs:
+            if trigger_message_id and candidate.trigger_message_id == trigger_message_id:
+                run = candidate
+                break
+        if run is None:
+            run = runs[0] if runs else None
         if run is None:
             return {}
+        result_json = {}
+        usage_json = {}
+        try:
+            result_json = json.loads(run.result_json or "{}") or {}
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            usage_json = json.loads(run.usage_json or "{}") or {}
+        except Exception:  # noqa: BLE001
+            pass
         return {
             "id": run.id,
             "status": run.status,
             "stage": run.stage,
             "error_text": run.error_text,
-            "result_json": run.result_json,
-            "usage_json": run.usage_json,
+            "result_json": result_json,
+            "usage_json": usage_json,
+            "created_at": run.created_at.isoformat() if run.created_at else None,
         }
 
 
-def _last_assistant_body(conversation_id: str) -> str:
+def _assistant_message(conversation_id: str, result_message_id: str | None, bot_user_id: int | None) -> dict:
+    """Resolve the REAL assistant answer via result_message_id. Falls back
+    to the newest message from the bot user only — never to the user's own
+    latest message."""
     with chat_db.chat_session(DB_URL) as session:
-        msg = (
-            session.query(chat_models.ChatMessage)
-            .filter(chat_models.ChatMessage.conversation_id == conversation_id)
-            .order_by(chat_models.ChatMessage.conversation_seq.desc())
-            .first()
-        )
-        return str(msg.body or "") if msg is not None else ""
+        msg = None
+        if result_message_id:
+            msg = session.get(chat_models.ChatMessage, result_message_id)
+        if msg is None and bot_user_id:
+            msg = (
+                session.query(chat_models.ChatMessage)
+                .filter(
+                    chat_models.ChatMessage.conversation_id == conversation_id,
+                    chat_models.ChatMessage.sender_user_id == int(bot_user_id),
+                )
+                .order_by(chat_models.ChatMessage.conversation_seq.desc())
+                .first()
+            )
+        if msg is None:
+            return {"id": None, "body": "", "sender_ok": False}
+        sender_ok = (bot_user_id is None) or (int(msg.sender_user_id or 0) == int(bot_user_id))
+        return {"id": msg.id, "body": str(msg.body or ""), "sender_ok": sender_ok}
+
+
+def _match_any(pattern: str, values: list[str]) -> bool:
+    return any(fnmatch.fnmatchcase(v, pattern) for v in values)
+
+
+def _summarize_trace(trace: dict) -> dict:
+    data = trace.get("data") if isinstance(trace.get("data"), dict) else {}
+    items = data.get("items") if isinstance(data.get("items"), list) else None
+    rows = data.get("rows") if isinstance(data.get("rows"), list) else None
+    return {
+        "tool_id": trace.get("tool_id"),
+        "args": trace.get("args") or {},
+        "state": trace.get("state") or trace.get("status"),
+        "error": trace.get("error"),
+        "latency_ms": trace.get("latency_ms"),
+        "database_id": trace.get("database_id"),
+        "items": len(items) if items is not None else None,
+        "rows": len(rows) if rows is not None else None,
+        "total": data.get("total"),
+        "truncated": bool(data.get("truncated") or data.get("has_more")),
+    }
 
 
 # --- corpus -------------------------------------------------------------------
@@ -312,16 +408,35 @@ if _args.limit:
     scenarios = scenarios[: _args.limit]
 
 perms = [
-    "chat.read", "chat.write", "chat.ai.use", "kb.read",
-    "itinvent.read", "itinvent.act", "office.read", "office.act",
-    "directory.read", "me.read", "me.act", "warehouse.read",
-    "network.read", "ad.read", "ad.act", "mfu.read",
-    "helpdesk.act", "files.create", "chat.act",
+    "chat.read", "chat.write", "chat.ai.use",
+    "database.read", "tasks.read", "tasks.create", "tasks.write", "tasks.review",
+    "announcements.read", "mfu.read", "networks.read", "mail.access",
+    "kb.read", "company_structure.read", "address_book.read",
+    "warehouse_1c.read", "warehouse_1c.it_requests.read",
+    "ad_users.read", "ad_users.manage",
+    "my_files.read", "my_files.write", "tickets.read", "tickets.write",
+    "docflow.read", "docflow.act", "it_objects.read", "computers.read",
+    "voice.read", "statistics.read",
 ]
-actor = _mk_actor("real_bench_user", perms)
+_truth = None
+if _args.seed:
+    _seed_dir = str(ROOT / "documentation" / "technical" / "ai-architecture-audit" / "a9-artifacts")
+    if _seed_dir not in sys.path:
+        sys.path.insert(0, _seed_dir)
+    import bench_seed  # noqa: E402
+    from backend.services.hub_service import hub_service  # noqa: E402
+    _truth = bench_seed.seed_all(user_service=user_service, hub_service=hub_service)
+    actor = user_service.get_by_username(_args.actor) or _mk_actor(_args.actor, perms)
+else:
+    actor = _mk_actor("real_bench_user", perms)
 
 bot_no_tools = _mk_bot(actor, "bot_no_tools", [])
 bot_all = _mk_bot(actor, "bot_all_tools", ALL_TOOL_IDS)
+
+_FLAG_KEYS = sorted(
+    k for k in os.environ
+    if k.startswith("AI_") and (k.endswith("_ENABLED") or k in {"AI_JEV_ROUTING", "AI_SANDBOX_ENABLED"})
+)
 
 results = {
     "env": {
@@ -330,129 +445,276 @@ results = {
         "AI_SUMMARY_BACKGROUND_ENABLED": os.environ.get("AI_SUMMARY_BACKGROUND_ENABLED"),
         "ROUTERAI_MODEL": os.environ.get("ROUTERAI_MODEL"),
         "JEV_MODEL": os.environ.get("JEV_MODEL") or "(default)",
+        "provider": _args.provider,
+        "flags": {k: os.environ.get(k) for k in _FLAG_KEYS},
         "env_keys_loaded": len(_env_loaded),
         "registered_tools": len(ALL_TOOL_IDS),
         "code_root": str(ROOT),
+        "harness": "a9_real_run.py v2",
+        "actor": (actor.get("username") if isinstance(actor, dict) else None),
+        "seeded": bool(_truth),
     },
+    "ground_truth": _truth,
     "scenarios": [],
     "started_at": datetime.now(timezone.utc).isoformat(),
 }
-
-print(f"[a9_real] {len(scenarios)} scenarios, jev={_args.jev}, a9={_args.a9}, root={ROOT}", flush=True)
-
-for idx, scenario in enumerate(scenarios, 1):
-    sid = scenario["id"]
-    category = scenario.get("category") or ""
-    prompt = scenario.get("prompt") or ""
-    expected = set(scenario.get("expected_tools") or [])
-    forbidden = set(scenario.get("forbidden") or [])
-    bot = bot_no_tools if category == "CHAT" else bot_all
-
-    conv = ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
-    seq = 0
-    if category == "LONGCTX":
-        # Real multi-turn history, not a one-line summary.
-        for i in range(1, 21):
-            seq += 1
-            _send(conv["id"], int(actor["id"]), seq,
-                  f"История {i}: обсуждали оборудование в кабинете 201, картриджи HP и заявки склада.")
-    seq += 1
-    trigger_id = f"msg-{conv['id']}-{seq}"
-    _send(conv["id"], int(actor["id"]), seq, prompt)
-
-    calls_start = len(LLM_CALLS)
-    jev_start = len(JEV_CALLS)
-    t0 = time.perf_counter()
-    run_ok = False
-    run_error = None
-    try:
-        ai_service.queue_run_for_message(
-            conversation_id=conv["id"],
-            trigger_message_id=trigger_id,
-            current_user_id=int(actor["id"]),
-        )
-        run_ok = bool(ai_service.process_next_run())
-    except Exception as exc:  # noqa: BLE001
-        run_error = f"{type(exc).__name__}: {str(exc)[:300]}"
-    wall_ms = int((time.perf_counter() - t0) * 1000)
-
-    recs = LLM_CALLS[calls_start:]
-    jevs = JEV_CALLS[jev_start:]
-    tools_called = [c["tool_id"] for rec in recs for c in rec.get("tool_calls") or []]
-    tool_ids = [t for t in tools_called if t]
-    run_row = _last_run(conv["id"])
-    answer = _last_assistant_body(conv["id"])
-
-    expected_hit = sorted(t for t in expected if t in set(tool_ids))
-    forbidden_hit = [t for t in tool_ids if "*any-tool*" in forbidden or t in forbidden]
-    in_tok = sum(int((r.get("usage") or {}).get("prompt_tokens") or 0) for r in recs)
-    out_tok = sum(int((r.get("usage") or {}).get("completion_tokens") or 0) for r in recs)
-    jev_tok = sum(int(j.get("input_tokens") or 0) + int(j.get("output_tokens") or 0) for j in jevs)
-    jev_cost = sum(float(j.get("cost_usd") or 0) for j in jevs)
-    llm_cost = sum(float((r.get("usage") or {}).get("cost") or 0) for r in recs)
-
-    entry = {
-        "id": sid,
-        "category": category,
-        "run_ok": run_ok,
-        "run_error": run_error,
-        "run_status": run_row.get("status"),
-        "run_stage": run_row.get("stage"),
-        "wall_ms": wall_ms,
-        "llm_calls": len(recs),
-        "llm_call_errors": sum(1 for r in recs if not r.get("ok")),
-        "jev_calls": len(jevs),
-        "jev_errors": sum(1 for j in jevs if not j.get("ok")),
-        "jev_answers": [j.get("answers") for j in jevs if j.get("ok")][:3],
-        "tool_calls": tools_called,
-        "expected_hit": expected_hit,
-        "expected_missing": sorted(expected - set(expected_hit)),
-        "forbidden_hit": forbidden_hit,
-        "tokens": {
-            "llm_in": in_tok, "llm_out": out_tok, "jev_total": jev_tok,
-            "est_in": sum(int(r.get("est_in_tokens") or 0) for r in recs),
-        },
-        "cost_usd": {"llm": llm_cost, "jev": jev_cost},
-        "answer_len": len(answer),
-        "answer_head": answer[:240],
-        "result_message": bool(answer.strip()),
-    }
-    try:
-        _u = json.loads(run_row.get("usage_json") or "{}")
-        entry["fast_path_hit"] = bool(_u.get("fast_path_hit"))
-        entry["direct_read_hit"] = bool(_u.get("direct_read_hit"))
-    except Exception:  # noqa: BLE001
-        entry["fast_path_hit"] = None
-    results["scenarios"].append(entry)
-    status = "OK" if run_ok else f"FAIL({run_error or run_row.get('status')})"
-    print(f"[{idx}/{len(scenarios)}] {sid}: {status} llm={len(recs)} jev={len(jevs)} "
-          f"tools={tool_ids} in={in_tok} out={out_tok} wall={wall_ms}ms", flush=True)
-
-# aggregate
-agg = {
-    "scenarios": len(results["scenarios"]),
-    "run_ok": sum(1 for s in results["scenarios"] if s["run_ok"]),
-    "llm_calls_total": sum(s["llm_calls"] for s in results["scenarios"]),
-    "jev_calls_total": sum(s["jev_calls"] for s in results["scenarios"]),
-    "tool_calls_total": sum(len(s["tool_calls"]) for s in results["scenarios"]),
-    "tokens_in_total": sum(s["tokens"]["llm_in"] for s in results["scenarios"]),
-    "tokens_out_total": sum(s["tokens"]["llm_out"] for s in results["scenarios"]),
-    "jev_tokens_total": sum(s["tokens"]["jev_total"] for s in results["scenarios"]),
-    "est_in_total": sum(s["tokens"]["est_in"] for s in results["scenarios"]),
-    "cost_usd_total": sum(s["cost_usd"]["llm"] + s["cost_usd"]["jev"] for s in results["scenarios"]),
-    "wall_ms_total": sum(s["wall_ms"] for s in results["scenarios"]),
-    "expected_coverage": (
-        sum(len(s["expected_hit"]) for s in results["scenarios"]),
-        sum(len(s["expected_hit"]) + len(s["expected_missing"]) for s in results["scenarios"]),
-    ),
-    "forbidden_violations": sum(1 for s in results["scenarios"] if s["forbidden_hit"]),
-}
-results["aggregate"] = agg
-results["finished_at"] = datetime.now(timezone.utc).isoformat()
 
 out_path = Path(_args.out) if _args.out else (
     ROOT / "documentation" / "technical" / "ai-architecture-audit" / "a9-artifacts" / f"real_run_{LABEL}.json"
 )
 out_path.parent.mkdir(parents=True, exist_ok=True)
-out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _dump():
+    results["finished_at"] = datetime.now(timezone.utc).isoformat()
+    out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _attempt(conversation_id: str, trigger_id: str):
+    """One scenario attempt; returns (calls_start, jev_start, exception or None)."""
+    calls_start, jev_start = len(LLM_CALLS), len(JEV_CALLS)
+    t0 = time.perf_counter()
+    exc_text = None
+    try:
+        ai_service.queue_run_for_message(
+            conversation_id=conversation_id,
+            trigger_message_id=trigger_id,
+            current_user_id=int(actor["id"]),
+        )
+        ai_service.process_next_run()
+    except Exception as exc:  # noqa: BLE001
+        exc_text = f"{type(exc).__name__}: {str(exc)[:300]}"
+    wall_ms = int((time.perf_counter() - t0) * 1000)
+    return calls_start, jev_start, exc_text, wall_ms
+
+
+print(f"[a9_real v2] {len(scenarios)} scenarios, jev={_args.jev}, a9={_args.a9}, "
+      f"provider={_args.provider}, root={ROOT}", flush=True)
+
+for idx, scenario in enumerate(scenarios, 1):
+    sid = scenario["id"]
+    category = scenario.get("category") or ""
+    prompt = scenario.get("prompt") or ""
+    expected = list(scenario.get("expected_tools") or [])
+    forbidden = list(scenario.get("forbidden") or [])
+    required_facts = [str(f) for f in (scenario.get("required_facts") or []) if str(f).strip()]
+    bot = bot_no_tools if category == "CHAT" else bot_all
+
+    attempt_no = 0
+    entry = None
+    while True:
+        attempt_no += 1
+        conv = ai_service.create_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+        seq = 0
+        if category == "LONGCTX":
+            # Real multi-turn history, not a one-line summary.
+            for i in range(1, 21):
+                seq += 1
+                _send(conv["id"], int(actor["id"]), seq,
+                      f"История {i}: обсуждали оборудование в кабинете 201, картриджи HP и заявки склада.")
+        seq += 1
+        trigger_id = f"msg-{conv['id']}-{seq}"
+        _send(conv["id"], int(actor["id"]), seq, prompt)
+
+        calls_start, jev_start, harness_exc, wall_ms = _attempt(conv["id"], trigger_id)
+        recs = LLM_CALLS[calls_start:]
+        jevs = JEV_CALLS[jev_start:]
+        run_row = _run_row_for_trigger(conv["id"], trigger_id)
+        result_json = run_row.get("result_json") or {}
+        usage_json = run_row.get("usage_json") or {}
+        result_message_id = result_json.get("result_message_id")
+        _buid = bot.get("bot_user_id") if isinstance(bot, dict) else getattr(bot, "bot_user_id", None)
+        bot_user_id = int(_buid or 0) or None
+        answer = _assistant_message(conv["id"], result_message_id, bot_user_id)
+        answer_body = answer["body"]
+
+        # --- tool calls: proposed (model) vs executed (DB traces) ---------
+        proposed = [c.get("tool_id") for rec in recs for c in (rec.get("tool_calls") or []) if c.get("tool_id")]
+        traces = [t for t in (result_json.get("tool_traces") or []) if isinstance(t, dict)]
+        executed = [_summarize_trace(t) for t in traces]
+        executed_ids = [t["tool_id"] for t in executed if t.get("tool_id")]
+        # Local meta-tools still count as executed steps but are not "tools"
+        # for coverage purposes.
+        meta_ids = {"ai.request_tool_group", "ai.results.read_more"}
+        executed_real_ids = [t for t in executed_ids if t not in meta_ids]
+
+        expected_hit = sorted(p for p in expected if _match_any(p, executed_real_ids))
+        expected_missing = sorted(p for p in expected if not _match_any(p, executed_real_ids))
+        forbidden_hit = sorted({t for t in executed_real_ids
+                                if "*any-tool*" in forbidden
+                                or any(fnmatch.fnmatchcase(t, p) for p in forbidden)})
+
+        facts_found = [f for f in required_facts if f.lower() in answer_body.lower()]
+        facts_missing = [f for f in required_facts if f.lower() not in answer_body.lower()]
+
+        # --- tokens / cost (missing usage is reported, not zeroed) --------
+        in_tok = sum(int(r["usage"]["prompt_tokens"]) for r in recs
+                     if r.get("usage") and r["usage"].get("prompt_tokens") is not None)
+        out_tok = sum(int(r["usage"]["completion_tokens"]) for r in recs
+                      if r.get("usage") and r["usage"].get("completion_tokens") is not None)
+        usage_missing = sum(1 for r in recs if r.get("ok") and not (r.get("usage") or {}).get("prompt_tokens"))
+        cost_missing = sum(1 for r in recs if r.get("ok") and (r.get("usage") or {}).get("cost") is None)
+        jev_tok = sum(int(j.get("input_tokens") or 0) + int(j.get("output_tokens") or 0) for j in jevs)
+        jev_cost = sum(float(j.get("cost_usd") or 0) for j in jevs)
+        llm_cost = sum(float(r["usage"]["cost"]) for r in recs
+                       if r.get("usage") and r["usage"].get("cost") is not None)
+
+        # --- error classification ------------------------------------------
+        provider_errors = [r["error"] for r in recs if not r.get("ok") and r.get("error_class") == "provider"]
+        app_errors = [r["error"] for r in recs if not r.get("ok") and r.get("error_class") != "provider"]
+        jev_provider_errors = [j["error"] for j in jevs if not j.get("ok") and j.get("error_class") == "provider"]
+        jev_app_errors = [j["error"] for j in jevs if not j.get("ok") and j.get("error_class") != "provider"]
+        tool_errors = [t for t in executed if t.get("error")]
+
+        # --- outcome -------------------------------------------------------
+        run_status = run_row.get("status")
+        has_answer = bool(answer_body.strip()) and bool(result_message_id)
+        if run_status == "completed" and has_answer:
+            if provider_errors or app_errors or tool_errors or not answer.get("sender_ok", True):
+                outcome = "degraded"
+            else:
+                outcome = "completed"
+        else:
+            outcome = "failed"
+
+        # --- correctness ---------------------------------------------------
+        checks = bool(expected or forbidden or required_facts)
+        if outcome == "failed":
+            correctness = "FAIL" if checks else "NO_CHECK"
+        elif expected_missing or forbidden_hit or facts_missing:
+            correctness = "FAIL"
+        elif not checks:
+            correctness = "NO_CHECK"
+        else:
+            correctness = "PASS"
+
+        # Fallback reasons, observable from the run itself.
+        fallback_reasons = []
+        if usage_json.get("direct_read_hit") and recs:
+            fallback_reasons.append("direct_read_fell_back_to_llm")
+        if result_json.get("action_attachment_pending"):
+            fallback_reasons.append("action_attachment_failed")
+        if any(t.get("error") for t in executed):
+            fallback_reasons.append("tool_error")
+        for rec in recs:
+            if not rec.get("ok"):
+                fallback_reasons.append(f"llm_error:{rec.get('error_class')}")
+
+        new_entry = {
+            "id": sid,
+            "category": category,
+            "prompt": prompt,
+            "attempt": attempt_no,
+            "outcome": outcome,
+            "correctness": correctness,
+            "run": {
+                "id": run_row.get("id"),
+                "status": run_status,
+                "stage": run_row.get("stage"),
+                "error_text": run_row.get("error_text"),
+                "result_message_id": result_message_id,
+                "intent_mode": result_json.get("intent_mode"),
+                "harness_exception": harness_exc,
+            },
+            "answer": {
+                "message_id": answer["id"],
+                "sender_ok": answer["sender_ok"],
+                "len": len(answer_body),
+                "head": answer_body[:300],
+                "body": answer_body,
+            },
+            "tools": {
+                "proposed": proposed,
+                "executed": executed,
+                "executed_ids": executed_ids,
+                "expected_hit": expected_hit,
+                "expected_missing": expected_missing,
+                "forbidden_hit": forbidden_hit,
+            },
+            "facts": {"required": required_facts, "found": facts_found, "missing": facts_missing},
+            "flags": {
+                "fast_path_hit": bool(usage_json.get("fast_path_hit")),
+                "direct_read_hit": bool(usage_json.get("direct_read_hit")),
+            },
+            "errors": {
+                "provider": provider_errors + jev_provider_errors,
+                "app": app_errors + jev_app_errors,
+                "tool": [{"tool_id": t["tool_id"], "error": t["error"]} for t in tool_errors],
+                "harness": harness_exc,
+            },
+            "llm_calls": len(recs),
+            "llm_call_errors": len(provider_errors) + len(app_errors),
+            "jev_calls": len(jevs),
+            "jev_errors": len(jev_provider_errors) + len(jev_app_errors),
+            "jev_answers": [j.get("answers") for j in jevs if j.get("ok")][:3],
+            "wall_ms": wall_ms,
+            "tokens": {
+                "llm_in": in_tok,
+                "llm_out": out_tok,
+                "jev_total": jev_tok,
+                "est_in": sum(int(r.get("est_in_tokens") or 0) for r in recs),
+                "usage_missing_calls": usage_missing,
+            },
+            "cost_usd": {"llm": llm_cost, "jev": jev_cost, "cost_missing_calls": cost_missing},
+            "fallback_reasons": fallback_reasons,
+        }
+
+        provider_only = (
+            outcome == "failed"
+            and not app_errors and not jev_app_errors and not harness_exc
+            and (provider_errors or jev_provider_errors)
+        )
+        if provider_only and attempt_no <= _args.provider_retries:
+            print(f"[{idx}/{len(scenarios)}] {sid}: provider failure, retry {attempt_no} "
+                  f"(errors={provider_errors + jev_provider_errors})", flush=True)
+            continue
+        entry = new_entry
+        break
+
+    results["scenarios"].append(entry)
+    print(f"[{idx}/{len(scenarios)}] {sid}: {entry['outcome']}/{entry['correctness']} "
+          f"llm={entry['llm_calls']} jev={entry['jev_calls']} "
+          f"tools={entry['tools']['executed_ids']} in={entry['tokens']['llm_in']} "
+          f"wall={entry['wall_ms']}ms"
+          + (f" fp" if entry["flags"].get("fast_path_hit") else "")
+          + (f" dr" if entry["flags"].get("direct_read_hit") else ""), flush=True)
+    _dump()
+
+# aggregate
+sc = results["scenarios"]
+agg = {
+    "scenarios": len(sc),
+    "outcomes": {
+        "completed": sum(1 for s in sc if s["outcome"] == "completed"),
+        "degraded": sum(1 for s in sc if s["outcome"] == "degraded"),
+        "failed": sum(1 for s in sc if s["outcome"] == "failed"),
+    },
+    "correctness": {
+        "PASS": sum(1 for s in sc if s["correctness"] == "PASS"),
+        "FAIL": sum(1 for s in sc if s["correctness"] == "FAIL"),
+        "NO_CHECK": sum(1 for s in sc if s["correctness"] == "NO_CHECK"),
+    },
+    "llm_calls_total": sum(s["llm_calls"] for s in sc),
+    "jev_calls_total": sum(s["jev_calls"] for s in sc),
+    "tool_calls_executed_total": sum(len(s["tools"]["executed_ids"]) for s in sc),
+    "tokens_in_total": sum(s["tokens"]["llm_in"] for s in sc),
+    "tokens_out_total": sum(s["tokens"]["llm_out"] for s in sc),
+    "usage_missing_calls": sum(s["tokens"]["usage_missing_calls"] for s in sc),
+    "jev_tokens_total": sum(s["tokens"]["jev_total"] for s in sc),
+    "est_in_total": sum(s["tokens"]["est_in"] for s in sc),
+    "cost_usd_total": sum(s["cost_usd"]["llm"] + s["cost_usd"]["jev"] for s in sc),
+    "cost_missing_calls": sum(s["cost_usd"]["cost_missing_calls"] for s in sc),
+    "wall_ms_total": sum(s["wall_ms"] for s in sc),
+    "expected_coverage": (
+        sum(len(s["tools"]["expected_hit"]) for s in sc),
+        sum(len(s["tools"]["expected_hit"]) + len(s["tools"]["expected_missing"]) for s in sc),
+    ),
+    "forbidden_violations": sum(1 for s in sc if s["tools"]["forbidden_hit"]),
+    "provider_error_scenarios": sum(1 for s in sc if s["errors"]["provider"]),
+    "app_error_scenarios": sum(1 for s in sc if s["errors"]["app"] or s["errors"]["harness"]),
+    "fast_path_hits": sum(1 for s in sc if s["flags"].get("fast_path_hit")),
+    "direct_read_hits": sum(1 for s in sc if s["flags"].get("direct_read_hit")),
+}
+results["aggregate"] = agg
+_dump()
 print(json.dumps({"aggregate": agg, "out": str(out_path)}, ensure_ascii=False, indent=2))

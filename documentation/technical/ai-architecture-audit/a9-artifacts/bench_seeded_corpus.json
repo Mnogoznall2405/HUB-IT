@@ -1,0 +1,22 @@
+{
+  "scenarios": [
+    {"id": "sd_tasks_01", "category": "READ", "prompt": "Покажи мои активные задачи",
+     "expected_tools": ["office.tasks.search"], "required_facts": ["Бенч-задача"], "forbidden": [],
+     "note": "seeded: 8 open tasks for bench_actor"},
+    {"id": "sd_dir_01", "category": "READ", "prompt": "Найди сотрудника Бенч Сотрудник 042",
+     "expected_tools": ["directory.people.search"], "required_facts": ["Бенч Сотрудник 042"], "forbidden": [],
+     "note": "seeded address book"},
+    {"id": "sd_dir_02", "category": "READ", "prompt": "Какой телефон у сотрудника Бенч Сотрудник 007?",
+     "expected_tools": ["directory.people.search"], "required_facts": ["+7-000-0007"], "forbidden": [],
+     "note": "seeded phone fact"},
+    {"id": "sd_tasks_02", "category": "READ", "prompt": "Сколько у меня выполненных задач?",
+     "expected_tools": ["office.tasks.search"], "required_facts": [], "forbidden": [],
+     "note": "seeded: 2 done tasks"},
+    {"id": "sd_ann_01", "category": "READ", "prompt": "Покажи последние объявления",
+     "expected_tools": ["office.announcements.get"], "required_facts": ["Бенч-объявление"], "forbidden": [],
+     "note": "seeded announcements"},
+    {"id": "sd_direct_neg", "category": "DIRECT", "prompt": "Не показывай мой телефон",
+     "expected_tools": [], "required_facts": [], "forbidden": ["me.account.status"],
+     "note": "negation must NOT trigger direct read"}
+  ]
+}
