@@ -283,3 +283,36 @@ RC inventory + smoke-test triage fixes; `609572ac` release perf A/B;
 - Backend collection sanity: candidate **6808 collected / 10 env-legacy errors**; baseline `af485f22` **6779 collected / 11 errors**. Единственная разница в error-set — baseline-only `test_migrate_safe_replace_scripts.py`, дефект исправлен в integration; остальные ошибки одинаковые environment/legacy-gated.
 - E2E: release-smoke **1/1 PASS** (31 route: 29 render + 2 documented degraded upstream surfaces), chat emoji/sticker/recents **25/25 PASS** до final AI-card fix, My Files fixture harness в dev mode **60/60 PASS**, AI chat reliability после fix **8/8 PASS**; AI drafts/mail-open **3/3 PASS**.
 - Perf A/B production builds, alternating sides, n=20/scenario: no p95 regression >10%; warm-dock send улучшился `127.2→81.8 ms` p50 и `160.8→95.5 ms` p95. Подробности — в gate report.
+
+---
+
+## Post-PR#75 synchronization addendum — 2026-11-25
+
+`origin/main` был заморожен на `4d4dba1ffa5a3f8e8d7345bbcb2929a7d12e7e9b` (PR #75, merged 2026-11-25 11:51:41Z). Pre-sync tip ветки: `c18d9fa8cff34bdf7808006c90e136d4663e550d`. Создан semantic merge commit `5e6ac871243cbdd7a016c160ca715101cd565c9c` с родителями `c18d9fa8` + `4d4dba1f`; это **не** merge в `main` и не deploy.
+
+### Размер оставшейся дельты над main
+
+После синхронизации diff `4d4dba1f..5e6ac871`: **12 коммитов, 93 файла, +8 937/−809**. Значительная часть — release evidence, e2e harnesses и visual/perf artifacts. Продуктовая дельта сконцентрирована в восстановленных My Files fixes, warm-dock chat perf stabilization, safe paste PR #10, AI action-card click isolation, Database mobile tabs/QR stabilization и связанных тестах/документации.
+
+### Ключевые conflict resolutions
+
+- Alembic `0085/0086/0174/0180`, `telegram_sticker_service.py`, `http.js`, `client.test.js` — взяты версии main/PR #75: там более поздние migration repair/idempotency hardening, uniform sticker entitlement + `FileMessageCommittedError`, nonce CAS refresh-claim protocol.
+- `MyFiles.jsx` — взята branch-сторона: PR #75 при restore конфликта потерял branch behavior `d73498ea` (upload-queue guard, bulk progress, deep-link fallback, editor session/deep-link fixes).
+- root `tests/test_chat_sticker_favorites.py` — branch-сторона из-за правильных renumbered migration parents; main-side security HTTP tests сохранены отдельно в `WEB-itinvent/backend/tests/`.
+- `my-files-admin.spec.js` — semantic union: branch sweep + main ruRU pagination matcher.
+- generated emoji/sticker artifacts — branch final acceptance/perf lineage.
+- Protected files (`ChatBubble.jsx`, warm-dock chat hooks/content, `DatabasePageHeader.jsx`, `taskRichText.js`, `MyFiles.jsx`) после merge content-normalized совпадают с pre-merge `c18d9fa8`.
+
+### Проверки post-merge
+
+- Alembic static graph: один head `20261125_0182`.
+- Backend targeted pytest: **148/148 PASS**; isolated PostgreSQL sticker gate на scratch `stgt_*`: **4/4 PASS** (production не затрагивался).
+- Frontend targeted flags-on vitest: **17/17 files, 674/674 tests PASS**; явно включены `Database.test.jsx`, `Tasks.test.jsx`, `MyFiles.test.jsx`, auth refresh/Login/App, sticker-store/API/components, task rich-text.
+- Production build в outDir вне `frontend/dist`: **PASS**, 7698 modules, 1 m 03 s.
+- Production E2E: `release-smoke` **1/1 PASS** (31 route: 28 normal + 3 documented unseeded-upstream degraded surfaces), `chat-ai-reliability` **8/8 PASS**.
+- My Files E2E: 9 specs/85 unique tests; первый sweep **84/85**, единственный failure — boundary 149 px vs 150 px в `my-files-name-columns`; focused rerun exact spec **1/1 PASS**.
+- Auth remediation P0+multitab: 11 tests; первый sweep **10/11**, failure в no-Web-Locks case с нулём refresh POST (не duplicate rotation); focused rerun exact test **1/1 PASS**, затем независимый полный rerun **11/11 PASS** за 4.2 min.
+- Sticker V2 production E2E: первый run 4 passed + manage-reorder failure + cross-user не запустился; focused rerun двух оставшихся **2/2 PASS**, затем независимый полный rerun **6/6 PASS** за 1.7 min. Backend boundary tests подтверждают persistence reorder; первоначальный browser failure соответствует read-after-write race в spec (ожидание request, а не response).
+- Focused warm-dock perf spot check pre/post merge, production builds, n=20, 1440×900: typing `31.0/40.9 → 29.3/36.5 ms` p50/p95; send `86.5/100.3 → 61.3/88.0 ms` p50/p95; zero long tasks/timeouts/sticker requests. Регрессии нет, post-merge быстрее.
+
+**Post-sync verdict: GO для review/merge refreshed consolidation diff относительно `4d4dba1f`.** Это не deploy approval: staging/migration runbook и явное owner release decision остаются обязательными. Полная таблица и caveats — в `FINAL_RELEASE_GATE_REPORT.md`, section 11.

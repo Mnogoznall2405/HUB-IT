@@ -6,16 +6,17 @@ pass requested after the integration branch had already been assembled.
 
 ## Verdict up front
 
-**Code-gate verdict for the acceptance baseline: GO**, with the explicit caveats below.
+**Current post-PR#75 synchronization verdict: GO for the refreshed consolidation diff
+relative to `4d4dba1f`.** The pre-merge branch tip `c18d9fa8` was semantically merged
+with frozen `origin/main` `4d4dba1f` in merge commit
+`5e6ac871243cbdd7a016c160ca715101cd565c9c`; targeted post-merge backend, frontend,
+production-build, E2E and warm-dock perf evidence is in section 11.
 
-**Release-vehicle verdict: PR #73 is superseded/closed.** During this acceptance pass
-`origin/main` moved externally from `af485f22` to `4d4dba1f` through **PR #75**
-(`release: unified HUB-IT release candidate (42 remediation PRs + Sticker V2 + main integration)`),
-and PR #73 was closed unmerged at 2026-11-25 11:52:58Z. Therefore this report is a
-branch-local final acceptance record for `integration/frontend-remediation`, not approval
-to merge the already-closed PR over current main. If this branch is still intended as a
-release source, it needs a fresh diff/rebase review against `4d4dba1f`; otherwise use the
-already merged PR #75/main release line.
+The earlier acceptance relative to the original baseline `af485f22` also remains **GO**;
+sections 1–10 are retained as the historical evidence record. Their release-vehicle
+caveat is now superseded in exactly one respect: PR #73 was indeed closed unmerged after
+main moved through PR #75, but the branch has since been synchronized with that new main
+instead of being resurrected blindly.
 
 No production deploy, restart, migration or merge was performed by this gate.
 
@@ -28,7 +29,9 @@ No production deploy, restart, migration or merge was performed by this gate.
 | Baseline at start of acceptance | `af485f22c71264bc81eafb797538736c5f8a0553` | `origin/main` merge-base used for comparison |
 | Remote integration branch before this pass | `6983328e9dcb9a7d2eac8c228bcbc8be2c07b850` | PR #73 head before local acceptance fixes |
 | Final code tip after acceptance fixes | `4483485c72e065d8f279f687ecf4f05b8a78ef79` | Last product/test-code commit before this documentation commit |
-| External current main discovered during the pass | `4d4dba1ffa5a3f8e8d7345bbcb2929a7d12e7e9b` | Result of PR #75; not the perf baseline |
+| External current main discovered during the pass | `4d4dba1ffa5a3f8e8d7345bbcb2929a7d12e7e9b` | Result of PR #75; frozen post-PR#75 sync base |
+| Pre-sync integration tip | `c18d9fa8cff34bdf7808006c90e136d4663e550d` | Branch and remote tip immediately before the post-PR#75 merge |
+| Post-sync merge commit | `5e6ac871243cbdd7a016c160ca715101cd565c9c` | Semantic merge of `c18d9fa8` + `4d4dba1f`; verification candidate |
 
 Additional local commits on top of `6983328e`:
 
@@ -368,9 +371,113 @@ tests. Targeted migration/sticker backend tests are included in the **134/134 PA
 1. Treat the code acceptance of `integration/frontend-remediation` as **GO relative to
    `af485f22`**, based on frontend/backend/E2E/perf evidence above.
 2. Do **not** resurrect or merge PR #73 blindly: it is closed, and main already advanced via
-   PR #75. If the branch still contains unique required deltas, open a fresh comparison/review
-   against `4d4dba1f` and run only the delta-driven checks.
-3. If PR #75 is the accepted release line, use this report as supplementary evidence for the
+   PR #75. That caution was acted on rather than ignored: section 11 is the fresh semantic
+   synchronization and delta-driven verification against `4d4dba1f`.
+3. If PR #75 is the accepted release line, use sections 1–10 as supplementary evidence for the
    overlapping integration content, not as a direct approval of every line currently in main.
 4. Deploy remains out of scope for this gate and requires the normal explicit release/deploy
    procedure.
+
+---
+
+## 11. Post-PR#75 synchronization gate
+
+### 11.1 Frozen refs and remaining delta
+
+PR #75 (`integration/hub-it-release-candidate` → `main`) was merged at
+2026-11-25 11:51:41Z as `4d4dba1ffa5a3f8e8d7345bbcb2929a7d12e7e9b`. Its delta from the
+same acceptance base `af485f22` was **339 files, +29 685/−2 131, 141 commits**. It already
+contained most of the broad remediation/Sticker V2 line plus newer auth/session hardening,
+FE-0198 trusted-device gating, migration repair hardening, release documentation and the
+P0/multitab runtime harnesses.
+
+The integration branch was synchronized by merge commit
+`5e6ac871243cbdd7a016c160ca715101cd565c9c` with parents:
+
+- `c18d9fa8cff34bdf7808006c90e136d4663e550d` — pre-sync branch/remote tip;
+- `4d4dba1ffa5a3f8e8d7345bbcb2929a7d12e7e9b` — frozen post-PR#75 main.
+
+After that merge the remaining diff over current main is **12 commits, 93 files,
++8 937/−809**. Much of that file count is release evidence, harnesses and visual/perf
+artifacts. The remaining product-code delta is concentrated in:
+
+- My Files branch fixes that PR #75 accidentally dropped while restoring the conflicted file:
+  upload-queue guard, bulk-operation progress, inaccessible-folder deep-link cleanup and
+  editor deep-link/session handling (`MyFiles.jsx`, `MyFilesListItems.jsx`);
+- warm-dock chat send performance stabilization (`ChatPageContent.jsx`,
+  `useChatComposerSelection.js`, `useChatPageAnchorScrollBridge.js`);
+- PR #10 safe paste sanitization in the mobile task editor;
+- AI action-card click/pointer/touch propagation isolation;
+- Database mobile tab/QR deep-link stabilization;
+- release-gate/sticker evidence, migration-numbered test corrections and generated artifacts.
+
+### 11.2 Conflict-resolution decisions
+
+| Area | Resolution | Reason |
+|---|---|---|
+| Alembic `0085`, `0086`, `0174`, `0180` | main/PR #75 version | later repair/idempotency hardening, including invalid concurrent-index cleanup and missing base sticker-table repair |
+| `telegram_sticker_service.py` | main/PR #75 version | preserves uniform `media_kind == "sticker"` entitlement and `FileMessageCommittedError` copy-preservation handling |
+| `http.js`, `client.test.js` | main/PR #75 version | unique `<ts>:<nonce>` claim IDs, settle/re-read window and propagation-aware test supersede the older branch marker approach |
+| `MyFiles.jsx` | branch version | main commit `667ec342` dropped branch commit `d73498ea` behaviour while restoring the conflicted file; no countervailing unique delta was found |
+| root `tests/test_chat_sticker_favorites.py` | branch version | correct renumbered migration parents (`0179` → `0180`); main's separate security HTTP tests under `WEB-itinvent/backend/tests/` were also kept |
+| `my-files-admin.spec.js` | semantic union | branch sweep coverage plus main's ruRU MUI pagination matcher |
+| emoji/sticker generated PNGs and perf metrics | branch version | final acceptance/warm-dock evidence lineage; runtime-neutral artifacts |
+| `e2e/runtime/fixtures-admin.cjs` | main version plus EOF whitespace cleanup | keeps incoming fixture content and leaves `git diff --check` clean |
+
+Protected branch fixes were re-checked after the merge. Content-normalized equality with
+pre-merge `c18d9fa8` holds for the warm-dock perf files, AI action-card propagation fix,
+Database mobile header fix, task paste sanitizer and `MyFiles.jsx`.
+
+### 11.3 Post-merge verification
+
+| Check | Result |
+|---|---|
+| Static Alembic graph | single head `20261125_0182`; linear chain `0176 → 0177 → 0178 → 0179 → 0180 → 0181 → 0182` |
+| Targeted backend pytest | **148/148 PASS** in 57.41 s (`test_chat_sticker_favorites` root+backend copies, telegram stickers, attachment sticker preview, migration scope independence, sticker security HTTP) |
+| Isolated PostgreSQL sticker gate | **4/4 PASS** in 13.84 s on scratch `stgt_*` databases only; production `hubit_chat` not touched |
+| Targeted flags-on vitest | **17/17 files, 674/674 tests PASS** in 64.88 s, explicitly including `Database.test.jsx`, `Tasks.test.jsx`, `MyFiles.test.jsx`, auth refresh/Login/App, badge, sticker-store/API/component and task rich-text suites |
+| Production build | **PASS**, 7698 modules in 1 m 03 s; explicit outDir outside `frontend/dist` |
+| Production-stack release/AI E2E | **9/9 PASS** in 2.5 min: `release-smoke` 1/1 across 31 routes (28 rendered normally; `/database`, `/scan-center`, `/voice` were documented unseeded-upstream degraded surfaces) plus `chat-ai-reliability` 8/8 |
+| My Files E2E, 9 specs/85 unique tests | initial sweep **84 passed / 1 failed**; the single failure was a 149 px vs 150 px boundary in `my-files-name-columns` at 390 px. Focused rerun of that exact spec: **1/1 PASS**. No reproducible product regression; the boundary flake is recorded honestly |
+| Auth remediation P0 + multitab E2E, 11 tests | initial sweep **10 passed / 1 failed**; the failure was the `navigator.locks unavailable` case with zero refresh POSTs rather than duplicate rotations. Focused rerun of that exact test: **1/1 PASS**; an independent full rerun then passed **11/11** in 4.2 min. No refresh-rotation safety regression was reproduced |
+| Sticker V2 production E2E, 6 tests | initial run: tests 1–4 passed, manage-reorder failed before cross-user isolation ran. Backend boundary tests already prove order persistence. Focused rerun of the two remaining tests: **2/2 PASS**; an independent full rerun then passed **6/6** in 1.7 min. The initial browser failure is consistent with the spec awaiting the request rather than the reorder response before reading state back |
+
+The initial My Files/Sticker browser failures mean the first full browser sweeps were not
+uninterrupted all-green runs. They are still strong evidence against a merge product
+regression: auth and Sticker V2 later completed independent full clean reruns, the exact
+My Files spec passed in a focused rerun, every unique test passed on the merged code, and
+each initial failure had a narrow timing/boundary failure mode rather than a persistent
+behavioural defect.
+
+### 11.4 Focused warm-dock perf spot check
+
+Because the merge delta involved perf-sensitive chat paths, a direct pre/post-merge check was
+run on the same Windows host with production builds, `E2E_FOCUS_DOCK_MODE=warm`,
+`E2E_FOCUS_RUNS=20`, viewport 1440×900:
+
+| Metric | pre-merge `c18d9fa8` | post-merge `5e6ac871` | delta |
+|---|---:|---:|---:|
+| typing echo p50/p95 | 31.0 / 40.9 ms | 29.3 / 36.5 ms | −5.5% / −10.8% |
+| send echo p50/p95 | 86.5 / 100.3 ms | 61.3 / 88.0 ms | −29.1% / −12.3% |
+| send commits p50 | 7 | 6 | improved |
+| rendered fibers p50 | 18 652 | 16 178 | improved |
+
+Both sides had zero long tasks, zero send timeouts and zero sticker API requests inside the
+measured send windows. **PASS:** no post-merge warm-dock regression; the post-merge result is
+faster in this spot check. This does not replace production telemetry or the broader historical
+A/B matrix.
+
+### 11.5 Post-sync risks and verdict
+
+1. The full 6800+ backend corpus and full 722-file frontend suite were not rerun after the
+   merge; the post-merge gate was deliberately targeted to the merge/conflict surface.
+2. Initial browser sweeps exposed three timing/boundary flakes documented above. Auth and
+   Sticker V2 were subsequently clean in independent full reruns and the exact My Files
+   spec passed in a focused rerun; none demonstrated a persistent product regression.
+3. Migration evidence is static-chain validation plus scratch PostgreSQL/sqlite coverage;
+   it is not a production or staging migration.
+4. Perf numbers are same-host local harness numbers, not production telemetry.
+
+**Post-sync verdict: GO for review/merge of the refreshed consolidation diff relative to
+`4d4dba1f`.** This is not a deploy approval: release still requires the normal owner decision,
+staging/migration runbook and explicit deployment procedure.
