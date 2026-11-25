@@ -2547,6 +2547,23 @@ def _llm_projection_policy(tool_id: str) -> dict[str, Any]:
     return _LLM_PROJ_UNKNOWN
 
 
+# §6: mutation classification must not rely on name markers alone — file-
+# producing tools mutate app state (create files / send chat attachments)
+# without any ".action"/".create" segment in tool_id.
+_MUTATING_TOOL_IDS = frozenset({
+    "me.files.attach", "ai.files.convert_document", "ai.files.report",
+    *COMMUNICATION_DRAFTS,
+})
+
+
+def _is_mutating_tool_id(tool_id: Any) -> bool:
+    tid = _normalize_text(tool_id)
+    return (
+        tid in _MUTATING_TOOL_IDS
+        or any(marker in tid for marker in _LLM_PROJ_ACTION_MARKERS)
+    )
+
+
 def _project_llm_value(
     value: Any,
     *,
@@ -3170,46 +3187,401 @@ def get_ai_chat_runtime_metrics() -> dict[str, Any]:
     }
 
 
-# A10 §2.2: tools whose single successful result renders deterministically.
-# ACT/draft/delivery/file/meta tools are NEVER here — they always need the
-# model's confirmation narrative.
-_FAST_PATH_READ_TOOLS = frozenset({
-    "ad.mailbox.password_status", "ad.mailboxes.expiring_soon",
-    "ad.user.groups", "ad.user.lockout_status", "ad.user.logon_history",
-    "ad.user.password_status", "ad.users.expiring_soon",
-    "chat.conversations.search", "chat.users.search",
-    "directory.department.get", "directory.people.search",
-    "itinvent.acts.pending", "itinvent.analytics.summary",
-    "itinvent.audit.dismissed_with_equipment",
-    "itinvent.computers.changes", "itinvent.computers.get",
-    "itinvent.computers.search", "itinvent.computers.software_search",
-    "itinvent.consumables.search", "itinvent.database.current",
-    "itinvent.directory.branches", "itinvent.directory.departments",
-    "itinvent.directory.equipment_types", "itinvent.directory.locations",
-    "itinvent.directory.statuses", "itinvent.directory.vendors",
-    "itinvent.employee.list_equipment", "itinvent.employee.search",
-    "itinvent.entity.resolve", "itinvent.equipment.acts",
-    "itinvent.equipment.get_card", "itinvent.equipment.history",
-    "itinvent.equipment.list_by_branch", "itinvent.equipment.models_search",
-    "itinvent.equipment.search", "itinvent.equipment.search_multi_db",
-    "itinvent.equipment.search_universal",
-    "itinvent.user.by_name",
-    "kb.articles.get", "kb.articles.search",
-    "me.account.status", "me.computer.health", "me.equipment",
-    "me.files.search", "me.it_requests", "me.mailbox.quota",
-    "mfu.device.status", "mfu.devices.list", "mfu.devices.low_toner",
-    "mfu.pages.monthly",
-    "network.branch.overview", "network.dns.lookup", "network.host.info",
-    "network.host.ping", "network.ports.search", "network.socket.search",
-    "network.ssl.check",
-    "office.announcements.get", "office.mail.contacts.resolve",
-    "office.mail.get_message", "office.mail.search",
-    "office.mailbox.quota_report", "office.tasks.get",
-    "office.tasks.projects", "office.tasks.search",
-    "voice.meeting.get", "voice.meetings.search",
-    "warehouse.balances.search", "warehouse.it_requests.get",
-    "warehouse.it_requests.search",
-})
+# A10 §2.2/§3: deterministic renderers for single-tool READ answers.
+# The fast-path whitelist IS the renderer map — a tool without a verified
+# renderer never takes the fast path. ACT/draft/delivery/file/meta tools
+# are NEVER here.
+def _fp_plural(n: int, one: str, few: str, many: str) -> str:
+    n = abs(int(n)) % 100
+    if 11 <= n <= 14:
+        return many
+    r = n % 10
+    if r == 1:
+        return one
+    if 2 <= r <= 4:
+        return few
+    return many
+
+
+def _fp_scalar(data: dict, *keys: str) -> str:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, (str, int, float)) and _normalize_text(value):
+            return _normalize_text(value)
+    return ""
+
+
+def _fp_first(value: Any) -> str:
+    if isinstance(value, list):
+        return _normalize_text(value[0]) if value else ""
+    return _normalize_text(value)
+
+
+def _fp_date(value: Any) -> str:
+    return _normalize_text(value)[:10]
+
+
+def _fp_lines(items: list, render, *, limit: int = 25) -> list[str]:
+    lines = [render(item) for item in items[:limit] if isinstance(item, dict)]
+    lines = [line for line in lines if line]
+    if len(items) > limit:
+        lines.append(f"… и ещё {len(items) - limit}")
+    return lines
+
+
+def _fp_task_status(status: Any) -> str:
+    return {
+        "new": "новая", "in_progress": "в работе",
+        "review": "на проверке", "done": "выполнена",
+    }.get(_normalize_text(status), _normalize_text(status))
+
+
+def _fp_render_tasks(data: dict, args: dict) -> str:
+    items = list(data.get("items") or [])
+    total = data.get("total")
+    status_arg = _normalize_text((args or {}).get("status")).lower()
+    if not items:
+        if status_arg in ("open", "active", "new", "in_progress", "review"):
+            return "Активных задач не найдено."
+        if status_arg == "done":
+            return "Выполненных задач не найдено."
+        return "Задачи не найдены."
+    count = int(total) if isinstance(total, int) and total else len(items)
+    head = f"Задач: {count}."
+    lines = [head]
+    for item in items[:25]:
+        parts = [f"«{_normalize_text(item.get('title'))}»"]
+        details = [
+            _fp_task_status(item.get("status")),
+            f"до {_fp_date(item.get('due_at'))}" if item.get("due_at") else "",
+            "просрочена" if item.get("is_overdue") else "",
+            _normalize_text(item.get("assignee_full_name")),
+        ]
+        tail = ", ".join(p for p in details if p)
+        lines.append(f"- {parts[0]} ({tail})" if tail else f"- {parts[0]}")
+    if len(items) > 25:
+        lines.append(f"… и ещё {len(items) - 25}")
+    return "\n".join(lines)
+
+
+def _fp_person_line(item: dict) -> str:
+    name = _fp_scalar(item, "display_name", "full_name", "name", "fio", "employee_name")
+    if not name:
+        return ""
+    detail = ", ".join(p for p in (
+        _fp_scalar(item, "position"), _fp_scalar(item, "department", "department_name")
+    ) if p)
+    contacts = ", ".join(p for p in (
+        _fp_first(item.get("work_phones")) or _fp_scalar(item, "phone", "work_phone"),
+        _fp_first(item.get("work_emails")) or _fp_scalar(item, "email", "work_email"),
+    ) if p)
+    room = _fp_scalar(item, "office_room", "office_address", "room")
+    tail = "; ".join(p for p in (detail, contacts, f"каб. {room}" if room else "") if p)
+    return f"{name}" + (f" — {tail}" if tail else "")
+
+
+def _fp_render_people(data: dict, args: dict) -> str:
+    items = list(data.get("items") or data.get("persons") or [])
+    if not items:
+        return "Сотрудники не найдены."
+    total = data.get("total")
+    count = int(total) if isinstance(total, int) and total else len(items)
+    lines = [f"Найдено {_fp_plural(count, 'сотрудник', 'сотрудника', 'сотрудников')}: {count}."]
+    lines += [f"- {line}" for line in _fp_lines(items, _fp_person_line)]
+    return "\n".join(lines)
+
+
+def _fp_equipment_line(item: dict) -> str:
+    parts = [
+        _fp_scalar(item, "type_name", "type"),
+        _fp_scalar(item, "model_name", "model", "name"),
+    ]
+    head = " ".join(p for p in parts if p) or _fp_scalar(item, "summary", "key")
+    ids = ", ".join(p for p in (
+        f"инв. {_fp_scalar(item, 'inv_no', 'inventory_number')}" if _fp_scalar(item, "inv_no", "inventory_number") else "",
+        f"s/n {_fp_scalar(item, 'serial_no', 'serial', 'serial_number')}" if _fp_scalar(item, "serial_no", "serial", "serial_number") else "",
+    ) if p)
+    place = ", ".join(p for p in (
+        _fp_scalar(item, "owner_name", "employee_name", "owner"),
+        _fp_scalar(item, "branch_name", "branch"),
+        _fp_scalar(item, "location_name", "location", "cabinet"),
+    ) if p)
+    tail = "; ".join(p for p in (ids, place) if p)
+    return head + (f" — {tail}" if tail else "") if head else ""
+
+
+def _fp_render_equipment(data: dict, args: dict) -> str:
+    items = list(data.get("items") or data.get("rows") or [])
+    if not items:
+        return "Оборудование не найдено."
+    total = data.get("total")
+    count = int(total) if isinstance(total, int) and total else len(items)
+    lines = [f"Найдено {_fp_plural(count, 'единица оборудования', 'единицы оборудования', 'единиц оборудования')}: {count}."]
+    lines += [f"- {line}" for line in _fp_lines(items, _fp_equipment_line)]
+    return "\n".join(lines)
+
+
+def _fp_render_my_equipment(data: dict, args: dict) -> str:
+    items = list(data.get("items") or [])
+    if not items:
+        return "За вами не числится оборудования."
+    lines = [f"За вами числится {_fp_plural(len(items), 'единица оборудования', 'единицы оборудования', 'единиц оборудования')}: {len(items)}."]
+    lines += [f"- {line}" for line in _fp_lines(items, _fp_equipment_line)]
+    return "\n".join(lines)
+
+
+def _fp_render_account_status(data: dict, args: dict) -> str:
+    lines = []
+    password = data.get("password") if isinstance(data.get("password"), dict) else {}
+    days = password.get("days_to_expire")
+    if password.get("expired"):
+        lines.append("Срок действия вашего пароля истёк — требуется смена.")
+    elif password.get("must_change_now"):
+        lines.append("Пароль необходимо сменить при следующем входе.")
+    elif password.get("never_expires"):
+        lines.append("Срок действия вашего пароля не ограничен.")
+    elif days is not None:
+        lines.append(f"Срок действия пароля истекает через {days} "
+                     f"{_fp_plural(int(days), 'день', 'дня', 'дней')}"
+                     + (f" ({_fp_date(password.get('expiration_date'))})." if password.get("expiration_date") else "."))
+    lockout = data.get("lockout") if isinstance(data.get("lockout"), dict) else {}
+    if lockout.get("is_locked"):
+        lines.append("Учётная запись заблокирована.")
+    elif lockout:
+        lines.append("Учётная запись не заблокирована.")
+    login = _fp_scalar(data, "login")
+    if login:
+        lines.append(f"Учётная запись: {login}.")
+    return "\n".join(lines) or "Статус учётной записи недоступен."
+
+
+def _fp_render_mfu(data: dict, args: dict) -> str:
+    items = list(data.get("items") or data.get("devices") or data.get("rows") or [])
+    if not items:
+        return "Печатающие устройства не найдены."
+    lines = [f"Найдено устройств: {len(items)}."]
+    for item in items[:25]:
+        name = _fp_scalar(item, "name", "model_name", "model", "inv_no")
+        if not name:
+            continue
+        tail = ", ".join(p for p in (
+            _fp_scalar(item, "location_name", "location", "cabinet"),
+            f"тонер: {item.get('toner_level')}%" if item.get("toner_level") is not None else "",
+            f"тонер: {item.get('toner')}" if item.get("toner") and item.get("toner_level") is None else "",
+            _fp_scalar(item, "status"),
+        ) if p)
+        lines.append(f"- {name}" + (f" ({tail})" if tail else ""))
+    if len(items) > 25:
+        lines.append(f"… и ещё {len(items) - 25}")
+    return "\n".join(lines)
+
+
+def _fp_render_mail(data: dict, args: dict) -> str:
+    items = list(data.get("items") or data.get("messages") or [])
+    if not items:
+        return "Письма не найдены."
+    lines = [f"Найдено {_fp_plural(len(items), 'письмо', 'письма', 'писем')}: {len(items)}."]
+    for item in items[:15]:
+        subj = _fp_scalar(item, "subject", "title")
+        tail = ", ".join(p for p in (
+            _fp_scalar(item, "from_name", "sender", "from"),
+            _fp_date(item.get("received_at", item.get("date"))),
+        ) if p)
+        lines.append(f"- «{subj}»" + (f" — {tail}" if tail else "") if subj else "")
+    return "\n".join(l for l in lines if l != "- ")
+
+
+def _fp_render_announcements(data: dict, args: dict) -> str:
+    items = list(data.get("items") or data.get("announcements") or [])
+    if not items:
+        return "Активных объявлений нет."
+    lines = [f"Объявлений: {len(items)}."]
+    for item in items[:15]:
+        title = _fp_scalar(item, "title")
+        tail = ", ".join(p for p in (
+            _fp_date(item.get("published_from", item.get("created_at"))),
+            "требует подтверждения" if item.get("requires_ack") else "",
+        ) if p)
+        if title:
+            lines.append(f"- «{title}»" + (f" — {tail}" if tail else ""))
+    return "\n".join(lines)
+
+
+def _fp_render_kb(data: dict, args: dict) -> str:
+    items = list(data.get("items") or data.get("articles") or data.get("documents") or [])
+    if not items:
+        single = _fp_scalar(data, "title")
+        if single:
+            lines = [f"Статья: «{single}»."]
+            body = _fp_scalar(data, "body", "content", "summary", "text")
+            if body:
+                lines.append(body[:1500])
+            return "\n".join(lines)
+        return "Статьи не найдены."
+    lines = [f"Найдено {_fp_plural(len(items), 'статья', 'статьи', 'статей')}: {len(items)}."]
+    for item in items[:15]:
+        title = _fp_scalar(item, "title", "name")
+        if title:
+            lines.append(f"- «{title}»")
+    return "\n".join(lines)
+
+
+def _fp_render_files(data: dict, args: dict) -> str:
+    items = list(data.get("items") or data.get("files") or [])
+    if not items:
+        return "Файлы не найдены."
+    lines = [f"Найдено {_fp_plural(len(items), 'файл', 'файла', 'файлов')}: {len(items)}."]
+    for item in items[:15]:
+        name = _fp_scalar(item, "original_file_name", "download_file_name", "name", "title")
+        size = item.get("original_size_bytes") or item.get("size_bytes")
+        tail = f"{round(int(size) / 1024)} КБ" if isinstance(size, (int, float)) and size else ""
+        if name:
+            lines.append(f"- {name}" + (f" ({tail})" if tail else ""))
+    return "\n".join(lines)
+
+
+def _fp_render_department(data: dict, args: dict) -> str:
+    title = _fp_scalar(data, "title", "name", "department")
+    lines = [f"Подразделение: {title}."] if title else []
+    head = _fp_scalar(data, "head_name", "manager_name", "head", "manager")
+    if head:
+        lines.append(f"Руководитель: {head}.")
+    members = data.get("members") if isinstance(data.get("members"), list) else None
+    if members:
+        lines.append(f"Сотрудников: {len(members)}.")
+        lines += [f"- {line}" for line in _fp_lines(members, _fp_person_line)]
+    for key in ("members_count", "employee_count", "location", "description"):
+        value = _fp_scalar(data, key)
+        if value and not members:
+            lines.append(f"{key}: {value}")
+    return "\n".join(lines) or "Подразделение не найдено."
+
+
+def _fp_render_generic_list(*, empty: str, nouns: tuple[str, str, str]):
+    def render(data: dict, args: dict) -> str:
+        items = list(data.get("items") or data.get("rows") or [])
+        if not items:
+            return empty
+        count = data.get("total")
+        count = int(count) if isinstance(count, int) and count else len(items)
+        lines = [f"{nouns[0].capitalize()}: {count}."]
+        for item in items[:25]:
+            line = _fp_scalar(item, "title", "name", "summary", "key", "label")
+            if not line:
+                line = _fp_equipment_line(item) or _fp_person_line(item)
+            if line:
+                lines.append(f"- {line}")
+        if len(items) > 25:
+            lines.append(f"… и ещё {len(items) - 25}")
+        return "\n".join(lines)
+    return render
+
+
+def _fp_render_scalars(*, title: str, keys: tuple[str, ...], empty: str):
+    def render(data: dict, args: dict) -> str:
+        lines = [title]
+        for key in keys:
+            value = data.get(key)
+            if isinstance(value, (str, int, float)) and _normalize_text(value):
+                lines.append(f"- {key}: {_normalize_text(value)[:300]}")
+        return "\n".join(lines) if len(lines) > 1 else empty
+    return render
+
+
+_TASKS_NOUNS = ("задачи", "задачи", "задач")
+_FAST_PATH_RENDERERS: dict[str, Any] = {
+    # own profile
+    "me.equipment": _fp_render_my_equipment,
+    "me.account.status": _fp_render_account_status,
+    "me.files.search": _fp_render_files,
+    "me.it_requests": _fp_render_generic_list(
+        empty="У вас нет заявок.", nouns=("заявки", "заявки", "заявок")),
+    "me.mailbox.quota": _fp_render_scalars(
+        title="Квота почтового ящика", empty="Данные о квоте недоступны.",
+        keys=("quota_used_mb", "quota_total_mb", "used_percent", "mailbox")),
+    "me.computer.health": _fp_render_generic_list(
+        empty="Данные о вашем компьютере недоступны.", nouns=("компьютеры", "компьютера", "компьютеров")),
+    # directory / people / departments
+    "directory.people.search": _fp_render_people,
+    "directory.department.get": _fp_render_department,
+    "office.mail.contacts.resolve": _fp_render_people,
+    "itinvent.employee.search": _fp_render_people,
+    "itinvent.user.by_name": _fp_render_people,
+    "chat.users.search": _fp_render_people,
+    # equipment / itinvent
+    "itinvent.equipment.search": _fp_render_equipment,
+    "itinvent.equipment.search_universal": _fp_render_equipment,
+    "itinvent.equipment.search_multi_db": _fp_render_equipment,
+    "itinvent.equipment.list_by_branch": _fp_render_equipment,
+    "itinvent.equipment.get_card": _fp_render_equipment,
+    "itinvent.equipment.models_search": _fp_render_equipment,
+    "itinvent.employee.list_equipment": _fp_render_equipment,
+    "itinvent.consumables.search": _fp_render_generic_list(
+        empty="Расходные материалы не найдены.", nouns=("позиции", "позиции", "позиций")),
+    # MFU
+    "mfu.devices.list": _fp_render_mfu,
+    "mfu.devices.low_toner": _fp_render_mfu,
+    "mfu.device.status": _fp_render_mfu,
+    # tasks
+    "office.tasks.search": _fp_render_tasks,
+    "office.tasks.projects": _fp_render_generic_list(
+        empty="Проекты не найдены.", nouns=("проекты", "проекта", "проектов")),
+    # office / mail / announcements
+    "office.mail.search": _fp_render_mail,
+    "office.announcements.get": _fp_render_announcements,
+    # KB
+    "kb.articles.search": _fp_render_kb,
+    "kb.articles.get": _fp_render_kb,
+    # itinvent directories
+    "itinvent.directory.branches": _fp_render_generic_list(
+        empty="Филиалы не найдены.", nouns=("филиалы", "филиала", "филиалов")),
+    "itinvent.directory.departments": _fp_render_generic_list(
+        empty="Подразделения не найдены.", nouns=("подразделения", "подразделения", "подразделений")),
+    "itinvent.directory.locations": _fp_render_generic_list(
+        empty="Локации не найдены.", nouns=("локации", "локации", "локаций")),
+    "itinvent.directory.vendors": _fp_render_generic_list(
+        empty="Производители не найдены.", nouns=("производители", "производителя", "производителей")),
+    "itinvent.directory.equipment_types": _fp_render_generic_list(
+        empty="Типы оборудования не найдены.", nouns=("типы", "типа", "типов")),
+    "itinvent.directory.statuses": _fp_render_generic_list(
+        empty="Статусы не найдены.", nouns=("статусы", "статуса", "статусов")),
+    # voice / chat
+    "voice.meetings.search": _fp_render_generic_list(
+        empty="Встречи не найдены.", nouns=("встречи", "встречи", "встреч")),
+    "chat.conversations.search": _fp_render_generic_list(
+        empty="Диалоги не найдены.", nouns=("диалоги", "диалога", "диалогов")),
+    # warehouse
+    "warehouse.balances.search": _fp_render_generic_list(
+        empty="Остатки не найдены.", nouns=("остатки", "остатка", "остатков")),
+    "warehouse.it_requests.search": _fp_render_generic_list(
+        empty="Заявки не найдены.", nouns=("заявки", "заявки", "заявок")),
+    # AD reads (detail scalars)
+    "ad.user.password_status": _fp_render_account_status,
+    "ad.user.lockout_status": _fp_render_scalars(
+        title="Статус блокировки", empty="Данные недоступны.",
+        keys=("is_locked", "lockout_time", "bad_password_count", "login")),
+    "ad.user.groups": _fp_render_generic_list(
+        empty="Группы не найдены.", nouns=("группы", "группы", "групп")),
+    "ad.mailboxes.expiring_soon": _fp_render_generic_list(
+        empty="Ящиков с истекающим паролем нет.", nouns=("ящики", "ящика", "ящиков")),
+    "ad.users.expiring_soon": _fp_render_generic_list(
+        empty="Учётных записей с истекающим паролем нет.", nouns=("записи", "записи", "записей")),
+}
+
+# A10 §4: fast path applies ONLY to tools with a verified renderer.
+_FAST_PATH_READ_TOOLS = frozenset(_FAST_PATH_RENDERERS)
+
+# A10 §4: the request itself must be a plain single-purpose lookup. Anything
+# comparative, analytical, causal, multi-step, negative or sorting asks the
+# model to reason over the result — the deterministic renderer cannot.
+_FAST_PATH_REQUEST_BLOCKERS = re.compile(
+    r"(сравн|почему|зачем|объясн|анализ|разниц|отличи|динамик|тренд|статистик|"
+    r"отсортиру|топ\b|сам\w+\W+(дорог|дешев|нов|стар|больш|маленьк)|"
+    r"наибольш|наименьш|не\s|нет\b.{0,10}ли\b|как\s+(исправ|настро|измен|сдел|почин|обнов|сброс)|"
+    r"что\s+делать|сначала|затем|а\s+также|и\s+потом|нескольк|"
+    r"её\b|его\b|у\s+не[её]|у\s+него)",
+    re.IGNORECASE | re.UNICODE,
+)
 
 
 def _try_read_fast_path_answer(
@@ -3220,6 +3592,7 @@ def _try_read_fast_path_answer(
     report_file_intent: bool,
     has_meta_calls: bool,
     template_pending: bool,
+    request_text: str = "",
 ) -> str | None:
     """Deterministic final answer for a single unambiguous READ round.
 
@@ -3232,8 +3605,11 @@ def _try_read_fast_path_answer(
         return None
     if _normalize_text(intent_mode) == JEV_INTENT_ACT:
         return None
+    if _FAST_PATH_REQUEST_BLOCKERS.search(_normalize_text(request_text)):
+        return None
     tool_id = _normalize_text((tool_call or {}).get("tool_id"))
-    if tool_id not in _FAST_PATH_READ_TOOLS:
+    renderer = _FAST_PATH_RENDERERS.get(tool_id)
+    if renderer is None:
         return None
     real_results = [
         r for r in (tool_results or [])
@@ -3248,38 +3624,77 @@ def _try_read_fast_path_answer(
     if data.get("truncated") or data.get("has_more"):
         return None
     items = data.get("items") if isinstance(data.get("items"), list) else None
-    if items:
-        # A partial list must never be presented as complete — the model
-        # paginates or states the limit itself.
+    rows = data.get("rows") if isinstance(data.get("rows"), list) else None
+    listed = items if items is not None else rows
+    if listed is not None:
         total = data.get("total")
         returned = data.get("returned_count", data.get("count"))
         if isinstance(total, int) and isinstance(returned, int) and returned < total:
+            # A partial list must never be presented as complete.
             return None
-    return _format_fallback_tool_answer(real_results)
+        if not listed and isinstance(total, int) and total > 0:
+            # Empty page with a non-zero total is an inconsistent result.
+            return None
+        if isinstance(data.get("next_offset"), int) and data.get("next_offset"):
+            return None
+        if isinstance(data.get("omitted_items"), list) and data["omitted_items"]:
+            return None
+    # Nested structures (groups/children/sections) need the model's
+    # comprehension; a flat renderer would silently drop the hierarchy.
+    if any(key in data for key in ("children", "groups", "sections", "subitems")):
+        return None
+    try:
+        answer = renderer(data, dict(tool_call.get("args") or {}))
+    except Exception:  # noqa: BLE001 — never let a renderer break the run
+        logger.warning("AI fast-path renderer failed for %s", tool_id, exc_info=True)
+        return None
+    return _normalize_text(answer) or None
 
 
 # A10 §2.3 (experimental, default OFF): strict whole-prompt patterns for a
 # handful of self-service questions. The ENTIRE short prompt must match —
-# a keyword inside a longer request never triggers this path, and the mapped
-# tool must be enabled for this specific user.
-_DIRECT_READ_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
-    (re.compile(r"^.{0,40}(мой|моей|моего)\W+(рабоч\w+\W+)?телефон\W{0,5}$", re.I | re.U), "me.account.status"),
-    (re.compile(r"^.{0,40}(оборудован\w+\W+за\W+мной\W+числится|мо[еёи]\W+оборудован\w+|что\W+за\W+мной\W+числится)\W{0,5}$", re.I | re.U), "me.equipment"),
-    (re.compile(r"^.{0,40}(истека\w+\W+(мой\W+)?парол\w+|когда\W+.{0,15}пароль)\W{0,5}$", re.I | re.U), "ad.user.password_status"),
-    (re.compile(r"^.{0,30}мо[иё]\W+(активные\W+)?задач\w+\W{0,5}$", re.I | re.U), "office.tasks.search"),
+# a keyword inside a longer request never triggers this path, the mapped
+# tool must be enabled for this specific user, and each entry carries the
+# exact args so 'активные задачи' really filters active ones.
+_DIRECT_READ_PATTERNS: tuple[tuple[re.Pattern, str, dict], ...] = (
+    (re.compile(r"^.{0,40}(мой|моей|моего)\W+(рабоч\w+\W+)?телефон\W{0,5}$", re.I | re.U),
+     "me.account.status", {}),
+    (re.compile(r"^.{0,40}(оборудован\w+\W+за\W+мной\W+числится|мо[еёи]\W+оборудован\w+|что\W+за\W+мной\W+числится)\W{0,5}$", re.I | re.U),
+     "me.equipment", {}),
+    (re.compile(r"^.{0,40}(истека\w+\W+(мой\W+)?парол\w+|когда\W+.{0,15}пароль)\W{0,5}$", re.I | re.U),
+     "ad.user.password_status", {}),
+    (re.compile(r"^.{0,30}мо[иё]\W+активные\W+задач\w+\W{0,5}$", re.I | re.U),
+     "office.tasks.search", {"status": "active"}),
+    (re.compile(r"^.{0,30}мо[иё]\W+задач\w+\W{0,5}$", re.I | re.U),
+     "office.tasks.search", {}),
+)
+
+# A10 §5: negations, comparisons, causal and how-to questions must never be
+# intercepted — they change the meaning of the request entirely.
+_DIRECT_READ_BLOCKERS = re.compile(
+    r"(^|\W)(не\b|нельзя|сравн|почему|объясн|как\s|зачем|помен|измен|"
+    r"сколько|чей|чья|у\s+кого|другого|другой|его\b|её\b|удали|отмен|"
+    r"создай|создать|отправь|напиши|покажи\s+.{0,20}\s+и\s+)",
+    re.IGNORECASE | re.UNICODE,
 )
 
 
-def _try_direct_read_tool(request_text: str, *, enabled_tool_ids) -> str | None:
+def _try_direct_read_tool(request_text: str, *, enabled_tool_ids, intent_mode: str = ""):
     if not AI_DIRECT_READ_ENABLED:
+        return None
+    if _normalize_text(intent_mode) == JEV_INTENT_ACT:
         return None
     text = _normalize_text(request_text)
     if not text or len(text) > 100:
         return None
+    if _DIRECT_READ_BLOCKERS.search(text):
+        return None
     enabled_ids = {_normalize_text(t) for t in (enabled_tool_ids or set())}
-    for pattern, tool_id in _DIRECT_READ_PATTERNS:
+    for pattern, tool_id, tool_args in _DIRECT_READ_PATTERNS:
         if pattern.match(text):
-            return tool_id if tool_id in enabled_ids and tool_id in _FAST_PATH_READ_TOOLS else None
+            if tool_id in enabled_ids and tool_id in _FAST_PATH_READ_TOOLS:
+                return tool_id, dict(tool_args)
+            return None
     return None
 
 
@@ -3287,18 +3702,46 @@ def _format_fallback_tool_answer(results: list[dict[str, Any]]) -> str:
     normalized = [item for item in list(results or []) if isinstance(item, dict)]
     if not normalized:
         return "Не удалось получить корректный ответ модели."
+    # Orchestrator/meta tools must never leak into the user-facing answer.
+    _META_TOOL_IDS = {"ai.request_tool_group", "ai.results.read_more"}
+    _TOOL_LABELS = {
+        "office.tasks": "задачи",
+        "office.mail": "почта",
+        "office.announcements": "объявления",
+        "itinvent.equipment": "оборудование",
+        "itinvent.employee": "сотрудники",
+        "itinvent.directory": "справочник",
+        "directory.": "справочник",
+        "me.": "ваши данные",
+        "mfu.": "печатающие устройства",
+        "kb.": "база знаний",
+        "warehouse.": "склад",
+        "ad.": "Active Directory",
+        "network.": "сеть",
+        "chat.": "чат",
+        "voice.": "встречи",
+    }
+
+    def _tool_label(tool_id: str) -> str:
+        for prefix, label in _TOOL_LABELS.items():
+            if tool_id.startswith(prefix):
+                return label
+        return "результат запроса"
+
     lines = ["## Результат"]
     used_sources: list[str] = []
     for result in normalized:
         tool_id = _normalize_text(result.get("tool_id")) or "unknown"
+        if tool_id in _META_TOOL_IDS:
+            continue
         database_id = _normalize_text(result.get("database_id"))
         if database_id and database_id not in used_sources:
             used_sources.append(database_id)
         if not bool(result.get("ok")):
-            lines.append(f"- `{tool_id}`: ошибка - {_normalize_text(result.get('error')) or 'неизвестная ошибка'}")
+            lines.append(f"- {_tool_label(tool_id)}: ошибка — {_normalize_text(result.get('error')) or 'неизвестная ошибка'}")
             continue
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        title_parts = [f"`{tool_id}`"]
+        title_parts = [_tool_label(tool_id)]
         if data.get("query"):
             title_parts.append(f"запрос: {data.get('query')}")
         if data.get("branch_name"):
@@ -7337,9 +7780,12 @@ class AiChatService:
             if not AI_RUN_RESULT_REUSE_ENABLED or reuse_state is None:
                 return None
             tid = _normalize_text(call.get("tool_id"))
-            if not tid or any(marker in tid for marker in _LLM_PROJ_ACTION_MARKERS):
+            if not tid or _is_mutating_tool_id(tid):
                 return None
             try:
+                # args carry scope: database_id / branch / pagination keys —
+                # different args produce different keys, so a new page or a
+                # different DB selection is never served from cache.
                 return tid + "|" + json.dumps(
                     call.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str,
                 )
@@ -7347,8 +7793,7 @@ class AiChatService:
                 return None
 
         def _result_is_mutating(payload: dict[str, Any]) -> bool:
-            tid = _normalize_text((payload or {}).get("tool_id"))
-            return any(marker in tid for marker in _LLM_PROJ_ACTION_MARKERS)
+            return _is_mutating_tool_id((payload or {}).get("tool_id"))
 
         def _execute_single_call(call: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
             """Execute a single tool call, returning (result, trace). Never raises."""
@@ -7375,7 +7820,15 @@ class AiChatService:
                     and not reuse_state.get("_mutation")
                 ):
                     payload, trace = reuse_state[cache_key]
-                    payload = {**payload, "_a10_reused": True}
+                    payload = {
+                        **payload,
+                        "_a10_reused": True,
+                        "_a10_reused_note": (
+                            "This exact tool call was already executed earlier in "
+                            "this run and returned the same result. Do not repeat it; "
+                            "proceed with the answer or choose a different tool."
+                        ),
+                    }
                     trace = {
                         **trace,
                         "args": prepared_args,
@@ -8748,15 +9201,17 @@ class AiChatService:
         # prompts runs one READ tool and renders the answer without ANY main
         # LLM call. Uncertainty, a disabled tool or a failed result fall back
         # to the normal pipeline below.
-        direct_read_tool_id = _try_direct_read_tool(
+        direct_read = _try_direct_read_tool(
             trigger_text_for_routing,
             enabled_tool_ids=getattr(tool_context, "enabled_tools", None),
+            intent_mode=intent_mode,
         )
-        if direct_read_tool_id is not None:
+        if direct_read is not None:
+            direct_read_tool_id, direct_read_args = direct_read
             if callable(report_stage):
                 report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
             direct_results, direct_traces = self._execute_tool_calls(
-                tool_calls=[{"tool_id": direct_read_tool_id, "args": {}}],
+                tool_calls=[{"tool_id": direct_read_tool_id, "args": direct_read_args}],
                 tool_context=tool_context,
                 report_stage=report_stage,
             )
@@ -8766,12 +9221,21 @@ class AiChatService:
                 and direct_results[0].get("ok")
                 and not _normalize_text(direct_results[0].get("error"))
             )
+            direct_answer = None
             if direct_ok:
+                _dr_renderer = _FAST_PATH_RENDERERS.get(direct_read_tool_id)
+                if _dr_renderer is not None:
+                    try:
+                        _dr_data = direct_results[0].get("data") if isinstance(direct_results[0].get("data"), dict) else {}
+                        direct_answer = _normalize_text(_dr_renderer(_dr_data, dict(direct_read_args))) or None
+                    except Exception:  # noqa: BLE001
+                        logger.warning("AI direct-read renderer failed: %s", direct_read_tool_id, exc_info=True)
+            if direct_ok and direct_answer:
                 direct_usage: dict[str, Any] = {"direct_read_hit": True, "fast_path_hit": True}
                 extracted_context["direct_read_hit"] = True
                 extracted_context["fast_path_hit"] = True
                 return (
-                    _format_fallback_tool_answer(direct_results),
+                    direct_answer,
                     [],
                     None,
                     direct_usage,
@@ -8956,6 +9420,7 @@ class AiChatService:
                     report_file_intent=bool(report_file_intent),
                     has_meta_calls=bool(read_more_calls or expansion_calls),
                     template_pending=bool(template_candidates),
+                    request_text=trigger_text_for_routing,
                 )
                 if tool_rounds_used == 1
                 else None
