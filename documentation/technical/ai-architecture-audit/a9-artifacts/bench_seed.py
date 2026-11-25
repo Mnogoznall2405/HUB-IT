@@ -101,8 +101,10 @@ def seed_address_book() -> list[dict]:
             "position": POSITIONS[i % len(POSITIONS)],
             "department": dept,
             "department_code": f"D{(i - 1) % len(DEPARTMENTS) + 1:02d}",
-            "work_phones": [f"+7-000-{i:04d}"],
-            "work_emails": [f"bench{i:03d}@bench.local"],
+            # production shape: contacts are dicts — the search index drops
+            # plain strings (cpx_10: phone lookup never matched).
+            "work_phones": [{"value": f"+7-000-{i:04d}", "kind": "рабочий"}],
+            "work_emails": [{"value": f"bench{i:03d}@bench.local", "kind": "рабочий"}],
             "office_room": f"{100 + i}",
             "hire_date": "2024-01-15",
             "workplace_number": f"WP-{i:03d}",
