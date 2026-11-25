@@ -9,7 +9,7 @@
 | Текущая production-ревизия БД | `20261118_0176` (проверено read-only на prod 2026-11-25) |
 | Production PostgreSQL | 16.15 (Ubuntu, `10.103.0.10:5432`, db `hubit_chat`, user `hubit_chat_app`) |
 | Layout production-БД | **legacy-public**: все 33 chat-таблицы с данными в схеме `public`; в `chat` — 4 пустых орфана (`chat_sticker_packs`, `chat_stickers`, `chat_user_sticker_packs`, `chat_event_outbox`, все 0 строк) |
-| Итоговый SHA кандидата | `df0b70c9` (ветка `integration/hub-it-release-candidate`) |
+| Итоговый SHA кандидата | `667ec342` (ветка `integration/hub-it-release-candidate`, включает merge main и merge-fix) |
 | Последнее изменение кода приложения | `8e837468` + gate-фиксы `df0b70c9` (миграция 0178 + entitlement) |
 | Целевая ревизия БД после релиза | `20261125_0182` (один head — проверено `alembic heads` на объединённом дереве) |
 
@@ -148,8 +148,9 @@ Smoke-минимум (вручную, 5–10 минут):
 | S3 прерванная миграция → resume | **PASS** — доводка до 0180, recents-таблица + индексы корректны |
 | S4 repair: базовые таблицы удалены в обеих схемах, 0086 stamped | **PASS** — 0178 восстановила trio в `public` (3/3), FK=1 |
 | S5 realtime relay/presence валидация на prodlike-public | **PASS** — schema=public, missing=none |
-| S6 invalid concurrent index (реально убитый CREATE INDEX CONCURRENTLY) → 0174 | **PASS** — индекс перестроен, данные сохранены |
+| S6 invalid concurrent index (реально убитый CREATE INDEX CONCURRENTLY: backend terminated mid-build, indisvalid=false) → 0174 | **PASS** — индекс перестроен до valid state, 800000 строк сохранены |
 | `pytest tests/test_pg_sticker_gate.py` на реальном PG | **PASS 2/2** |
+| U1-U8 union-chain (после merge main + перенумерации): prodlike 0176→0182, favorites/recents/state в public, position/op_batch колонки, myfiles updated_at, FK, re-upgrade no-op, downgrade head→0177 | **PASS** — все проверки green |
 
 Тестовый инстанс: portable PostgreSQL 16.6 (совместим с prod 16.15 — одна major-версия), изолированный кластер, production не использовался для тестов.
 
