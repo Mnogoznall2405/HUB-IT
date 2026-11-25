@@ -1,7 +1,7 @@
 """Add per-user recents-sync state for chat stickers.
 
-Revision ID: 20261124_0179
-Revises: 20261124_0178
+Revision ID: 20261124_0181
+Revises: 20261124_0180
 Create Date: 2026-11-24 13:00:00.000000
 
 ``chat_user_recent_sticker_state`` holds one row per user: a monotonic
@@ -19,8 +19,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20261124_0179"
-down_revision = "20261124_0178"
+revision = "20261124_0181"
+down_revision = "20261124_0180"
 branch_labels = None
 depends_on = None
 

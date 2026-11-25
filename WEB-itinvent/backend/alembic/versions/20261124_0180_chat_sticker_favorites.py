@@ -1,7 +1,7 @@
 """Add chat sticker favorites, recents and per-user pack ordering.
 
-Revision ID: 20261124_0178
-Revises: 20261124_0177
+Revision ID: 20261124_0180
+Revises: 20261124_0179
 Create Date: 2026-11-24 12:00:00.000000
 
 Created "if missing" in the schema where the chat tables really live (logical ``chat`` schema, or
@@ -14,8 +14,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20261124_0178"
-down_revision = "20261124_0177"
+revision = "20261124_0180"
+down_revision = "20261124_0179"
 branch_labels = None
 depends_on = None
 
