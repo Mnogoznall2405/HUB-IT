@@ -161,3 +161,72 @@ prod-сборка + `vite preview`, backend через decoy.
   MUI-чанк (см. follow-up проверки) — окружение, не код ветки.
 - Одновременно с мерджем на ветку лёг `d50ca236` (fix инертности Login +
   Escape keepMounted-модалок) — он поверх `e6aa9251`, сохранён.
+
+---
+
+## Ретроспективный реестр всех интеграционных мерджей (final gate, 2026-11-25)
+
+До PR #69 отдельного трекера не было — таблица ниже восстановлена по
+`git log --merges 926dd9f5..HEAD` на финальном гейте: merge-sha, ветка и
+scope в одну строку (subject tip-коммита ветки / заголовок PR по
+`release-gate/rc-inventory.md`). Порядок — хронологический (первый мердж
+сверху). Все 42 батч-мерджа + feature-мердж PR #69; мерджи main в
+сторонние ветки (`e82dfd29`, `e2cebccd`, `84883f06`) интеграциями не
+являются и не перечислены.
+
+| # | Merge SHA | Ветка | Scope (evidence) |
+|---|---|---|---|
+| 1 | `81282384` | fix/auth-2fa-flow (#23) | post-auth UI смонтирован до завершения Login — 2FA backup codes, trusted-device prompt (FE-0197/0198/0199) |
+| 2 | `2d96c13e` | fix/account-delegate-integrity (#27) | partial success при падении записи делегатов — делегаты задач больше не стираются (FE-0233) |
+| 3 | `995ff14b` | fix/account-department-race (#28) | department members race — seq-guard + проверка dept при save (FE-0239) |
+| 4 | `14c4d036` | fix/auth-refresh-coordination (#29) | координация ротации refresh-token между вкладками браузера |
+| 5 | `14ff8dd8` | fix/construction-beforeunload (#30) | beforeunload-предупреждение о несохранённых черновиках работ (FE-0259) |
+| 6 | `8aa9f1bd` | fix/networks-mobile-render (#31) | chunk mobile card lists на вкладках Equipment/Sockets (FE-0023) |
+| 7 | `f110ddef` | fix/warehouse1c-keyboard (#32) | a11y: клавиатурный доступ к кликабельным desktop-строкам/ячейкам (FE-0022) |
+| 8 | `4cac11fb` | fix/networks-a11y (#33) | a11y networks: labels, keyboard rows/markers, валидный card DOM (FE-0024/0035/0155/0156) |
+| 9 | `113960ef` | fix/networks-csv-sanitize (#34) | санитизация CSV-экспорта против formula injection (FE-0154) |
+| 10 | `8adf9a98` | fix/networks-correctness (#35) | busy-guards, delete confirms, стабильный keydown listener (FE-0029/0145/0153) |
+| 11 | `0fd0ae04` | fix/networks-sites-deadcode (#36) | skip MAC sync для read-only, удалён stale map image (FE-0143/0144) |
+| 12 | `782d0b9c` | fix/networks-map (#37) | map pan clamp, gesture fixes, memoized markers, point-edit rollback (FE-0031/0140-0142/0151) |
+| 13 | `0c9e978d` | fix/account-guards (#38) | удалён test-only tab resolver, NaN-guard fontScale без clamp (FE-0250) |
+| 14 | `76c2068b` | fix/account-seq-guards (#39) | seq-guards для loaders, loadMore/reload race, delete-dialog usage race |
+| 15 | `986b5c27` | fix/account-draft-loss (#40) | черновики переживают refresh, настоящий autosave для групп паролей |
+| 16 | `071c5a41` | fix/account-aibots-lazy (#41) | lazy-load AI bot runs на вкладке диагностики (FE-0019) |
+| 17 | `9e0a20a1` | fix/database-misc (#42) | cancel in-flight work при unmount/rerun — transfer poll, deeplink, maintenance loaders, timers |
+| 18 | `2358e247` | fix/database-races (#43) | русские aria-labels + MUI ruRU locale, page overflow clip, export abort при сбое prefetch movements |
+| 19 | `e64ab42a` | fix/voice-batch (#44) | voice: busy guards, abort/seq checks, keyboard+a11y, upload dedup, lazy voices tab — 18 записей |
+| 20 | `9a6e167f` | fix/chat-batch (#45) | chat: 15 записей — pending reads flush, loadingOlder reset, heartbeat degrade, retry/prep guards, a11y |
+| 21 | `ae60b39b` | fix/tasks-batch (#46) | tasks batch audit fixes (FE-0045/0053/0058/0127-0134/0262/0264/0277/0278) |
+| 22 | `8d169dbd` | fix/mail-batch (#47) | mail: draft lifecycle, preview fetch, read-state rollback, a11y (21 запись) |
+| 23 | `b55abf34` | fix/auth-misc-batch (#48) | auth-misc: storage guards, epoch reset, SPA nav, Login a11y/UX (15 записей) |
+| 24 | `a6d95e75` | fix/myfiles-batch (#49) | my-files: upload-queue guard, bulk progress, deep-link, editor-session (13 записей) — tip сам является sync-мерджем main |
+| 25 | `fa715629` | fix/scancenter-batch (#50) | scan-center: URL-synced tabs, abort coverage, busy guards (FE-0011/0052/0088/0093/0094/0312/0317-0319/0322) |
+| 26 | `a334b53b` | fix/itobjects-batch (#51) | it-objects: abort signal, save-failure guard, confirm revokes (FE-0046/0139/0284-0286/0288/0292) |
+| 27 | `d9934b5c` | fix/layout-batch (#52) | layout: notification drawer semantics, badge accuracy, nav overlay (FE-0014/0204-0207/0214) |
+| 28 | `16f029ef` | fix/networks-batch (#53) | networks: global key guards, edit-permission gates, race и virtual-scroll fixes |
+| 29 | `b601721b` | fix/feed-batch (#54) | feed: attachment stubs, draft autosave guards, comment poll/lookup fixes |
+| 30 | `80e7d9da` | fix/stats-batch (#55) | statistics: SWR dedupe, seq-guarded refresh, blob error text, URL revoke delay |
+| 31 | `880c7df9` | fix/shared-batch (#56) | shared-files: download error text, retry action, list cap, visible-only tick |
+| 32 | `e93cdf3a` | fix/dash-batch (#57) | dashboard: карточки при ошибке refresh, dedupe alerts, in-dialog save error |
+| 33 | `7e675a4b` | fix/computers-batch (#58) | Computers page + employee history panel audit fixes |
+| 34 | `b4b7005a` | fix/swr-batch (#59) | swr-cache: гарантированный force refetch и доставка stale revalidation |
+| 35 | `29870a7a` | fix/constr-batch (#60) | construction: work workspace и objects page audit fixes |
+| 36 | `d3b6e6bc` | fix/company-batch (#61) | company-structure: structure page и absences panel audit fixes |
+| 37 | `c7936e00` | fix/pwa-batch (#62) | pwa/desktop batch — 6 findings |
+| 38 | `615457c8` | fix/mon-docflow-batch (#63) | monitoring+docflow batch — 5 findings |
+| 39 | `f5dc881c` | fix/kb-dlp-batch (#64) | kb+dlp batch — 6 findings |
+| 40 | `0585f30c` | fix/misc-batch (#65) | misc batch — notifications, task checklist, ad-users, drawers |
+| 41 | `6cdbafa2` | fix/final-polish (#66) | final polish — a11y, PWA updates, error reporting, mail inline, perf |
+| 42 | `de353a81` | fix/evidence-batch (#67) | close NEEDS_EVIDENCE records — guards, hook-order, limits UX (8 fixes) |
+| 43 | `e6aa9251` | feat/chat-sticker-system-v2 (#69) | Sticker System V2 — favorites, synced recents (op-protocol + op_batch dedup), search, suggestions — полный разбор выше в этом файле |
+
+Поверх мерджей (не-merge коммиты интеграционной ветки, хронологически):
+`53732f53` restore viewport scale + post-auth/mail test contracts после
+мерджей; `a18fc5e7` agent-review fixes (verify-2fa-login epoch reset,
+dedup ShowMore buttons, ports revalidate truncation warning); `d50ca236`
+инертность Login + Escape/Ctrl+S keepMounted-модалок; `d16e008d` recents
+op batch dedup + e2e mail key; `a50ad10c` PG sticker gate на изолированном
+PG17; `5bae5bfb` восстановление `scripts/_migration_safety.py`;
+`a7359e78` barrel-импорт Box; `1a2a7a0b` frontend release gate —
+RC inventory + smoke-test triage fixes; `609572ac` release perf A/B;
+`5a7cb5e1` release e2e module sweep (release-smoke 31/31 routes PASS).
