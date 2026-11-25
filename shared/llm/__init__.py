@@ -7,6 +7,7 @@ from shared.llm.client import (
     is_image_unsupported_error,
     openrouter_client,
     provider_error_text,
+    record_llm_call,
 )
 from shared.llm.env import (
     DEFAULT_AI_MODEL,
@@ -68,6 +69,7 @@ __all__ = [
     "normalize_gateway_request",
     "openrouter_client",
     "provider_error_text",
+    "record_llm_call",
     "iter_openai_sse",
     "read_env",
     "resolve_model",

@@ -1,0 +1,177 @@
+{
+  "env": {
+    "AI_JEV_ROUTING": "1",
+    "AI_SUMMARY_BACKGROUND_ENABLED": "0",
+    "AI_INPUT_BUDGET_TOKENS": 32000,
+    "AI_MODEL_CONTEXT_WINDOW": 32000,
+    "AI_CONTEXT_DB_MESSAGE_WINDOW": 20,
+    "registered_tools": 100
+  },
+  "scenarios": [
+    {
+      "scenario": "chat_no_tools_1msg",
+      "calls": [
+        {
+          "est_system_tokens": 1572,
+          "est_user_tokens": 349,
+          "est_total_tokens": 1921,
+          "system_blocks": {
+            "other": 764,
+            "guide_answer_style": 416,
+            "guide_understanding": 393
+          },
+          "user_blocks": {
+            "bot_title": 6,
+            "other": 57,
+            "conversation_history": 58,
+            "memory_status": 68,
+            "current_request": 10,
+            "answer_instructions": 124,
+            "current_request_tail": 25
+          }
+        }
+      ],
+      "call_count": 1
+    },
+    {
+      "scenario": "read_itinvent_tools_1msg",
+      "calls": [
+        {
+          "est_system_tokens": 1572,
+          "est_user_tokens": 357,
+          "est_total_tokens": 1929,
+          "system_blocks": {
+            "other": 764,
+            "guide_answer_style": 416,
+            "guide_understanding": 393
+          },
+          "user_blocks": {
+            "bot_title": 6,
+            "other": 57,
+            "conversation_history": 60,
+            "memory_status": 68,
+            "current_request": 13,
+            "answer_instructions": 124,
+            "current_request_tail": 27
+          }
+        }
+      ],
+      "call_count": 1
+    },
+    {
+      "scenario": "act_all_tools_1msg",
+      "calls": [
+        {
+          "est_system_tokens": 1572,
+          "est_user_tokens": 1308,
+          "est_total_tokens": 2880,
+          "system_blocks": {
+            "other": 764,
+            "guide_answer_style": 416,
+            "guide_understanding": 393
+          },
+          "user_blocks": {
+            "bot_title": 5,
+            "other": 144,
+            "tool_specs_files": 312,
+            "guide_files": 363,
+            "tool_specs_other": 120,
+            "unattached_groups_hint": 55,
+            "conversation_history": 65,
+            "memory_status": 68,
+            "current_request": 18,
+            "answer_instructions": 124,
+            "current_request_tail": 32
+          }
+        }
+      ],
+      "call_count": 1
+    },
+    {
+      "scenario": "all_tools_60msg",
+      "calls": [
+        {
+          "est_system_tokens": 1572,
+          "est_user_tokens": 2851,
+          "est_total_tokens": 4423,
+          "system_blocks": {
+            "other": 764,
+            "guide_answer_style": 416,
+            "guide_understanding": 393
+          },
+          "user_blocks": {
+            "bot_title": 5,
+            "other": 144,
+            "tool_specs_files": 312,
+            "guide_files": 363,
+            "tool_specs_kb": 319,
+            "guide_kb": 196,
+            "tool_specs_other": 120,
+            "unattached_groups_hint": 54,
+            "rolling_summary": 707,
+            "conversation_history": 385,
+            "memory_status": 68,
+            "current_request": 19,
+            "answer_instructions": 124,
+            "current_request_tail": 33
+          }
+        }
+      ],
+      "call_count": 1
+    },
+    {
+      "scenario": "act_tool_round_followup",
+      "calls": [
+        {
+          "est_system_tokens": 1572,
+          "est_user_tokens": 1288,
+          "est_total_tokens": 2860,
+          "system_blocks": {
+            "other": 764,
+            "guide_answer_style": 416,
+            "guide_understanding": 393
+          },
+          "user_blocks": {
+            "bot_title": 5,
+            "other": 144,
+            "tool_specs_files": 312,
+            "guide_files": 363,
+            "tool_specs_other": 120,
+            "unattached_groups_hint": 55,
+            "conversation_history": 58,
+            "memory_status": 68,
+            "current_request": 11,
+            "answer_instructions": 124,
+            "current_request_tail": 25
+          }
+        },
+        {
+          "est_system_tokens": 1572,
+          "est_user_tokens": 1682,
+          "est_total_tokens": 3254,
+          "system_blocks": {
+            "other": 764,
+            "guide_answer_style": 416,
+            "guide_understanding": 393
+          },
+          "user_blocks": {
+            "bot_title": 5,
+            "other": 367,
+            "tool_specs_files": 312,
+            "guide_files": 363,
+            "tool_specs_other": 120,
+            "unattached_groups_hint": 55,
+            "conversation_history": 58,
+            "memory_status": 68,
+            "current_request": 11,
+            "answer_instructions": 124,
+            "current_request_tail": 25,
+            "tool_results": 122,
+            "running_summary": 48
+          }
+        }
+      ],
+      "call_count": 2
+    }
+  ]
+}

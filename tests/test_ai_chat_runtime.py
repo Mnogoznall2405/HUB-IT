@@ -938,13 +938,16 @@ def test_ai_prompt_budget_preserves_high_priority_tail():
     system_prompt = "system " * 20000
     user_prompt = ("old context " * 50000) + "\nHIGHEST PRIORITY CURRENT REQUEST: keep-this-request"
 
-    bounded_system, bounded_user = ai_chat_module._fit_prompt_pair(
+    bounded_system, bounded_user, meta = ai_chat_module._fit_prompt_pair_blocks(
         system_prompt,
-        user_prompt,
+        [("other", user_prompt)],
         token_limit=32000,
     )
 
-    assert len(bounded_system) + len(bounded_user) <= 32000 * 4
+    # System is mandatory and never cut; when it alone exceeds the window,
+    # the pair is returned intact and flagged instead of being corrupted.
+    assert bounded_system == system_prompt
+    assert meta["over_budget"] is True
     assert "keep-this-request" in bounded_user
 
 
