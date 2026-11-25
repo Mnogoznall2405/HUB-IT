@@ -1,0 +1,1675 @@
+{
+  "env": {
+    "AI_JEV_ROUTING": "1",
+    "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+    "AI_SUMMARY_BACKGROUND_ENABLED": "0",
+    "ROUTERAI_MODEL": "google/gemini-3.7-flash",
+    "JEV_MODEL": "(default)",
+    "env_keys_loaded": 449,
+    "registered_tools": 100,
+    "code_root": "C:\\Project\\HUB-IT-a9-wt"
+  },
+  "scenarios": [
+    {
+      "id": "multi_01",
+      "category": "MULTI",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 2591,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.49
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3439,
+        "est_in": 2817
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137634
+      },
+      "answer_len": 62,
+      "answer_head": "Найди принтер в 204-м, а потом покажи его историю обслуживания",
+      "result_message": true
+    },
+    {
+      "id": "multi_02",
+      "category": "MULTI",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 1196,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.99
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.25
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.25
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.14
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.95
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "ai.files.report",
+        "directory.people.search",
+        "itinvent.equipment.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3447,
+        "est_in": 3064
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013797
+      },
+      "answer_len": 64,
+      "answer_head": "Найди Иванова и составь список его техники, затем выгрузи в xlsx",
+      "result_message": true
+    },
+    {
+      "id": "multi_03",
+      "category": "MULTI",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 2179,
+      "llm_calls": 2,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.21
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.2
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.99
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "office.action.mail_send_draft",
+        "office.tasks.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3467,
+        "est_in": 4099
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013881
+      },
+      "answer_len": 64,
+      "answer_head": "Посмотри мои задачи и создай черновик письма руководителю по ним",
+      "result_message": true
+    },
+    {
+      "id": "multi_04",
+      "category": "MULTI",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 607,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.91
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.89
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.93
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "chat.action.message_send_draft",
+        "kb.articles.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3443,
+        "est_in": 3088
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137802
+      },
+      "answer_len": 47,
+      "answer_head": "Найди статью про VPN и отправь её новичку в чат",
+      "result_message": true
+    },
+    {
+      "id": "multi_05",
+      "category": "MULTI",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 583,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.27
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.42
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.72
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.32
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.14
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.57
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.94
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "helpdesk.request_draft",
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3465,
+        "est_in": 3756
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000138726
+      },
+      "answer_len": 63,
+      "answer_head": "Собери список картриджей и оформи заявку на закупку недостающих",
+      "result_message": true
+    },
+    {
+      "id": "multi_06",
+      "category": "MULTI",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 612,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.95
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.02
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.18
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.95
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "directory.people.search",
+        "office.action.mail_send_draft",
+        "office.mail.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3443,
+        "est_in": 3725
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137802
+      },
+      "answer_len": 45,
+      "answer_head": "Найди письмо с актом сверки и перешли Петрову",
+      "result_message": true
+    },
+    {
+      "id": "multi_07",
+      "category": "MULTI",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 3852,
+      "llm_calls": 2,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.26
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.96
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "helpdesk.request_draft",
+        "me.equipment"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3441,
+        "est_in": 3621
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137718
+      },
+      "answer_len": 57,
+      "answer_head": "Покажи моё оборудование и создай заявку на замену старого",
+      "result_message": true
+    },
+    {
+      "id": "multi_08",
+      "category": "MULTI",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 1036,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.75
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.97
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "ai.files.report",
+        "mfu.devices.list"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3439,
+        "est_in": 3536
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137634
+      },
+      "answer_len": 45,
+      "answer_head": "Найди все МФУ и сделай отчёт по моделям в PDF",
+      "result_message": true
+    },
+    {
+      "id": "multi_09",
+      "category": "MULTI",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 730,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.41
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.26
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "ad.user.password_status",
+        "directory.people.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3417,
+        "est_in": 2372
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013671
+      },
+      "answer_len": 49,
+      "answer_head": "Проверь пароли у 5 пользователей из отдела продаж",
+      "result_message": true
+    },
+    {
+      "id": "multi_10",
+      "category": "MULTI",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 1468,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.86
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.51
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.46
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.48
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "office.action.task_status_draft",
+        "office.tasks.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3433,
+        "est_in": 3765
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137382
+      },
+      "answer_len": 43,
+      "answer_head": "Найди задачу про принтер и обнови её статус",
+      "result_message": true
+    },
+    {
+      "id": "longctx_01",
+      "category": "LONGCTX",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 2553,
+      "llm_calls": 2,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.84
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.25
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search",
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3655,
+        "est_in": 3696
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000146706
+      },
+      "answer_len": 101,
+      "answer_head": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 201. Теперь найди картридж для него",
+      "result_message": true
+    },
+    {
+      "id": "longctx_02",
+      "category": "LONGCTX",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 3184,
+      "llm_calls": 2,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.88
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.18
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search",
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3655,
+        "est_in": 3696
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000146706
+      },
+      "answer_len": 101,
+      "answer_head": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 202. Теперь найди картридж для него",
+      "result_message": true
+    },
+    {
+      "id": "longctx_03",
+      "category": "LONGCTX",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 2800,
+      "llm_calls": 2,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.88
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.14
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.23
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search",
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3655,
+        "est_in": 3696
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000146706
+      },
+      "answer_len": 101,
+      "answer_head": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 203. Теперь найди картридж для него",
+      "result_message": true
+    },
+    {
+      "id": "longctx_04",
+      "category": "LONGCTX",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 2740,
+      "llm_calls": 2,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.87
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.14
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.22
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search",
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3655,
+        "est_in": 3696
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000146706
+      },
+      "answer_len": 101,
+      "answer_head": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 204. Теперь найди картридж для него",
+      "result_message": true
+    },
+    {
+      "id": "longctx_05",
+      "category": "LONGCTX",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 2855,
+      "llm_calls": 2,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.87
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.14
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.23
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search",
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3655,
+        "est_in": 3696
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000146706
+      },
+      "answer_len": 101,
+      "answer_head": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 205. Теперь найди картридж для него",
+      "result_message": true
+    },
+    {
+      "id": "longctx_06",
+      "category": "LONGCTX",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 2740,
+      "llm_calls": 2,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.88
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.21
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search",
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3655,
+        "est_in": 3696
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000146706
+      },
+      "answer_len": 101,
+      "answer_head": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 206. Теперь найди картридж для него",
+      "result_message": true
+    },
+    {
+      "id": "longctx_07",
+      "category": "LONGCTX",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 2461,
+      "llm_calls": 2,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.89
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.14
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.18
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search",
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3655,
+        "est_in": 3696
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000146706
+      },
+      "answer_len": 101,
+      "answer_head": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 207. Теперь найди картридж для него",
+      "result_message": true
+    },
+    {
+      "id": "longctx_08",
+      "category": "LONGCTX",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 4655,
+      "llm_calls": 2,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.88
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.22
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search",
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3655,
+        "est_in": 3696
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000146706
+      },
+      "answer_len": 101,
+      "answer_head": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 208. Теперь найди картридж для него",
+      "result_message": true
+    },
+    {
+      "id": "longctx_09",
+      "category": "LONGCTX",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 2327,
+      "llm_calls": 2,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.88
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.14
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.2
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search",
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3655,
+        "est_in": 3696
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000146706
+      },
+      "answer_len": 101,
+      "answer_head": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 209. Теперь найди картридж для него",
+      "result_message": true
+    },
+    {
+      "id": "longctx_10",
+      "category": "LONGCTX",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 2798,
+      "llm_calls": 2,
+      "llm_call_errors": 2,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.88
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.16
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.2
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search",
+        "warehouse.balances.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3655,
+        "est_in": 3696
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000146706
+      },
+      "answer_len": 101,
+      "answer_head": "Вот контекст переписки: мы 20 минут обсуждали принтеры в кабинете 210. Теперь найди картридж для него",
+      "result_message": true
+    }
+  ],
+  "started_at": "2026-11-24T14:06:11.810516+00:00",
+  "aggregate": {
+    "scenarios": 20,
+    "run_ok": 20,
+    "llm_calls_total": 32,
+    "jev_calls_total": 20,
+    "tool_calls_total": 0,
+    "tokens_in_total": 0,
+    "tokens_out_total": 0,
+    "jev_tokens_total": 70984,
+    "est_in_total": 70803,
+    "cost_usd_total": 0.002845248,
+    "wall_ms_total": 43967,
+    "expected_coverage": [
+      0,
+      41
+    ],
+    "forbidden_violations": 0
+  },
+  "finished_at": "2026-11-24T14:06:58.076719+00:00"
+}

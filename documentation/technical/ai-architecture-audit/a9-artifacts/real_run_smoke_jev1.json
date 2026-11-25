@@ -1,0 +1,161 @@
+{
+  "env": {
+    "AI_JEV_ROUTING": "1",
+    "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+    "AI_SUMMARY_BACKGROUND_ENABLED": "0",
+    "ROUTERAI_MODEL": "google/gemini-3.7-flash",
+    "JEV_MODEL": "(default)",
+    "env_keys_loaded": 449,
+    "registered_tools": 100,
+    "code_root": "C:\\Project\\HUB-IT-a9-wt"
+  },
+  "scenarios": [
+    {
+      "id": "chat_01",
+      "category": "CHAT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 7576,
+      "llm_calls": 1,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.96
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 2012,
+        "llm_out": 570,
+        "jev_total": 1031,
+        "est_in": 1932
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 4.1622e-05
+      },
+      "answer_len": 618,
+      "answer_head": "Я корпоративный AI-ассистент IT-команды. Помогаю находить информацию по регламентам, инструкциям и базе знаний компании.\n\n## Возможности\n- **Консультации по IT-регламентам:** предоставление инструкций по настройке рабочих мест, доступам и к",
+      "result_message": true
+    },
+    {
+      "id": "read_01",
+      "category": "READ",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 71805,
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.32
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          }
+        }
+      ],
+      "tool_calls": [
+        "mfu.devices.list"
+      ],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.equipment.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 8959,
+        "llm_out": 1527,
+        "jev_total": 3427,
+        "est_in": 7333
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013713
+      },
+      "answer_len": 715,
+      "answer_head": "По запросу «кабинет 204» найдено 4 печатающих устройства в двух филиалах.\n\n## Список устройств\n\n| Инв. номер | Серийный номер | Тип | Модель | Сотрудник | Статус | Филиал | Локация |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+      "result_message": true
+    }
+  ],
+  "started_at": "2026-11-24T12:24:17.920249+00:00",
+  "aggregate": {
+    "scenarios": 2,
+    "run_ok": 2,
+    "llm_calls_total": 3,
+    "jev_calls_total": 2,
+    "tool_calls_total": 1,
+    "tokens_in_total": 10971,
+    "tokens_out_total": 2097,
+    "jev_tokens_total": 4458,
+    "est_in_total": 9265,
+    "cost_usd_total": 0.000178752,
+    "wall_ms_total": 79381,
+    "expected_coverage": [
+      0,
+      1
+    ],
+    "forbidden_violations": 0
+  },
+  "finished_at": "2026-11-24T12:25:37.425924+00:00"
+}
