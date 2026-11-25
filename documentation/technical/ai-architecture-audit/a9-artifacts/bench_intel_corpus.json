@@ -1,6 +1,6 @@
 {
  "meta": {
-  "version": "a11-v3",
+  "version": "a11-v4",
   "generator": "bench_corpus_gen.py",
   "categories": {
    "ACT": 20,
@@ -2842,7 +2842,7 @@
    "expected_tools": [],
    "forbidden": [],
    "required_facts": [
-    "английск"
+    "английск|русск"
    ],
    "forbidden_facts": [],
    "expect": {},

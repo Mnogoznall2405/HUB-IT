@@ -679,8 +679,14 @@ for idx, scenario in enumerate(scenarios, 1):
                                 if "*any-tool*" in forbidden
                                 or any(fnmatch.fnmatchcase(t, p) for p in forbidden)})
 
-        facts_found = [f for f in required_facts if f.lower() in answer_body.lower()]
-        facts_missing = [f for f in required_facts if f.lower() not in answer_body.lower()]
+        # A11 c3: any-of facts. A fact written as "a|b" passes when ANY
+        # alternative is present - memory recall is semantically correct even
+        # when the stored fact is faithfully rephrased (mem_05: "ne ispylzuy
+        # angliysky" recalled as "isklyuchitelno russky").
+        def _fact_hit(fact: str) -> bool:
+            return any(alt.strip().lower() in answer_body.lower() for alt in fact.split("|") if alt.strip())
+        facts_found = [f for f in required_facts if _fact_hit(f)]
+        facts_missing = [f for f in required_facts if not _fact_hit(f)]
         forbidden_facts_hit = [f for f in forbidden_facts if f.lower() in answer_body.lower()]
 
         # --- exact-expect checks (§2): tool result cardinality / ACL flags ---

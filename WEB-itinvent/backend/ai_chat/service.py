@@ -7975,6 +7975,13 @@ class AiChatService:
             tool_id = _normalize_text(call.get("tool_id"))
             tool = ai_tool_registry.get(tool_id)
             try:
+                # A11 c3 (F-D1): capture the raw model-facing form BEFORE
+                # draft_policy.prepare transforms it. Cross-round dedup checks
+                # raw signatures, so both forms must be recorded or a repeated
+                # identical raw call escapes detection whenever prepare
+                # rewrites tool_id/args.
+                raw_tool_id = tool_id
+                raw_args = call.get("args") or {}
                 tool_id, prepared_args = tool_context.draft_policy.prepare(
                     tool_id, call.get("args") or {}, tool_context.enabled_tools,
                 )
@@ -8038,6 +8045,18 @@ class AiChatService:
                     "diagnostic": diagnostic,
                     "sources": payload.get("sources") or [],
                 }
+                try:
+                    trace["sig_prepared"] = [
+                        _normalize_text(tool_id),
+                        json.dumps(prepared_args or {}, sort_keys=True, ensure_ascii=False, default=str),
+                    ]
+                    if raw_tool_id != tool_id or raw_args != (prepared_args or {}):
+                        trace["sig_raw"] = [
+                            _normalize_text(raw_tool_id),
+                            json.dumps(raw_args or {}, sort_keys=True, ensure_ascii=False, default=str),
+                        ]
+                except Exception:
+                    pass
                 # Surface result cardinality + ACL downgrade flags for
                 # benchmark/audit checks without storing the full payload.
                 if isinstance(payload_data, dict):
@@ -9674,10 +9693,21 @@ class AiChatService:
                     if not result.get("ok"):
                         continue
                     effect = tool_effect(trace.get("tool_id"))
-                    executed_call_signatures.add((
-                        _normalize_text(trace.get("tool_id")),
-                        json.dumps(trace.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str),
-                    ))
+                    # F-D1: register the canonical prepared signature AND the
+                    # raw model-facing one when prepare transformed the call —
+                    # the duplicate check runs against raw args, so recording
+                    # only the prepared form let transformed calls repeat.
+                    sig_prepared = trace.get("sig_prepared")
+                    if isinstance(sig_prepared, list) and len(sig_prepared) == 2:
+                        executed_call_signatures.add((sig_prepared[0], sig_prepared[1]))
+                    else:
+                        executed_call_signatures.add((
+                            _normalize_text(trace.get("tool_id")),
+                            json.dumps(trace.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str),
+                        ))
+                    sig_raw = trace.get("sig_raw")
+                    if isinstance(sig_raw, list) and len(sig_raw) == 2:
+                        executed_call_signatures.add((sig_raw[0], sig_raw[1]))
                     if effect in ("artifact", "action", "unknown"):
                         # State-changing execution: earlier read results may be
                         # stale now (file appeared in storage, memory written,
@@ -10196,6 +10226,19 @@ class AiChatService:
         )
         memory_command = re.match(r"^\s*(?:запомни|забудь|удали\s+из\s+памяти)", policy.trigger_text, re.I)
         memory_claim = re.search(r"запомнил|(?:памят|предпочтени).{0,60}(?:сохран|обновлен|удален|записан)", answer_markdown, re.I)
+        # A11 c3 (mem_08): the claim guard exists to catch hallucinated memory
+        # WRITES — but a recall question ("Что ты знаешь о моих предпочтениях?")
+        # legitimately produces an answer referencing stored preferences
+        # ("сохранено: …"), and overriding it with "Память не изменена" destroys
+        # a correct recall. Interrogative triggers are never write requests, so
+        # the claim guard must not apply to them.
+        _trigger_stripped = (policy.trigger_text or "").strip()
+        memory_recall_question = bool(
+            _trigger_stripped.endswith("?")
+            or re.match(r"^\s*(?:что|како[йяе]|как\b|расскажи|покажи|напомни|перечисли|вспомни)", _trigger_stripped, re.I)
+        )
+        if memory_recall_question and not memory_command:
+            memory_claim = None
         if (not tool_traces and (memory_command or memory_claim)
                 and not (extracted_context.get("memory_status") == "applied" and extracted_context.get("memory_changed"))):
             answer_markdown = ("Память не изменена." if extracted_context.get("memory_status") == "applied"

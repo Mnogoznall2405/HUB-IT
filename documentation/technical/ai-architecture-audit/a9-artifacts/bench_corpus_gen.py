@@ -557,7 +557,7 @@ add("MEMORY", turns=["Запомни: я предпочитаю короткие
 add("MEMORY", turns=["Запомни, что мой руководитель — Бенч Сотрудник 001", "Кто мой руководитель?"],
     required_facts=["Бенч Сотрудник 001"])
 add("MEMORY", turns=["Запомни: не используй английский в ответах", "Что ты запомнил обо мне?"],
-    required_facts=["английск"])
+    required_facts=["английск|русск"])
 add("MEMORY", turns=["Мой рабочий телефон +7-000-9999, запомни", "Какой у меня рабочий телефон?"],
     required_facts=["+7-000-9999"])
 add("MEMORY", turns=["Запомни что я из Бенч-Отдел-01", "Из какого я отдела?"],
@@ -682,7 +682,7 @@ for s in scenarios:
 # write corpus
 # =============================================================================
 meta = {
-    "version": "a11-v3",
+    "version": "a11-v4",
     "generator": "bench_corpus_gen.py",
     "categories": {k: v for k, v in sorted(_counter.items())},
     "total": len(scenarios),
