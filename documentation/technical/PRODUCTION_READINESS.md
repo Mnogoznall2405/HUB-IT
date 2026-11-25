@@ -6,7 +6,7 @@
 
 | Параметр | Значение |
 |---|---|
-| Текущая production-ревизия БД | `20261118_0176` (проверено read-only на prod 2026-11-25) |
+| Текущая production-ревизия БД | `20261124_0179` (read-only проверка 2026-11-25 при staging: миграции 0177-0179 my_files уже применены). **Перед реальным выпуском повторно проверить `alembic current`** — стартовая ревизия может измениться |
 | Production PostgreSQL | 16.15 (Ubuntu, `10.103.0.10:5432`, db `hubit_chat`, user `hubit_chat_app`) |
 | Layout production-БД | **legacy-public**: все 33 chat-таблицы с данными в схеме `public`; в `chat` — 4 пустых орфана (`chat_sticker_packs`, `chat_stickers`, `chat_user_sticker_packs`, `chat_event_outbox`, все 0 строк) |
 | Итоговый SHA кандидата | `3474bb94` (ветка `integration/hub-it-release-candidate`, запушена, PR #75) |
@@ -96,14 +96,14 @@ psql -c "SELECT pid, application_name, state FROM pg_stat_activity WHERE datname
 
 ## 6. Последовательность миграций
 
-Проверено гейтом на точной реплике production на финальной цепочке (после перенумерации): upgrade `0176 → 0182` проходит чисто (rc 0), все пост-проверки PASS (п. 11.1).
+Проверено гейтом на точной реплике production на финальной цепочке (после перенумерации): upgrade `0176 → 0182` (полная цепочка) и `0179 → 0182` (staging от фактической production-ревизии) проходит чисто (rc 0), все пост-проверки PASS (п. 11.1).
 
 Команды — PowerShell (рабочая оболочка проекта):
 
 ```powershell
 cd <repo>\WEB-itinvent
 $env:ALEMBIC_DATABASE_URL = "postgresql+psycopg://<prod-dsn>"   # либо параметр: alembic -x url=<dsn>
-python -m alembic -c backend\alembic.ini current                # ожидание: 20261118_0176
+python -m alembic -c backend\alembic.ini current                # ожидание: 20261124_0179 (перепроверить перед выпуском)
 python -m alembic -c backend\alembic.ini upgrade head           # до 20261125_0182
 python -m alembic -c backend\alembic.ini current                # проверка: 20261125_0182
 ```
