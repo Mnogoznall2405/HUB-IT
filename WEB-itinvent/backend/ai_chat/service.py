@@ -1694,7 +1694,15 @@ def _route_tool_groups_jev(
     # threshold and the query is not confidently conversational, rescue the
     # argmax group if it carries meaningful probability mass — the model can
     # still decline the tools, but it cannot recover groups it never sees.
-    if not routed and group_questions and probs and chat_prob < threshold:
+    # AI_JEV_TOP1_RESCUE=0 restores the pre-A11 undecided behavior; the flag
+    # is read at runtime so tests and A/B measurements can toggle it.
+    if (
+        not routed
+        and group_questions
+        and probs
+        and chat_prob < threshold
+        and _env_flag("AI_JEV_TOP1_RESCUE", True)
+    ):
         best_group, best_prob = max(probs.items(), key=lambda item: item[1])
         if best_prob >= max(0.2, threshold * 0.5):
             routed.add(best_group)
@@ -2750,6 +2758,76 @@ def _tool_spec_args_signature(input_schema: Any, *, with_descriptions: bool) -> 
             label += f" ({description[:70]})"
         parts.append(label)
     return ", ".join(parts) if parts else "no arguments"
+
+
+def _validation_example_placeholder(prop: dict[str, Any], defs: dict[str, Any], *, field_name: str) -> Any:
+    """One compact example value for a schema property.
+
+    Used only in validation retry hints, so the model sees the shape of a
+    minimal valid call instead of guessing. Priority: schema ``examples`` /
+    ``example`` / ``enum`` / ``default``, then a type-based placeholder; a
+    string field falls back to its own description or name so the placeholder
+    still hints at the expected content.
+    """
+    ref = _normalize_text(prop.get("$ref"))
+    if ref:
+        prop = defs.get(ref.rsplit("/", 1)[-1], {}) if isinstance(defs, dict) else {}
+    examples = prop.get("examples")
+    if isinstance(examples, list) and examples:
+        return examples[0]
+    if "example" in prop:
+        return prop["example"]
+    if isinstance(prop.get("enum"), list) and prop["enum"]:
+        return prop["enum"][0]
+    if prop.get("default") is not None:
+        return prop["default"]
+    variants = prop.get("anyOf") if isinstance(prop.get("anyOf"), list) else []
+    for variant in variants:
+        if isinstance(variant, dict) and _normalize_text(variant.get("type")) != "null":
+            return _validation_example_placeholder(variant, defs, field_name=field_name)
+    kind = _normalize_text(prop.get("type")) or "string"
+    if kind == "string":
+        description = _normalize_text(prop.get("description"))
+        if description:
+            return f"<{description[:50]}>"
+        return f"<{field_name or 'string'}>"
+    if kind in ("integer", "number"):
+        return 1
+    if kind == "boolean":
+        return True
+    if kind == "array":
+        return []
+    if kind == "object":
+        return {}
+    return "<value>"
+
+
+def _validation_args_recovery_hint(
+    input_schema: Any,
+    *,
+    focus_field: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Compact retry hint for a failed validation: one-line args signature plus
+    a minimal example built from required fields (and the offending field).
+
+    Never emits the full JSON schema — the signature reuses the same compact
+    ``name*: type`` notation the prompt's tool listing uses, so the model can
+    map the error onto the spec it already saw.
+    """
+    schema = input_schema if isinstance(input_schema, dict) else {}
+    defs = schema.get("$defs") if isinstance(schema.get("$defs"), dict) else {}
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    required = [name for name in list(schema.get("required") or []) if name in properties]
+    signature = _tool_spec_args_signature(schema, with_descriptions=False)
+    example_fields = list(required)
+    focus_root = _normalize_text(focus_field).split(".")[0] if focus_field else ""
+    if focus_root and focus_root in properties and focus_root not in example_fields:
+        example_fields.append(focus_root)
+    example: dict[str, Any] = {}
+    for name in example_fields[:4]:
+        prop = properties.get(name) if isinstance(properties.get(name), dict) else {}
+        example[name] = _validation_example_placeholder(prop, defs, field_name=name)
+    return signature, example
 
 
 _SPEC_EXAMPLE_LIST_RE = re.compile(
@@ -7986,15 +8064,72 @@ class AiChatService:
                     tool_id or "-",
                     error_text,
                 )
-                diagnostic = {
-                    "error_code": "invalid_arguments",
-                    "message": error_text,
-                    "suggested_fix": (
+                # A11 §9/§11: the registry attaches field_path/detail only for
+                # real schema-validation failures (not for unknown/disabled
+                # tools). When they are present the diagnostic must tell the
+                # model exactly WHICH argument is wrong, what shape it expects
+                # and what a minimal valid call looks like — the bare generic
+                # "match the input_schema" advice measurably failed to produce
+                # a corrected re-call in dev runs.
+                field_path = _normalize_text(getattr(exc, "field_path", None)) or None
+                is_schema_error = bool(_normalize_text(getattr(exc, "detail", None)))
+                args_hint: str | None = None
+                example_payload: dict[str, Any] | None = None
+                input_schema: dict[str, Any] | None = None
+                if tool is not None:
+                    try:
+                        input_schema = tool.input_model.model_json_schema()
+                    except Exception:  # noqa: BLE001 — schema introspection must never break error handling
+                        input_schema = None
+                if is_schema_error and isinstance(input_schema, dict):
+                    args_hint, example_payload = _validation_args_recovery_hint(
+                        input_schema, focus_field=field_path,
+                    )
+                    args_hint = args_hint or None
+                    example_payload = example_payload or None
+                if is_schema_error and field_path:
+                    expected_label = ""
+                    focus_root = field_path.split(".")[0]
+                    properties = (input_schema or {}).get("properties") if isinstance(input_schema, dict) else None
+                    focus_prop = properties.get(focus_root) if isinstance(properties, dict) else None
+                    if isinstance(focus_prop, dict):
+                        defs = (input_schema or {}).get("$defs") if isinstance(input_schema, dict) else {}
+                        expected_label = _schema_type_label(focus_prop, defs if isinstance(defs, dict) else {})
+                    if isinstance(properties, dict) and focus_root not in properties:
+                        # extra="forbid" rejection: the argument does not exist on
+                        # this tool at all — "fix" would send the model hunting for
+                        # a type problem that is not there; it must DROP the field
+                        # and pick the right one from args_hint instead.
+                        fix_action = (
+                            f"Remove unknown argument '{field_path}' — the tool has no such parameter; "
+                            "map the value onto the correct one"
+                        )
+                    else:
+                        fix_action = (
+                            f"Fix argument '{field_path}'"
+                            + (f" (expected: {expected_label})" if expected_label else "")
+                        )
+                    suggested_fix = (
+                        fix_action
+                        + " and re-call the tool — args_hint lists all parameters ('*' = required), "
+                        "example shows a minimal valid call. Do not repeat the same invalid args."
+                    )
+                else:
+                    suggested_fix = (
                         "Re-call the same tool with corrected args matching the input_schema. "
                         "Common fixes: ensure required fields are present, types match, and "
                         "string fields stay within length limits."
-                    ),
+                    )
+                diagnostic = {
+                    "error_code": "invalid_arguments",
+                    "message": error_text,
+                    "field_path": field_path,
+                    "suggested_fix": suggested_fix,
                 }
+                if args_hint:
+                    diagnostic["args_hint"] = args_hint
+                if example_payload:
+                    diagnostic["example"] = example_payload
                 payload = {
                     "tool_id": tool_id or "unknown",
                     "ok": False,
@@ -9682,6 +9817,8 @@ class AiChatService:
                         "args": dict(trace.get("args") or {}),
                         "message": _normalize_text(diag.get("message")) or _normalize_text(trace.get("error")),
                         "field_path": _normalize_text(diag.get("field_path")) or None,
+                        "args_hint": _normalize_text(diag.get("args_hint")) or None,
+                        "example": diag.get("example") if isinstance(diag.get("example"), dict) else None,
                     })
             if callable(report_stage):
                 report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
@@ -9708,7 +9845,9 @@ class AiChatService:
                         "tool_validation_errors",
                         "Tool validation errors to fix (untrusted data):\n"
                         + untrusted.wrap(UNTRUSTED_TOOL_RESULT, _json_dumps(round_validation_errors))
-                        + "\nIf you re-call the same tool, fix the arguments per the diagnostics. "
+                        + "\nIf you re-call the same tool, fix the arguments per the diagnostics: "
+                        "args_hint lists the tool's parameters ('*' = required) with types and "
+                        "example shows a minimal valid call shape. "
                         "Do not repeat the exact same invalid args."
                         if round_validation_errors
                         else "",

@@ -638,3 +638,69 @@ def test_chat_mode_blocks_every_tool_call_even_without_specs():
         result, _ = registry.execute_bounded(tool_id=tool_id, raw_args={}, context=ctx)
         assert result.ok is False, tool_id
     assert ctx.mode_denied_calls == 3
+
+
+# ---------- A11 §6: AI_JEV_TOP1_RESCUE feature flag ----------
+
+
+def test_top1_rescue_enabled_by_default(monkeypatch):
+    """Default (flag absent): a weak-but-present argmax signal is rescued —
+    the A11 behavior stays the shipped default."""
+    monkeypatch.delenv("AI_JEV_TOP1_RESCUE", raising=False)
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_office": 0.4, "m_mode_chat": 0.4, "m_mode_act": 0.4}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="составь сводку по письмам",
+        available_groups={"office", "itinvent", "other"},
+    )
+    assert "office" in result
+    assert result.intent_mode == "read"
+
+
+def test_top1_rescue_disabled_restores_undecided(monkeypatch):
+    """AI_JEV_TOP1_RESCUE=0: the same weak signal no longer rescues the
+    group — routing falls back to undecided with only the 'other' safety net
+    (pre-A11 behavior), keeping the request_tool_group recovery path."""
+    monkeypatch.setenv("AI_JEV_TOP1_RESCUE", "0")
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_office": 0.4, "m_mode_chat": 0.4, "m_mode_act": 0.4}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="составь сводку по письмам",
+        available_groups={"office", "itinvent", "other"},
+    )
+    assert "office" not in result
+    assert "other" in result  # safety net survives indecision
+    assert result.intent_mode is None  # undecided, not read
+
+
+def test_top1_rescue_flag_is_read_at_runtime(monkeypatch):
+    """The flag is evaluated per call, not at import: toggling the env var
+    between two routings flips the behavior without any reload."""
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_office": 0.4, "m_mode_chat": 0.4, "m_mode_act": 0.4}))
+    kwargs = dict(
+        trigger_text="составь сводку по письмам",
+        available_groups={"office", "itinvent", "other"},
+    )
+    monkeypatch.setenv("AI_JEV_TOP1_RESCUE", "0")
+    service_module._jev_routing_cache.clear()
+    off_result = service_module._route_tool_groups_jev(**kwargs)
+    monkeypatch.setenv("AI_JEV_TOP1_RESCUE", "1")
+    service_module._jev_routing_cache.clear()
+    on_result = service_module._route_tool_groups_jev(**kwargs)
+    assert "office" not in off_result
+    assert "office" in on_result
+
+
+def test_top1_rescue_off_does_not_block_confident_routing(monkeypatch):
+    """Flag OFF changes only the sub-threshold rescue: a group clearly above
+    the threshold routes exactly as before."""
+    monkeypatch.setenv("AI_JEV_TOP1_RESCUE", "0")
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_office": 0.9, "m_mode_chat": 0.05, "m_mode_act": 0.05}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="покажи мои последние письма",
+        available_groups={"office", "itinvent", "other"},
+    )
+    assert "office" in result
+    assert result.intent_mode == "read"

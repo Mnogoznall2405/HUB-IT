@@ -10,7 +10,7 @@
 | 3 | P0 database fail-closed: матрица + confirm-time | **partial** | 19/19 `test_ai_database_failclosed.py`; аудит субагента 582800ea в работе; confirm-time revalidation pending |
 | 4 | P1 dedup: mutation-aware invalidation | **done-code** | коммит «duplicate guard full semantics»; pipeline-тесты новой логики pending |
 | 5 | Loop Guard полный | **done-code** | `AI_LOOP_GUARD_ENABLED`, no-progress stop после 2 раундов, телеметрия в result_json `loop_guard`; 123/123 runtime+rounds; pipeline-тесты pending |
-| 6 | JEV top-1 rescue флаг + precision/recall/confusion | pending | — |
+| 6 | JEV top-1 rescue флаг + precision/recall/confusion | **done** | AI_JEV_TOP1_RESCUE (default 1, runtime) в service.py + 4 теста; 134/134 jev + 45/45 routing/e2e зелёные; 9-artifacts/jev_eval.py + jev_eval_report.json: replay 740 реальных векторов (P 0.73/R 0.77 ON vs P 0.73/R 0.72 OFF, 5 уникальных спасений vs 2 routable-коллизии), sweep-полоса [0.25,0.5), матрица 19/19 ON |
 | 7 | Семантика инструментов аудит | **partial** | цикл 1: описания itinvent/office/kb/directory/network; продолжение pending |
 | 9 | Аргументы/валидация/coreference | pending | — |
 | 10 | MULTISTEP 25 real-LLM сценариев | pending | корпус ms_01..ms_25 существует, прогон pending |
