@@ -747,6 +747,23 @@ const flushRecentStickerOps = (scopeKey) => {
     });
 };
 
+// Flush'и одного scope строго сериализуются: без цепочки «уверенный» flush
+// (remove/clear уходит без дебаунса) мог стартовать параллельно уже
+// летящему дебаунсному, а row-lock на сервере применял бы пакеты в
+// произвольном порядке — bump из старого пакета воскрешал бы удалённый
+// стикер. С сериализацией второй flush читает журнал уже после ответа
+// первого: подтверждённые операции сняты, порядок применения совпадает с
+// порядком пользовательских действий.
+const flushRecentStickerOpsSerialized = (scopeKey) => {
+  const meta = scopeMetas.get(scopeKey);
+  if (!meta) return Promise.resolve({ ok: true });
+  const run = (meta.recentFlushChain || Promise.resolve())
+    .then(() => flushRecentStickerOps(scopeKey));
+  // Цепочка не должна обрываться на reject — следующий flush обязан уйти.
+  meta.recentFlushChain = run.catch(() => {});
+  return run;
+};
+
 // Первый синк (version === 0): поднимаем локальную копию legacy
 // bump-head merge'ем — tombstones не нужны, сервер ещё ничего не
 // очищал. Операций в журнале здесь нет — это целый список из localStorage.
@@ -767,7 +784,7 @@ const pushLegacyLocalRecents = (scopeKey) => {
 const scheduleRecentSyncFlush = (scopeKey, record) => {
   scheduleRecentStickersSync(
     { userId: record.userId, scopeKey },
-    () => flushRecentStickerOps(scopeKey),
+    () => flushRecentStickerOpsSerialized(scopeKey),
   );
 };
 
@@ -791,7 +808,7 @@ export const removeRecentSticker = (scopeKey, stickerId) => {
   pushRecentJournalOp(getScopeMeta(scopeKey), { type: 'remove', stickerId: normalizedStickerId });
   commitRecents(scopeKey);
   cancelRecentStickersSync(scopeKey);
-  return flushRecentStickerOps(scopeKey);
+  return flushRecentStickerOpsSerialized(scopeKey);
 };
 
 export const clearRecentStickers = (scopeKey) => {
@@ -800,7 +817,7 @@ export const clearRecentStickers = (scopeKey) => {
   pushRecentJournalOp(getScopeMeta(scopeKey), { type: 'clear' });
   commitRecents(scopeKey);
   cancelRecentStickersSync(scopeKey);
-  return flushRecentStickerOps(scopeKey);
+  return flushRecentStickerOpsSerialized(scopeKey);
 };
 
 // Единственный слушатель «наборы изменились» на весь документ — заменяет

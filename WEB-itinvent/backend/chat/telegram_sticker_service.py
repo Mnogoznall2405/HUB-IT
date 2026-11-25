@@ -23,6 +23,7 @@ from sqlalchemy import and_, delete, func, insert, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.chat.db import chat_read_session, chat_write_session
+from backend.chat.message_persistence import FileMessageCommittedError
 from backend.chat.models import (
     ChatMember,
     ChatMessageAttachment,
@@ -1555,6 +1556,10 @@ class TelegramStickerService:
                 reply_to_message_id=reply_to_message_id,
             )
             chat_service._set_request_meta(conversation_kind=persisted.conversation_kind)
+        except FileMessageCommittedError:
+            # The committed message owns the sticker copy; deleting it would
+            # leave the committed attachment dead (DCHAT-05).
+            raise
         except Exception:
             target_path.unlink(missing_ok=True)
             raise
