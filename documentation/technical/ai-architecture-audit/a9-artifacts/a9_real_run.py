@@ -758,8 +758,12 @@ for idx, scenario in enumerate(scenarios, 1):
                 expect_failures.append(f"pending_action query failed: {exc}")
             want_action = str(expect.get("pending_action") or "").lower()
             if want_action:
+                # A11 c3: action types are dot-namespaced ("office.mail.send") while
+                # the corpus authors naturally write "mail_send" — compare with all
+                # separators stripped so both spellings match the real type.
+                want_key = re.sub(r"[._\s]", "", want_action)
                 if not any(
-                    want_action in str(r["action_type"]).lower() and r["status"] == "pending"
+                    want_key in re.sub(r"[._\s]", "", str(r["action_type"]).lower()) and r["status"] == "pending"
                     for r in action_rows
                 ):
                     expect_failures.append(
