@@ -10,7 +10,7 @@
 | Исходный (удалённая интеграционная ветка) | `a18fc5e7` | origin `integration/frontend-remediation`, верифицированный sign-off |
 | Cherry-pick owner-fix | `e68ab6a0` | из `d50ca236` — Networks.jsx `.MuiModal-root` visibility + Login.jsx inert chrome; Sticker V2 не содержит |
 | Финальный | `32bd103f` | `e68ab6a0` + фикс post-auth remount + регрессионный тест + E2E-стенд |
-| Release-gate closure | `79093cb0` | + `b435257c` (strict FE-0198 E2E + absorb cross-tab epoch race, FE-0083), `8270d0f7` (strict FE-0059 lost-rotation E2E), `79093cb0` (расширенная multi-tab матрица + CAS-claim + post-fix runtime-тесты FE-0232/0239/0259) |
+| Release-gate closure | `cfc5e012` | `79093cb0` = `b435257c` (strict FE-0198 E2E + absorb cross-tab epoch race, FE-0083) + `8270d0f7` (strict FE-0059 lost-rotation E2E) + `79093cb0` (расширенная multi-tab матрица + CAS-claim + post-fix runtime-тесты FE-0232/0239/0259); `cfc5e012` добавляет gate-артефакты (chatcalls-lifecycle, fe0023-bench, serve-prod) |
 
 ## 2. Перенесённые исправления
 
@@ -52,7 +52,7 @@
 | Тир | Кол-во | Критерий |
 |---|---|---|
 | VERIFIED_FIXED | 8 | браузерный E2E / измеренный perf-бенч / P0-юнит на итоговом SHA (FE-0023/0059/0083/0197/0198/0232/0239/0259) |
-| IMPLEMENTED | 260 | commit/PR head — ancestor интеграционного SHA; покрыто зелёным unit-suite; 23 записи без PR (commit-only: `1998a488`, `37317636`, `6d700d6b`) и 8 preventive из PR #67 (`5b9f7bd6`) повторно проверены `git merge-base --is-ancestor` на `79093cb0` — все ancestor |
+| IMPLEMENTED | 260 | commit/PR head — ancestor интеграционного SHA; покрыто зелёным unit-suite; 23 записи без PR (commit-only: `1998a488`, `37317636`, `6d700d6b`) и 8 preventive из PR #67 (`5b9f7bd6`) повторно проверены `git merge-base --is-ancestor` на `cfc5e012` — все ancestor |
 | PARTIALLY_FIXED | 1 | FE-0215 (EWS-контракт не проверен — нет Exchange-стенда) |
 | BLOCKED | 1 | FE-0064 — PR #10 сознательно исключён, решение владельца |
 | NEEDS_EVIDENCE | 0 | — |
