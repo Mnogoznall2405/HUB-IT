@@ -251,6 +251,14 @@ AI_PERSONAL_MEMORY_ENABLED = str(os.environ.get("AI_PERSONAL_MEMORY_ENABLED", "0
 }
 AI_TOOL_CALL_LIMIT = int(os.environ.get("AI_TOOL_CALL_LIMIT", "3"))
 AI_TOOL_ROUND_LIMIT = int(os.environ.get("AI_TOOL_ROUND_LIMIT", "6"))
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """Runtime boolean env flag — read per use so tests can toggle it."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 # Живой набор ответа (стриминг answer_markdown). Выключатель — AI_STREAM_ANSWER_ENABLED=0.
 AI_STREAM_ANSWER_ENABLED = os.environ.get("AI_STREAM_ANSWER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 AI_PREVIEW_MIN_INTERVAL_SEC = float(os.environ.get("AI_PREVIEW_MIN_INTERVAL_SEC", "0.6"))
@@ -7647,6 +7655,14 @@ class AiChatService:
                                 "my_files_delivered": my_files_delivered,
                                 "tool_traces": tool_traces,
                                 "routed_groups": list(routed_groups or []),
+                                # A11 §5 loop-guard telemetry: how the run actually behaved.
+                                "loop_guard": (extracted_context or {}).get("_loop_guard") or {
+                                    "stopped": False,
+                                    "rounds_used": 0,
+                                    "duplicate_calls": 0,
+                                    "expansion_calls_used": 0,
+                                    "expansion_budget": 0,
+                                },
                                 # A5 run profile: JEV intent ceiling + calls the
                                 # run-mode check refused at execute time.
                                 "intent_mode": (extracted_context or {}).get("intent_mode"),
@@ -9361,6 +9377,16 @@ class AiChatService:
         expansion_calls_budget = AI_TOOL_GROUP_EXPANSION_LIMIT + 2
         executed_call_signatures: set[tuple[str, str]] = set()
         tool_rounds_used = 0
+        # A11 §5 Loop Guard: progress tracking. A round makes progress when it
+        # yields at least one successful non-meta result or a NEW error shape
+        # the model has not seen yet. Two consecutive rounds without progress
+        # mean the loop is burning tokens without moving towards an answer —
+        # stop it honestly instead of hitting the hard round ceiling.
+        loop_guard_enabled = _env_flag("AI_LOOP_GUARD_ENABLED", True)
+        consecutive_no_progress = 0
+        seen_error_signatures: set[tuple[str, str]] = set()
+        duplicate_calls_total = 0
+        loop_guard_stopped = False
         # Per-bot limits from context (with env fallback)
         max_rounds = tool_context.max_tool_rounds if tool_context else AI_TOOL_ROUND_LIMIT
         max_calls_per_round = tool_context.max_tool_calls_per_round if tool_context else AI_TOOL_CALL_LIMIT
@@ -9472,6 +9498,7 @@ class AiChatService:
                     json.dumps(call.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str),
                 )
                 if signature in executed_call_signatures:
+                    duplicate_calls_total += 1
                     tool_results.append({
                         "tool_id": call.get("tool_id"),
                         "ok": False,
@@ -9530,6 +9557,48 @@ class AiChatService:
             accumulated_tool_results.extend(tool_results)
             tool_traces.extend(round_traces)
             tool_rounds_used += 1
+
+            # A11 §5 Loop Guard: evaluate progress of this round.
+            if loop_guard_enabled:
+                round_progress = False
+                for res in tool_results:
+                    if res.get("ok") and res.get("tool_id") != "ai.request_tool_group":
+                        round_progress = True
+                        break
+                    if res.get("code") == "duplicate_call":
+                        continue
+                    err_sig = (
+                        _normalize_text(res.get("tool_id")),
+                        _normalize_text(str(res.get("error") or ""))[:120],
+                    )
+                    if res.get("error") and err_sig not in seen_error_signatures:
+                        # A genuinely new error shape is fresh information the
+                        # model has not yet had a chance to react to.
+                        seen_error_signatures.add(err_sig)
+                        round_progress = True
+                        break
+                if round_progress:
+                    consecutive_no_progress = 0
+                else:
+                    consecutive_no_progress += 1
+                if consecutive_no_progress >= 2:
+                    loop_guard_stopped = True
+                    logger.info(
+                        "AI loop guard stop: run_id=%s rounds_used=%s — no progress in 2 consecutive rounds",
+                        run_id, tool_rounds_used,
+                    )
+                    accumulated_tool_results.append({
+                        "tool_id": "ai.loop_guard",
+                        "ok": False,
+                        "error": (
+                            "Последние шаги не дали новых данных: дальнейшие попытки с теми же "
+                            "аргументами бесполезны. Не повторяй вызовы — честно сообщи пользователю, "
+                            "что удалось и что не удалось выяснить, и предложи уточнить запрос."
+                        ),
+                        "code": "loop_guard_stop",
+                        "data": None,
+                    })
+                    break
 
             # Auto-pagination: detect truncated results and inject next-page calls
             # if the user's request implies they need complete data (e.g., file export, report)
@@ -10004,6 +10073,14 @@ class AiChatService:
             extracted_context["fast_path_hit"] = True
         if llm_call_records:
             final_usage["llm_calls"] = llm_call_records
+        if isinstance(extracted_context, dict):
+            extracted_context["_loop_guard"] = {
+                "stopped": bool(loop_guard_stopped),
+                "rounds_used": int(tool_rounds_used),
+                "duplicate_calls": int(duplicate_calls_total),
+                "expansion_calls_used": int(expansion_calls_used),
+                "expansion_budget": int(expansion_calls_budget),
+            }
         return answer_markdown, artifacts, kb_attachment_send, final_usage, extracted_context, tool_traces, generated_file_specs, sorted(routed_groups)
 
     def _build_conversation_context(
