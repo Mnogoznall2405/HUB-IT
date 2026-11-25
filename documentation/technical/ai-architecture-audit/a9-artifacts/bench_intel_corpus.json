@@ -2364,10 +2364,11 @@
    "required_facts": [],
    "forbidden_facts": [],
    "expect": {
-    "pending_action": "request",
+    "pending_action": "mail_send",
     "no_mutation": true
    },
-   "prompt": "Подготовь заявку в ИТ: не работает принтер в кабинете 112"
+   "prompt": "Подготовь заявку в ИТ: не работает принтер в кабинете 112",
+   "note": "helpdesk requests ARE office.mail.send drafts to IT by design — the card type is mail"
   },
   {
    "id": "act_12",
