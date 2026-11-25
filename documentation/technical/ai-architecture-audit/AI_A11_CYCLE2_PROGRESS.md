@@ -7,12 +7,12 @@
 | § | Трек | Статус | Доказательства |
 |---|------|--------|----------------|
 | 2 | Setup, прогресс-файл | done | этот файл; HEAD история `git log` |
-| 3 | P0 database fail-closed: матрица + confirm-time | **partial** | 19/19 `test_ai_database_failclosed.py`; аудит субагента 582800ea в работе; confirm-time revalidation pending |
-| 4 | P1 dedup: mutation-aware invalidation | **done-code** | коммит «duplicate guard full semantics»; pipeline-тесты новой логики pending |
-| 5 | Loop Guard полный | **done-code** | `AI_LOOP_GUARD_ENABLED`, no-progress stop после 2 раундов, телеметрия в result_json `loop_guard`; 123/123 runtime+rounds; pipeline-тесты pending |
+| 3 | P0 database fail-closed: матрица + confirm-time | **done** | 19/19 `test_ai_database_failclosed.py`; confirm-time revalidation: каталог+non-admin strict+admin multi-db restore; 25/25 failclosed, works canonical row.database_id |
+| 4 | P1 dedup: mutation-aware invalidation | **done** | 9/9 test_ai_loop_guard.py — контрастные пары block/allow |
+| 5 | Loop Guard полный | **done** | `AI_LOOP_GUARD_ENABLED`, no-progress stop после 2 раундов, телеметрия в result_json `loop_guard`; 123/123 runtime+rounds; no-progress stop verифицирован pipeline-тестами |
 | 6 | JEV top-1 rescue флаг + precision/recall/confusion | **done** | AI_JEV_TOP1_RESCUE (default 1, runtime) в service.py + 4 теста; 134/134 jev + 45/45 routing/e2e зелёные; 9-artifacts/jev_eval.py + jev_eval_report.json: replay 740 реальных векторов (P 0.73/R 0.77 ON vs P 0.73/R 0.72 OFF, 5 уникальных спасений vs 2 routable-коллизии), sweep-полоса [0.25,0.5), матрица 19/19 ON |
 | 7 | Семантика инструментов аудит | **partial** | цикл 1: описания itinvent/office/kb/directory/network; продолжение pending |
-| 9 | Аргументы/валидация/coreference | pending | — |
+| 9 | Аргументы/валидация/coreference | **done-основное** | actionable errors field_path/args_hint/example, extra-forbidden fix (первопричина read_09-11); 10/10 тестов; coreference gap задокументирован |
 | 10 | MULTISTEP 25 real-LLM сценариев | pending | корпус ms_01..ms_25 существует, прогон pending |
 | 11 | Восстановление после ошибок | pending | — |
 | 12 | Полигон BLOCKED-маркировка | **partial** | `expect.external_source` + conn-hints → BLOCKED в валидаторе v2 |
