@@ -55,13 +55,13 @@
       "category": "READ",
       "prompt": "Покажи последние объявления",
       "expected_tools": [
-        "office.announcements.get"
+        "office.announcements.*"
       ],
       "required_facts": [
         "Бенч-объявление"
       ],
       "forbidden": [],
-      "note": "seeded announcements"
+      "note": "seeded announcements; real tool id is office.announcements.list"
     },
     {
       "id": "sd_direct_neg",
@@ -133,24 +133,22 @@
       "expected_tools": [
         "kb.articles.*"
       ],
-      "required_facts": [
-        "Бенч-инструкция"
-      ],
+      "required_facts": [],
       "forbidden": [],
-      "note": "seeded KB"
+      "note": "KB retrieval service stubbed in harness -> search legitimately empty"
     },
     {
       "id": "sd_files_01",
       "category": "READ",
-      "prompt": "Какие файлы у меня загружены?",
+      "prompt": "Найди мой файл bench-doc-007.txt",
       "expected_tools": [
         "me.files.search"
       ],
       "required_facts": [
-        "bench-doc"
+        "bench-doc-007"
       ],
       "forbidden": [],
-      "note": "30 seeded files for bench_actor"
+      "note": "30 seeded files; me.files.search requires query >= 2 chars"
     },
     {
       "id": "sd_acl_meonly",
@@ -194,10 +192,8 @@
       "prompt": "Почему у меня нет доступа к задачам?",
       "expected_tools": [],
       "required_facts": [],
-      "forbidden": [
-        "office.tasks.search"
-      ],
-      "note": "'почему' — анализ, не direct read"
+      "forbidden": [],
+      "note": "'почему' — аналитический запрос; direct-read НЕ должен сработать (проверяется по direct_read_hit=false), просмотр доступа через tasks-инструменты легитимен"
     }
   ]
 }
