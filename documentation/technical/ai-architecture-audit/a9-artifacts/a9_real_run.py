@@ -52,6 +52,10 @@ _parser.add_argument("--a9", choices=("on", "off"), default="on",
 _parser.add_argument("--env", default=str(ROOT.parent / "HUB-IT-main" / ".env"))
 _parser.add_argument("--limit", type=int, default=0)
 _parser.add_argument("--ids", default="")
+_parser.add_argument("--split", choices=("", "dev", "holdout"), default="",
+                     help="A11: run only scenarios of one split (corpus with split fields)")
+_parser.add_argument("--categories", default="",
+                     help="comma-separated scenario categories to include")
 _parser.add_argument("--corpus", default="")
 _parser.add_argument("--provider", choices=("routerai", "openrouter"), default="routerai")
 _parser.add_argument("--provider-retries", type=int, default=1,
@@ -409,6 +413,11 @@ scenarios = corpus["scenarios"] if isinstance(corpus, dict) else corpus
 if _args.ids:
     wanted = {s.strip() for s in _args.ids.split(",") if s.strip()}
     scenarios = [s for s in scenarios if s["id"] in wanted]
+if _args.split:
+    scenarios = [s for s in scenarios if (s.get("split") or "dev") == _args.split]
+if _args.categories:
+    wanted_cats = {c.strip() for c in _args.categories.split(",") if c.strip()}
+    scenarios = [s for s in scenarios if (s.get("category") or "") in wanted_cats]
 if _args.limit:
     scenarios = scenarios[: _args.limit]
 
@@ -562,26 +571,50 @@ for idx, scenario in enumerate(scenarios, 1):
                 seq += 1
                 _send(conv["id"], int(scn_actor["id"]), seq,
                       f"История {i}: обсуждали оборудование в кабинете 201, картриджи HP и заявки склада.")
-        seq += 1
-        trigger_id = f"msg-{conv['id']}-{seq}"
-        _send(conv["id"], int(scn_actor["id"]), seq, prompt)
-
-        calls_start, jev_start, harness_exc, wall_ms = _attempt(
-            conv["id"], trigger_id, int(scn_actor["id"]))
-        recs = LLM_CALLS[calls_start:]
-        jevs = JEV_CALLS[jev_start:]
-        run_row = _run_row_for_trigger(conv["id"], trigger_id)
-        result_json = run_row.get("result_json") or {}
-        usage_json = run_row.get("usage_json") or {}
-        result_message_id = result_json.get("result_message_id")
+        # A11 v3: multi-turn scenarios. ``turns`` is a list of user messages
+        # executed sequentially in one conversation; tools/tokens aggregate
+        # across turns, the answer under test is the LAST turn's answer.
+        turn_texts = list(scenario.get("turns") or []) or [prompt]
+        conv_calls_start, conv_jev_start = len(LLM_CALLS), len(JEV_CALLS)
+        harness_exc = None
+        wall_ms = 0
+        turn_answers = []
+        traces = []
+        run_row = {}
+        result_json = {}
+        usage_json = {}
+        result_message_id = None
+        answer = {"id": None, "body": "", "sender_ok": False}
         _buid = bot.get("bot_user_id") if isinstance(bot, dict) else getattr(bot, "bot_user_id", None)
         bot_user_id = int(_buid or 0) or None
-        answer = _assistant_message(conv["id"], result_message_id, bot_user_id)
+        for turn_text in turn_texts:
+            seq += 1
+            trigger_id = f"msg-{conv['id']}-{seq}"
+            _send(conv["id"], int(scn_actor["id"]), seq, turn_text)
+            _cs, _js, turn_exc, turn_wall = _attempt(
+                conv["id"], trigger_id, int(scn_actor["id"]))
+            wall_ms += turn_wall
+            if turn_exc and not harness_exc:
+                harness_exc = turn_exc
+            turn_row = _run_row_for_trigger(conv["id"], trigger_id)
+            turn_result = turn_row.get("result_json") or {}
+            turn_usage = turn_row.get("usage_json") or {}
+            turn_mid = turn_result.get("result_message_id")
+            turn_answer = _assistant_message(conv["id"], turn_mid, bot_user_id)
+            turn_answers.append({"prompt": turn_text, "answer": turn_answer["body"][:500]})
+            traces.extend(t for t in (turn_result.get("tool_traces") or []) if isinstance(t, dict))
+            # The LAST turn's run/answer is the one under test.
+            run_row = turn_row
+            result_json = turn_result
+            usage_json = turn_usage
+            result_message_id = turn_mid
+            answer = turn_answer
+        recs = LLM_CALLS[conv_calls_start:]
+        jevs = JEV_CALLS[conv_jev_start:]
         answer_body = answer["body"]
 
         # --- tool calls: proposed (model) vs executed (DB traces) ---------
         proposed = [c.get("tool_id") for rec in recs for c in (rec.get("tool_calls") or []) if c.get("tool_id")]
-        traces = [t for t in (result_json.get("tool_traces") or []) if isinstance(t, dict)]
         executed = [_summarize_trace(t) for t in traces]
         executed_ids = [t["tool_id"] for t in executed if t.get("tool_id")]
         # Local meta-tools still count as executed steps but are not "tools"
@@ -630,6 +663,98 @@ for idx, scenario in enumerate(scenarios, 1):
                 if got_f != want_f:
                     expect_failures.append(f"{_flag}: want {want_f}, got {got_f}")
 
+        # --- A11 v3: argument correctness -----------------------------------
+        # expect.tool_args: {"office.tasks.search": {"status": "active"}} —
+        # at least one executed call to a matching tool must carry args that
+        # are a superset of the expected subset (str compare, case-insensitive).
+        tool_args_spec = expect.get("tool_args") if isinstance(expect.get("tool_args"), dict) else {}
+        for _pat, _want_args in tool_args_spec.items():
+            matched_calls = [
+                t for t in executed
+                if t.get("tool_id") and fnmatch.fnmatchcase(t["tool_id"], _pat)
+            ]
+            if not matched_calls:
+                continue  # missing tool is already covered by expected_tools
+            ok_args = False
+            for _t in matched_calls:
+                _a = {str(k).lower(): str(v).lower() for k, v in ((_t.get("args") or {}).items())}
+                if all(_a.get(str(k).lower()) == str(v).lower() for k, v in (_want_args or {}).items()):
+                    ok_args = True
+                    break
+            if not ok_args:
+                got_args = [(_t.get("args") or {}) for _t in matched_calls]
+                expect_failures.append(f"tool_args[{_pat}]: want superset of {_want_args}, got {got_args}")
+
+        # --- A11 v3: ACT safety — pending action cards ----------------------
+        # expect.pending_action: substring of action_type that MUST exist in
+        # status 'pending' for this conversation. expect.no_mutation: no
+        # executed mutating tool and no confirmed/executing action.
+        if expect.get("pending_action") or expect.get("no_mutation"):
+            try:
+                from backend.appdb.models import AppAiPendingAction
+                with grant_session(DB_URL) as _db:
+                    rows = (
+                        _db.query(AppAiPendingAction)
+                        .filter(AppAiPendingAction.conversation_id == conv["id"])
+                        .all()
+                    )
+                action_rows = [
+                    {"action_type": r.action_type, "status": r.status}
+                    for r in rows
+                ]
+            except Exception as exc:  # noqa: BLE001
+                action_rows = []
+                expect_failures.append(f"pending_action query failed: {exc}")
+            want_action = str(expect.get("pending_action") or "").lower()
+            if want_action:
+                if not any(
+                    want_action in str(r["action_type"]).lower() and r["status"] == "pending"
+                    for r in action_rows
+                ):
+                    expect_failures.append(
+                        f"pending_action: no pending action containing '{want_action}', got {action_rows}")
+            if expect.get("no_mutation"):
+                bad_status = [r for r in action_rows if r["status"] in ("confirmed", "executing")]
+                if bad_status:
+                    expect_failures.append(f"no_mutation: actions executed/confirmed {bad_status}")
+                try:
+                    from backend.ai_chat.service import _is_mutating_tool_id
+                    mutating = [t for t in executed_real_ids if _is_mutating_tool_id(t)]
+                    # Communication drafts are allowed to execute as DRAFTS
+                    # (they create pending cards, not mutations); the mutation
+                    # itself only happens on user confirmation.
+                    mutating = [t for t in mutating if t not in (
+                        "me.files.attach",)]
+                    if mutating and expect.get("strict_no_mutation"):
+                        expect_failures.append(f"no_mutation: mutating tools executed {mutating}")
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # --- A11 v3: answer sanity ------------------------------------------
+        if expect.get("min_answer_len"):
+            if len(answer_body.strip()) < int(expect["min_answer_len"]):
+                expect_failures.append(
+                    f"min_answer_len: answer len {len(answer_body.strip())} < {expect['min_answer_len']}")
+
+        # --- A11 v3: hallucination guard ------------------------------------
+        # Bench entities are fully known. Any bench-task/employee reference in
+        # the answer that does not exist in ground truth is fabricated.
+        hallucinated = []
+        if _truth and not expect.get("skip_hallucination_check"):
+            valid_tasks = {f"бенч-задача {i:03d}" for i in range(1, int((_truth or {}).get("tasks_created") or 100) + 1)}
+            valid_emps = {n.lower() for n in ((_truth or {}).get("employee_names") or [])}
+            low_ans = answer_body.lower()
+            for m in re.finditer(r"бенч-задача\s*(\d{1,3})", low_ans):
+                ref = f"бенч-задача {int(m.group(1)):03d}"
+                if ref not in valid_tasks:
+                    hallucinated.append(ref)
+            for m in re.finditer(r"бенч сотрудник\s*(\d{1,3})", low_ans):
+                ref = f"бенч сотрудник {int(m.group(1)):03d}"
+                if ref not in valid_emps:
+                    hallucinated.append(ref)
+            if hallucinated:
+                expect_failures.append(f"hallucinated entities: {sorted(set(hallucinated))}")
+
         # --- tokens / cost (missing usage is reported, not zeroed) --------
         in_tok = sum(int(r["usage"]["prompt_tokens"]) for r in recs
                      if r.get("usage") and r["usage"].get("prompt_tokens") is not None)
@@ -662,8 +787,31 @@ for idx, scenario in enumerate(scenarios, 1):
 
         # --- correctness ---------------------------------------------------
         checks = bool(expected or forbidden or required_facts or forbidden_facts or expect)
+        # A11 v3 BLOCKED: the scenario depends on an external data source
+        # (ITINVENT SQL, Exchange, AD, 1C) that is unreachable in the contour —
+        # the expected tool was called but errored with connectivity hints.
+        # Such scenarios are honestly BLOCKED, never PASS.
+        blocked = False
+        if expect.get("external_source"):
+            conn_hints = re.compile(
+                r"(connect|timeout|timed out|unavailable|недоступ|refused|"
+                r"network|socket|odbc|pyodbc|tcp|host|eai_again|unreachable)",
+                re.IGNORECASE)
+            expected_traces = [
+                t for t in executed
+                if t.get("tool_id") and any(fnmatch.fnmatchcase(t["tool_id"], p) for p in expected)
+            ]
+            if expected_traces and all(
+                t.get("error") and conn_hints.search(str(t["error"])) for t in expected_traces
+            ):
+                blocked = True
+            elif not expected_traces and expected_missing:
+                # Tool never even ran AND no data path — cannot verify.
+                blocked = bool(expect.get("blocked_if_tool_missing"))
         if outcome == "failed":
             correctness = "FAIL" if checks else "NO_CHECK"
+        elif blocked:
+            correctness = "BLOCKED"
         elif expected_missing or forbidden_hit or facts_missing or forbidden_facts_hit or expect_failures:
             correctness = "FAIL"
         elif not checks:
@@ -781,6 +929,7 @@ agg = {
         "PASS": sum(1 for s in sc if s["correctness"] == "PASS"),
         "FAIL": sum(1 for s in sc if s["correctness"] == "FAIL"),
         "NO_CHECK": sum(1 for s in sc if s["correctness"] == "NO_CHECK"),
+        "BLOCKED": sum(1 for s in sc if s["correctness"] == "BLOCKED"),
     },
     "llm_calls_total": sum(s["llm_calls"] for s in sc),
     "jev_calls_total": sum(s["jev_calls"] for s in sc),

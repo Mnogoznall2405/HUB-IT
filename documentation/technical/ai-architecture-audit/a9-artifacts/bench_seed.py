@@ -265,6 +265,207 @@ def seed_kb(*, count: int = 10) -> list[str]:
     return ids
 
 
+# --- A11: topical KB articles in the REAL kb_service store -------------------
+# kb.articles.search reads kb_articles.json via JSONDataManager (app-db backed
+# in the bench contour), NOT the AppAiKbDocument index tables — seeding only
+# the index used to make kb scenarios unverifiable. Each article carries
+# distinctive facts for exact answer checking.
+KB_ARTICLES = [
+    {
+        "code": "vpn", "title": "Настройка VPN для удалённой работы",
+        "category": "сеть", "tags": ["vpn", "удалённая работа", "сеть"],
+        "summary": "Пошаговая настройка VPN-подключения для работы из дома.",
+        "body": ("Установите клиент BenchVPN 4.2 с портала. Сервер: vpn.bench.local, порт 1443. "
+                 "Логин — доменная учётная запись. После подключения проверьте доступ к portal.bench.local. "
+                 "При ошибке 809 перезагрузите клиент и повторите. Поддержка: доб. 7101."),
+        "facts": ["vpn.bench.local", "1443", "7101"],
+    },
+    {
+        "code": "password", "title": "Сброс пароля учётной записи",
+        "category": "учётные записи", "tags": ["пароль", "доступ", "учётная запись"],
+        "summary": "Самостоятельный сброс пароля и разблокировка учётной записи.",
+        "body": ("Пароль меняется через портал selfservice.bench.local раз в 90 дней. "
+                 "Минимальная длина — 12 символов. При блокировке после 5 неверных попыток "
+                 "подождите 15 минут или позвоните на доб. 7102. Не передавайте пароль коллегам."),
+        "facts": ["selfservice.bench.local", "90", "7102"],
+    },
+    {
+        "code": "cartridge", "title": "Замена картриджа в МФУ",
+        "category": "оргтехника", "tags": ["мфу", "картридж", "печать"],
+        "summary": "Порядок замены картриджа и запроса нового через склад.",
+        "body": ("Картридж меняется при остатке тонера ниже 10%. Извлеките старый картридж, "
+                 "встряхните новый 5 раз, снимите защитную ленту. Старый картридж сдайте на склад "
+                 "в кабинет 105. Запрос нового — через заявку на складе, срок поставки 3 дня. "
+                 "Вопросы: доб. 7103."),
+        "facts": ["10%", "105", "7103"],
+    },
+    {
+        "code": "vacation", "title": "Как оформить отпуск",
+        "category": "кадры", "tags": ["отпуск", "кадры", "заявление"],
+        "summary": "Порядок согласования и оформления ежегодного отпуска.",
+        "body": ("Заявление подаётся за 14 дней до начала отпуска через кадровую систему. "
+                 "Согласование: руководитель, затем отдел кадров (кабинет 208). "
+                 "Отпускные выплачиваются за 3 дня до начала. Контакт кадров: доб. 7104."),
+        "facts": ["14", "208", "7104"],
+    },
+    {
+        "code": "newcomer", "title": "Выдача оборудования новому сотруднику",
+        "category": "it", "tags": ["оборудование", "новый сотрудник", "onboarding"],
+        "summary": "Что выдаётся новому сотруднику в первый рабочий день.",
+        "body": ("Стандартный комплект: ноутбук BenchBook Pro, монитор 24\", гарнитура. "
+                 "Заявку создаёт руководитель за 5 рабочих дней до выхода. "
+                 "Выдача — кабинет 110, с 9:00 до 17:00. Контакт: доб. 7105."),
+        "facts": ["BenchBook Pro", "110", "7105"],
+    },
+    {
+        "code": "mailquota", "title": "Увеличение квоты почтового ящика",
+        "category": "почта", "tags": ["почта", "квота", "ящик"],
+        "summary": "Стандартная квота и порядок её увеличения.",
+        "body": ("Стандартная квота ящика — 2048 МБ. При заполнении свыше 90% приходит "
+                 "предупреждение. Увеличение до 4096 МБ — по заявке руководителя, срок 1 день. "
+                 "Архив старых писем хранится 2 года. Вопросы: доб. 7106."),
+        "facts": ["2048", "4096", "7106"],
+    },
+    {
+        "code": "wifi", "title": "Подключение к корпоративному Wi-Fi",
+        "category": "сеть", "tags": ["wifi", "сеть", "подключение"],
+        "summary": "Сети BENCH-CORP и BENCH-GUEST, сертификаты доступа.",
+        "body": ("Рабочая сеть — BENCH-CORP, вход по доменной учётной записи. "
+                 "Гостевая — BENCH-GUEST, пароль меняется каждый месяц, узнать можно на ресепшн. "
+                 "Сертификат обновляется автоматически. Проблемы: доб. 7107."),
+        "facts": ["BENCH-CORP", "BENCH-GUEST", "7107"],
+    },
+    {
+        "code": "laptoprepair", "title": "Ремонт ноутбука",
+        "category": "it", "tags": ["ремонт", "ноутбук", "сервис"],
+        "summary": "Куда сдавать ноутбук в ремонт и что получить на замену.",
+        "body": ("Неисправный ноутбук сдаётся в кабинет 110 с актом приёма-передачи. "
+                 "На время ремонта выдаётся подменный BenchBook Air. "
+                 "Срок типового ремонта — 5 рабочих дней. Данные с диска не гарантируются — "
+                 "храните файлы в сетевой папке. Вопросы: доб. 7108."),
+        "facts": ["BenchBook Air", "5", "7108"],
+    },
+]
+
+
+def seed_kb_articles() -> list[dict]:
+    """Publish the topical articles into the REAL kb_service store so
+    kb.articles.search can actually find them (idempotent by title)."""
+    from backend.services.kb_service import kb_service
+
+    rows = kb_service.data_manager.load_json("kb_articles.json", default_content=[])
+    if not isinstance(rows, list):
+        rows = []
+    existing_titles = {str(r.get("title") or "") for r in rows if isinstance(r, dict)}
+    now = _utcnow().isoformat()
+    out = []
+    for spec in KB_ARTICLES:
+        title = f"Бенч-KB: {spec['title']}"
+        if title in existing_titles:
+            row = next(r for r in rows if r.get("title") == title)
+        else:
+            row = {
+                "id": f"bench-kba-{spec['code']}",
+                "title": title,
+                "category": spec["category"],
+                "article_type": "runbook",
+                "status": "published",
+                "summary": spec["summary"],
+                "tags": list(spec["tags"]),
+                "owner_user_id": None,
+                "owner_name": "bench",
+                "department_id": None,
+                "visibility_scope": "global",
+                "version": 1,
+                "created_at": now,
+                "updated_at": now,
+                "created_by": "bench",
+                "updated_by": "bench",
+                "content": {"overview": spec["body"], "resolution_steps": [spec["body"]]},
+                "primary_attachment_id": None,
+                "attachments": [],
+                "revisions": [],
+            }
+            rows.append(row)
+        out.append({"id": row["id"], "title": title, "facts": spec["facts"], "code": spec["code"]})
+    kb_service.data_manager.save_json("kb_articles.json", rows)
+    return out
+
+
+# Announcement titles deliberately overlapping KB topics — routing must pick
+# the authoritative source (KB for how-to, announcements for news/events).
+TRAP_ANNOUNCEMENTS = [
+    ("Плановые работы VPN в субботу", "В субботу с 02:00 до 06:00 VPN будет недоступен — плановое обновление сервера."),
+    ("Замена картриджей в бухгалтерии", "В четверг техник обойдёт бухгалтерию для плановой замены картриджей."),
+    ("Новые правила отпусков с марта", "С марта заявление на отпуск подаётся за 21 день вместо 14."),
+]
+
+
+def seed_trap_announcements(hub_service, users: dict) -> list[dict]:
+    admin = users["bench_admin"]
+    out = []
+    existing_titles = set()
+    try:
+        for row in hub_service.list_announcements(user_id=int(admin["id"]), limit=200).get("items") or []:
+            existing_titles.add(str(row.get("title") or ""))
+    except Exception:
+        pass
+    for i, (title, body) in enumerate(TRAP_ANNOUNCEMENTS, 1):
+        full_title = f"Бенч-объявление: {title}"
+        if full_title in existing_titles:
+            continue
+        try:
+            out.append(hub_service.create_announcement(
+                payload={"title": full_title, "body": body, "status": "published"},
+                actor=admin,
+            ))
+        except Exception:
+            break
+    return out
+
+
+# Natural file names for realistic "find my file" queries.
+SPECIAL_FILES = [
+    "акт-приёма-передачи-ноутбука.txt",
+    "отчёт-за-май.txt",
+    "договор-поставки-2024.txt",
+    "презентация-проекта.txt",
+    "акт-сверки.txt",
+]
+
+
+def seed_special_files(users: dict) -> list[dict]:
+    from backend.appdb.db import app_session
+    from backend.appdb.models import AppMyFile
+
+    actor = users["bench_actor"]
+    out = []
+    with app_session() as session:
+        existing = {
+            row[0]
+            for row in session.query(AppMyFile.original_file_name).all()
+        }
+        for i, name in enumerate(SPECIAL_FILES, 1):
+            fid = f"bench-special-{i:03d}"
+            if name in existing:
+                continue
+            session.add(AppMyFile(
+                id=fid, owner_user_id=int(actor["id"]),
+                owner_username=actor["username"],
+                uploaded_by_user_id=int(actor["id"]),
+                original_file_name=name,
+                download_file_name=name,
+                mime_type="text/plain", download_mime_type="text/plain",
+                original_size_bytes=2048 * i, stored_size_bytes=2048 * i,
+                retention_days=30, status="ready",
+                expires_at=_utcnow() + timedelta(days=30),
+                storage_mode="spool", spool_path=f"bench/{fid}.txt",
+            ))
+            out.append({"id": fid, "name": name})
+        session.commit()
+    return out
+
+
 def seed_my_files(users: dict, *, count: int = 30) -> list[str]:
     from backend.appdb.db import app_session
     from backend.appdb.models import AppMyFile
@@ -301,18 +502,25 @@ def seed_all(*, user_service, hub_service, task_count: int = 100) -> dict:
     tasks = seed_tasks(hub_service, users, count=task_count)
     anns = seed_announcements(hub_service, users)
     kb_ids = seed_kb()
+    kb_articles = seed_kb_articles()
+    trap_anns = seed_trap_announcements(hub_service, users)
     file_ids = seed_my_files(users)
+    special_files = seed_special_files(users)
     truth = {
         "employees_total": len(employees),
         "departments": DEPARTMENTS,
         "employee_names": [e["full_name"] for e in employees],
         "employee_by_code": {e["employee_code"]: e for e in employees},
+        "employees": employees,
         "org_node_ids": org_ids,
         "users": {k: {"id": int(v["id"]), "username": v["username"]} for k, v in users.items()},
         "tasks_created": len(tasks),
         "actor_open_tasks": 8,
         "announcements": len(anns),
         "kb_docs": kb_ids,
+        "kb_articles": kb_articles,
+        "trap_announcements": len(trap_anns),
         "my_files": file_ids,
+        "special_files": special_files,
     }
     return truth
