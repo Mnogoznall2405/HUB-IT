@@ -704,3 +704,50 @@ def test_top1_rescue_off_does_not_block_confident_routing(monkeypatch):
     )
     assert "office" in result
     assert result.intent_mode == "read"
+
+
+# ---------- A11 c3 (ctx_14): borderline chat vs meaningful group mass ----------
+
+
+def test_borderline_chat_with_strong_group_mass_rescues_group(monkeypatch):
+    """ctx_14 regression: a follow-up ('А гостевой как называется?') scored
+    chat exactly at the 0.5 threshold with kb at 0.49 — a coin flip, not a
+    confident conversation. Meaningful group mass must contradict the chat
+    verdict exactly like a routed group does (A5.1): the run keeps the rescued
+    group under a READ ceiling instead of losing every tool."""
+    monkeypatch.delenv("AI_JEV_TOP1_RESCUE", raising=False)
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_kb": 0.49, "g_chat": 0.26, "g_network": 0.15, "m_mode_chat": 0.5, "m_mode_act": 0.02}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="А гостевой как называется?",
+        available_groups={"kb", "chat", "network", "other"},
+    )
+    assert result.intent_mode == "read"
+    assert "kb" in result
+
+
+def test_confident_chat_with_noise_group_mass_stays_chat(monkeypatch):
+    """Noise-level group probabilities (< rescue floor) must not block a
+    confident CHAT: pure conversation still drops every tool."""
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_itinvent": 0.1, "g_kb": 0.08, "m_mode_chat": 0.9, "m_mode_act": 0.05}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="расскажи анекдот про принтеры",
+        available_groups={"itinvent", "kb", "other"},
+    )
+    assert result == set()
+    assert result.intent_mode == "chat"
+
+
+def test_borderline_chat_rescue_flag_off_keeps_chat(monkeypatch):
+    """AI_JEV_TOP1_RESCUE=0 restores the pre-fix behavior for the same
+    borderline vector — the flag governs both rescue paths."""
+    monkeypatch.setenv("AI_JEV_TOP1_RESCUE", "0")
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_kb": 0.49, "m_mode_chat": 0.5, "m_mode_act": 0.02}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="А гостевой как называется?",
+        available_groups={"kb", "other"},
+    )
+    assert result.intent_mode == "chat"
+    assert "kb" not in result

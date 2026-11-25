@@ -783,6 +783,79 @@ def test_ai_files_create_tool_returns_structured_diagnostic_on_generator_error()
     assert result["ok"] is False
     assert result["data"]["diagnostic"]["error_code"] == "invalid_rows_shape"
     assert result["data"]["diagnostic"]["field_path"] == "rows"
+    # A11 c3 (doc_08): generator errors are runtime errors, not schema
+    # validation errors, so the model never saw the actionable args_hint
+    # examples and repeated the same wrong rows shape. The diagnostic now
+    # carries a format-targeted minimal valid example — for csv a table with
+    # a header row.
+    example = result["data"]["diagnostic"]["example"]
+    assert isinstance(example, dict)
+    example_rows = example["files"][0]["rows"]
+    assert isinstance(example_rows, list) and example_rows
+    assert all(isinstance(row, list) for row in example_rows)
+    assert isinstance(example_rows[0], list)  # header row first
+
+
+def test_ai_files_create_json_error_example_uses_content_shape():
+    """doc_08: for json the model was told (via the rows error) to build a
+    table, which is wrong — json wants object/array content. The example for
+    json files must demonstrate the content field shape instead."""
+    from backend.ai_chat.tools.files import FilesCreateArgs, FilesCreateTool
+
+    result = FilesCreateTool().execute(
+        context=_make_context(),
+        args=FilesCreateArgs.model_validate({
+            "files": [{"format": "json", "file_name": "bad", "rows": ["flat", "cells"]}]
+        }),
+    ).to_payload()
+
+    assert result["ok"] is False
+    diagnostic = result["data"]["diagnostic"]
+    assert diagnostic["error_code"] == "invalid_rows_shape"
+    example = diagnostic["example"]
+    example_file = example["files"][0]
+    assert "content" in example_file
+    assert isinstance(example_file["content"], list)
+    assert all(isinstance(item, dict) for item in example_file["content"])
+
+
+def test_generated_json_with_content_tolerates_invalid_rows():
+    """doc_08 regression: the model passed BOTH content (a valid json array)
+    and a junk flat rows list; the hard rows error killed the whole artifact
+    even though nothing in the json builder ever reads rows. For json the
+    rows field is dead weight — it is dropped with a salvage instead of
+    failing the artifact."""
+    from backend.ai_chat.artifact_generator import normalize_generated_file_specs
+
+    specs = normalize_generated_file_specs([{
+        "format": "json",
+        "file_name": "tasks.json",
+        "title": "Задачи",
+        "content": [{"task": "A"}, {"task": "B"}],
+        "rows": ["flat", "junk", "cells"],
+    }])
+
+    assert len(specs) == 1
+    assert specs[0]["content"] == [{"task": "A"}, {"task": "B"}]
+    assert specs[0]["rows"] == []
+
+
+def test_generated_csv_flat_rows_still_rejected():
+    """Leniency is json-only: for table formats a flat rows list means the
+    model produced no table at all — that must keep failing loudly, otherwise
+    the format-choice probe (which validates with txt) would silently lose
+    the table structure."""
+    import pytest
+    from backend.ai_chat.artifact_generator import GeneratedFileError, normalize_generated_file_specs
+
+    with pytest.raises(GeneratedFileError, match="flat list"):
+        normalize_generated_file_specs([{
+            "format": "csv", "file_name": "x.csv", "rows": ["not", "a", "table"]
+        }])
+    with pytest.raises(GeneratedFileError, match="flat list"):
+        normalize_generated_file_specs([{
+            "format": "json", "file_name": "x.json", "rows": ["flat"]
+        }])
 
 
 def test_ai_files_report_tool_respects_generated_files_master_switch():

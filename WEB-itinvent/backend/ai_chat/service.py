@@ -811,6 +811,15 @@ REPORT_FORMAT_ALIASES = {
     "word": "docx",
     "ворд": "docx",
     "csv": "csv",
+    # A11 c3 (doc_08): the format-choice card itself offers txt/md/json
+    # (action_cards.REPORT_FORMAT_CHOICES), so an explicit user request for one
+    # of them must count as a chosen format too — otherwise 'создай json-файл'
+    # was treated as "no format" and the answer got hijacked into the
+    # format-choice card even after a successful direct creation.
+    "txt": "txt",
+    "md": "md",
+    "markdown": "md",
+    "json": "json",
 }
 # Strong file/report intent keywords - reliable on their own (no false positives on tasks/comments).
 FILE_REPORT_INTENT_KEYWORDS = (
@@ -846,6 +855,15 @@ FILE_REPORT_INTENT_SOFT_VERBS = (
     "сделать",
     "построй",
     "построить",
+    # A11 c3 (doc_05/doc_07): «сгенерируй файл» and «подготовь файл-инструкцию»
+    # missed the intent entirely — the user got an inconsistent plain-text
+    # format question instead of the designed format-choice card flow.
+    "сгенерируй",
+    "сгенерировать",
+    "подготовь",
+    "подготовить",
+    "собери",
+    "собрать",
     "make",
     "build",
     "create",
@@ -1703,7 +1721,6 @@ def _route_tool_groups_jev(
         not routed
         and group_questions
         and probs
-        and chat_prob < threshold
         and _env_flag("AI_JEV_TOP1_RESCUE", True)
     ):
         # A11 c3: deterministic tie-break. max() over a dict resolves equal
@@ -1713,6 +1730,16 @@ def _route_tool_groups_jev(
         best_group, best_prob = sorted(
             probs.items(), key=lambda item: (-item[1], str(item[0]))
         )[0]
+        # A11 c3 (ctx_14): the rescue must also fire when chat_prob crosses the
+        # threshold. Meaningful group mass (>= the rescue floor) contradicts a
+        # "pure conversation" verdict just like a routed group does (A5.1) —
+        # otherwise a borderline coin-flip chat answer (0.5) with strong
+        # sub-threshold group signal (kb 0.49) stripped ALL tools from a
+        # context-dependent follow-up and the model fabricated an honest-miss.
+        # Noise-level mass (< floor) keeps the confident-chat path intact.
+        # READ is strictly safer than CHAT here: the model may still decline
+        # the tools and answer conversationally, but it cannot recover groups
+        # it never sees.
         if best_prob >= max(0.2, threshold * 0.5):
             routed.add(best_group)
             jev_selected = True
@@ -9031,7 +9058,9 @@ class AiChatService:
                         "Never promise to make another live query later unless you return the needed tool_calls now. "
                         "When file tools are available and the user explicitly asks to create/export/send a file, "
                         "call ai.files.report or ai.files.create; do not only describe that a file can be created. "
-                        "If the user asks for a file/report but does not specify xlsx, pdf, docx or csv, gather live data first, "
+                        "If the user named any supported format — xlsx, pdf, docx, csv, txt, md or json — pass it as the file "
+                        "format and create the file in this run. "
+                        "If the user asks for a file/report but does not specify a format, gather live data first, "
                         "then return a short summary and do not call file tools yet; the app will ask the user to choose a format."
                     ),
                     AI_ANSWER_STYLE_GUIDE,
@@ -9895,8 +9924,8 @@ class AiChatService:
                         "answer_instructions",
                         "If the available tool results are enough, return the final user-facing answer in Russian markdown. "
                         "If another enabled tool is still required, return tool_calls for the next step instead of a placeholder. "
-                        "If the user asked for a file and explicitly specified xlsx/pdf/docx/csv, return an ai.files.report or ai.files.create tool_call when available. "
-                        "If the user did not specify xlsx/pdf/docx/csv, summarize the collected data and wait for the app's format choice card. "
+                        "If the user asked for a file and explicitly specified a format (xlsx/pdf/docx/csv/txt/md/json), return an ai.files.report or ai.files.create tool_call when available. "
+                        "If the user did not specify a format, summarize the collected data and wait for the app's format choice card. "
                         "When you use live ITinvent data in the final answer, cite the source as 'Источник: ITinvent / <database_id>'. "
                         "Keep the answer structured: short summary first, then sections or a table, then the source line. "
                         "Do not re-call tools for data already present in the running summary above. "
@@ -10160,6 +10189,11 @@ class AiChatService:
             and file_tools_available
             and accumulated_tool_results
             and not file_format_choice_created
+            # A11 c3 (doc_08): never hijack a run whose file tools already
+            # produced real files — discarding generated_file_specs here threw
+            # away the model's finished work and replaced it with a generic
+            # card rebuilt from raw tool rows.
+            and not generated_file_specs
         ):
             report_choice_payload = _build_report_choice_payload(
                 trigger_text=trigger_text_for_routing,

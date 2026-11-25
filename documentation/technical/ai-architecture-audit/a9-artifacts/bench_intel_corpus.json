@@ -1,6 +1,6 @@
 {
  "meta": {
-  "version": "a11-v4",
+  "version": "a11-v5",
   "generator": "bench_corpus_gen.py",
   "categories": {
    "ACT": 20,
@@ -2979,28 +2979,32 @@
    "category": "DOCS",
    "split": "dev",
    "expected_tools": [
-    "office.tasks.search",
-    "ai.files.*"
+    "office.tasks.search"
    ],
    "forbidden": [],
-   "required_facts": [],
+   "required_facts": [
+    "формат"
+   ],
    "forbidden_facts": [],
    "expect": {},
-   "prompt": "Сделай отчёт по моим задачам"
+   "prompt": "Сделай отчёт по моим задачам",
+   "note": "no format specified: designed behavior is data + format-choice card, not file creation"
   },
   {
    "id": "doc_05",
    "category": "DOCS",
    "split": "dev",
    "expected_tools": [
-    "directory.people.search",
-    "ai.files.*"
+    "directory.people.search"
    ],
    "forbidden": [],
-   "required_facts": [],
+   "required_facts": [
+    "формат"
+   ],
    "forbidden_facts": [],
    "expect": {},
-   "prompt": "Сгенерируй файл со списком сотрудников Бенч-Отдел-01"
+   "prompt": "Сгенерируй файл со списком сотрудников Бенч-Отдел-01",
+   "note": "no format specified: designed behavior is data + format-choice card"
   },
   {
    "id": "doc_06",
@@ -3021,14 +3025,16 @@
    "category": "DOCS",
    "split": "dev",
    "expected_tools": [
-    "kb.articles.search",
-    "ai.files.*"
+    "kb.articles.search"
    ],
    "forbidden": [],
-   "required_facts": [],
+   "required_facts": [
+    "формат"
+   ],
    "forbidden_facts": [],
    "expect": {},
-   "prompt": "Подготовь файл-инструкцию по VPN на основе базы знаний"
+   "prompt": "Подготовь файл-инструкцию по VPN на основе базы знаний",
+   "note": "no format specified: designed behavior is data + format-choice card"
   },
   {
    "id": "doc_08",
@@ -3063,15 +3069,16 @@
    "category": "DOCS",
    "split": "dev",
    "expected_tools": [
-    "me.files.search",
-    "ai.files.*"
+    "me.files.search"
    ],
    "forbidden": [],
-   "required_facts": [],
+   "required_facts": [
+    "формат"
+   ],
    "forbidden_facts": [],
    "expect": {},
    "prompt": "Выгрузи мои файлы в таблицу",
-   "note": "watch: model must use correct tool order"
+   "note": "no explicit format: data + format-choice; list-all must not require a query (doc_10 regression)"
   },
   {
    "id": "sec_01",

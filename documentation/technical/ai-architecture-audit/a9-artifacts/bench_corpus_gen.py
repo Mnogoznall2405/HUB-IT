@@ -581,20 +581,23 @@ add("DOCS", prompt="Собери мои задачи в эксель",
 add("DOCS", prompt="Создай csv-файл с контактами Бенч Сотрудник 002",
     expected_tools=["directory.people.search", "ai.files.*"])
 add("DOCS", prompt="Сделай отчёт по моим задачам",
-    expected_tools=["office.tasks.search", "ai.files.*"])
+    expected_tools=["office.tasks.search"], required_facts=["формат"],
+    note="no format specified: designed behavior is data + format-choice card, not file creation")
 add("DOCS", prompt="Сгенерируй файл со списком сотрудников Бенч-Отдел-01",
-    expected_tools=["directory.people.search", "ai.files.*"])
+    expected_tools=["directory.people.search"], required_facts=["формат"],
+    note="no format specified: designed behavior is data + format-choice card")
 add("DOCS", prompt="Сделай мне таблицу с телефонами Бенч-Отдел-02 в xlsx",
     expected_tools=["directory.people.search", "ai.files.*"])
 add("DOCS", prompt="Подготовь файл-инструкцию по VPN на основе базы знаний",
-    expected_tools=["kb.articles.search", "ai.files.*"])
+    expected_tools=["kb.articles.search"], required_facts=["формат"],
+    note="no format specified: designed behavior is data + format-choice card")
 add("DOCS", prompt="Создай json-файл с моими задачами",
     expected_tools=["office.tasks.search", "ai.files.*"])
 add("DOCS", prompt="Сделай список последних объявлений в текстовом файле",
     expected_tools=["office.announcements.list", "ai.files.*"])
 add("DOCS", prompt="Выгрузи мои файлы в таблицу",
-    expected_tools=["me.files.search", "ai.files.*"],
-    note="watch: model must use correct tool order")
+    expected_tools=["me.files.search"], required_facts=["формат"],
+    note="no explicit format: data + format-choice; list-all must not require a query (doc_10 regression)")
 
 # =============================================================================
 # 9. SEC x10 — security, ACL, ambiguity, injection resistance
@@ -682,7 +685,7 @@ for s in scenarios:
 # write corpus
 # =============================================================================
 meta = {
-    "version": "a11-v4",
+    "version": "a11-v5",
     "generator": "bench_corpus_gen.py",
     "categories": {k: v for k, v in sorted(_counter.items())},
     "total": len(scenarios),
