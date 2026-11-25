@@ -60,6 +60,12 @@ _parser.add_argument("--corpus", default="")
 _parser.add_argument("--provider", choices=("routerai", "openrouter"), default="routerai")
 _parser.add_argument("--provider-retries", type=int, default=1,
                     help="re-run a scenario on a fresh conversation when ALL failures are provider-side")
+add_argument("--resume", choices=("0", "1"), default="0",
+             help="reuse completed/degraded entries from the existing out file; "
+                  "re-run only failed or missing scenarios (hash-verified)")
+add_argument("--failfast", type=int, default=5,
+             help="abort after N consecutive provider-failed scenarios (0=never)")
+
 _parser.add_argument("--set", dest="flag_overrides", action="append", default=[],
                     metavar="KEY=VALUE", help="pin arbitrary env flags (repeatable)")
 _parser.add_argument("--seed", action="store_true",
@@ -554,11 +560,43 @@ def _attempt(conversation_id: str, trigger_id: str, current_user_id: int):
     return calls_start, jev_start, exc_text, wall_ms
 
 
+
+# --- A11 c2 §16: resume ------------------------------------------------------
+# Reuse entries whose run actually completed (completed/degraded) from the
+# existing artifact; re-run failed/missing ones. Version mixing is refused:
+# code/corpus/seed hashes must match exactly.
+_reusable: dict[str, dict] = {}
+if _args.resume == "1" and out_path.exists():
+    try:
+        _prev = json.loads(out_path.read_text(encoding="utf-8"))
+        _prev_env = _prev.get("env") or {}
+        _mismatches = [
+            key for key in ("code_sha", "corpus_sha256", "seed_sha256")
+            if _prev_env.get(key) and results["env"].get(key) and _prev_env.get(key) != results["env"].get(key)
+        ]
+        if _mismatches:
+            print(f"[resume] REFUSED: hash mismatch {_mismatches} — results would mix versions", flush=True)
+        else:
+            for _e in (_prev.get("scenarios") or []):
+                if _e.get("outcome") in ("completed", "degraded") and (_e.get("answer") or {}).get("body"):
+                    _reusable[_e["id"]] = _e
+            print(f"[resume] reusing {len(_reusable)} completed entries, re-running the rest", flush=True)
+    except Exception as _exc:  # noqa: BLE001
+        print(f"[resume] failed to load previous artifact: {_exc} — full run", flush=True)
+
+_consecutive_provider_failures = 0
+
 print(f"[a9_real v2] {len(scenarios)} scenarios, jev={_args.jev}, a9={_args.a9}, "
       f"provider={_args.provider}, root={ROOT}", flush=True)
 
 for idx, scenario in enumerate(scenarios, 1):
     sid = scenario["id"]
+    if sid in _reusable:
+        results["scenarios"].append(_reusable[sid])
+        _ru_outcome = _reusable[sid]["outcome"]
+        _ru_correct = _reusable[sid]["correctness"]
+        print(f"[{idx}/{len(scenarios)}] {sid}: reused ({_ru_outcome}/{_ru_correct})", flush=True)
+        continue
     category = scenario.get("category") or ""
     prompt = scenario.get("prompt") or ""
     expected = list(scenario.get("expected_tools") or [])
@@ -821,16 +859,97 @@ for idx, scenario in enumerate(scenarios, 1):
             elif not expected_traces and expected_missing:
                 # Tool never even ran AND no data path — cannot verify.
                 blocked = bool(expect.get("blocked_if_tool_missing"))
+        # --- A11 c2 §13: outcome taxonomy ----------------------------------
+        # Binary PASS/FAIL hid exactly the defects the directive demands to
+        # separate: a validation-errored tool with a lucky answer used to count
+        # as PASS (read_40), and a correct safety clarification looked like a
+        # missing-action FAIL (act_01). The corpus declares the expected
+        # outcome class; the validator derives the actual one from evidence.
+        expected_outcome = str(
+            expect.get("outcome") or scenario.get("expected_outcome") or "success"
+        ).strip().lower()
+
+        # Errors in EXPECTED tools: the scenario cannot be a full success when
+        # its authoritative data path errored — at best PARTIAL.
+        expected_tool_errors = [
+            t for t in executed
+            if t.get("error") and t.get("tool_id")
+            and any(fnmatch.fnmatchcase(t["tool_id"], p) for p in expected)
+        ]
+        # Clarification evidence: the assistant asks the user a question and
+        # no mutating/draft action was successfully created.
+        action_executed = [
+            t for t in executed
+            if t.get("tool_id") and (".action." in str(t["tool_id"]) or str(t["tool_id"]).endswith("_draft"))
+            and not t.get("error")
+        ]
+        looks_clarification = bool(answer_body.strip()) and (
+            "?" in answer_body
+            or "уточните" in answer_body.lower()
+            or "укажите" in answer_body.lower()
+        )
+        hard_fail = bool(expected_missing or forbidden_hit or forbidden_facts_hit)
+        halluc_fail = any("hallucinated" in str(f) for f in expect_failures)
+        other_expect_failures = [
+            f for f in expect_failures if "hallucinated" not in str(f)
+        ]
+
         if outcome == "failed":
-            correctness = "FAIL" if checks else "NO_CHECK"
+            result_type = "BLOCKED" if blocked else "FAILED"
         elif blocked:
+            result_type = "BLOCKED"
+        elif hard_fail or halluc_fail:
+            result_type = "FAILED"
+        elif expected_outcome == "clarification":
+            if looks_clarification and not action_executed and not facts_missing:
+                result_type = "CORRECT_CLARIFICATION"
+            elif looks_clarification and not action_executed:
+                result_type = "PARTIAL"
+            else:
+                result_type = "FAILED"
+        elif expected_outcome == "refusal":
+            if not forbidden_hit and not forbidden_facts_hit and not action_executed:
+                result_type = "CORRECT_REFUSAL" if not other_expect_failures else "PARTIAL"
+            else:
+                result_type = "FAILED"
+        elif expected_outcome == "not_found":
+            nf_markers = ("не найден", "не нашёл", "не удалось найти", "отсутствует", "нет данных", "не обнаруж")
+            if any(m in answer_body.lower() for m in nf_markers) and not facts_missing and not other_expect_failures:
+                result_type = "CORRECT_NOT_FOUND"
+            elif any(m in answer_body.lower() for m in nf_markers):
+                result_type = "PARTIAL"
+            else:
+                result_type = "FAILED"
+        elif expected_tool_errors:
+            # Data path errored: never full success. PARTIAL only when the
+            # answer still carries every required fact without fabrication.
+            result_type = "PARTIAL" if (not facts_missing and not other_expect_failures and answer_body.strip()) else "FAILED"
+        elif facts_missing or forbidden_facts_hit or other_expect_failures:
+            present_ratio = 0.0
+            if required_facts:
+                present_ratio = sum(
+                    1 for f in required_facts if f.lower() in answer_body.lower()
+                ) / max(1, len(required_facts))
+            result_type = "PARTIAL" if present_ratio >= 0.5 and not other_expect_failures else "FAILED"
+        else:
+            result_type = "SUCCESS"
+
+        pass_types = {
+            "success": {"SUCCESS"},
+            "clarification": {"CORRECT_CLARIFICATION"},
+            "refusal": {"CORRECT_REFUSAL"},
+            "not_found": {"CORRECT_NOT_FOUND"},
+        }
+        if result_type == "BLOCKED":
             correctness = "BLOCKED"
-        elif expected_missing or forbidden_hit or facts_missing or forbidden_facts_hit or expect_failures:
-            correctness = "FAIL"
         elif not checks:
             correctness = "NO_CHECK"
-        else:
+        elif result_type in pass_types.get(expected_outcome, {"SUCCESS"}):
             correctness = "PASS"
+        elif result_type in ("PARTIAL",):
+            correctness = "PARTIAL"
+        else:
+            correctness = "FAIL"
 
         # Fallback reasons, observable from the run itself.
         fallback_reasons = []
@@ -852,6 +971,12 @@ for idx, scenario in enumerate(scenarios, 1):
             "attempt": attempt_no,
             "outcome": outcome,
             "correctness": correctness,
+            "result_type": result_type,
+            "expected_outcome": expected_outcome,
+            "expected_tool_errors": [
+                {"tool_id": t.get("tool_id"), "error": str(t.get("error"))[:200]}
+                for t in expected_tool_errors
+            ],
             "run": {
                 "id": run_row.get("id"),
                 "status": run_status,
@@ -928,6 +1053,16 @@ for idx, scenario in enumerate(scenarios, 1):
           + (f" fp" if entry["flags"].get("fast_path_hit") else "")
           + (f" dr" if entry["flags"].get("direct_read_hit") else ""), flush=True)
     _dump()
+    # §16 fail-fast: a provider outage must not burn the whole corpus (and the
+    # quota) with garbage failures. Consecutive provider-only failures trip it.
+    if entry["outcome"] == "failed" and entry["errors"]["provider"] and not entry["errors"]["app"]:
+        _consecutive_provider_failures += 1
+    else:
+        _consecutive_provider_failures = 0
+    if _args.failfast and _consecutive_provider_failures >= _args.failfast:
+        results["aborted"] = f"provider_outage after {_consecutive_provider_failures} consecutive failures"
+        print(f"[failfast] {results['aborted']} — aborting; use --resume 1 after recovery", flush=True)
+        break
 
 # aggregate
 sc = results["scenarios"]
@@ -941,8 +1076,13 @@ agg = {
     "correctness": {
         "PASS": sum(1 for s in sc if s["correctness"] == "PASS"),
         "FAIL": sum(1 for s in sc if s["correctness"] == "FAIL"),
+        "PARTIAL": sum(1 for s in sc if s["correctness"] == "PARTIAL"),
         "NO_CHECK": sum(1 for s in sc if s["correctness"] == "NO_CHECK"),
         "BLOCKED": sum(1 for s in sc if s["correctness"] == "BLOCKED"),
+    },
+    "result_types": {
+        rt: sum(1 for s in sc if s.get("result_type") == rt)
+        for rt in ("SUCCESS", "CORRECT_CLARIFICATION", "CORRECT_REFUSAL", "CORRECT_NOT_FOUND", "PARTIAL", "FAILED", "BLOCKED")
     },
     "llm_calls_total": sum(s["llm_calls"] for s in sc),
     "jev_calls_total": sum(s["jev_calls"] for s in sc),
@@ -965,6 +1105,8 @@ agg = {
     "fast_path_hits": sum(1 for s in sc if s["flags"].get("fast_path_hit")),
     "direct_read_hits": sum(1 for s in sc if s["flags"].get("direct_read_hit")),
 }
+if results.get("aborted"):
+    agg["aborted"] = results["aborted"]
 results["aggregate"] = agg
 _dump()
 print(json.dumps({"aggregate": agg, "out": str(out_path)}, ensure_ascii=False, indent=2))
