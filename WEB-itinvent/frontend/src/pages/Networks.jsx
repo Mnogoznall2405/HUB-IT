@@ -97,7 +97,6 @@ import {
   isBranchWidePortSearch as isBranchWidePortSearchFor,
   makePortDraft,
   resolveDisplayedPorts,
-  resolveFocusPointId,
   resolveOptionValue,
   resolvePendingLookupStatus,
   resolvePortById,
@@ -201,7 +200,6 @@ function Networks() {
   const [pointEditMode, setPointEditMode] = useState(false);
   const [selectedPointSocketInput, setSelectedPointSocketInput] = useState('');
   const [mobileMapPanelOpen, setMobileMapPanelOpen] = useState(false);
-  const [mobilePortEditorOpen, setMobilePortEditorOpen] = useState(false);
 
   const [mapDialogOpen, setMapDialogOpen] = useState(false);
   const [focusMapPointId, setFocusMapPointId] = useState(null);
@@ -214,7 +212,6 @@ function Networks() {
   const [createBranchOpen, setCreateBranchOpen] = useState(false);
   const [createBranchCode, setCreateBranchCode] = useState('');
   const [createBranchName, setCreateBranchName] = useState('');
-  const [createBranchCity, setCreateBranchCity] = useState('tmn');
   const [createBranchDefaultSiteCode, setCreateBranchDefaultSiteCode] = useState('');
   const [createBranchDbId, setCreateBranchDbId] = useState('');
   const [availableDatabases, setAvailableDatabases] = useState([]);
@@ -299,12 +296,11 @@ function Networks() {
   }, [deviceCode, deviceEditId]); // Track deviceCode and whether we're editing
 
   const [loading, setLoading] = useState(false);
-  const [equipmentLoading, setEquipmentLoading] = useState(false);
-  const [socketsLoading, setSocketsLoading] = useState(false);
-  const [mapsLoading, setMapsLoading] = useState(false);
   const [editingPortId, setEditingPortId] = useState(null);
   const [portDraft, setPortDraft] = useState(null);
   const [portSaving, setPortSaving] = useState(false);
+  const [mapBusy, setMapBusy] = useState(false);
+  const [pointBusy, setPointBusy] = useState(false);
   const [socketAutocompleteOpen, setSocketAutocompleteOpen] = useState(false);
   const [socketAutocompleteOptions, setSocketAutocompleteOptions] = useState([]);
   const [selectedSocketId, setSelectedSocketId] = useState(null);
@@ -488,15 +484,26 @@ function Networks() {
     return fileName.endsWith('.pdf') || mimeType.includes('application/pdf');
   }, [selectedMap]);
 
-  const hasBranchDbChanges = useMemo(
-    () => String(branchDbId || '').trim() !== String(branchDbInitialId || '').trim(),
-    [branchDbId, branchDbInitialId]
-  );
-
   const selectedPoint = useMemo(
     () => mapPoints.find((item) => Number(item.id) === Number(selectedPointId)) || null,
     [mapPoints, selectedPointId]
   );
+
+  // Point edit draft lives inside mapPoints — snapshot it on edit start so
+  // "Отмена" can roll back every field the user touched (FE-0140).
+  const pointEditSnapshotRef = useRef(null);
+  const startPointEdit = useCallback(() => {
+    pointEditSnapshotRef.current = selectedPoint ? { ...selectedPoint } : null;
+    setPointEditMode(true);
+  }, [selectedPoint]);
+  const cancelPointEdit = useCallback(() => {
+    const snapshot = pointEditSnapshotRef.current;
+    if (snapshot) {
+      setMapPoints((prev) => prev.map((p) => (p.id === snapshot.id ? { ...p, ...snapshot } : p)));
+      pointEditSnapshotRef.current = null;
+    }
+    setPointEditMode(false);
+  }, []);
 
   const selectedCluster = useMemo(() => {
     if (!selectedPoint || !selectedMapId || !mapPoints.length) return null;
@@ -729,80 +736,28 @@ function Networks() {
     [allPortsWithSocket, selectedPointSocketInput]
   );
 
-  const focusPointId = useMemo(
-    () => resolveFocusPointId({
-      selectedPointId,
-      pointsForMap,
-      filteredPointsForMap,
-      mapPointSearch,
-      selectedDeviceId,
-      selectedMapId,
-    }),
-    [filteredPointsForMap, mapPointSearch, pointsForMap, selectedDeviceId, selectedMapId, selectedPointId]
-  );
-
   const loadBranches = useCallback(async () => {
     const { data } = await getOrFetchSWR(
       buildCacheKey('networks', 'branches', 'tmn'),
       async () => (await networksAPI.getBranches('tmn')).branches || [],
-      { staleTimeMs: SWR_STALE_MS }
+      {
+        staleTimeMs: SWR_STALE_MS,
+        onRevalidated: (fresh) => setBranches(Array.isArray(fresh) ? fresh : []),
+      }
     );
     setBranches(Array.isArray(data) ? data : []);
   }, []);
 
-  const loadBranchContext = useCallback(async (id, force = false) => {
-    if (!id) return;
-    const requestSeq = ++branchContextRequestSeq.current;
-    const { data } = await getOrFetchSWR(
-      buildCacheKey('networks', 'branch-context', id),
-      async () => {
-        const results = await Promise.allSettled([
-          networksAPI.getBranchOverview(id),
-          networksAPI.getDevices(id),
-          networksAPI.getMaps(id),
-          networksAPI.getMapPoints(id),
-          networksAPI.getAudit({ branch_id: id, limit: 100 }),
-          networksAPI.getBranchSockets(id, { limit: 10000 }),
-        ]);
-
-        const [ovResult, dvResult, mpResult, ptResult, auResult, skResult] = results;
-
-        // Log errors for debugging
-        if (ovResult.status === 'rejected') console.error('Failed to load branch overview:', ovResult.reason);
-        if (dvResult.status === 'rejected') console.error('Failed to load devices:', dvResult.reason);
-        if (mpResult.status === 'rejected') console.error('Failed to load maps:', mpResult.reason);
-        if (ptResult.status === 'rejected') console.error('Failed to load map points:', ptResult.reason);
-        if (auResult.status === 'rejected') console.error('Failed to load audit:', auResult.reason);
-        if (skResult.status === 'rejected') console.error('Failed to load sockets:', skResult.reason);
-
-        return {
-          overview: ovResult.status === 'fulfilled' ? (ovResult.value || null) : null,
-          devices: Array.isArray(dvResult.value?.devices) ? dvResult.value.devices : [],
-          maps: Array.isArray(mpResult.value?.maps) ? mpResult.value.maps : [],
-          points: Array.isArray(ptResult.value?.points) ? ptResult.value.points : [],
-          audit: Array.isArray(auResult.value?.items) ? auResult.value.items : [],
-          sockets: Array.isArray(skResult.value?.sockets) ? skResult.value.sockets : [],
-          errors: {
-            overview: ovResult.status === 'rejected' ? String(ovResult.reason?.response?.data?.detail || ovResult.reason?.message || 'Unknown error') : null,
-            devices: dvResult.status === 'rejected' ? String(dvResult.reason?.response?.data?.detail || dvResult.reason?.message || 'Unknown error') : null,
-            maps: mpResult.status === 'rejected' ? String(mpResult.reason?.response?.data?.detail || mpResult.reason?.message || 'Unknown error') : null,
-            points: ptResult.status === 'rejected' ? String(ptResult.reason?.response?.data?.detail || ptResult.reason?.message || 'Unknown error') : null,
-            audit: auResult.status === 'rejected' ? String(auResult.reason?.response?.data?.detail || auResult.reason?.message || 'Unknown error') : null,
-            sockets: skResult.status === 'rejected' ? String(skResult.reason?.response?.data?.detail || skResult.reason?.message || 'Unknown error') : null,
-          },
-        };
-      },
-      { staleTimeMs: SWR_STALE_MS, force }
-    );
-    if (requestSeq !== branchContextRequestSeq.current) {
-      return;
-    }
+  const applyBranchContext = useCallback((data) => {
     setOverview(data?.overview || null);
     setDevices(data?.devices || []);
     setMaps(data?.maps || []);
     setMapPoints(data?.points || []);
     setAudit(data?.audit || []);
     setSockets(data?.sockets || []);
+    if (data?.socketsTruncated) {
+      pushWarningToast('Список розеток достиг лимита 10000 — показаны не все записи.');
+    }
 
     // Store errors for user notification
     if (data?.errors) {
@@ -841,7 +796,65 @@ function Networks() {
     } else {
       setSelectedMapId(null);
     }
-  }, [notifyError]);
+  }, [notifyError, pushWarningToast]);
+
+  const loadBranchContext = useCallback(async (id, force = false) => {
+    if (!id) return;
+    const requestSeq = ++branchContextRequestSeq.current;
+    const { data } = await getOrFetchSWR(
+      buildCacheKey('networks', 'branch-context', id),
+      async () => {
+        const results = await Promise.allSettled([
+          networksAPI.getBranchOverview(id),
+          networksAPI.getDevices(id),
+          networksAPI.getMaps(id),
+          networksAPI.getMapPoints(id),
+          networksAPI.getAudit({ branch_id: id, limit: 100 }),
+          networksAPI.getBranchSockets(id, { limit: 10000 }),
+        ]);
+
+        const [ovResult, dvResult, mpResult, ptResult, auResult, skResult] = results;
+
+        // Log errors for debugging
+        if (ovResult.status === 'rejected') console.error('Failed to load branch overview:', ovResult.reason);
+        if (dvResult.status === 'rejected') console.error('Failed to load devices:', dvResult.reason);
+        if (mpResult.status === 'rejected') console.error('Failed to load maps:', mpResult.reason);
+        if (ptResult.status === 'rejected') console.error('Failed to load map points:', ptResult.reason);
+        if (auResult.status === 'rejected') console.error('Failed to load audit:', auResult.reason);
+        if (skResult.status === 'rejected') console.error('Failed to load sockets:', skResult.reason);
+
+        return {
+          overview: ovResult.status === 'fulfilled' ? (ovResult.value || null) : null,
+          devices: Array.isArray(dvResult.value?.devices) ? dvResult.value.devices : [],
+          maps: Array.isArray(mpResult.value?.maps) ? mpResult.value.maps : [],
+          points: Array.isArray(ptResult.value?.points) ? ptResult.value.points : [],
+          audit: Array.isArray(auResult.value?.items) ? auResult.value.items : [],
+          sockets: Array.isArray(skResult.value?.sockets) ? skResult.value.sockets : [],
+          socketsTruncated: skResult.status === 'fulfilled' && (skResult.value?.sockets?.length || 0) >= 10000,
+          errors: {
+            overview: ovResult.status === 'rejected' ? String(ovResult.reason?.response?.data?.detail || ovResult.reason?.message || 'Unknown error') : null,
+            devices: dvResult.status === 'rejected' ? String(dvResult.reason?.response?.data?.detail || dvResult.reason?.message || 'Unknown error') : null,
+            maps: mpResult.status === 'rejected' ? String(mpResult.reason?.response?.data?.detail || mpResult.reason?.message || 'Unknown error') : null,
+            points: ptResult.status === 'rejected' ? String(ptResult.reason?.response?.data?.detail || ptResult.reason?.message || 'Unknown error') : null,
+            audit: auResult.status === 'rejected' ? String(auResult.reason?.response?.data?.detail || auResult.reason?.message || 'Unknown error') : null,
+            sockets: skResult.status === 'rejected' ? String(skResult.reason?.response?.data?.detail || skResult.reason?.message || 'Unknown error') : null,
+          },
+        };
+      },
+      {
+        staleTimeMs: SWR_STALE_MS,
+        force,
+        // Stale-while-revalidate: apply the background refetch when it lands (FE-0150).
+        onRevalidated: (fresh) => {
+          if (requestSeq === branchContextRequestSeq.current) applyBranchContext(fresh);
+        },
+      }
+    );
+    if (requestSeq !== branchContextRequestSeq.current) {
+      return;
+    }
+    applyBranchContext(data);
+  }, [applyBranchContext]);
 
   const beginPorts = useRequestGuard(JSON.stringify([branchIdNum, selectedDeviceId]));
 
@@ -854,7 +867,13 @@ function Networks() {
     const { data } = await getOrFetchSWR(
       buildCacheKey('networks', 'ports', deviceId),
       async () => (await networksAPI.getPorts(deviceId)).ports || [],
-      { staleTimeMs: SWR_STALE_MS, force }
+      {
+        staleTimeMs: SWR_STALE_MS,
+        force,
+        onRevalidated: (fresh) => {
+          if (isCurrent()) setPorts(Array.isArray(fresh) ? fresh : []);
+        },
+      }
     );
     if (!isCurrent()) return;
     setPorts(Array.isArray(data) ? data : []);
@@ -869,13 +888,27 @@ function Networks() {
     const { data } = await getOrFetchSWR(
       buildCacheKey('networks', 'branch-ports-all', id),
       async () => (await networksAPI.getBranchPorts(id, { limit: 10000 })).ports || [],
-      { staleTimeMs: SWR_STALE_MS, force }
+      {
+        staleTimeMs: SWR_STALE_MS,
+        force,
+        onRevalidated: (fresh) => {
+          if (requestSeq === branchPortsRequestSeq.current) {
+            setAllBranchPorts(Array.isArray(fresh) ? fresh : []);
+            if (Array.isArray(fresh) && fresh.length >= 10000) {
+              pushWarningToast('Список портов филиала достиг лимита 10000 — показаны не все записи.');
+            }
+          }
+        },
+      }
     );
     if (requestSeq !== branchPortsRequestSeq.current) {
       return;
     }
     setAllBranchPorts(Array.isArray(data) ? data : []);
-  }, []);
+    if (Array.isArray(data) && data.length >= 10000) {
+      pushWarningToast('Список портов филиала достиг лимита 10000 — показаны не все записи.');
+    }
+  }, [pushWarningToast]);
 
   const partialRefreshSeq = useRef(0);
 
@@ -1058,7 +1091,11 @@ function Networks() {
           setBranchPortLoading(true);
           const response = await networksAPI.getBranchPorts(branchId, { search: searchValue, limit: 5000 });
           if (!active) return;
-          setBranchPortResults(Array.isArray(response?.ports) ? response.ports : []);
+          const foundPorts = Array.isArray(response?.ports) ? response.ports : [];
+          setBranchPortResults(foundPorts);
+          if (foundPorts.length >= 5000) {
+            pushWarningToast('Поиск портов достиг лимита 5000 — показаны не все результаты.');
+          }
         } catch (requestError) {
           if (!active) return;
           console.error('Failed to search branch ports:', requestError);
@@ -1074,7 +1111,7 @@ function Networks() {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [branchIdNum, notifyError, portSearch, getErrorDetail]);
+  }, [branchIdNum, notifyError, portSearch, getErrorDetail, pushWarningToast]);
 
   useEffect(() => {
     let currentUrl = '';
@@ -1086,6 +1123,11 @@ function Networks() {
       setMapRenderedFrom('');
       return undefined;
     }
+    // Drop the previous map image before the new download resolves so
+    // stale tiles never sit under the newly selected map's points.
+    setMapBlobUrl('');
+    setMapIsPdf(false);
+    setMapRenderedFrom('');
     void (async () => {
       try {
         const response = await networksAPI.downloadMapFile(selectedMapId, { render: 'auto' });
@@ -1177,14 +1219,10 @@ function Networks() {
   useEffect(() => {
     if (!isMobile) {
       setMobileMapPanelOpen(false);
-      setMobilePortEditorOpen(false);
       return;
     }
     if (tab !== 'maps') {
       setMobileMapPanelOpen(false);
-    }
-    if (tab !== 'equipment') {
-      setMobilePortEditorOpen(false);
     }
   }, [isMobile, tab]);
 
@@ -1214,7 +1252,7 @@ function Networks() {
     setMapFile(null);
     setMapTitle('');
     setMapFloor('');
-    setMapSiteCode('p19');
+    setMapSiteCode(String(selectedBranch?.default_site_code || determineSiteCode(selectedBranch?.name) || 'p19'));
     setMapDialogOpen(true);
   };
 
@@ -1257,14 +1295,16 @@ function Networks() {
   };
 
   const saveMap = async () => {
-    if (!branchIdNum) return;
+    if (!branchIdNum || mapBusy) return;
+    const mapSiteName = (availableSites || []).find((site) => site.site_code === mapSiteCode)?.name || mapSiteCode;
+    setMapBusy(true);
     try {
       if (mapEditId) {
         await networksAPI.updateMap(mapEditId, {
           title: mapTitle.trim() || null,
           floor_label: mapFloor.trim() || null,
           site_code: mapSiteCode,
-          site_name: mapSiteCode === 'p21' ? 'Первомайская 21' : 'Первомайская 19',
+          site_name: mapSiteName,
         });
       } else {
         if (!mapFile) {
@@ -1275,7 +1315,7 @@ function Networks() {
         formData.append('branch_id', String(branchIdNum));
         formData.append('file', mapFile);
         formData.append('site_code', mapSiteCode);
-        formData.append('site_name', mapSiteCode === 'p21' ? 'Первомайская 21' : 'Первомайская 19');
+        formData.append('site_name', mapSiteName);
         if (mapTitle.trim()) formData.append('title', mapTitle.trim());
         if (mapFloor.trim()) formData.append('floor_label', mapFloor.trim());
         await networksAPI.uploadMap(formData);
@@ -1286,15 +1326,18 @@ function Networks() {
     } catch (requestError) {
       console.error(requestError);
       notifyError(requestError?.response?.data?.detail || 'Ошибка сохранения карты.');
+    } finally {
+      setMapBusy(false);
     }
   };
 
   const removeMap = async (map) => {
     const mapId = Number(map?.id || 0);
-    if (!mapId) return;
+    if (!mapId || mapBusy) return;
     const mapTitle = String(map?.title || map?.file_name || `#${mapId}`).trim();
     const confirmed = window.confirm(`Удалить карту "${mapTitle}"? Это действие нельзя отменить.`);
     if (!confirmed) return;
+    setMapBusy(true);
     try {
       await networksAPI.deleteMap(mapId);
       await refreshBranchContext();
@@ -1302,6 +1345,8 @@ function Networks() {
     } catch (requestError) {
       console.error(requestError);
       notifyError(requestError?.response?.data?.detail || 'Ошибка удаления карты.');
+    } finally {
+      setMapBusy(false);
     }
   };
 
@@ -1338,6 +1383,9 @@ function Networks() {
   }, [notifyError, notifySuccess, refreshBranchContextParts]);
 
   const applySocketPointDraft = useCallback((socketLike) => {
+    // Read-only пользователь не должен попадать в режим размещения точки —
+    // иначе commit потом ловит серию 403.
+    if (!canEdit) return;
     const socketCode = String(socketLike?.socket_code || socketLike?.patch_panel_port || '').trim();
     clearPendingPointDraft();
     setPlacingMarker(true);
@@ -1349,9 +1397,10 @@ function Networks() {
     if (isMobile) {
       setMobileMapPanelOpen(true);
     }
-  }, [clearPendingPointDraft, isMobile]);
+  }, [canEdit, clearPendingPointDraft, isMobile]);
 
   const commitPendingPoint = async () => {
+    if (pointBusy) return;
     if (!pendingPoint || !selectedMapId || !branchIdNum) {
       notifyError('Сначала выберите позицию на карте.');
       return;
@@ -1367,6 +1416,7 @@ function Networks() {
       notifyError('Не удалось определить порт или розетку для привязки.');
       return;
     }
+    setPointBusy(true);
     try {
       await networksAPI.createMapPoint({
         branch_id: branchIdNum,
@@ -1386,12 +1436,14 @@ function Networks() {
     } catch (requestError) {
       console.error(requestError);
       notifyError(requestError?.response?.data?.detail || 'Ошибка привязки розетки.');
+    } finally {
+      setPointBusy(false);
     }
   };
 
   const selectPoint = (point) => {
     setSelectedPointId(point.id);
-    setPointEditMode(false);
+    cancelPointEdit();
     setCreatePointHint(null);
     if (point.device_id) {
       setSelectedDeviceId(point.device_id);
@@ -1411,12 +1463,13 @@ function Networks() {
   };
 
   const saveSelectedPoint = async () => {
-    if (!selectedPoint) return;
+    if (!selectedPoint || pointBusy) return;
     const nextPortId = Number(selectedPoint.port_id || 0);
     if (!nextPortId) {
       notifyError('Для точки необходимо выбрать порт с заполненным PORT P/P.');
       return;
     }
+    setPointBusy(true);
     try {
       await networksAPI.updateMapPoint(selectedPoint.id, {
         port_id: nextPortId,
@@ -1425,29 +1478,39 @@ function Networks() {
         color: selectedPoint.color || null,
       });
       await refreshBranchContext();
+      pointEditSnapshotRef.current = null;
       setPointEditMode(false);
       notifySuccess('Точка обновлена.');
     } catch (requestError) {
       console.error(requestError);
       notifyError(requestError?.response?.data?.detail || 'Ошибка обновления точки.');
+    } finally {
+      setPointBusy(false);
     }
   };
 
   const removeSelectedPoint = async () => {
-    if (!selectedPoint) return;
+    if (!selectedPoint || pointBusy) return;
+    const confirmed = window.confirm('Удалить точку с карты? Это действие нельзя отменить.');
+    if (!confirmed) return;
+    setPointBusy(true);
     try {
       await networksAPI.deleteMapPoint(selectedPoint.id);
       setSelectedPointId(null);
+      pointEditSnapshotRef.current = null;
       setPointEditMode(false);
       await refreshBranchContext();
       notifySuccess('Точка удалена.');
     } catch (requestError) {
       console.error(requestError);
       notifyError(requestError?.response?.data?.detail || 'Ошибка удаления точки.');
+    } finally {
+      setPointBusy(false);
     }
   };
 
   const startSocketPointCreation = (socketLike) => {
+    if (!canEdit) return;
     const socketCode = String(socketLike?.socket_code || socketLike?.patch_panel_port || '').trim();
     const mapIdCandidate = Number(socketLike?.map_id || selectedMapId || maps?.[0]?.id || 0) || null;
     setTab('maps');
@@ -1561,7 +1624,7 @@ function Networks() {
 
   useEffect(() => {
     const normalizedBranchId = Number(branchIdNum || 0);
-    if (!normalizedBranchId || fioResolving || branchDbLoading || !branchDbReady) return;
+    if (!normalizedBranchId || !canEdit || fioResolving || branchDbLoading || !branchDbReady) return;
     const normalizedDbId = String(branchDbId || '').trim();
     const attemptKey = `${normalizedBranchId}:${normalizedDbId || '-'}`;
     if (attemptKey === fioResolveAttemptKey) return;
@@ -1587,7 +1650,7 @@ function Networks() {
       }
     };
     resolveSilently();
-  }, [branchIdNum, branchDbId, branchDbLoading, branchDbReady, fioResolveAttemptKey, fioResolving, notifySuccess, notifyWarning, refreshBranchContext]);
+  }, [branchIdNum, branchDbId, branchDbLoading, branchDbReady, canEdit, fioResolveAttemptKey, fioResolving, notifySuccess, notifyWarning, refreshBranchContext]);
 
   const handleEquipImport = async (e) => {
     const file = e.target.files?.[0];
@@ -1634,7 +1697,8 @@ function Networks() {
     }
 
     let payload = {
-      city_code: createBranchCity || 'tmn',
+      // City is not selectable in the UI; the backend always receives 'tmn'.
+      city_code: 'tmn',
       branch_name: branchName,
       default_site_code: createBranchDefaultSiteCode || null,
       db_id: createBranchDbId || null,
@@ -1734,7 +1798,12 @@ function Networks() {
     }
   };
 
+  const branchEditMappingRequestRef = useRef(0);
   const openEditBranchDialog = async (branch) => {
+    // Быстрое переоткрытие диалога на другом филиале: старый ответ не должен
+    // перезаписать уже открытый диалог чужим db_id.
+    const requestId = branchEditMappingRequestRef.current + 1;
+    branchEditMappingRequestRef.current = requestId;
     setBranchEditId(branch.id);
     setBranchEditName(String(branch.name || ''));
     setBranchDefaultSiteCode(branch.default_site_code || '');
@@ -1743,12 +1812,13 @@ function Networks() {
     try {
       setBranchEditLoading(true);
       const mapping = await networksAPI.getBranchDbMapping(branch.id);
+      if (requestId !== branchEditMappingRequestRef.current) return;
       setBranchEditDbId(String(mapping?.db_id || ''));
     } catch (err) {
       console.error('Failed to load branch DB mapping for edit:', err);
-      setBranchEditDbId('');
+      if (requestId === branchEditMappingRequestRef.current) setBranchEditDbId('');
     } finally {
-      setBranchEditLoading(false);
+      if (requestId === branchEditMappingRequestRef.current) setBranchEditLoading(false);
     }
   };
 
@@ -1853,10 +1923,6 @@ function Networks() {
     });
 
     setSocketAutocompleteOptions(filteredFreeSockets);
-
-    if (isMobile) {
-      setMobilePortEditorOpen(true);
-    }
   };
 
   const cancelEditPort = (event) => {
@@ -1865,7 +1931,6 @@ function Networks() {
     setPortDraft(null);
     setSelectedSocketId(null);
     setSocketAutocompleteOpen(false);
-    setMobilePortEditorOpen(false);
   };
 
   const updatePortDraftField = (field, value) => {
@@ -1991,6 +2056,9 @@ function Networks() {
       notifyError('Устройство не выбрано.');
       return;
     }
+    if (deviceDeleting) return;
+    const confirmed = window.confirm(`Удалить устройство "${deviceCode || deviceEditId}"? Это действие нельзя отменить.`);
+    if (!confirmed) return;
     try {
       setDeviceDeleting(true);
       await networksAPI.deleteDevice(deviceEditId);
@@ -2028,14 +2096,17 @@ function Networks() {
       }
       if (isBranchWidePortSearch && branchIdNum) {
         const response = await networksAPI.getBranchPorts(branchIdNum, { search: String(portSearch || '').trim(), limit: 5000 });
-        setBranchPortResults(Array.isArray(response?.ports) ? response.ports : []);
+        const foundPorts = Array.isArray(response?.ports) ? response.ports : [];
+        setBranchPortResults(foundPorts);
+        if (foundPorts.length >= 5000) {
+          pushWarningToast('Поиск портов достиг лимита 5000 — показаны не все результаты.');
+        }
       }
       await refreshBranchContext();
       notifySuccess(`Порт ${portDraft.port_name || port.port_name} обновлён.`);
       setEditingPortId(null);
       setPortDraft(null);
       setSelectedSocketId(null);
-      setMobilePortEditorOpen(false);
       if (updatedPort?.requires_point_creation) {
         startSocketPointCreation({
           socket_id: updatedPort.socket_id,
@@ -2052,26 +2123,44 @@ function Networks() {
     }
   };
 
+
+  // Рефы — чтобы глобальный слушатель висел один раз, а не перевешивался на
+  // каждый новый массив displayedPorts / пересозданные колбэки.
+  const editingPortIdRef = useRef(editingPortId);
+  editingPortIdRef.current = editingPortId;
+  const displayedPortsRef = useRef(displayedPorts);
+  displayedPortsRef.current = displayedPorts;
+  const cancelEditPortRef = useRef(cancelEditPort);
+  cancelEditPortRef.current = cancelEditPort;
+  const savePortEditRef = useRef(savePortEdit);
+  savePortEditRef.current = savePortEdit;
+
   useEffect(() => {
     const handleKeyDown = (e) => {
+      // Открытый диалог/дровер сам обрабатывает Escape и Ctrl+S — не трогаем.
+      // keepMounted-модалки MainLayout остаются в DOM с классом MuiModal-hidden —
+      // открытость определяем по ней, иначе глобальные клавиши молча умирают.
+      if (document.querySelector('.MuiModal-root:not(.MuiModal-hidden)')) return;
+      const portId = editingPortIdRef.current;
+
       // Escape key
       if (e.key === 'Escape') {
-        if (editingPortId) cancelEditPort(e);
+        if (portId) cancelEditPortRef.current(e);
       }
 
       // Ctrl + S or Meta + S
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        if (editingPortId) {
+        if (portId) {
           e.preventDefault();
-          const portObj = displayedPorts.find(p => Number(p.id) === Number(editingPortId)) || { id: editingPortId };
-          savePortEdit(portObj, e);
+          const portObj = displayedPortsRef.current.find(p => Number(p.id) === Number(portId)) || { id: portId };
+          savePortEditRef.current(portObj, e);
         }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [editingPortId, displayedPorts, cancelEditPort, savePortEdit]);
+  }, []);
 
   const setDeviceChipRef = useCallback((deviceId, node) => {
     const key = Number(deviceId || 0);
@@ -2129,7 +2218,7 @@ function Networks() {
       {isMobile && (
         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.4 }}>
           <Typography variant="subtitle2">Панель карты</Typography>
-          <IconButton size="small" onClick={() => setMobileMapPanelOpen(false)}>
+          <IconButton size="small" aria-label="Закрыть панель карты" onClick={() => setMobileMapPanelOpen(false)}>
             <CloseIcon fontSize="small" />
           </IconButton>
         </Stack>
@@ -2145,7 +2234,7 @@ function Networks() {
         {canEdit && (
           <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
             <Button size="small" onClick={() => selectedMap && openMapDialogEdit(selectedMap)} disabled={!selectedMap}>Правка</Button>
-            <Button size="small" color="error" onClick={() => selectedMap && void removeMap(selectedMap)} disabled={!selectedMap}>Удалить</Button>
+            <Button size="small" color="error" onClick={() => selectedMap && void removeMap(selectedMap)} disabled={!selectedMap || mapBusy}>Удалить</Button>
           </Stack>
         )}
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 0.8 }}>
@@ -2211,7 +2300,7 @@ function Networks() {
                     >
                       Создать точку
                     </Button>
-                    <IconButton size="small" onClick={() => setCreatePointHint(null)}>
+                    <IconButton size="small" aria-label="Скрыть подсказку" onClick={() => setCreatePointHint(null)}>
                       <CloseIcon fontSize="inherit" />
                     </IconButton>
                   </Stack>
@@ -2244,7 +2333,15 @@ function Networks() {
                       key={point.id}
                       hover
                       selected={Number(point.id) === Number(selectedPointId)}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => onPointRowSelect(point)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          onPointRowSelect(point);
+                        }
+                      }}
                       sx={{
                         cursor: 'pointer',
                         '& td': {
@@ -2469,7 +2566,7 @@ function Networks() {
                     size="small"
                     startIcon={<PlaceIcon />}
                     onClick={() => void commitPendingPoint()}
-                    disabled={pendingCommitDisabled}
+                    disabled={pendingCommitDisabled || pointBusy}
                   >
                     Привязать розетку
                   </Button>
@@ -2602,15 +2699,15 @@ function Networks() {
                   <TextField size="small" label="Примечание" value={selectedPoint.note || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, note: event.target.value } : p)))} />
                   <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
                   <Stack direction="row" spacing={1}>
-                    <Button size="small" variant="contained" onClick={() => void saveSelectedPoint()}>Сохранить</Button>
-                    <Button size="small" onClick={() => setPointEditMode(false)}>Отмена</Button>
-                    <Button size="small" color="error" onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                    <Button size="small" variant="contained" onClick={() => void saveSelectedPoint()} disabled={pointBusy}>Сохранить</Button>
+                    <Button size="small" onClick={() => cancelPointEdit()}>Отмена</Button>
+                    <Button size="small" color="error" onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                   </Stack>
                 </>
               ) : (
                 <Stack direction="row" spacing={1}>
-                  <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
-                  <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                  <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => startPointEdit()}>Изменить</Button>
+                  <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                 </Stack>
               )}
             </Stack>
@@ -2701,7 +2798,7 @@ function Networks() {
               <Box sx={{ mb: 1, flexShrink: 0 }}>
                 {/* Компактная строка: назад + название + кнопка разворота */}
                 <Stack direction="row" alignItems="center" spacing={0.5}>
-                  <IconButton size="small" onClick={() => navigate('/networks')} sx={{ flexShrink: 0 }}>
+                  <IconButton size="small" aria-label="К списку филиалов" onClick={() => navigate('/networks')} sx={{ flexShrink: 0 }}>
                     <ArrowBackIcon fontSize="small" />
                   </IconButton>
                   <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -2711,6 +2808,8 @@ function Networks() {
                   </Box>
                   <IconButton
                     size="small"
+                    aria-label={mobileHeaderCollapsed ? 'Развернуть сведения о филиале' : 'Свернуть сведения о филиале'}
+                    aria-expanded={!mobileHeaderCollapsed}
                     onClick={() => setMobileHeaderCollapsed((v) => !v)}
                     sx={{ flexShrink: 0, transition: 'transform 0.2s', transform: mobileHeaderCollapsed ? 'rotate(0deg)' : 'rotate(180deg)' }}
                   >
@@ -2745,7 +2844,7 @@ function Networks() {
             ) : (
               <Stack direction="row" justifyContent="space-between" spacing={1.2} sx={{ mb: 1.5, flexShrink: 0 }}>
                 <Stack direction="row" spacing={1} alignItems="center">
-                  <IconButton onClick={() => navigate('/networks')}><ArrowBackIcon /></IconButton>
+                  <IconButton aria-label="К списку филиалов" onClick={() => navigate('/networks')}><ArrowBackIcon /></IconButton>
                   <Box>
                     <Typography variant="h6">{selectedBranch?.name || overview?.branch?.name || 'Филиал'}</Typography>
                     <Typography variant="body2" color="text.secondary">{selectedBranch?.branch_code || overview?.branch?.branch_code || '-'}</Typography>
@@ -2840,8 +2939,7 @@ function Networks() {
                   onCreateSocket={openCreateSocketDialog}
                   onDeleteSocket={requestDeleteSocket}
                   deletingSocketId={socketDeleteSaving ? Number(socketDeleteTarget?.id || 0) : null}
-                  pointEditMode={pointEditMode}
-                />
+                        />
               </Box>
             )}
 
@@ -2870,7 +2968,7 @@ function Networks() {
                               focusPointId={focusMapPointId}
                               onPointSelect={onMapPointSelect}
                               onPointDrop={mobileMapEditMode ? onMapPointDrop : undefined}
-                              onCanvasClick={mobileMapEditMode ? onMapClickAddPoint : undefined}
+                              onCanvasClick={mobileMapEditMode || placingMarker ? onMapClickAddPoint : undefined}
                               disabled={!selectedMapId}
                               mobile={true}
                               height={{ xs: 'calc(100dvh - 148px)' }}
@@ -2986,7 +3084,7 @@ function Networks() {
           <Drawer
             anchor="bottom"
             open={pointDetailsOpen}
-            onClose={() => { setPointDetailsOpen(false); setPointEditMode(false); }}
+            onClose={() => { setPointDetailsOpen(false); cancelPointEdit(); }}
             PaperProps={{
               sx: getOfficeDrawerPaperSx(ui, {
                 borderLeft: 'none',
@@ -3003,7 +3101,7 @@ function Networks() {
             </Box>
             <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 2, pb: 1, flexShrink: 0 }}>
               <Typography variant="subtitle1" fontWeight={700}>Детали точки</Typography>
-              <IconButton size="small" onClick={() => { setPointDetailsOpen(false); setPointEditMode(false); }}>
+              <IconButton size="small" aria-label="Закрыть детали точки" onClick={() => { setPointDetailsOpen(false); cancelPointEdit(); }}>
                 <CloseIcon fontSize="small" />
               </IconButton>
             </Stack>
@@ -3107,15 +3205,15 @@ function Networks() {
                       <TextField size="small" label="Примечание" value={selectedPoint.note || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, note: event.target.value } : p)))} />
                       <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
                       <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                        <Button size="large" variant="contained" fullWidth onClick={() => void saveSelectedPoint()}>Сохранить</Button>
-                        <Button size="large" variant="outlined" fullWidth onClick={() => setPointEditMode(false)}>Отмена</Button>
+                        <Button size="large" variant="contained" fullWidth onClick={() => void saveSelectedPoint()} disabled={pointBusy}>Сохранить</Button>
+                        <Button size="large" variant="outlined" fullWidth onClick={() => cancelPointEdit()}>Отмена</Button>
                       </Stack>
-                      <Button size="large" color="error" variant="outlined" fullWidth onClick={() => void removeSelectedPoint()}>Удалить точку</Button>
+                      <Button size="large" color="error" variant="outlined" fullWidth onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить точку</Button>
                     </>
                   ) : (
                     <Stack spacing={1} sx={{ mt: 0.5 }}>
-                      <Button size="large" variant="outlined" fullWidth startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
-                      <Button size="large" color="error" variant="outlined" fullWidth startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                      <Button size="large" variant="outlined" fullWidth startIcon={<EditIcon />} onClick={() => startPointEdit()}>Изменить</Button>
+                      <Button size="large" color="error" variant="outlined" fullWidth startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                     </Stack>
                   )}
                 </Stack>
@@ -3227,15 +3325,15 @@ function Networks() {
                     <TextField size="small" label="Примечание" value={selectedPoint.note || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, note: event.target.value } : p)))} />
                     <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
                     <Stack direction="row" spacing={1}>
-                      <Button size="small" variant="contained" onClick={() => void saveSelectedPoint()}>Сохранить</Button>
-                      <Button size="small" onClick={() => setPointEditMode(false)}>Отмена</Button>
-                      <Button size="small" color="error" onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                      <Button size="small" variant="contained" onClick={() => void saveSelectedPoint()} disabled={pointBusy}>Сохранить</Button>
+                      <Button size="small" onClick={() => cancelPointEdit()}>Отмена</Button>
+                      <Button size="small" color="error" onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                     </Stack>
                   </>
                 ) : (
                   <Stack direction="row" spacing={1}>
-                    <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
-                    <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                    <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => startPointEdit()}>Изменить</Button>
+                    <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()} disabled={pointBusy}>Удалить</Button>
                   </Stack>
                 )}
               </Stack>
@@ -3399,6 +3497,7 @@ function Networks() {
           mapSiteCode={mapSiteCode}
           setMapSiteCode={setMapSiteCode}
           saveMap={saveMap}
+          saving={mapBusy}
           sites={availableSites}
         />
 

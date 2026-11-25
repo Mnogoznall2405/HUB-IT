@@ -98,6 +98,7 @@ const CompanyStructure = () => {
   const selectedIdRef = useRef(initialUrlState.nodeId);
   const peopleCacheRef = useRef(new Map());
   const peopleRequestsRef = useRef(new Map());
+  const treeRequestSeq = useRef(0);
 
   const [mode, setMode] = useState('explore');
   const [tree, setTree] = useState([]);
@@ -107,6 +108,8 @@ const CompanyStructure = () => {
   const [error, setError] = useState('');
   const [people, setPeople] = useState([]);
   const [peopleLoading, setPeopleLoading] = useState(false);
+  const [peopleError, setPeopleError] = useState('');
+  const [peopleAttempt, setPeopleAttempt] = useState(0);
   const [focusedPerson, setFocusedPerson] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchOptions, setSearchOptions] = useState([]);
@@ -142,10 +145,12 @@ const CompanyStructure = () => {
   }, [blockId, explorerView, tree, updateUrlState]);
 
   const loadTree = useCallback(async (preferredId = '', { background = false } = {}) => {
+    const seq = ++treeRequestSeq.current;
     if (!background) setLoading(true);
     setError('');
     try {
       const payload = await companyStructureAPI.getTree();
+      if (seq !== treeRequestSeq.current) return [];
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setTree(items);
       const urlState = readStructureUrlState();
@@ -168,12 +173,13 @@ const CompanyStructure = () => {
       );
       return items;
     } catch (requestError) {
+      if (seq !== treeRequestSeq.current) return [];
       console.error(requestError);
       setError('Не удалось загрузить структуру компании.');
       notifyApiError?.(requestError, 'Не удалось загрузить структуру компании.');
       return [];
     } finally {
-      if (!background) setLoading(false);
+      if (seq === treeRequestSeq.current && !background) setLoading(false);
     }
   }, [notifyApiError, updateUrlState]);
 
@@ -202,17 +208,20 @@ const CompanyStructure = () => {
   useEffect(() => {
     if (!selectedId) {
       setPeople([]);
+      setPeopleError('');
       return undefined;
     }
     const key = String(selectedId);
     const cached = peopleCacheRef.current.get(key);
     if (cached) {
       setPeople(cached);
+      setPeopleError('');
       setPeopleLoading(false);
       return undefined;
     }
     let cancelled = false;
     setPeople([]);
+    setPeopleError('');
     setPeopleLoading(true);
     const existingRequest = peopleRequestsRef.current.get(key);
     const request = existingRequest || companyStructureAPI.getNodePeople(selectedId).then((payload) => {
@@ -227,7 +236,10 @@ const CompanyStructure = () => {
       })
       .catch((requestError) => {
         console.error(requestError);
-        if (!cancelled) setPeople([]);
+        if (!cancelled) {
+          setPeople([]);
+          setPeopleError('Не удалось загрузить список сотрудников.');
+        }
       })
       .finally(() => {
         peopleRequestsRef.current.delete(key);
@@ -236,7 +248,7 @@ const CompanyStructure = () => {
     return () => {
       cancelled = true;
     };
-  }, [selectedId]);
+  }, [selectedId, peopleAttempt]);
 
   useEffect(() => {
     const query = searchQuery.trim();
@@ -290,6 +302,7 @@ const CompanyStructure = () => {
     if (person && !nodeId) {
       setFocusedPerson(person);
       setPeople([person]);
+      setPeopleError('');
     }
     setDirectoryDrawerOpen(true);
   }, [selectNode]);
@@ -512,6 +525,8 @@ const CompanyStructure = () => {
                       selectedPath={selectedPath}
                       people={people}
                       peopleLoading={peopleLoading}
+                      peopleError={peopleError}
+                      onPeopleRetry={() => setPeopleAttempt((value) => value + 1)}
                       focusedPerson={focusedPerson}
                       onSelect={(nodeId) => selectNode(nodeId, null, { view: 'focus' })}
                       onPeople={(nodeId) => openPeople(nodeId)}
@@ -577,6 +592,8 @@ const CompanyStructure = () => {
           <EmployeeDirectoryPanel
             people={people}
             loading={peopleLoading}
+            error={peopleError}
+            onRetry={() => setPeopleAttempt((value) => value + 1)}
             focusedPerson={focusedPerson}
           />
           </Box>

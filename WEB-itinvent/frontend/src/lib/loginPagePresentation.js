@@ -181,6 +181,10 @@ export function scheduleLoginPresentationRecovery({
       return;
     }
     recover('visibility');
+    detach();
+  };
+
+  const detach = () => {
     window.removeEventListener('visibilitychange', onVisible);
     window.removeEventListener('pageshow', onVisible);
   };
@@ -188,8 +192,12 @@ export function scheduleLoginPresentationRecovery({
   window.addEventListener('visibilitychange', onVisible);
   window.addEventListener('pageshow', onVisible);
 
+  // Callers never invoke the returned cleanup; bound the listener lifetime so
+  // repeated recoveries cannot accumulate permanent window listeners.
+  const detachTimer = window.setTimeout(detach, 15000);
+
   return () => {
-    window.removeEventListener('visibilitychange', onVisible);
-    window.removeEventListener('pageshow', onVisible);
+    window.clearTimeout(detachTimer);
+    detach();
   };
 }

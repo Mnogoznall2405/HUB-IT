@@ -60,9 +60,11 @@ export default function useTaskDetails({
   const mobileChecklistHistoryPushedRef = useRef(false);
   const loadTaskDetailsRequestRef = useRef(0);
   const checklistMutationRef = useRef(new Map());
+  const [checklistPending, setChecklistPending] = useState(null);
   const loadedActivityRef = useRef({ taskId: '', comments: false, history: false });
   const discussionConversationRef = useRef({ taskId: '', conversationId: '' });
   const discussionProvisioningTaskRef = useRef('');
+  const discussionProvisionSeqRef = useRef(0);
   const discussionAttemptedTaskRef = useRef('');
 
   const selectedTaskId = useMemo(() => {
@@ -160,7 +162,16 @@ export default function useTaskDetails({
       } else {
         const res = await hubTaskActivityAPI.getTaskComments(normalizedId);
         if (!stillCurrent()) return;
-        setDetailsComments(Array.isArray(res?.items) ? res.items : []);
+        // Merge, not replace: a comment added locally after this request
+        // started must survive the (stale) server list.
+        setDetailsComments((prev) => {
+          const serverItems = Array.isArray(res?.items) ? res.items : [];
+          const serverIds = new Set(serverItems.map((item) => String(item?.id || '')));
+          const localOnly = (Array.isArray(prev) ? prev : []).filter(
+            (item) => item?.id && !serverIds.has(String(item.id)),
+          );
+          return [...serverItems, ...localOnly];
+        });
         if (options.hasUnread) {
           try {
             await hubTaskActivityAPI.markTaskCommentsSeen(normalizedId);
@@ -177,12 +188,15 @@ export default function useTaskDetails({
           }
         }
       }
-    } catch {
+    } catch (err) {
       if (isHistory) ledger.history = false; else ledger.comments = false;
+      if (stillCurrent()) {
+        setError(err?.response?.data?.detail || err?.message || (isHistory ? 'Ошибка загрузки истории задачи' : 'Ошибка загрузки комментариев'));
+      }
     } finally {
       if (stillCurrent()) setDetailsActivityLoading(false);
     }
-  }, [patchTaskItem]);
+  }, [patchTaskItem, setError]);
 
   const loadTaskDetails = useCallback(async (taskId) => {
     const normalizedId = String(taskId || '').trim();
@@ -323,6 +337,11 @@ export default function useTaskDetails({
   const openTaskDetails = useCallback((task, { view = '', replace = false } = {}) => {
     const id = String(task?.id || '').trim();
     if (!id) return;
+    if (id !== String(discussionProvisioningTaskRef.current || '')) {
+      // Supersede any in-flight discussion provisioning for another task so its
+      // late completion cannot navigate back to it.
+      discussionProvisionSeqRef.current += 1;
+    }
     const requestedView = String(view || '').trim();
     // Stale-while-revalidate: the lean list row is already on screen — draw it
     // immediately and let the background full fetch (effect below) reconcile.
@@ -350,7 +369,7 @@ export default function useTaskDetails({
       if (requestedView) params.set('task_detail_view', normalizeTaskDetailView(requestedView));
       else params.delete('task_detail_view');
     }, { replace });
-  }, [taskDiscussionChatEnabled, updateSearch]);
+  }, [taskDiscussionChatEnabled, updateSearch, visibleTaskItems]);
 
   const openMobileTaskChecklist = useCallback(() => {
     if (!selectedTaskId) return;
@@ -374,7 +393,7 @@ export default function useTaskDetails({
     const nextTab = normalizeTaskDetailTab(tab, taskDiscussionChatEnabled);
     updateSearch((params) => {
       if (selectedTaskId) params.set('task_tab', nextTab);
-    }, { replace: false });
+    }, { replace: true });
   }, [selectedTaskId, taskDiscussionChatEnabled, updateSearch]);
 
   const setTaskDetailView = useCallback((view) => {
@@ -477,12 +496,16 @@ export default function useTaskDetails({
     if (!normalizedTaskId || !taskDiscussionChatEnabled) return '';
     if (discussionProvisioningTaskRef.current === normalizedTaskId) return '';
     discussionProvisioningTaskRef.current = normalizedTaskId;
+    const provisionSeq = ++discussionProvisionSeqRef.current;
     setDiscussionOpening(true);
     setDiscussionError('');
     try {
       const response = await hubTaskDiscussionAPI.openTaskDiscussion(normalizedTaskId);
       const conversationId = String(response?.conversation_id || '').trim();
       if (!conversationId) throw new Error('Не удалось открыть обсуждение задачи');
+      // A newer provisioning/openTaskDetails superseded this one — applying the
+      // stale completion would navigate back to the previously active task.
+      if (provisionSeq !== discussionProvisionSeqRef.current) return '';
       discussionConversationRef.current = { taskId: normalizedTaskId, conversationId };
       setSelectedDiscussionConversationId(conversationId);
       invalidateSWRCacheByPrefix('chat', 'conversations', String(user?.id || 'guest'));
@@ -740,14 +763,23 @@ export default function useTaskDetails({
     const runAfter = existing?.chain || Promise.resolve();
     const chain = runAfter.catch(() => {}).then(() => hubTasksAPI.updateTask(taskId, { checklist_items: nextItems }));
     mutations.set(taskId, { items: nextItems, chain });
+    // Оптимистичный отклик: чекбокс переключается сразу, ответ сервера
+    // подтверждает; при ошибке — откат к исходному списку.
+    setChecklistPending({ taskId, itemId: String(itemId) });
+    applyTaskUpdate(taskId, { id: taskId, checklist_items: nextItems });
     try {
       const updatedTask = await chain;
       if (mutations.get(taskId)?.chain === chain) {
         mutations.delete(taskId);
+        setChecklistPending(null);
         applyTaskUpdate(taskId, updatedTask || { id: taskId, checklist_total: nextItems.length, checklist_done: nextItems.filter((i) => i.done).length });
       }
     } catch (err) {
-      if (mutations.get(taskId)?.chain === chain) mutations.delete(taskId);
+      if (mutations.get(taskId)?.chain === chain) {
+        mutations.delete(taskId);
+        setChecklistPending(null);
+        applyTaskUpdate(taskId, { id: taskId, checklist_items: sourceItems });
+      }
       setError(err?.response?.data?.detail || err?.message || 'Ошибка обновления чек-листа');
     }
   }, [applyTaskUpdate, setError]);
@@ -756,12 +788,23 @@ export default function useTaskDetails({
     const taskId = String(task?.id || '').trim();
     const itemText = String(text || '').trim();
     if (!taskId || !itemText || !canUpdateTaskChecklist(task)) return;
-    const items = Array.isArray(task?.checklist_items) ? task.checklist_items : [];
-    const nextItems = [...items, { id: createChecklistItemId(), text: itemText, done: false }];
+    // Route through the same mutation queue as toggles: a parallel updateTask
+    // built from stale checklist_items would overwrite a toggle in flight.
+    const mutations = checklistMutationRef.current;
+    const existing = mutations.get(taskId);
+    const baseItems = existing?.items || (Array.isArray(task?.checklist_items) ? task.checklist_items : []);
+    const nextItems = [...baseItems, { id: createChecklistItemId(), text: itemText, done: false }];
+    const runAfter = existing?.chain || Promise.resolve();
+    const chain = runAfter.catch(() => {}).then(() => hubTasksAPI.updateTask(taskId, { checklist_items: nextItems }));
+    mutations.set(taskId, { items: nextItems, chain });
     try {
-      const updatedTask = await hubTasksAPI.updateTask(taskId, { checklist_items: nextItems });
-      applyTaskUpdate(taskId, updatedTask || {});
+      const updatedTask = await chain;
+      if (mutations.get(taskId)?.chain === chain) {
+        mutations.delete(taskId);
+        applyTaskUpdate(taskId, updatedTask || { id: taskId, checklist_items: nextItems });
+      }
     } catch (err) {
+      if (mutations.get(taskId)?.chain === chain) mutations.delete(taskId);
       setError(err?.response?.data?.detail || err?.message || 'Ошибка добавления пункта чек-листа');
     }
   }, [applyTaskUpdate, canUpdateTaskChecklist, setError]);
@@ -770,10 +813,11 @@ export default function useTaskDetails({
     <TaskDetailChecklist
       task={task}
       canUpdate={canUpdateTaskChecklist(task)}
+      updatingItemId={checklistPending?.taskId === String(task?.id || '') ? checklistPending.itemId : ''}
       onToggle={(itemId, done) => void handleToggleTaskChecklistItem(task, itemId, done)}
       ui={ui}
     />
-  ), [canUpdateTaskChecklist, handleToggleTaskChecklistItem, ui]);
+  ), [canUpdateTaskChecklist, checklistPending, handleToggleTaskChecklistItem, ui]);
 
   return {
     detailsOpen,

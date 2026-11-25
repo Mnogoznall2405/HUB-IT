@@ -147,7 +147,16 @@ function VoiceUploadDialog({ open, onClose, onUploaded, onPartiallyUploaded, opt
       const ext = `.${f.name.split('.').pop()?.toLowerCase()}`;
       return acceptedExts.has(ext);
     });
-    if (next.length) setFiles((prev) => [...prev, ...next]);
+    if (next.length) setFiles((prev) => {
+      const seen = new Set(prev.map((f) => `${f.name}:${f.size}:${f.lastModified}`));
+      const fresh = next.filter((f) => {
+        const key = `${f.name}:${f.size}:${f.lastModified}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      return fresh.length ? [...prev, ...fresh] : prev;
+    });
   };
 
   const oversized = useMemo(

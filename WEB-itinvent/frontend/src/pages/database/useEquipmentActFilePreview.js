@@ -26,6 +26,7 @@ export function useEquipmentActFilePreview({ fallbackInvNo = '' } = {}) {
   const [preview, setPreview] = useState(createEmptyPreviewState);
   const [openingDocNo, setOpeningDocNo] = useState('');
   const objectUrlRef = useRef('');
+  const openSeqRef = useRef(0);
 
   const revokePreviewUrl = useCallback(() => {
     if (objectUrlRef.current && typeof window !== 'undefined' && window.URL?.revokeObjectURL) {
@@ -35,6 +36,7 @@ export function useEquipmentActFilePreview({ fallbackInvNo = '' } = {}) {
   }, []);
 
   const closePreview = useCallback(() => {
+    openSeqRef.current += 1;
     revokePreviewUrl();
     setPreview(createEmptyPreviewState());
     setOpeningDocNo('');
@@ -59,6 +61,7 @@ export function useEquipmentActFilePreview({ fallbackInvNo = '' } = {}) {
     ).trim();
     const docNumber = String(readFirst(act, ['doc_number', 'DOC_NUMBER'], docNo)).trim() || docNo;
 
+    const seq = ++openSeqRef.current;
     setOpeningDocNo(docNo);
     revokePreviewUrl();
     setPreview({
@@ -85,6 +88,7 @@ export function useEquipmentActFilePreview({ fallbackInvNo = '' } = {}) {
       if (selectedDb) params.db_id = selectedDb;
 
       const response = await equipmentTransferActsAPI.downloadEquipmentActFile(docNo, params);
+      if (seq !== openSeqRef.current) return { ok: false, error: '' };
       const contentType = String(response?.headers?.['content-type'] || 'application/octet-stream');
       const fileName = fileNameFromContentDisposition(response?.headers?.['content-disposition'])
         || `act_${docNo}.pdf`;
@@ -97,6 +101,7 @@ export function useEquipmentActFilePreview({ fallbackInvNo = '' } = {}) {
       }
 
       const sniff = await sniffBlobKind(blob);
+      if (seq !== openSeqRef.current) return { ok: false, error: '' };
       const resolved = resolveDocumentPreviewKind({
         contentType,
         fileName,
@@ -138,6 +143,7 @@ export function useEquipmentActFilePreview({ fallbackInvNo = '' } = {}) {
       });
       return { ok: true, error: '' };
     } catch (error) {
+      if (seq !== openSeqRef.current) return { ok: false, error: '' };
       console.error('Error opening equipment act file preview:', error);
       const apiDetail = error?.response?.data?.detail;
       let detail = typeof apiDetail === 'string' ? apiDetail : (error?.message || ACT_OPEN_ERROR);
@@ -160,7 +166,7 @@ export function useEquipmentActFilePreview({ fallbackInvNo = '' } = {}) {
       }));
       return { ok: false, error: detail };
     } finally {
-      setOpeningDocNo('');
+      if (seq === openSeqRef.current) setOpeningDocNo('');
     }
   }, [fallbackInvNo, revokePreviewUrl]);
 

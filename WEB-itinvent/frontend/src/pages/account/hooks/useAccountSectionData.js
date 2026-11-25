@@ -40,6 +40,11 @@ import {
 } from '../accountUserModel';
 import { normalizeAppSettingsState } from '../admin/appSettingsModel';
 
+const normalizeFontScale = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 1;
+};
+
 export function useAccountSectionData(area = 'settings') {
   const isDesktopViewport = useMediaQuery(DESKTOP_SCROLL_QUERY);
   const isVeryWide = useMediaQuery(SETTINGS_VERY_WIDE_QUERY);
@@ -110,7 +115,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   const [blockingError, setBlockingError] = useState('');
   const [themeMode, setThemeMode] = useState(preferences.theme_mode || 'system');
   const [fontFamily, setFontFamily] = useState(preferences.font_family || 'Aptos');
-  const [fontScale, setFontScale] = useState(Number(preferences.font_scale || 1));
+  const [fontScale, setFontScale] = useState(() => normalizeFontScale(preferences.font_scale));
   const [mobileBottomNavItems, setMobileBottomNavItems] = useState(
     () => normalizeMobileBottomNavItems(preferences.mobile_bottom_nav_items),
   );
@@ -125,6 +130,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   // Start as loading for managers: the users effect fires after the first paint, and an initial
   // `false` renders the short "not found" row first, so the table jumps when the real rows arrive.
   const [usersLoading, setUsersLoading] = useState(canManageUsers);
+  const [taskDelegatesLoadFailed, setTaskDelegatesLoadFailed] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
   const [cleanupResult, setCleanupResult] = useState({ deactivated: 0, deleted: 0 });
@@ -155,6 +161,8 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   const [passwordGroupsLoading, setPasswordGroupsLoading] = useState(false);
   const [passwordGroupsSaving, setPasswordGroupsSaving] = useState(false);
   const linkTrustedDeviceModeRef = useRef({ platformOnly: false });
+  const passwordGroupSaveTimersRef = useRef({});
+  const passwordGroupPendingRef = useRef({});
 
   // PreferencesContext hands out a new object on every refresh (e.g. auth-changed) even when nothing changed on the
   // server. Re-seeding the drafts only when the stored values differ keeps unsaved edits from being reverted.
@@ -163,7 +171,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     const synced = {
       themeMode: preferences.theme_mode || 'system',
       fontFamily: preferences.font_family || 'Aptos',
-      fontScale: Number(preferences.font_scale || 1),
+      fontScale: normalizeFontScale(preferences.font_scale),
       mobileBottomNavItems: normalizeMobileBottomNavItems(preferences.mobile_bottom_nav_items),
     };
     const syncedKey = JSON.stringify(synced);
@@ -194,30 +202,40 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     if (legacyTarget) navigate(legacyTarget, { replace: true });
   }, [area, location.hash, location.search, navigate]);
 
+  const beginUsers = useRequestGuard(JSON.stringify([user?.id, canManageUsers]));
+  const beginSessions = useRequestGuard(JSON.stringify([user?.id, canManageSessions]));
+  const beginDatabases = useRequestGuard(JSON.stringify([user?.id]));
+  const beginEnv = useRequestGuard(JSON.stringify([user?.id, isAdmin, 'env']));
+  const beginAppSettings = useRequestGuard(JSON.stringify([user?.id, isAdmin, 'appSettings']));
+  const beginPasswordGroups = useRequestGuard(JSON.stringify([user?.id, isAdmin, 'passwordGroups']));
+  const beginAiBots = useRequestGuard(JSON.stringify([user?.id, canManageAiBots]));
+  const beginSecurity = useRequestGuard(JSON.stringify([user?.id, 'security']));
+
   const dbOptions = useMemo(
     () => databases.map((db) => ({ id: String(db.id), name: db.name })),
     [databases],
   );
 
   const loadDatabases = useCallback(async () => {
+    const isCurrent = beginDatabases();
     setDatabasesAttempted(true);
     setDatabasesLoading(true);
     setDatabasesError('');
     try {
       const data = await databaseAPI.getAvailableDatabases();
+      if (!isCurrent()) return;
       setDatabases(Array.isArray(data) ? data : []);
       setDatabasesLoaded(true);
     } catch (error) {
+      if (!isCurrent()) return;
       console.error(error);
       setDatabasesLoaded(false);
       setDatabasesError('Не удалось загрузить список баз данных.');
     } finally {
-      setDatabasesLoading(false);
+      if (isCurrent()) setDatabasesLoading(false);
     }
-  }, []);
+  }, [beginDatabases]);
 
-  const beginUsers = useRequestGuard(JSON.stringify([user?.id, canManageUsers]));
-  const beginSessions = useRequestGuard(JSON.stringify([user?.id, canManageSessions]));
   const loadUsers = useCallback(async () => {
     const isCurrent = beginUsers();
     if (!canManageUsers) return;
@@ -242,15 +260,18 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
         custom_permissions: normalizePermissions(item?.custom_permissions),
       }));
       let usersWithDelegates = mergeTaskDelegatesIntoUsers(baseUsers, { items: [] });
+      let delegatesLoadFailed = false;
       if (baseUsers.length > 0) {
         try {
           const delegatesPayload = await authAPI.getTaskDelegatesBulk(baseUsers.map((item) => item.id));
           usersWithDelegates = mergeTaskDelegatesIntoUsers(baseUsers, delegatesPayload);
         } catch (delegateError) {
+          delegatesLoadFailed = true;
           console.error(delegateError);
         }
       }
       if (!isCurrent()) return;
+      setTaskDelegatesLoadFailed(delegatesLoadFailed);
       setUsers(usersWithDelegates);
       setBlockingError('');
     } catch (error) {
@@ -281,10 +302,12 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   }, [beginSessions, canManageSessions]);
 
   const loadEnv = useCallback(async () => {
+    const isCurrent = beginEnv();
     if (!isAdmin) return;
     setEnvLoading(true);
     try {
       const data = await settingsAPI.getEnvSettings();
+      if (!isCurrent()) return;
       setEnvState({
         items: Array.isArray(data?.items) ? data.items : [],
         deployment_targets: Array.isArray(data?.deployment_targets) ? data.deployment_targets : [],
@@ -294,86 +317,115 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
       });
       setBlockingError('');
     } catch (error) {
+      if (!isCurrent()) return;
       console.error(error);
       setBlockingError('Не удалось загрузить переменные окружения.');
     } finally {
-      setEnvLoading(false);
+      if (isCurrent()) setEnvLoading(false);
     }
-  }, [isAdmin]);
+  }, [beginEnv, isAdmin]);
 
   const loadAppSettings = useCallback(async () => {
+    const isCurrent = beginAppSettings();
     if (!isAdmin) return;
     setAppSettingsLoading(true);
     try {
       const data = await settingsAPI.getAppSettings();
+      if (!isCurrent()) return;
       setAppSettingsState(normalizeAppSettingsState(data));
       setBlockingError('');
     } catch (error) {
+      if (!isCurrent()) return;
       console.error(error);
       setBlockingError('Не удалось загрузить web-настройки reminder-задач.');
     } finally {
-      setAppSettingsLoading(false);
+      if (isCurrent()) setAppSettingsLoading(false);
     }
-  }, [isAdmin]);
+  }, [beginAppSettings, isAdmin]);
 
   const loadPasswordGroups = useCallback(async () => {
+    const isCurrent = beginPasswordGroups();
     if (!isAdmin) return;
+    const pendingGroups = Object.entries(passwordGroupPendingRef.current);
+    if (pendingGroups.length) {
+      Object.values(passwordGroupSaveTimersRef.current).forEach(clearTimeout);
+      passwordGroupSaveTimersRef.current = {};
+      passwordGroupPendingRef.current = {};
+      try {
+        await Promise.all(pendingGroups.map(([groupId, payload]) => passwordsAPI.updateGroup(Number(groupId), payload)));
+      } catch (error) {
+        notifyApiError(error, 'Не удалось сохранить часть изменений групп паролей.', { dedupeMode: 'none' });
+      }
+    }
     setPasswordGroupsLoading(true);
     try {
       const data = await passwordsAPI.getGroups({ include_inactive: true });
+      if (!isCurrent()) return;
       setPasswordGroups(Array.isArray(data?.items) ? data.items : []);
       setBlockingError('');
     } catch (error) {
+      if (!isCurrent()) return;
       console.error(error);
       setBlockingError('Не удалось загрузить группы хранилища паролей.');
     } finally {
-      setPasswordGroupsLoading(false);
+      if (isCurrent()) setPasswordGroupsLoading(false);
     }
-  }, [isAdmin]);
+  }, [beginPasswordGroups, isAdmin, notifyApiError]);
 
   const loadAiBotsAdmin = useCallback(async () => {
-    if (!canManageAiBots) return;
+    const isCurrent = beginAiBots();
+    if (!canManageAiBots) return [];
     setAiBotsLoading(true);
     try {
       const data = await settingsAPI.getAiBots();
       const items = Array.isArray(data) ? data : [];
+      if (!isCurrent()) return items;
       setAiBotsState(items);
-      const runsEntries = await Promise.all(
-        items.map(async (item) => {
-          try {
-            const runsResponse = await settingsAPI.getAiBotRuns(item.id);
-            return [item.id, Array.isArray(runsResponse?.items) ? runsResponse.items : []];
-          } catch {
-            return [item.id, []];
-          }
-        }),
-      );
-      setAiBotRunsById(Object.fromEntries(runsEntries));
+      setAiBotRunsById({});
       setBlockingError('');
       return items;
     } catch (error) {
+      if (!isCurrent()) return [];
       console.error(error);
       setBlockingError('Не удалось загрузить настройки AI-ботов.');
       return [];
     } finally {
-      setAiBotsLoading(false);
+      if (isCurrent()) setAiBotsLoading(false);
+    }
+  }, [beginAiBots, canManageAiBots]);
+
+  const aiBotRunsSeqRef = useRef({});
+  const loadAiBotRuns = useCallback(async (botId) => {
+    if (botId == null || !canManageAiBots) return;
+    const seq = (aiBotRunsSeqRef.current[botId] || 0) + 1;
+    aiBotRunsSeqRef.current[botId] = seq;
+    try {
+      const response = await settingsAPI.getAiBotRuns(botId);
+      if (aiBotRunsSeqRef.current[botId] !== seq) return;
+      setAiBotRunsById((prev) => ({ ...prev, [botId]: Array.isArray(response?.items) ? response.items : [] }));
+    } catch {
+      if (aiBotRunsSeqRef.current[botId] !== seq) return;
+      setAiBotRunsById((prev) => ({ ...prev, [botId]: [] }));
     }
   }, [canManageAiBots]);
 
   const loadSecurity = useCallback(async () => {
+    const isCurrent = beginSecurity();
     if (!user?.id) return;
     setSecurityLoading(true);
     try {
       const devices = await authAPI.getTrustedDevices();
+      if (!isCurrent()) return;
       setTrustedDevices(Array.isArray(devices) ? devices : []);
       setBlockingError('');
     } catch (error) {
+      if (!isCurrent()) return;
       console.error(error);
       setBlockingError('Не удалось загрузить данные по безопасности входа.');
     } finally {
-      setSecurityLoading(false);
+      if (isCurrent()) setSecurityLoading(false);
     }
-  }, [user?.id]);
+  }, [beginSecurity, user?.id]);
 
   useEffect(() => {
     const needsDatabases = tab === 'profile'
@@ -414,7 +466,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
       await savePreferences({
         theme_mode: themeMode,
         font_family: fontFamily,
-        font_scale: Number(fontScale),
+        font_scale: normalizeFontScale(fontScale),
         mobile_bottom_nav_items: mobileBottomNavItems,
       });
       notifySuccess('Настройки внешнего вида сохранены.', { source: 'settings', dedupeMode: 'none' });
@@ -584,18 +636,30 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
         return { ok: false };
       }
       const created = await authAPI.createUser(payload);
+      let delegatesSaved = true;
       if (Array.isArray(draft.task_delegate_links) && draft.task_delegate_links.length > 0) {
-        await authAPI.updateTaskDelegates(
-          created.id,
-          normalizeTaskDelegateLinks(draft.task_delegate_links).map((item) => ({
-            delegate_user_id: Number(item.delegate_user_id),
-            role_type: item.role_type === 'deputy' ? 'deputy' : 'assistant',
-            is_active: item.is_active !== false,
-          })),
-        );
+        try {
+          await authAPI.updateTaskDelegates(
+            created.id,
+            normalizeTaskDelegateLinks(draft.task_delegate_links).map((item) => ({
+              delegate_user_id: Number(item.delegate_user_id),
+              role_type: item.role_type === 'deputy' ? 'deputy' : 'assistant',
+              is_active: item.is_active !== false,
+            })),
+          );
+        } catch {
+          delegatesSaved = false;
+        }
       }
       await loadUsers();
-      notifySuccess(`Пользователь ${created.username} создан.`, { source: 'settings', dedupeMode: 'none' });
+      if (delegatesSaved) {
+        notifySuccess(`Пользователь ${created.username} создан.`, { source: 'settings', dedupeMode: 'none' });
+      } else {
+        notifyInfo(`Пользователь ${created.username} создан, но список помощников и заместителей сохранить не удалось. Проверьте связи вручную.`, {
+          source: 'settings',
+          dedupeMode: 'none',
+        });
+      }
       return { ok: true, user: created };
     } catch (error) {
       notifyApiError(error, 'Не удалось создать пользователя.', {
@@ -634,20 +698,41 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
         my_files_quota_bytes: draft.my_files_quota_bytes ?? null,
       };
       const updated = await authAPI.updateUser(userId, payload);
-      await authAPI.updateTaskDelegates(
-        userId,
-        normalizeTaskDelegateLinks(draft.task_delegate_links).map((item) => ({
-          delegate_user_id: Number(item.delegate_user_id),
-          role_type: item.role_type === 'deputy' ? 'deputy' : 'assistant',
-          is_active: item.is_active !== false,
-        })),
-      );
+      // FE-0232: если bulk-загрузка делегатов упала, draft.task_delegate_links —
+      // это не данные пользователя, а пустой дефолт. Отправка такого списка
+      // стирает реальные связи на сервере — пропускаем запись и предупреждаем.
+      let delegatesSaved = true;
+      if (taskDelegatesLoadFailed) {
+        notifyInfo('Связи помощников и заместителей не изменены: не удалось загрузить их текущий список.', {
+          dedupeMode: 'none',
+        });
+      } else {
+        try {
+          await authAPI.updateTaskDelegates(
+            userId,
+            normalizeTaskDelegateLinks(draft.task_delegate_links).map((item) => ({
+              delegate_user_id: Number(item.delegate_user_id),
+              role_type: item.role_type === 'deputy' ? 'deputy' : 'assistant',
+              is_active: item.is_active !== false,
+            })),
+          );
+        } catch {
+          delegatesSaved = false;
+        }
+      }
       await loadUsers();
       if (canManageSessions) await loadSessions();
       if (Number(userId) === Number(user?.id)) {
         await refreshSession();
       }
-      notifySuccess(`Пользователь ${updated.username} обновлён.`, { source: 'settings', dedupeMode: 'none' });
+      if (delegatesSaved) {
+        notifySuccess(`Пользователь ${updated.username} обновлён.`, { source: 'settings', dedupeMode: 'none' });
+      } else {
+        notifyInfo(`Пользователь ${updated.username} обновлён, но список помощников и заместителей сохранить не удалось. Проверьте связи вручную.`, {
+          source: 'settings',
+          dedupeMode: 'none',
+        });
+      }
       return { ok: true, user: updated };
     } catch (error) {
       if (error?.response?.status === 404) {
@@ -667,7 +752,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     } finally {
       setSavingUser(false);
     }
-  }, [canManageSessions, loadSessions, loadUsers, notifyApiError, notifyInfo, notifySuccess, refreshSession, user?.id]);
+  }, [canManageSessions, loadSessions, loadUsers, notifyApiError, notifyInfo, notifySuccess, refreshSession, taskDelegatesLoadFailed, user?.id]);
 
   const handleDeleteUser = useCallback(async (target) => {
     try {
@@ -700,6 +785,11 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   }, [canManageUsers, loadSessions, loadUsers, notifyApiError, notifySuccess]);
 
   const handleCleanupSessions = useCallback(async () => {
+    if (typeof window !== 'undefined' && !window.confirm(
+      'Очистить устаревшие сессии? Неактивные и просроченные сессии будут закрыты.',
+    )) {
+      return;
+    }
     setCleaningSessions(true);
     try {
       const result = await authAPI.cleanupSessions();
@@ -723,6 +813,11 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   }, [loadSessions, notifyApiError, notifySuccess]);
 
   const handlePurgeInactiveSessions = useCallback(async () => {
+    if (typeof window !== 'undefined' && !window.confirm(
+      'Удалить все неактивные сессии пользователей? Это действие нельзя отменить.',
+    )) {
+      return;
+    }
     setPurgingSessions(true);
     try {
       const result = await authAPI.purgeInactiveSessions();
@@ -842,6 +937,28 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     }
   }, [loadPasswordGroups, notifyApiError, notifySuccess]);
 
+  const persistPasswordGroupUpdate = useCallback(async (groupId, payload) => {
+    setPasswordGroupsSaving(true);
+    try {
+      await passwordsAPI.updateGroup(groupId, payload);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось обновить группу паролей.', { dedupeMode: 'none' });
+      await loadPasswordGroups();
+    } finally {
+      setPasswordGroupsSaving(false);
+    }
+  }, [loadPasswordGroups, notifyApiError]);
+
+  useEffect(() => () => {
+    const pending = passwordGroupPendingRef.current;
+    passwordGroupPendingRef.current = {};
+    Object.values(passwordGroupSaveTimersRef.current).forEach(clearTimeout);
+    passwordGroupSaveTimersRef.current = {};
+    Object.entries(pending).forEach(([groupId, payload]) => {
+      passwordsAPI.updateGroup(Number(groupId), payload).catch(() => {});
+    });
+  }, []);
+
   const handleUpdatePasswordGroup = useCallback(async (groupId, payload, options = {}) => {
     const autosave = Boolean(options?.autosave);
     setPasswordGroups((current) => current.map((item) => (
@@ -853,7 +970,20 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
         }
         : item
     )));
-    if (autosave) return true;
+    if (autosave) {
+      passwordGroupPendingRef.current[groupId] = payload;
+      clearTimeout(passwordGroupSaveTimersRef.current[groupId]);
+      passwordGroupSaveTimersRef.current[groupId] = setTimeout(() => {
+        const pending = passwordGroupPendingRef.current[groupId];
+        delete passwordGroupPendingRef.current[groupId];
+        delete passwordGroupSaveTimersRef.current[groupId];
+        if (pending) void persistPasswordGroupUpdate(groupId, pending);
+      }, 700);
+      return true;
+    }
+    clearTimeout(passwordGroupSaveTimersRef.current[groupId]);
+    delete passwordGroupSaveTimersRef.current[groupId];
+    delete passwordGroupPendingRef.current[groupId];
     setPasswordGroupsSaving(true);
     try {
       await passwordsAPI.updateGroup(groupId, payload);
@@ -867,7 +997,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     } finally {
       setPasswordGroupsSaving(false);
     }
-  }, [loadPasswordGroups, notifyApiError, notifySuccess]);
+  }, [loadPasswordGroups, notifyApiError, notifySuccess, persistPasswordGroupUpdate]);
 
   const handleArchivePasswordGroup = useCallback(async (group) => {
     if (!window.confirm(`Архивировать группу "${group?.name || ''}"?`)) return;
@@ -884,6 +1014,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
   }, [loadPasswordGroups, notifyApiError, notifySuccess]);
 
   const handleCreateAiBot = useCallback(async (draft) => {
+    if (savingAiBotId) return;
     setSavingAiBotId('new');
     try {
       const created = await settingsAPI.createAiBot({
@@ -917,11 +1048,11 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     } finally {
       setSavingAiBotId('');
     }
-  }, [loadAiBotsAdmin, notifyApiError, notifySuccess]);
+  }, [loadAiBotsAdmin, notifyApiError, notifySuccess, savingAiBotId]);
 
   const handleUpdateAiBot = useCallback(async (botId, draft) => {
     const normalizedBotId = String(botId || '').trim();
-    if (!normalizedBotId) return;
+    if (!normalizedBotId || savingAiBotId) return;
     setSavingAiBotId(normalizedBotId);
     try {
       const updated = await settingsAPI.updateAiBot(normalizedBotId, {
@@ -954,7 +1085,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     } finally {
       setSavingAiBotId('');
     }
-  }, [loadAiBotsAdmin, notifyApiError, notifySuccess]);
+  }, [loadAiBotsAdmin, notifyApiError, notifySuccess, savingAiBotId]);
 
   return {
     area,
@@ -1027,6 +1158,7 @@ const canDeployHubDesktop = isAdmin || hasPermission('scan.tasks');
     passwordGroupsLoading,
     passwordGroupsSaving,
     loadAiBotsAdmin,
+  loadAiBotRuns,
     loadEnv,
     loadPasswordGroups,
     handleCreateUser,

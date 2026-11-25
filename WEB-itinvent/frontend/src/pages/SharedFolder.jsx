@@ -35,6 +35,18 @@ const resolveError = (error) => {
   return 'Папка недоступна — ссылка отключена или срок хранения истёк.';
 };
 
+const resolveDownloadError = (error) => {
+  if (!error?.response) return 'Не удалось начать скачивание. Попробуйте ещё раз.';
+  if (Number(error.response.status) === 429) {
+    return 'Слишком много запросов. Попробуйте через несколько минут.';
+  }
+  const status = Number(error.response.status || 0);
+  if (status >= 500) return 'Не удалось связаться с сервером. Попробуйте повторить скачивание позже.';
+  return 'Файл недоступен — ссылка отключена или срок хранения истёк.';
+};
+
+const FILES_PAGE_SIZE = 200;
+
 export default function SharedFolder() {
   const { token = '' } = useParams();
   const [payload, setPayload] = useState(null);
@@ -43,18 +55,21 @@ export default function SharedFolder() {
   const [downloadError, setDownloadError] = useState('');
   const [downloadingId, setDownloadingId] = useState('');
   const [downloadingAll, setDownloadingAll] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
+  const [visibleCount, setVisibleCount] = useState(FILES_PAGE_SIZE);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setLoadError('');
     setDownloadError('');
+    setVisibleCount(FILES_PAGE_SIZE);
     myFilesAPI.getPublicFolder(token)
       .then((data) => { if (!cancelled) setPayload(data); })
       .catch((requestError) => { if (!cancelled) setLoadError(resolveError(requestError)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [token]);
+  }, [token, reloadTick]);
 
   const handleDownload = async (file) => {
     if (downloadingId || downloadingAll) return;
@@ -67,7 +82,7 @@ export default function SharedFolder() {
         throw new Error('download failed');
       }
     } catch (requestError) {
-      setDownloadError(resolveError(requestError));
+      setDownloadError(resolveDownloadError(requestError));
     } finally {
       setDownloadingId('');
     }
@@ -84,13 +99,15 @@ export default function SharedFolder() {
         throw new Error('download failed');
       }
     } catch (requestError) {
-      setDownloadError(resolveError(requestError));
+      setDownloadError(resolveDownloadError(requestError));
     } finally {
       setDownloadingAll(false);
     }
   };
 
   const items = Array.isArray(payload?.items) ? payload.items : [];
+  const visibleItems = items.slice(0, visibleCount);
+  const hiddenCount = items.length - visibleItems.length;
 
   return (
     <Box
@@ -135,7 +152,17 @@ export default function SharedFolder() {
         ) : null}
 
         {!loading && loadError ? (
-          <Alert severity="warning" sx={{ maxWidth: 520, mx: 'auto' }}>{loadError}</Alert>
+          <Alert
+            severity="warning"
+            sx={{ maxWidth: 520, mx: 'auto' }}
+            action={(
+              <Button size="small" onClick={() => setReloadTick((tick) => tick + 1)}>
+                Повторить
+              </Button>
+            )}
+          >
+            {loadError}
+          </Alert>
         ) : null}
 
         {!loading && !loadError && payload ? (
@@ -204,7 +231,8 @@ export default function SharedFolder() {
                 Папка пуста.
               </Typography>
             ) : (
-              items.map((file) => (
+              <>
+              {visibleItems.map((file) => (
                 <Stack
                   key={file.id}
                   direction="row"
@@ -256,7 +284,19 @@ export default function SharedFolder() {
                     </Tooltip>
                   )}
                 </Stack>
-              ))
+              ))}
+              {hiddenCount > 0 ? (
+                <Box sx={{ px: { xs: 2, sm: 3 }, py: 2, textAlign: 'center' }}>
+                  <Button
+                    size="small"
+                    onClick={() => setVisibleCount((count) => count + FILES_PAGE_SIZE)}
+                    sx={{ textTransform: 'none', fontWeight: 700 }}
+                  >
+                    Показать ещё {Math.min(hiddenCount, FILES_PAGE_SIZE)} из {hiddenCount}
+                  </Button>
+                </Box>
+              ) : null}
+              </>
             )}
           </Paper>
         ) : null}

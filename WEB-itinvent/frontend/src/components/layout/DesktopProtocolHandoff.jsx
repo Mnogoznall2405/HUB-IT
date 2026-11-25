@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation } from 'react-router-dom';
 import { Box, Button, Collapse, Paper, Stack, Typography } from '@mui/material';
@@ -36,7 +36,6 @@ export default function DesktopProtocolHandoff() {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const location = useLocation();
-  const autoLaunchedRef = useRef(false);
   const [visible, setVisible] = useState(false);
   const [protocolHref, setProtocolHref] = useState('');
   // AI15/Д1: на странице чата баннер «Открыть в HUB Desktop» не показываем
@@ -64,10 +63,8 @@ export default function DesktopProtocolHandoff() {
     setProtocolHref(href);
     setVisible(true);
     markDesktopHandoffSeen();
-    if (!autoLaunchedRef.current) {
-      autoLaunchedRef.current = true;
-      launchHubitProtocol(href);
-    }
+    // Протокол запускаем только по явному действию пользователя: автозапуск
+    // hubit:// без установленного обработчика логирует ошибку в консоль браузера.
   }, [isChatRoute, isNarrowScreen, location.pathname, location.search]);
 
   if (!visible || !protocolHref || isChatRoute) return null;

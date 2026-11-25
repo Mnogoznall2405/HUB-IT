@@ -395,7 +395,7 @@ export default function MailPreviewHeader({
                 ) : null}
               </Box>
             ) : null}
-            <Typography data-testid="mail-preview-date" noWrap sx={getMailMetaTextSx(tokens, { mt: 0.2, lineHeight: 1.45 })}>
+            <Typography data-testid="mail-preview-date" sx={getMailMetaTextSx(tokens, { mt: 0.2, lineHeight: 1.45 })}>
               {formatFullDate(selectedMessage.received_at)}
             </Typography>
           </Box>

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Box, Button, Chip, IconButton, MenuItem, Paper, Stack, TextField, Tooltip, Typography } from '@mui/material';
 import PersonRemoveOutlinedIcon from '@mui/icons-material/PersonRemoveOutlined';
+import { useConfirmDialog } from '../feedback/ConfirmDialogProvider';
 import ItObjectUserPicker from './ItObjectUserPicker';
 import { LEVEL_LABELS, SECTION_KEYS, SECTION_LABELS } from './itObjectsShared';
 
@@ -38,12 +39,22 @@ function SectionLevels({ keys, values, onChange, disabled }) {
 }
 
 function PersonRow({ keys, person, busy, onSave }) {
+  const { confirm } = useConfirmDialog();
   const serverValues = useMemo(
     () => Object.fromEntries(keys.map((key) => [key, person.sections[key] || NONE])),
     [keys, person.sections],
   );
   const [values, setValues] = useState(serverValues);
-  useEffect(() => setValues(serverValues), [serverValues]);
+  const prevServerValuesRef = useRef(serverValues);
+  useEffect(() => {
+    const prev = prevServerValuesRef.current;
+    prevServerValuesRef.current = serverValues;
+    // Каждый load создаёт новый объект person.sections — сбрасываем локальные
+    // правки только когда серверные значения реально изменились (своё сохранение),
+    // а не когда сохранилась соседняя строка.
+    if (keys.every((key) => prev[key] === serverValues[key])) return;
+    setValues(serverValues);
+  }, [serverValues, keys]);
   const dirty = keys.some((key) => values[key] !== serverValues[key]);
 
   return (
@@ -61,7 +72,15 @@ function PersonRow({ keys, person, busy, onSave }) {
             <IconButton
               disabled={busy}
               aria-label={`Забрать весь доступ: ${person.name}`}
-              onClick={() => void onSave(person.userId, toPayload(keys, allSections(keys, NONE)))}
+              onClick={async () => {
+                const ok = await confirm({
+                  title: 'Забрать весь доступ',
+                  message: `${person.name} потеряет доступ ко всем разделам объекта.`,
+                  confirmLabel: 'Забрать',
+                  destructive: true,
+                });
+                if (ok) void onSave(person.userId, toPayload(keys, allSections(keys, NONE)));
+              }}
               sx={{ width: 40, height: 40 }}
             >
               <PersonRemoveOutlinedIcon fontSize="small" />

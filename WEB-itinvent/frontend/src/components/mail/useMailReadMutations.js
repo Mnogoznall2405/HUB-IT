@@ -307,12 +307,38 @@ export default function useMailReadMutations({
         unreadDelta: -unreadDelta,
         nextIsRead: !nextIsRead,
       });
-      applyMailboxUnreadDelta(-unreadDelta);
-      localReadStateOverridesRef.current = clearLocalReadStateOverride({
+      // Roll the local row back too — a failed refetch must not leave the
+      // optimistic state on screen next to restored counters. The apply*
+      // helpers restore the mailbox badge and folder counter internally.
+      const rollbackIsRead = !nextIsRead;
+      localReadStateOverridesRef.current = setLocalReadStateOverride({
         mode: normalizedMode,
         targetId: normalizedTargetId,
-        overrides: localReadStateOverridesRef.current,
+        isRead: rollbackIsRead,
+        overrides: clearLocalReadStateOverride({
+          mode: normalizedMode,
+          targetId: normalizedTargetId,
+          overrides: localReadStateOverridesRef.current,
+        }),
+        now: Date.now(),
+        ttlMs: readStateOverrideTtlMs,
       });
+      const rollbackFolderApplied = normalizedMode === 'conversations'
+        ? applyConversationReadStateLocally({
+          conversationId: normalizedTargetId,
+          isRead: rollbackIsRead,
+          unreadCount: rollbackIsRead ? 0 : Math.max(0, -unreadDelta),
+          messageCount: normalizedMessageCount,
+          unreadDelta: -unreadDelta,
+        })
+        : applyMessageReadStateLocally({
+          messageId: normalizedTargetId,
+          isRead: rollbackIsRead,
+          unreadDelta: -unreadDelta,
+        });
+      if (!rollbackFolderApplied) {
+        updateCurrentFolderUnread(-unreadDelta);
+      }
       await Promise.allSettled([
         refreshList({ silent: true, force: true }),
         refreshFolderSummary({ force: true }),

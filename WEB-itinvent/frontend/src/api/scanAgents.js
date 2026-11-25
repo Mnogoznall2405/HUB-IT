@@ -11,7 +11,7 @@ export const scanAgentsAPI = {
     return response.data;
   },
 
-  getAgentsActivity: async (agentIds = []) => {
+  getAgentsActivity: async (agentIds = [], options = {}) => {
     const query = new URLSearchParams();
     (Array.isArray(agentIds) ? agentIds : []).forEach((agentId) => {
       const normalized = String(agentId || '').trim();
@@ -20,6 +20,7 @@ export const scanAgentsAPI = {
     const suffix = query.toString();
     const response = await apiClient.get(
       suffix ? `/scan/agents/activity?${suffix}` : '/scan/agents/activity',
+      { signal: options?.signal },
     );
     return response.data;
   },

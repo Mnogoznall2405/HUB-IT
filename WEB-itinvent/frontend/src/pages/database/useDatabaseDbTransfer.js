@@ -55,7 +55,12 @@ export function useDatabaseDbTransfer({ notifyDatabaseError } = {}) {
       };
       const scope = JSON.stringify(payload);
       if (requestRef.current?.scope !== scope) {
-        requestRef.current = { scope, operationId: crypto.randomUUID() };
+        requestRef.current = {
+          scope,
+          operationId: typeof crypto?.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `op-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`,
+        };
       }
       const response = await equipmentDbTransferAPI.transferToDb({
         ...payload, operation_id: requestRef.current.operationId,

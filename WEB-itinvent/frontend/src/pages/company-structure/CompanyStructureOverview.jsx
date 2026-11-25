@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Avatar,
   Box,
   Button,
@@ -46,7 +47,9 @@ let elkInstancePromise = null;
 const getElk = () => {
   if (!elkInstancePromise) {
     elkInstancePromise = import('elkjs/lib/elk.bundled.js')
-      .then((module) => new (module.default || module)());
+      .then((module) => new (module.default || module)())
+      // A rejected import must not pin the slot: the next layout attempt retries.
+      .catch((error) => { elkInstancePromise = null; throw error; });
   }
   return elkInstancePromise;
 };
@@ -267,6 +270,8 @@ function OverviewCanvas({ tree, blockId, selectedId, onFocus, onRoot, onPeople }
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
   const [layoutLoading, setLayoutLoading] = useState(true);
+  const [layoutError, setLayoutError] = useState('');
+  const [layoutRetry, setLayoutRetry] = useState(0);
   const layoutVersionRef = useRef(0);
   const anchorRef = useRef(null);
   const fittedBlockRef = useRef('');
@@ -317,6 +322,7 @@ function OverviewCanvas({ tree, blockId, selectedId, onFocus, onRoot, onPeople }
     const version = layoutVersionRef.current + 1;
     layoutVersionRef.current = version;
     setLayoutLoading(true);
+    setLayoutError('');
     getElk().then((elkInstance) => elkInstance.layout(buildElkInput(graph))).then((layout) => {
       if (layoutVersionRef.current !== version) return;
       const positioned = new Map((layout.children || []).map((item) => [String(item.id), item]));
@@ -376,10 +382,14 @@ function OverviewCanvas({ tree, blockId, selectedId, onFocus, onRoot, onPeople }
           void fitView({ padding: 0.18, minZoom: 0.35, maxZoom: 0.9, duration: 0 });
         }
       });
-    }).catch(() => {
-      if (layoutVersionRef.current === version) setLayoutLoading(false);
+    }).catch((error) => {
+      if (layoutVersionRef.current === version) {
+        console.error('Company structure layout failed:', error);
+        setLayoutError('Не удалось построить схему подчинённости.');
+        setLayoutLoading(false);
+      }
     });
-  }, [fitView, graph, setViewport, toggleNode]);
+  }, [fitView, graph, setViewport, toggleNode, layoutRetry]);
 
   // Selection changes patch node flags only — they must not re-run ELK.
   useEffect(() => {
@@ -448,6 +458,15 @@ function OverviewCanvas({ tree, blockId, selectedId, onFocus, onRoot, onPeople }
           >
             <CircularProgress size={28} />
           </Box>
+        ) : null}
+        {!layoutLoading && layoutError ? (
+          <Alert
+            severity="warning"
+            sx={{ position: 'absolute', top: 8, left: 8, right: 8, zIndex: 5 }}
+            action={<Button size="small" onClick={() => setLayoutRetry((value) => value + 1)}>Повторить</Button>}
+          >
+            {layoutError}
+          </Alert>
         ) : null}
       </Box>
     </Paper>

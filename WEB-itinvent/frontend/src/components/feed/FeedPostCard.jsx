@@ -43,6 +43,8 @@ const isImageAttachment = (attachment) => {
   return /\.(avif|gif|jpe?g|png|webp)$/i.test(String(attachment?.file_name || '').trim());
 };
 
+const ATTACHMENT_PROBE_LIMIT = 12;
+
 const MOBILE_VISIBLE_REACTIONS = 3;
 const DESKTOP_VISIBLE_REACTIONS = 5;
 
@@ -73,6 +75,7 @@ export default function FeedPostCard({
   const [menuAnchor, setMenuAnchor] = useState(null);
   const [reactionAnchor, setReactionAnchor] = useState(null);
   const [failedMediaIds, setFailedMediaIds] = useState(() => new Set());
+  const [failedAttachmentIds, setFailedAttachmentIds] = useState(() => new Set());
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
   const initialExpansionReportedRef = useRef(false);
   const previewText = String(post?.preview || stripFeedMarkdown(post?.body) || '').trim();
@@ -115,8 +118,30 @@ export default function FeedPostCard({
 
   useEffect(() => {
     setFailedMediaIds(new Set());
+    setFailedAttachmentIds(new Set());
     setActiveMediaIndex(0);
   }, [coverUrl, post?.id]);
+
+  useEffect(() => {
+    if (!contentExpanded || !post?.id || typeof buildAttachmentUrl !== 'function') return undefined;
+    const probeTargets = otherAttachments
+      .filter((attachment) => attachment?.id && !failedAttachmentIds.has(String(attachment.id)))
+      .slice(0, ATTACHMENT_PROBE_LIMIT);
+    if (!probeTargets.length) return undefined;
+    const controller = new AbortController();
+    probeTargets.forEach((attachment) => {
+      const url = buildAttachmentUrl(post.id, attachment.id);
+      if (!url) return;
+      fetch(url, { method: 'HEAD', credentials: 'include', signal: controller.signal })
+        .then((response) => {
+          if (response.status === 404 || response.status === 410) {
+            setFailedAttachmentIds((current) => new Set([...current, String(attachment.id)]));
+          }
+        })
+        .catch(() => undefined);
+    });
+    return () => controller.abort();
+  }, [buildAttachmentUrl, contentExpanded, failedAttachmentIds, otherAttachments, post?.id]);
 
   useEffect(() => {
     if (activeMediaIndex >= visibleGalleryItems.length) {
@@ -273,6 +298,26 @@ export default function FeedPostCard({
           </>
         ) : null}
       </Stack>
+
+      {!activeMedia && galleryItems.length > 0 ? (
+        <Box
+          role="img"
+          aria-label={`Изображения к публикации «${post?.title || ''}» недоступны`}
+          sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 0.75,
+            py: 4,
+            bgcolor: 'action.hover',
+            color: 'text.secondary',
+          }}
+        >
+          <AttachFileOutlinedIcon sx={{ fontSize: 28, opacity: 0.6 }} />
+          <Typography variant="body2">Изображение недоступно</Typography>
+        </Box>
+      ) : null}
 
       {activeMedia ? (
         <Box
@@ -449,21 +494,25 @@ export default function FeedPostCard({
 
         {contentExpanded && otherAttachments.length > 0 ? (
           <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mt: 1 }}>
-            {otherAttachments.map((attachment) => (
-              <Button
-                key={attachment.id}
-                component="a"
-                href={buildAttachmentUrl?.(post.id, attachment.id)}
-                target="_blank"
-                rel="noreferrer"
-                variant="outlined"
-                size="small"
-                startIcon={<AttachFileOutlinedIcon />}
-                sx={{ borderRadius: '10px', textTransform: 'none' }}
-              >
-                {attachment.file_name || 'Открыть файл'}
-              </Button>
-            ))}
+            {otherAttachments.map((attachment) => {
+              const broken = failedAttachmentIds.has(String(attachment.id));
+              return (
+                <Button
+                  key={attachment.id}
+                  component={broken ? 'button' : 'a'}
+                  href={broken ? undefined : buildAttachmentUrl?.(post.id, attachment.id)}
+                  target={broken ? undefined : '_blank'}
+                  rel={broken ? undefined : 'noreferrer'}
+                  variant="outlined"
+                  size="small"
+                  disabled={broken}
+                  startIcon={<AttachFileOutlinedIcon />}
+                  sx={{ borderRadius: '10px', textTransform: 'none' }}
+                >
+                  {broken ? `${attachment.file_name || 'Файл'} — недоступен` : (attachment.file_name || 'Открыть файл')}
+                </Button>
+              );
+            })}
           </Stack>
         ) : null}
 

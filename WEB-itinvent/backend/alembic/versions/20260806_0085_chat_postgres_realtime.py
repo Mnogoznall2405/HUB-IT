@@ -24,8 +24,17 @@ def _enabled() -> bool:
     return _scope() != "app" and op.get_bind().dialect.name == "postgresql"
 
 
-def _schema() -> str:
-    return "chat"
+def _schema() -> str | None:
+    """Schema where the chat tables live: logical ``chat`` or legacy ``public``.
+
+    Mirrors the runtime detection in ``chat/postgres_realtime.py`` (relay and
+    presence tables are validated in the schema that holds
+    ``chat_conversations``); creating them in ``chat`` while the legacy
+    runtime routes chat to ``public`` leaves realtime unable to start.
+    """
+    if sa.inspect(op.get_bind()).has_table("chat_conversations", schema="chat"):
+        return "chat"
+    return None
 
 
 def _has_table(table_name: str) -> bool:

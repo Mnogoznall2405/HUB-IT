@@ -79,7 +79,7 @@ it('stops automatic database requests after failure and supports manual retry', 
     const [databasesAttempted, setDatabasesAttempted] = useState(false);
     const [databasesLoaded, setDatabasesLoaded] = useState(false);
     const [databasesLoading, setDatabasesLoading] = useState(false);
-    const loadDatabases = useCallback(bind(loaderSource, { databaseAPI: api, setDatabasesAttempted, setDatabasesError: noop, setDatabasesLoaded, setDatabasesLoading, setDatabases: noop, setBlockingError: noop, console: { error: noop } }), []);
+    const loadDatabases = useCallback(bind(loaderSource, { databaseAPI: api, beginDatabases: () => () => true, setDatabasesAttempted, setDatabasesError: noop, setDatabasesLoaded, setDatabasesLoading, setDatabases: noop, setBlockingError: noop, console: { error: noop } }), []);
     useEffect(bind(effectSource, { tab: 'profile', user: { id: 1 }, canManageUsers: false, canManageAiBots: false, databasesAttempted, databasesLoaded, databasesLoading, loadDatabases }), [databasesAttempted, databasesLoaded, databasesLoading, loadDatabases]);
     return { loadDatabases };
   });

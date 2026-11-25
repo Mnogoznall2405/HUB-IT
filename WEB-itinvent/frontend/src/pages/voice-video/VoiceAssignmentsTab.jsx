@@ -241,7 +241,13 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
       patchStatus(item, { task_id: String(taskId) });
       voiceJobsAPI.updateAssignmentStatus(
         base, refOf(item), statuses[skOf(item)]?.status || 'pending', statuses[skOf(item)]?.comment || '', { taskId },
-      ).catch(() => {});
+      ).catch((err) => {
+        patchStatus(item, { task_id: '' });
+        setNotice({
+          text: errorDetailOr(err, 'Задача создана, но связь с поручением не сохранилась — проверьте вручную.'),
+          severity: 'warning',
+        });
+      });
       setTaskDialog(null);
     } catch (err) {
       setNotice({

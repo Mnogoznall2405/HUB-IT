@@ -144,6 +144,7 @@ export default function SessionsTab({ sessions, loading, cleanupResult, cleaning
                     </TableCell>
                     <TableCell>
                       <Chip size="small" color={meta.color} label={meta.label} />
+                      {session.is_current ? <Chip size="small" color="primary" label="Текущая" sx={{ ml: 0.5 }} /> : null}
                     </TableCell>
                     <TableCell align="right">
                       <OverflowMenu
@@ -152,7 +153,13 @@ export default function SessionsTab({ sessions, loading, cleanupResult, cleaning
                           { key: 'terminate', label: 'Завершить', tone: 'danger', disabled: session.status !== 'active', icon: <DeleteOutlineOutlinedIcon fontSize="small" /> },
                         ]}
                         onSelect={(key) => {
-                          if (key === 'terminate') onTerminate(session.session_id);
+                          if (key !== 'terminate') return;
+                          const confirmed = window.confirm(
+                            session.is_current
+                              ? 'Это ваша текущая сессия — завершение приведёт к выходу из системы. Продолжить?'
+                              : `Завершить сессию пользователя ${session.username || ''}? Устройство: ${session.device_label || 'неизвестно'}.`,
+                          );
+                          if (confirmed) onTerminate(session.session_id);
                         }}
                       />
                     </TableCell>

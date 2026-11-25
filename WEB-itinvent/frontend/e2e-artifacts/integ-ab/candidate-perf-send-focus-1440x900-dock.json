@@ -1,0 +1,391 @@
+{
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "measuredAt": "2026-11-24T12:58:09.833Z",
+  "dock": "warm",
+  "emojiText": false,
+  "scenarios": {
+    "typing_echo_ms": {
+      "n": 25,
+      "p50": 47.6,
+      "p95": 54.9,
+      "min": 31.2,
+      "max": 151.9
+    },
+    "send_echo_ms": {
+      "n": 40,
+      "p50": 178,
+      "p95": 198.2,
+      "min": 143.8,
+      "max": 217.9,
+      "commits": {
+        "n": 40,
+        "p50": 13,
+        "p95": 16,
+        "min": 9,
+        "max": 16
+      },
+      "rendered": {
+        "n": 40,
+        "p50": 44572,
+        "p95": 59910,
+        "min": 25244,
+        "max": 63103
+      },
+      "threadRendered": {
+        "n": 40,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "timeouts": 0,
+      "requestsTotal": 4,
+      "stickerRequests": 0
+    },
+    "send_echo_samples": [
+      {
+        "ms": 217.9,
+        "commits": 13,
+        "rendered": 27830,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/4bdfe14f-ab76-4b5e-b8d3-05cec5d94d86/thread-bootstrap?limit=24&lightweight=1",
+            "dur": 53.7
+          },
+          {
+            "m": "GET /api/v1/chat/conversations/4bdfe14f-ab76-4b5e-b8d3-05cec5d94d86/messages/hydrate?message_ids=57818017-dac9-415b-8b84-b67e603924f8",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 164.1,
+        "commits": 12,
+        "rendered": 26593,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 189.1,
+        "commits": 11,
+        "rendered": 25244,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 166.5,
+        "commits": 14,
+        "rendered": 33072,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 159,
+        "commits": 13,
+        "rendered": 31719,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 172.7,
+        "commits": 16,
+        "rendered": 40119,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 162.6,
+        "commits": 13,
+        "rendered": 33569,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 187.4,
+        "commits": 16,
+        "rendered": 42381,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 161.4,
+        "commits": 14,
+        "rendered": 38072,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 177.7,
+        "commits": 15,
+        "rendered": 41965,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 175.2,
+        "commits": 14,
+        "rendered": 40060,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 198,
+        "commits": 15,
+        "rendered": 44095,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 181.8,
+        "commits": 14,
+        "rendered": 42018,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 154.5,
+        "commits": 11,
+        "rendered": 33833,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 209.5,
+        "commits": 16,
+        "rendered": 50333,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 176.2,
+        "commits": 13,
+        "rendered": 41876,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 176.9,
+        "commits": 14,
+        "rendered": 45994,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 169.9,
+        "commits": 13,
+        "rendered": 43718,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 163,
+        "commits": 13,
+        "rendered": 44572,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 183.8,
+        "commits": 13,
+        "rendered": 45568,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 175.1,
+        "commits": 14,
+        "rendered": 49970,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 143.8,
+        "commits": 11,
+        "rendered": 40014,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 193.5,
+        "commits": 13,
+        "rendered": 48333,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 155.3,
+        "commits": 13,
+        "rendered": 49108,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 190.4,
+        "commits": 11,
+        "rendered": 42355,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/4bdfe14f-ab76-4b5e-b8d3-05cec5d94d86/messages?limit=50&after_message_id=7cebb68c-b970-49e8-b471-67cbd265fab9",
+            "dur": 65.7
+          }
+        ]
+      },
+      {
+        "ms": 198.2,
+        "commits": 13,
+        "rendered": 51102,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 193.1,
+        "commits": 14,
+        "rendered": 55934,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 178.8,
+        "commits": 11,
+        "rendered": 44769,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 184.8,
+        "commits": 12,
+        "rendered": 49591,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 189.5,
+        "commits": 11,
+        "rendered": 46327,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 180.3,
+        "commits": 14,
+        "rendered": 59910,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 189.4,
+        "commits": 11,
+        "rendered": 47889,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 180.5,
+        "commits": 12,
+        "rendered": 53005,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 175.4,
+        "commits": 11,
+        "rendered": 49455,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 184.6,
+        "commits": 13,
+        "rendered": 59261,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 160.7,
+        "commits": 11,
+        "rendered": 51015,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 178,
+        "commits": 13,
+        "rendered": 61107,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 162.5,
+        "commits": 9,
+        "rendered": 42907,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/4bdfe14f-ab76-4b5e-b8d3-05cec5d94d86/messages?limit=50&after_message_id=0af4eba3-aaf5-4752-9a86-984f527b08e4",
+            "dur": 43.3
+          }
+        ]
+      },
+      {
+        "ms": 191.1,
+        "commits": 13,
+        "rendered": 63103,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 179.7,
+        "commits": 12,
+        "rendered": 58963,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      }
+    ]
+  }
+}

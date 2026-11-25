@@ -43,6 +43,7 @@ import { itObjectsAPI } from '../api/itObjects';
 import { passwordsAPI } from '../api/passwords';
 import { settingsAPI } from '../api/settings';
 import { useAuth } from '../contexts/AuthContext';
+import { useConfirmDialog } from '../components/feedback/ConfirmDialogProvider';
 import { setBranchForDatabase } from './database/databaseBranchPreferences';
 import {
   LEVEL_LABELS,
@@ -57,7 +58,7 @@ const SUMMARY_PASSWORDS_LIMIT = 100;
 // Сводка по разделам объекта: по одному запросу на раздел, к которому у пользователя есть доступ.
 async function loadSectionSummary(section, objectRef, signal) {
   if (section === 'passwords') {
-    const payload = await passwordsAPI.getEntries({ object_ref: objectRef, limit: SUMMARY_PASSWORDS_LIMIT });
+    const payload = await passwordsAPI.getEntries({ object_ref: objectRef, limit: SUMMARY_PASSWORDS_LIMIT }, { signal });
     const count = Array.isArray(payload?.items) ? payload.items.length : 0;
     return { value: count >= SUMMARY_PASSWORDS_LIMIT ? `${count}+` : String(count), caption: 'записей' };
   }
@@ -272,6 +273,7 @@ function PasswordsTab({ objectRef, level }) {
 }
 
 function StructureTab({ object, busy, onAssign, onClear, onDelete, onSaveTeam }) {
+  const { confirm } = useConfirmDialog();
   const [candidate, setCandidate] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   return (
@@ -300,7 +302,15 @@ function StructureTab({ object, busy, onAssign, onClear, onDelete, onSaveTeam })
               color="inherit"
               variant="outlined"
               disabled={busy}
-              onClick={() => void onClear()}
+              onClick={async () => {
+                const ok = await confirm({
+                  title: 'Снять айтишника',
+                  message: `${object.owner?.user_name || 'Пользователь'} потеряет полный доступ ко всем разделам объекта.`,
+                  confirmLabel: 'Снять',
+                  destructive: true,
+                });
+                if (ok) void onClear();
+              }}
               sx={{ minHeight: 44, flexShrink: 0, textTransform: 'none' }}
             >
               Снять

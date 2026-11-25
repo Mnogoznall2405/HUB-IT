@@ -151,7 +151,9 @@ describe('apiClient auth response interceptor', () => {
     const protectedRequest = getRejectedHandler()({
       response: { status: 401 }, config: { url: '/auth/me' },
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The coordinator absorbs cross-tab epoch propagation (~400ms worst case)
+    // before posting — wait for the shared POST rather than a single tick.
+    await vi.waitFor(() => expect(apiClientMock.post.mock.calls.length).toBe(1), { timeout: 3000 });
     const refreshCount = apiClientMock.post.mock.calls.length;
     completions.forEach((resolve) => resolve({ data: { session_id: 'session-1' } }));
     expect(refreshCount).toBe(1);
@@ -182,7 +184,10 @@ describe('apiClient auth response interceptor', () => {
     window.addEventListener('auth-required', onAuthRequired);
     window.localStorage.setItem('user', JSON.stringify({ id: 1, username: 'user' }));
     const refreshError = Object.assign(new Error('Network Error'), { code: 'ERR_NETWORK' });
-    apiClientMock.post.mockRejectedValueOnce(refreshError);
+    // Transport failures get exactly one bounded retry — reject both attempts.
+    apiClientMock.post
+      .mockRejectedValueOnce(refreshError)
+      .mockRejectedValueOnce(refreshError);
 
     const rejectedHandler = getRejectedHandler();
     const error = {
@@ -5791,7 +5796,7 @@ describe('scanAgentsAPI contract', () => {
 
     await scanAgentsAPI.getAgentsActivity([' agent-1 ', '', null, 'agent-2']);
 
-    expect(apiClientMock.get).toHaveBeenCalledWith('/scan/agents/activity?agent_id=agent-1&agent_id=agent-2');
+    expect(apiClientMock.get).toHaveBeenCalledWith('/scan/agents/activity?agent_id=agent-1&agent_id=agent-2', { signal: undefined });
   });
 
   it('omits the activity query string when no valid agent ids are present', async () => {
@@ -5800,8 +5805,8 @@ describe('scanAgentsAPI contract', () => {
     await scanAgentsAPI.getAgentsActivity([' ', null]);
     await scanAgentsAPI.getAgentsActivity('agent-1');
 
-    expect(apiClientMock.get).toHaveBeenNthCalledWith(1, '/scan/agents/activity');
-    expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/scan/agents/activity');
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(1, '/scan/agents/activity', { signal: undefined });
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/scan/agents/activity', { signal: undefined });
   });
 
   it('keeps URLSearchParams encoding for special agent ids', async () => {
@@ -5809,7 +5814,7 @@ describe('scanAgentsAPI contract', () => {
 
     await scanAgentsAPI.getAgentsActivity(['agent/1', 'agent 2']);
 
-    expect(apiClientMock.get).toHaveBeenCalledWith('/scan/agents/activity?agent_id=agent%2F1&agent_id=agent+2');
+    expect(apiClientMock.get).toHaveBeenCalledWith('/scan/agents/activity?agent_id=agent%2F1&agent_id=agent+2', { signal: undefined });
   });
 
 
@@ -5872,9 +5877,11 @@ describe('scanIncidentsAPI contract', () => {
 
     expect(apiClientMock.get).toHaveBeenNthCalledWith(1, '/scan/hosts/HOST%2F1%20A/scan-runs', {
       params: { view: 'summary', limit: 30, offset: 0 },
+      signal: undefined,
     });
     expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/scan/tasks/task%2F1%20A/observations', {
       params: { limit: 10, offset: 5 },
+      signal: undefined,
     });
   });
 
@@ -6291,7 +6298,7 @@ describe('scanAPI table endpoints', () => {
 
     await scanAPI.getAgentsActivity(['agent-1', 'agent-2']);
 
-    expect(apiClientMock.get).toHaveBeenCalledWith('/scan/agents/activity?agent_id=agent-1&agent_id=agent-2');
+    expect(apiClientMock.get).toHaveBeenCalledWith('/scan/agents/activity?agent_id=agent-1&agent_id=agent-2', { signal: undefined });
   });
 
   it('requests scan task incident Excel export as a blob', async () => {

@@ -551,8 +551,11 @@ export default function useChatSocketEvents({
           current.includes(senderName) ? current : [...current, senderName].filter(Boolean)
         ));
         const timeoutId = window.setTimeout(() => {
-          setTypingUsers((current) => current.filter((item) => item !== senderName));
           typingParticipantsTimeoutsRef.current.delete(key);
+          // A timeout armed for an old conversation must not remove a typist
+          // (possibly the same display name) in the conversation open now.
+          if (conversationId !== activeConversationIdRef.current) return;
+          setTypingUsers((current) => current.filter((item) => item !== senderName));
         }, 4000);
         typingParticipantsTimeoutsRef.current.set(key, timeoutId);
         return;

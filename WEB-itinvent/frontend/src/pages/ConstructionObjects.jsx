@@ -66,6 +66,16 @@ const formatDate = (value, withTime = false) => {
 
 const formatNumber = (value) => new Intl.NumberFormat('ru-RU').format(Number(value) || 0);
 
+const formatSnapshotAge = (value) => {
+  const seconds = Math.max(0, Math.floor(Number(value) || 0));
+  if (seconds < 60) return `${formatNumber(seconds)} сек.`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${formatNumber(minutes)} мин.`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${formatNumber(hours)} ч. ${formatNumber(minutes % 60)} мин.`;
+  return `${formatNumber(Math.floor(hours / 24))} дн. ${formatNumber(hours % 24)} ч.`;
+};
+
 const requestCountLabel = (value) => {
   const count = Number(value) || 0;
   const mod100 = count % 100;
@@ -601,7 +611,7 @@ export default function ConstructionObjects() {
           ) : null}
           {cache?.state === 'stale' ? (
             <Alert severity="warning">
-              1С временно недоступна. Показан сохранённый снимок возрастом {formatNumber(cache.age_seconds)} сек.
+              1С временно недоступна. Показан сохранённый снимок возрастом {formatSnapshotAge(cache.age_seconds)}
             </Alert>
           ) : null}
           {canWrite && !managementAvailable ? (

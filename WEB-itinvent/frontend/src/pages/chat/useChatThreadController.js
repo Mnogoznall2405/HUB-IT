@@ -856,7 +856,10 @@ export default function useChatThreadController({
       return [];
     } finally {
       if (loadingOlderRequest) {
-        if (activeConversationIdRef.current === id) setLoadingOlder(false);
+        // Unconditional reset: a conversation switch mid-request must not leave
+        // loadingOlder stuck true — loadOlderMessages dedupes repeats via
+        // loadOlderInFlightCursorRef anyway.
+        setLoadingOlder(false);
       } else if (requestSeq === messagesLoadingRequestSeqRef.current) {
         messagesLoadingRequestSeqRef.current = 0;
         setMessagesLoading(false);

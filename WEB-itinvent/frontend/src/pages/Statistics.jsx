@@ -40,7 +40,10 @@ import { useNotification } from '../contexts/NotificationContext';
 import { useAuth } from '../contexts/AuthContext';
 import { createNavigateToastAction } from '../components/feedback/toastActions';
 import { buildOfficeUiTokens } from '../theme/officeUiTokens';
+import { getOrFetchSWR, invalidateSWRCacheByPrefix } from '../lib/swrCache';
 import PcRemainingDialog from './statistics/PcRemainingDialog';
+
+const STATS_SWR_STALE_MS = 30_000;
 
 const PERIOD_OPTIONS = [
   { value: 30, label: '30 дней' },
@@ -236,25 +239,44 @@ function Statistics() {
   // Only the newest load may touch the data/loading/error state (tab, period or database changed meanwhile).
   const loadRequestRef = useRef(0);
 
-  const loadPcStats = useCallback(async (isCurrent) => {
-    const response = await jsonAPI.getPcCleaningStatistics({ period_days: periodDays });
-    if (isCurrent()) setPcStats(response?.data || EMPTY_PC_STATS);
-  }, [periodDays]);
+  // Serves cached stats on tab/period revisit; a stale hit revalidates and publishes fresh data.
+  const loadStatsSection = useCallback(async (keyParts, fetcher, isCurrent, apply) => {
+    const options = { staleTimeMs: STATS_SWR_STALE_MS };
+    const result = await getOrFetchSWR(keyParts, fetcher, options);
+    if (isCurrent()) apply(result.data);
+    if (result.fromCache && !result.isFresh) {
+      const fresh = await getOrFetchSWR(keyParts, fetcher, { ...options, force: true });
+      if (isCurrent()) apply(fresh.data);
+    }
+  }, []);
 
-  const loadMfuStats = useCallback(async (isCurrent) => {
-    const response = await jsonAPI.getMfuStatistics({ period_days: periodDays });
-    if (isCurrent()) setMfuStats(response?.data || EMPTY_MFU_STATS);
-  }, [periodDays]);
+  const loadPcStats = useCallback(async (isCurrent) => loadStatsSection(
+    ['statistics', 'pc', periodDays],
+    async () => (await jsonAPI.getPcCleaningStatistics({ period_days: periodDays }))?.data || EMPTY_PC_STATS,
+    isCurrent,
+    setPcStats,
+  ), [loadStatsSection, periodDays]);
 
-  const loadBatteryStats = useCallback(async (isCurrent) => {
-    const response = await jsonAPI.getBatteryStatistics({ period_days: periodDays });
-    if (isCurrent()) setBatteryStats(response?.data || EMPTY_BATTERY_STATS);
-  }, [periodDays]);
+  const loadMfuStats = useCallback(async (isCurrent) => loadStatsSection(
+    ['statistics', 'mfu', periodDays],
+    async () => (await jsonAPI.getMfuStatistics({ period_days: periodDays }))?.data || EMPTY_MFU_STATS,
+    isCurrent,
+    setMfuStats,
+  ), [loadStatsSection, periodDays]);
 
-  const loadPcComponentsStats = useCallback(async (isCurrent) => {
-    const response = await jsonAPI.getPcComponentsStatistics({ period_days: periodDays });
-    if (isCurrent()) setPcComponentsStats(response?.data || EMPTY_PC_COMPONENTS_STATS);
-  }, [periodDays]);
+  const loadBatteryStats = useCallback(async (isCurrent) => loadStatsSection(
+    ['statistics', 'battery', periodDays],
+    async () => (await jsonAPI.getBatteryStatistics({ period_days: periodDays }))?.data || EMPTY_BATTERY_STATS,
+    isCurrent,
+    setBatteryStats,
+  ), [loadStatsSection, periodDays]);
+
+  const loadPcComponentsStats = useCallback(async (isCurrent) => loadStatsSection(
+    ['statistics', 'pc_components', periodDays],
+    async () => (await jsonAPI.getPcComponentsStatistics({ period_days: periodDays }))?.data || EMPTY_PC_COMPONENTS_STATS,
+    isCurrent,
+    setPcComponentsStats,
+  ), [loadStatsSection, periodDays]);
 
   const loadActiveStats = useCallback(async () => {
     const requestId = ++loadRequestRef.current;
@@ -297,6 +319,7 @@ function Statistics() {
 
   useEffect(() => {
     const onDatabaseChanged = () => {
+      invalidateSWRCacheByPrefix('statistics');
       setRemainingBranch(null);
       loadActiveStats();
     };
@@ -328,11 +351,22 @@ function Statistics() {
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
-      URL.revokeObjectURL(url);
+      // Браузер читает blob асинхронно: немедленный revoke даёт пустой или битый файл в «Загрузках».
+      window.setTimeout(() => URL.revokeObjectURL(url), 60000);
       notifySuccess(`Отчёт ${filename} экспортирован.`, { source: 'statistics' });
     } catch (exportError) {
       console.error('Error exporting statistics:', exportError);
-      notifyApiError(exportError, 'Не удалось экспортировать отчет в Excel', { source: 'statistics' });
+      let fallback = 'Не удалось экспортировать отчет в Excel';
+      const blobData = exportError?.response?.data;
+      if (blobData instanceof Blob) {
+        try {
+          const parsed = JSON.parse(await blobData.text());
+          if (parsed?.detail) fallback = String(parsed.detail);
+        } catch {
+          // Ответ не JSON — оставляем базовое сообщение.
+        }
+      }
+      notifyApiError(exportError, fallback, { source: 'statistics' });
     } finally {
       setExporting(false);
     }
@@ -595,7 +629,10 @@ function Statistics() {
               canWrite={hasPermission('database.write')}
               isMobile={isMobile}
               onClose={() => setRemainingBranch(null)}
-              onCleaningSaved={() => { loadPcStats(() => true).catch(() => {}); }}
+              onCleaningSaved={() => {
+                invalidateSWRCacheByPrefix('statistics', 'pc');
+                void loadActiveStats();
+              }}
               onNotifySuccess={(message) => notifySuccess(message, { source: 'statistics' })}
               onNotifyError={(requestError, fallbackMessage) => notifyApiError(requestError, fallbackMessage, { source: 'statistics' })}
             />

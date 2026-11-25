@@ -18,6 +18,8 @@ export const DATABASE_EQUIPMENT_PAGE_LIMIT = 1000;
 export const DATABASE_EQUIPMENT_PREFETCH_PAGES = 1;
 export const DATABASE_SWR_STALE_TIME_MS = 30_000;
 
+const LOAD_MORE_RETRY_DELAY_MS = 5000;
+
 const createEmptyModeSnapshot = () => ({
   allEquipment: {},
   equipment: {},
@@ -58,11 +60,13 @@ export function useDatabaseEquipmentData({
   staleTimeMs = DATABASE_SWR_STALE_TIME_MS,
   pageLimit = DATABASE_EQUIPMENT_PAGE_LIMIT,
   prefetchPages = DATABASE_EQUIPMENT_PREFETCH_PAGES,
+  notifyDatabaseError,
 }) {
   const initialLoadStartedRef = useRef(false);
   const dataModeRef = useRef(dataMode);
   const generationRef = useRef(0);
   const loadingMoreRef = useRef(null);
+  const loadMoreRetryAtRef = useRef(0);
   const currentScopeRef = useRef(getDbCacheScope);
   currentScopeRef.current = getDbCacheScope;
   const modeSnapshotsRef = useRef({
@@ -166,8 +170,9 @@ export function useDatabaseEquipmentData({
   }, []);
 
   const fetchEquipmentTypes = useCallback(async ({ force = false } = {}) => {
+    const scope = getDbCacheScope();
     try {
-      const cacheKey = buildCacheKey('equipment-types', getDbCacheScope());
+      const cacheKey = buildCacheKey('equipment-types', scope);
       const { data: response } = await getOrFetchSWR(
         cacheKey,
         () => equipmentAPI.getTypes(),
@@ -181,15 +186,17 @@ export function useDatabaseEquipmentData({
           TYPE_NAME: normalizeDatabaseText(item.TYPE_NAME),
         };
       });
+      if (scope !== currentScopeRef.current()) return;
       setEquipmentTypes(normalized);
     } catch (error) {
-      console.error('Error fetching types:', error);
+      if (scope === currentScopeRef.current()) console.error('Error fetching types:', error);
     }
   }, [getDbCacheScope, staleTimeMs]);
 
   const fetchStatuses = useCallback(async ({ force = false } = {}) => {
+    const scope = getDbCacheScope();
     try {
-      const cacheKey = buildCacheKey('equipment-statuses', getDbCacheScope());
+      const cacheKey = buildCacheKey('equipment-statuses', scope);
       const { data: response } = await getOrFetchSWR(
         cacheKey,
         () => equipmentAPI.getStatuses(),
@@ -203,15 +210,17 @@ export function useDatabaseEquipmentData({
           STATUS_NAME: normalizeDatabaseText(item.STATUS_NAME),
         };
       });
+      if (scope !== currentScopeRef.current()) return;
       setStatuses(normalized);
     } catch (error) {
-      console.error('Error fetching statuses:', error);
+      if (scope === currentScopeRef.current()) console.error('Error fetching statuses:', error);
     }
   }, [getDbCacheScope, staleTimeMs]);
 
   const fetchBranches = useCallback(async ({ force = false } = {}) => {
+    const scope = getDbCacheScope();
     try {
-      const cacheKey = buildCacheKey('equipment-branches-list', getDbCacheScope());
+      const cacheKey = buildCacheKey('equipment-branches-list', scope);
       const { data } = await getOrFetchSWR(
         cacheKey,
         () => equipmentAPI.getBranchesList(),
@@ -225,9 +234,10 @@ export function useDatabaseEquipmentData({
           BRANCH_NAME: normalizeDatabaseText(item.BRANCH_NAME),
         };
       });
+      if (scope !== currentScopeRef.current()) return;
       setBranches(normalized);
     } catch (error) {
-      console.error('Error fetching branches:', error);
+      if (scope === currentScopeRef.current()) console.error('Error fetching branches:', error);
     }
   }, [getDbCacheScope, staleTimeMs]);
 
@@ -305,6 +315,7 @@ export function useDatabaseEquipmentData({
     const resolvedTotalPages = Number(totalPagesOverride || equipmentPagesTotal || 1);
     const initialPage = startPage ?? nextEquipmentPage;
     if (!initialPage || initialPage > resolvedTotalPages || loadingMoreRef.current !== null) return undefined;
+    if (Date.now() < loadMoreRetryAtRef.current) return undefined;
     const generation = generationRef.current;
     const scope = getDbCacheScope();
     const isCurrent = () => generation === generationRef.current
@@ -342,7 +353,10 @@ export function useDatabaseEquipmentData({
       setServerTotal(latestServerTotal || 0);
       setNextEquipmentPage(cursor <= resolvedTotalPages ? cursor : null);
     })().catch((error) => {
-      if (isCurrent()) console.error('Error loading additional equipment pages:', error);
+      if (isCurrent()) {
+        loadMoreRetryAtRef.current = Date.now() + LOAD_MORE_RETRY_DELAY_MS;
+        console.error('Error loading additional equipment pages:', error);
+      }
     }).finally(() => {
       if (loadingMoreRef.current === generation) loadingMoreRef.current = null;
       if (isCurrent()) setLoadingMoreEquipment(false);
@@ -414,9 +428,15 @@ export function useDatabaseEquipmentData({
         });
       }
     } catch (error) {
-      if (isCurrent()) console.error('Error fetching equipment:', error);
+      if (isCurrent()) {
+        console.error('Error fetching equipment:', error);
+        notifyDatabaseError?.(
+          error?.response?.data?.detail || 'Не удалось загрузить данные базы. Повторите попытку.'
+        );
+      }
     }
   }, [
+    notifyDatabaseError,
     fetchEquipmentGroupedPage,
     loadMoreEquipmentPages,
     loadCurrentActsForGrouped,

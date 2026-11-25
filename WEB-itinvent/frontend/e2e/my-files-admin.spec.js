@@ -179,7 +179,9 @@ test('pagination preserves the file filter and opens the next page', async ({ pa
   const state = await setup(page, { rows: Array.from({ length: 27 }, (_, index) => file(`file-${index}`, `Отчёт ${index}.docx`)) });
   await openFiles(page);
   await expect(page.getByRole('button', { name: 'Отчёт 0.docx', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: /next page/i }).click();
+  // The harness uses the real app theme (ruRU): MUI TablePagination aria
+  // labels are localized — "Перейти на следующую страницу", not "next page".
+  await page.getByRole('button', { name: /перейти на следующую страницу|next page/i }).click();
   await expect(page.getByRole('button', { name: 'Отчёт 25.docx', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Отчёт 0.docx', exact: true })).toHaveCount(0);
   expect(state.calls.filter(call => call.path === '/my-files/admin/files').at(-1).query.offset).toBe('25');

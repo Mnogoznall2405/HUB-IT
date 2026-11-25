@@ -111,7 +111,7 @@ function QrScannerDialog({
           <Typography component="h2" variant="h6" sx={{ flex: 1, minWidth: 0, fontWeight: 700 }} noWrap>
             Сканер QR-кода
           </Typography>
-          <IconButton aria-label="close" onClick={onClose} edge="end" sx={{ width: 48, height: 48, color: 'text.primary' }}>
+          <IconButton aria-label="Закрыть сканер" onClick={onClose} edge="end" sx={{ width: 48, height: 48, color: 'text.primary' }}>
             <CloseIcon />
           </IconButton>
         </Box>

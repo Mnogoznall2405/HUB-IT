@@ -76,7 +76,10 @@ function persistToastHistory(items) {
 function persistSeenHubIds(ids) {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(HUB_SEEN_KEY, JSON.stringify(ids.slice(-MAX_SEEN_IDS)));
+    // Union при записи: у localStorage нет транзакций, иначе read-then-write
+    // из двух вкладок терял бы чужие маркеры.
+    const merged = [...new Set([...loadSeenHubIds(), ...ids])];
+    window.localStorage.setItem(HUB_SEEN_KEY, JSON.stringify(merged.slice(-MAX_SEEN_IDS)));
   } catch {
     // Storage quota/private mode must not break toasts.
   }
@@ -193,6 +196,7 @@ export function NotificationProvider({ children }) {
   const [activeToasts, setActiveToasts] = useState([]);
   const [seenHubNotificationIds, setSeenHubNotificationIds] = useState(() => loadSeenHubIds());
   const chatSerialQueueRef = useRef([]);
+  const chatActiveRef = useRef(false);
   const seenHubNotificationIdsRef = useRef(seenHubNotificationIds);
   const accountKeyRef = useRef(getBrowserAccount());
   const accountEpochRef = useRef(0);
@@ -206,6 +210,7 @@ export function NotificationProvider({ children }) {
       accountEpochRef.current += 1;
       setAccountEpoch(accountEpochRef.current);
       chatSerialQueueRef.current = [];
+      chatActiveRef.current = false;
       setActiveToasts([]);
       setToastHistory([]);
       setSeenHubNotificationIds([]);
@@ -224,6 +229,21 @@ export function NotificationProvider({ children }) {
     if (accountEpoch !== accountEpochRef.current || !accountKeyRef.current || accountKeyRef.current !== getBrowserAccount()) return;
     persistSeenHubIds(seenHubNotificationIds);
   }, [seenHubNotificationIds, accountEpoch]);
+
+  // Соседние вкладки дублировали уведомления: seen-маркеры читались один раз
+  // на маунте. storage-событие приходит только в другие вкладки — подхватываем
+  // их маркеры (сравнение без учёта порядка гасит эхо-циклы записи).
+  useEffect(() => {
+    const onStorage = (event) => {
+      if (event.key !== HUB_SEEN_KEY || event.storageArea !== window.localStorage) return;
+      const loaded = loadSeenHubIds();
+      const current = seenHubNotificationIdsRef.current;
+      if (loaded.length === current.length && loaded.every((value) => current.includes(value))) return;
+      setSeenHubNotificationIds(loaded);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   useEffect(() => {
     const nextExpiry = activeToasts.reduce((min, item) => (
@@ -280,13 +300,17 @@ export function NotificationProvider({ children }) {
 
   useEffect(() => {
     const hasActiveChatToast = activeToasts.some((item) => String(item?.source || '').trim() === 'chat');
+    chatActiveRef.current = hasActiveChatToast;
     if (hasActiveChatToast) return;
     const queue = chatSerialQueueRef.current;
     if (!Array.isArray(queue) || queue.length === 0) return;
-    const nextChatToast = queue.shift();
-    if (!nextChatToast) return;
-    if (!nextChatToast.persist) nextChatToast.expiresAt = Date.now() + nextChatToast.durationMs;
-    setActiveToasts((prev) => [...prev, nextChatToast]);
+    const [nextChatToast, ...rest] = queue;
+    chatSerialQueueRef.current = rest;
+    chatActiveRef.current = true;
+    const promoted = nextChatToast.persist
+      ? nextChatToast
+      : { ...nextChatToast, expiresAt: Date.now() + nextChatToast.durationMs };
+    setActiveToasts((prev) => [...prev, promoted]);
   }, [activeToasts]);
 
   const dismissToast = useCallback((id) => {
@@ -344,42 +368,44 @@ export function NotificationProvider({ children }) {
       return [next, ...prev].slice(0, MAX_HISTORY_ITEMS);
     });
 
-    setActiveToasts((prev) => {
-      if (isChatSerialToast) {
-        if (next.dedupeMode === 'recent') {
-          const queueMatchIndex = chatSerialQueueRef.current.findIndex((item) => item.dedupeKey === next.dedupeKey);
-          if (queueMatchIndex >= 0) {
-            chatSerialQueueRef.current[queueMatchIndex] = updateActiveToast(
-              chatSerialQueueRef.current[queueMatchIndex],
-              next,
-            );
-            return prev;
-          }
-          const activeMatch = prev.find((item) => (
-            String(item?.source || '').trim() === 'chat'
-            && item.dedupeKey === next.dedupeKey
-          ));
-          if (activeMatch) {
-            return prev.map((item) => (
-              item.id === activeMatch.id
-                ? updateActiveToast(item, next)
-                : item
-            ));
-          }
+    // Чат-очередь живёт в рефах и обновляется синхронно: updater'ы setState
+    // обязаны быть чистыми (StrictMode вызывает их дважды), а мутация
+    // chatSerialQueueRef внутри updater'а дублировала бы элементы очереди.
+    if (isChatSerialToast) {
+      const queue = chatSerialQueueRef.current;
+      if (next.dedupeMode === 'recent') {
+        const queueMatchIndex = queue.findIndex((item) => item.dedupeKey === next.dedupeKey);
+        if (queueMatchIndex >= 0) {
+          chatSerialQueueRef.current = [
+            ...queue.slice(0, queueMatchIndex),
+            updateActiveToast(queue[queueMatchIndex], next),
+            ...queue.slice(queueMatchIndex + 1),
+          ];
+          return next.id;
         }
-        chatSerialQueueRef.current.push(next);
-        if (chatSerialQueueRef.current.length > MAX_CHAT_SERIAL_QUEUE) {
-          chatSerialQueueRef.current.splice(0, chatSerialQueueRef.current.length - MAX_CHAT_SERIAL_QUEUE);
+        if (chatActiveRef.current) {
+          setActiveToasts((prev) => prev.map((item) => (
+            String(item?.source || '').trim() === 'chat' && item.dedupeKey === next.dedupeKey
+              ? updateActiveToast(item, next)
+              : item
+          )));
+          return next.id;
         }
-        const hasActiveChatToast = prev.some((item) => String(item?.source || '').trim() === 'chat');
-        if (!hasActiveChatToast) {
-          const queued = chatSerialQueueRef.current.shift();
-          if (queued && !queued.persist) queued.expiresAt = Date.now() + queued.durationMs;
-          return queued ? [...prev, queued] : prev;
-        }
-        return prev;
       }
+      const appended = [...queue, next].slice(-MAX_CHAT_SERIAL_QUEUE);
+      if (!chatActiveRef.current && appended.length > 0) {
+        const [queued, ...rest] = appended;
+        chatSerialQueueRef.current = rest;
+        chatActiveRef.current = true;
+        const promoted = queued.persist ? queued : { ...queued, expiresAt: Date.now() + queued.durationMs };
+        setActiveToasts((prev) => [...prev, promoted]);
+        return next.id;
+      }
+      chatSerialQueueRef.current = appended;
+      return next.id;
+    }
 
+    setActiveToasts((prev) => {
       if (next.dedupeMode === 'recent') {
         const match = prev.find((item) => item.dedupeKey === next.dedupeKey);
         if (match) {

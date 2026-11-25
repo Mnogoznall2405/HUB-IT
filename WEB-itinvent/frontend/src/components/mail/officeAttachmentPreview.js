@@ -1,6 +1,5 @@
 import {
   buildAttachmentBlobPayload,
-  getOfficeAttachmentSourceKind,
   getOfficeViewSourceKind,
   normalizeAttachmentPreviewMetadata,
 } from './mailMessageFileActions';
@@ -156,39 +155,4 @@ export const buildOfficeAttachmentPreviewState = async ({
     blob: null,
     excelWorkbook: null,
   };
-};
-
-export const buildOfficeInlinePreviewState = async ({
-  mailAPI,
-  messageId,
-  attachmentRef,
-  mailboxId,
-  attachment,
-  filename,
-  contentType,
-}) => {
-  const officeSourceKind = getOfficeAttachmentSourceKind({ filename, contentType });
-
-  if (officeSourceKind !== 'excel') {
-    return {
-      kind: 'office_placeholder',
-      sourceKind: officeSourceKind,
-    };
-  }
-
-  try {
-    const attachmentResponse = await mailAPI.downloadAttachment(messageId, attachmentRef, { mailboxId });
-    const { blob } = buildAttachmentBlobPayload({ response: attachmentResponse, attachment });
-    const excelWorkbook = await parseExcelWorkbookFromBlob(blob);
-    return {
-      kind: 'office_excel',
-      sourceKind: 'excel',
-      excelWorkbook,
-    };
-  } catch {
-    return {
-      kind: 'office_placeholder',
-      sourceKind: 'excel',
-    };
-  }
 };

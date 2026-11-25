@@ -180,20 +180,20 @@ export default function MailTemplatesDialog({
                             <Stack direction="row" spacing={0.2}>
                               <Tooltip title="Вверх">
                                 <span>
-                                  <IconButton size="small" disabled={index === 0} onClick={() => moveTemplateField(index, -1)}>
+                                  <IconButton size="small" disabled={index === 0} onClick={() => moveTemplateField(index, -1)} aria-label="Вверх">
                                     <ArrowUpwardIcon fontSize="inherit" />
                                   </IconButton>
                                 </span>
                               </Tooltip>
                               <Tooltip title="Вниз">
                                 <span>
-                                  <IconButton size="small" disabled={index === arr.length - 1} onClick={() => moveTemplateField(index, 1)}>
+                                  <IconButton size="small" disabled={index === arr.length - 1} onClick={() => moveTemplateField(index, 1)} aria-label="Вниз">
                                     <ArrowDownwardIcon fontSize="inherit" />
                                   </IconButton>
                                 </span>
                               </Tooltip>
                               <Tooltip title="Удалить поле">
-                                <IconButton size="small" color="error" onClick={() => removeTemplateField(index)}>
+                                <IconButton size="small" color="error" onClick={() => removeTemplateField(index)} aria-label="Удалить поле">
                                   <DeleteIcon fontSize="inherit" />
                                 </IconButton>
                               </Tooltip>

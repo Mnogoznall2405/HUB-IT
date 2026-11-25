@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import filecmp
+import json
 from io import BytesIO
 import logging
 import os
@@ -18,11 +19,21 @@ from uuid import uuid4
 
 import httpx
 from PIL import Image
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, delete, func, insert, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.chat.db import chat_read_session, chat_write_session
-from backend.chat.models import ChatSticker, ChatStickerPack, ChatUserStickerPack
+from backend.chat.message_persistence import FileMessageCommittedError
+from backend.chat.models import (
+    ChatMember,
+    ChatMessageAttachment,
+    ChatSticker,
+    ChatStickerPack,
+    ChatUserFavoriteSticker,
+    ChatUserRecentSticker,
+    ChatUserRecentStickerState,
+    ChatUserStickerPack,
+)
 from backend.services.hub_service import hub_service
 
 
@@ -41,10 +52,19 @@ _LEGACY_MESSAGE_STICKER_RE = re.compile(
     r"^sticker-(?P<pack_short_name>[A-Za-z0-9_]{1,128})\.(?:tgs|webm|webp)$",
     re.IGNORECASE,
 )
+# ``send_sticker`` stores a per-message copy named
+# ``sticker-{sticker_id}--{pack_short_name}{ext}``; that copy is what makes a
+# received sticker "referenced" for the uniform access check below.
+_MESSAGE_STICKER_REF_RE = re.compile(r"^sticker-(?P<sticker_id>.+?)--")
 _MAX_STICKERS_PER_PACK = 200
 _MAX_STICKER_BYTES = 5 * 1024 * 1024
 _MAX_STICKER_PREVIEW_BYTES = 512 * 1024
 _MAX_PACK_BYTES = 100 * 1024 * 1024
+_RECENT_STICKERS_LIMIT = 50
+# Bounded dedup window for ``op_batch_id``: a client only retries its current
+# journal batch, so 100 recorded ids covers far more retries than any real
+# flush sequence while keeping the state-row JSON small.
+_OP_BATCH_HISTORY_LIMIT = 100
 _PREVIEW_MAX_DIMENSION = 128
 _PREVIEW_CACHE_MARKER = ".previews-v2"
 _TELEGRAM_API_HOST = "api.telegram.org"
@@ -71,6 +91,22 @@ class TelegramStickerImportError(ValueError):
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _applied_op_batch_ids(state) -> list[str]:
+    """Parse the dedup history stored on the recents state row.
+
+    Tolerant to absent/corrupt payloads: anything unreadable degrades to an
+    empty list (the incoming batch then simply applies — the same behaviour
+    as a request without ``op_batch_id``).
+    """
+    try:
+        raw = json.loads(getattr(state, "applied_op_batch_ids", None) or "[]")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [value for value in (str(item or "").strip() for item in raw) if value]
 
 
 def parse_telegram_sticker_pack_name(value: object) -> str:
@@ -242,7 +278,7 @@ class TelegramStickerService:
                     select(ChatStickerPack)
                     .join(ChatUserStickerPack, ChatUserStickerPack.pack_id == ChatStickerPack.id)
                     .where(ChatUserStickerPack.user_id == int(current_user_id))
-                    .order_by(ChatUserStickerPack.added_at.asc(), ChatStickerPack.title.asc())
+                    .order_by(ChatUserStickerPack.position.asc(), ChatUserStickerPack.added_at.asc())
                 ).scalars()
             )
             pack_ids = [item.id for item in packs]
@@ -751,6 +787,498 @@ class TelegramStickerService:
             session.delete(installed)
         return {"ok": True}
 
+    def _serialize_sticker(self, sticker: ChatSticker, pack: ChatStickerPack) -> dict[str, Any]:
+        """Sticker dict for flat lists (favorites/recents); same shape as pack stickers
+        plus ``pack_short_name`` so clients can label the source pack."""
+        return {
+            "id": sticker.id,
+            "emoji": sticker.emoji or "",
+            "format": sticker.format,
+            "mime_type": sticker.mime_type,
+            "file_size": int(sticker.file_size or 0),
+            "width": int(sticker.width) if sticker.width is not None else None,
+            "height": int(sticker.height) if sticker.height is not None else None,
+            "pack_short_name": pack.short_name,
+            "file_url": self._pack_file_url(sticker.id),
+            "preview_url": (
+                self._pack_preview_url(sticker.id)
+                if self._preview_path(pack_id=sticker.pack_id, sticker_id=sticker.id).is_file()
+                else None
+            ),
+        }
+
+    def _serialize_sticker_list(self, rows) -> dict[str, Any]:
+        return {
+            "items": [self._serialize_sticker(sticker, pack) for sticker, pack in rows]
+        }
+
+    def list_favorite_stickers(self, *, current_user_id: int) -> dict[str, Any]:
+        """Favorites reference the sticker, not pack membership: they survive
+        ``remove_pack`` and still resolve because shared pack files are kept."""
+        with chat_read_session() as session:
+            rows = session.execute(
+                select(ChatSticker, ChatStickerPack)
+                .join(
+                    ChatUserFavoriteSticker,
+                    ChatUserFavoriteSticker.sticker_id == ChatSticker.id,
+                )
+                .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
+                .where(ChatUserFavoriteSticker.user_id == int(current_user_id))
+                .order_by(
+                    ChatUserFavoriteSticker.added_at.desc(),
+                    ChatUserFavoriteSticker.id.desc(),
+                )
+            ).all()
+            return self._serialize_sticker_list(rows)
+
+    # ------------------------------------------------------------------
+    # Uniform sticker entitlement (one policy for every code path: favorites
+    # PUT/GET, recents PUT/GET, sticker file serving, preview serving, send).
+    #
+    # A user may reference a sticker when ANY of these legs holds:
+    #   1. INSTALLED — the sticker's pack is installed for the user
+    #      (``chat_user_sticker_packs`` row);
+    #   2. FAVORITED — the sticker is already one of the user's favorites.
+    #      A favorite is a user-attached entitlement: it survives pack
+    #      uninstall and keeps metadata/file access (Telegram parity);
+    #   3. RECEIVED — a copy of the sticker was sent into a conversation the
+    #      user is an active member of (``send_sticker`` stores message
+    #      copies named ``sticker-{sticker_id}--{pack_short_name}``).
+    #
+    # Everything else is "not found": bulk writes drop inaccessible ids
+    # silently (same as unknown ids — never persisted, never echoed back),
+    # single-sticker lookups answer LookupError/404. Sticker bytes themselves
+    # are already reachable via the pack preview endpoints, so this policy
+    # limits picker noise and unsolicited references, not raw bytes.
+    # ------------------------------------------------------------------
+
+    def _member_conversation_sticker_ids(self, session, *, user_id: int, sticker_ids) -> set[str]:
+        """Leg 3: subset of ``sticker_ids`` whose message copy sits in a
+        conversation where ``user_id`` is an active member."""
+        wanted = {str(value).strip() for value in sticker_ids or [] if str(value or "").strip()}
+        if not wanted:
+            return set()
+        patterns = [f"sticker-{sticker_id}--%" for sticker_id in wanted]
+        file_names = session.execute(
+            select(ChatMessageAttachment.file_name)
+            .join(
+                ChatMember,
+                and_(
+                    ChatMember.conversation_id == ChatMessageAttachment.conversation_id,
+                    ChatMember.user_id == int(user_id),
+                    ChatMember.left_at.is_(None),
+                ),
+            )
+            # media_kind фильтр обязателен: имя файла обычного upload
+            # контролируется пользователем, без фильтра crafted-имя
+            # sticker-<id>--x.png подделывало бы leg-3 entitlement.
+            .where(
+                ChatMessageAttachment.media_kind == "sticker",
+                or_(*(ChatMessageAttachment.file_name.like(pattern) for pattern in patterns)),
+            )
+            .distinct()
+        ).scalars()
+        # Extract the real sticker id from each matched file name and keep only
+        # requested ids: a LIKE wildcard in user input cannot widen the grant.
+        found: set[str] = set()
+        for file_name in file_names:
+            match = _MESSAGE_STICKER_REF_RE.match(str(file_name or ""))
+            if match is None:
+                continue
+            sticker_id = str(match.group("sticker_id") or "").strip()
+            if sticker_id in wanted:
+                found.add(sticker_id)
+        return found
+
+    def _accessible_sticker_ids(self, session, *, user_id: int, sticker_ids) -> set[str]:
+        """Subset of ``sticker_ids`` the user may reference under the uniform
+        entitlement (installed pack OR own favorite OR member-conversation
+        copy). Short-circuits per leg so picker traffic usually runs 1 query."""
+        wanted = {str(value).strip() for value in sticker_ids or [] if str(value or "").strip()}
+        if not wanted:
+            return set()
+        accessible: set[str] = set()
+        # Leg 1 — installed pack.
+        accessible.update(
+            session.execute(
+                select(ChatSticker.id)
+                .join(ChatUserStickerPack, ChatUserStickerPack.pack_id == ChatSticker.pack_id)
+                .where(
+                    ChatUserStickerPack.user_id == int(user_id),
+                    ChatSticker.id.in_(wanted),
+                )
+            ).scalars()
+        )
+        remaining = wanted - accessible
+        if remaining:
+            # Leg 2 — already favorited by the user.
+            accessible.update(
+                session.execute(
+                    select(ChatUserFavoriteSticker.sticker_id).where(
+                        ChatUserFavoriteSticker.user_id == int(user_id),
+                        ChatUserFavoriteSticker.sticker_id.in_(remaining),
+                    )
+                ).scalars()
+            )
+            remaining = wanted - accessible
+        if remaining:
+            # Leg 3 — received copy in a member conversation.
+            accessible.update(
+                self._member_conversation_sticker_ids(
+                    session,
+                    user_id=int(user_id),
+                    sticker_ids=remaining,
+                )
+            )
+        return accessible & wanted
+
+    def _user_can_reference_sticker(self, session, *, user_id: int, sticker_id: str) -> bool:
+        """Uniform entitlement for one sticker — see the policy block above."""
+        normalized = str(sticker_id or "").strip()
+        if not normalized:
+            return False
+        return normalized in self._accessible_sticker_ids(
+            session,
+            user_id=int(user_id),
+            sticker_ids=[normalized],
+        )
+
+    def add_favorite_sticker(self, *, current_user_id: int, sticker_id: str) -> dict[str, Any]:
+        normalized_sticker_id = str(sticker_id or "").strip()
+        try:
+            with chat_write_session() as session:
+                row = session.execute(
+                    select(ChatSticker, ChatStickerPack)
+                    .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
+                    .where(ChatSticker.id == normalized_sticker_id)
+                ).first()
+                if row is None or not self._user_can_reference_sticker(
+                    session,
+                    user_id=int(current_user_id),
+                    sticker_id=row[0].id,
+                ):
+                    raise LookupError("Стикер не найден")
+                sticker, _pack = row
+                existing = session.execute(
+                    select(ChatUserFavoriteSticker).where(
+                        ChatUserFavoriteSticker.user_id == int(current_user_id),
+                        ChatUserFavoriteSticker.sticker_id == sticker.id,
+                    )
+                ).scalar_one_or_none()
+                if existing is None:
+                    session.add(
+                        ChatUserFavoriteSticker(
+                            user_id=int(current_user_id),
+                            sticker_id=sticker.id,
+                            added_at=utcnow(),
+                        )
+                    )
+        except IntegrityError:
+            # A parallel request won the race; the unique constraint kept one row.
+            pass
+        return self.list_favorite_stickers(current_user_id=int(current_user_id))
+
+    def remove_favorite_sticker(self, *, current_user_id: int, sticker_id: str) -> dict[str, Any]:
+        normalized_sticker_id = str(sticker_id or "").strip()
+        with chat_write_session() as session:
+            existing = session.execute(
+                select(ChatUserFavoriteSticker).where(
+                    ChatUserFavoriteSticker.user_id == int(current_user_id),
+                    ChatUserFavoriteSticker.sticker_id == normalized_sticker_id,
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                session.delete(existing)
+        return self.list_favorite_stickers(current_user_id=int(current_user_id))
+
+    def list_recent_stickers(self, *, current_user_id: int) -> dict[str, Any]:
+        """Return ``{"items", "version"}``.
+
+        ``version`` is the per-user sync counter from
+        ``chat_user_recent_sticker_state`` (0 when the user never synced).
+
+        Entries the user can no longer reference (pack uninstalled AND not
+        favorited AND no member-conversation copy) are filtered out — unlike
+        favorites, a recents row is not an entitlement, so a dead entry must
+        not leak metadata or file URLs. The rows stay in the table: if access
+        is regained (reinstall/favorite/receive) they reappear in place.
+        """
+        with chat_read_session() as session:
+            rows = session.execute(
+                select(ChatSticker, ChatStickerPack)
+                .join(
+                    ChatUserRecentSticker,
+                    ChatUserRecentSticker.sticker_id == ChatSticker.id,
+                )
+                .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
+                .where(ChatUserRecentSticker.user_id == int(current_user_id))
+                .order_by(
+                    ChatUserRecentSticker.position.asc(),
+                    ChatUserRecentSticker.id.asc(),
+                )
+            ).all()
+            accessible_ids = self._accessible_sticker_ids(
+                session,
+                user_id=int(current_user_id),
+                sticker_ids=[sticker.id for sticker, _pack in rows],
+            )
+            version = session.execute(
+                select(ChatUserRecentStickerState.version).where(
+                    ChatUserRecentStickerState.user_id == int(current_user_id)
+                )
+            ).scalar_one_or_none()
+            return {
+                "items": [
+                    self._serialize_sticker(sticker, pack)
+                    for sticker, pack in rows
+                    if sticker.id in accessible_ids
+                ],
+                "version": int(version or 0),
+            }
+
+    def replace_recent_stickers(
+        self,
+        *,
+        current_user_id: int,
+        sticker_ids=None,
+        base_version=None,
+        clear: bool = False,
+        ops=None,
+        op_batch_id=None,
+    ) -> dict[str, Any]:
+        """Versioned op-based sync of the recents rail.
+
+        Contract (see also ``ChatUserRecentStickerState``):
+
+        * ``ops`` — ordered delta ops ``{op, sticker_id}`` applied
+          sequentially over the CURRENT server rail: ``bump`` moves the id to
+          the front, ``remove`` deletes it, ``clear`` truncates the rail.
+          Ops are idempotent and commute under the per-user row lock, so a
+          stale ``base_version`` never rejects them — and because a delta
+          only names stickers the device actually acted on, a stale list can
+          no longer resurrect entries another device cleared or removed
+          (a ``bump`` of a cleared id is legitimate: the device genuinely
+          re-sent it).
+        * ``op_batch_id`` — optional per-batch idempotency key. A client
+          flush keeps one id across retries; when the response is lost after
+          the write committed, the retry carries the SAME batch id and the
+          server answers with the current ``{items, version}`` WITHOUT
+          reapplying the delta — a re-sent ``bump`` can no longer resurrect
+          what another device removed while the response was in flight, and
+          a re-sent ``clear`` cannot wipe ids added since. Applied ids are
+          recorded (bounded history, ``_OP_BATCH_HISTORY_LIMIT``)
+          atomically under the same ``FOR UPDATE`` row lock on the first
+          successful apply — a history rather than a single last id because
+          the replayed batch is not necessarily the most recent write:
+          another device's batch may have committed in between. Requests
+          without it (older clients) apply normally and leave the recorded
+          ids untouched.
+        * ``clear=True`` — with ``ops``: an implicit leading ``clear`` op;
+          without ``ops`` (legacy list push): the rail is replaced by exactly
+          ``sticker_ids`` (``[]`` empties it).
+        * ``sticker_ids`` (legacy "bump-head" merge, used by the version-0
+          local migration) — the client's ordered ids become the FRONT of the
+          list; server entries absent from the payload are KEPT appended in
+          their current order, then the result is truncated to
+          ``_RECENT_STICKERS_LIMIT``. Ignored when ``ops`` is non-empty;
+          an empty legacy payload without ``clear`` is a no-op for content.
+        * ``base_version`` is advisory: a mismatch does not reject the write
+          — the server still applies the ops/merge and bumps ``version``.
+          Clients may send the last seen ``version`` to detect that another
+          device synced in between and reconcile from the response.
+        * Every successful PUT bumps ``version`` by exactly 1; the per-user
+          state row is created lazily and locked ``FOR UPDATE`` for the
+          duration of the write so concurrent PUTs serialize. An idempotent
+          batch replay does NOT bump ``version``.
+        * Sticker ids the user cannot reference under the uniform entitlement
+          are silently dropped, same as unknown ids.
+        """
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for raw in list(sticker_ids or []):
+            value = str(raw or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+            if len(deduped) >= _RECENT_STICKERS_LIMIT:
+                break
+        normalized_ops: list[tuple[str, str | None]] = []
+        for entry in list(ops or []):
+            kind = str((entry or {}).get("op") or "").strip()
+            sticker_id = str((entry or {}).get("sticker_id") or "").strip()
+            if kind == "clear":
+                normalized_ops.append(("clear", None))
+            elif kind in ("bump", "remove") and sticker_id:
+                normalized_ops.append((kind, sticker_id))
+        has_ops = bool(normalized_ops)
+        normalized_batch_id = str(op_batch_id or "").strip() or None
+        now = utcnow()
+        with chat_write_session() as session:
+            # Lock the per-user state row for the whole read-merge-write cycle:
+            # concurrent PUTs then apply one after another instead of both
+            # reading the same base list.
+            def _state_for_update():
+                return session.execute(
+                    select(ChatUserRecentStickerState)
+                    .where(ChatUserRecentStickerState.user_id == int(current_user_id))
+                    .with_for_update()
+                ).scalar_one_or_none()
+
+            state = _state_for_update()
+            if state is None:
+                try:
+                    # Core INSERT (no ORM pending object): if a concurrent
+                    # first-PUT wins the PK race, the savepoint rollback leaves
+                    # nothing to re-raise at commit.
+                    with session.begin_nested():
+                        session.execute(
+                            insert(ChatUserRecentStickerState).values(
+                                user_id=int(current_user_id),
+                                version=0,
+                                updated_at=now,
+                            )
+                        )
+                except IntegrityError:
+                    pass
+                # Re-read under FOR UPDATE either way: our own row, or the
+                # competitor's once its transaction commits.
+                state = _state_for_update()
+            # Idempotent replay: the SAME batch already committed (its response
+            # was lost on the wire). Reapplying its ops would resurrect what a
+            # later write has legitimately changed — return the current state
+            # untouched instead. The check sits under the FOR UPDATE lock, so
+            # a replay racing the original commit sees the recorded id, never
+            # a half-applied batch.
+            batch_replay = bool(
+                normalized_batch_id
+                and state is not None
+                and normalized_batch_id in _applied_op_batch_ids(state)
+            )
+            if batch_replay:
+                logger.debug(
+                    "chat recents op batch replay user_id=%s batch_id=%s — returning current state",
+                    int(current_user_id),
+                    normalized_batch_id,
+                )
+            else:
+                if base_version is not None and state is not None and int(base_version) != int(state.version or 0):
+                    logger.debug(
+                        "chat recents base_version mismatch user_id=%s base=%s current=%s — merging anyway",
+                        int(current_user_id),
+                        base_version,
+                        int(state.version or 0),
+                    )
+                bump_ids = [sid for kind, sid in normalized_ops if kind == "bump"]
+                accessible_ids = self._accessible_sticker_ids(
+                    session,
+                    user_id=int(current_user_id),
+                    sticker_ids=deduped + bump_ids,
+                )
+                if has_ops:
+                    existing_rows = list(
+                        session.execute(
+                            select(ChatUserRecentSticker)
+                            .where(ChatUserRecentSticker.user_id == int(current_user_id))
+                            .order_by(
+                                ChatUserRecentSticker.position.asc(),
+                                ChatUserRecentSticker.id.asc(),
+                            )
+                        ).scalars()
+                    )
+                    rail = [row.sticker_id for row in existing_rows]
+                    if clear:
+                        # The flag is an implicit leading clear op — the explicit
+                        # ops then replay in order on top of the emptied rail.
+                        rail = []
+                    for kind, sticker_id in normalized_ops:
+                        if kind == "clear":
+                            rail = []
+                        elif kind == "remove":
+                            rail = [item for item in rail if item != sticker_id]
+                        elif sticker_id in accessible_ids:
+                            rail = [sticker_id] + [item for item in rail if item != sticker_id]
+                    merged_ids = rail
+                else:
+                    client_front = [value for value in deduped if value in accessible_ids]
+                    if clear:
+                        merged_ids = client_front
+                    else:
+                        existing_rows = list(
+                            session.execute(
+                                select(ChatUserRecentSticker)
+                                .where(ChatUserRecentSticker.user_id == int(current_user_id))
+                                .order_by(
+                                    ChatUserRecentSticker.position.asc(),
+                                    ChatUserRecentSticker.id.asc(),
+                                )
+                            ).scalars()
+                        )
+                        front_set = set(client_front)
+                        merged_ids = client_front + [
+                            row.sticker_id for row in existing_rows if row.sticker_id not in front_set
+                        ]
+                merged_ids = merged_ids[:_RECENT_STICKERS_LIMIT]
+                # Bulk delete now: the chat session defers ORM deletes to flush time,
+                # so session.delete() would insert the new rows before removing the old
+                # ones and trip the (user_id, sticker_id) unique constraint.
+                session.execute(
+                    delete(ChatUserRecentSticker).where(
+                        ChatUserRecentSticker.user_id == int(current_user_id)
+                    )
+                )
+                for position, sticker_id in enumerate(merged_ids):
+                    session.add(
+                        ChatUserRecentSticker(
+                            user_id=int(current_user_id),
+                            sticker_id=sticker_id,
+                            position=position,
+                            updated_at=now,
+                        )
+                    )
+                if state is not None:
+                    state.version = int(state.version or 0) + 1
+                    state.updated_at = now
+                    if normalized_batch_id:
+                        applied = _applied_op_batch_ids(state)
+                        applied.append(normalized_batch_id)
+                        state.applied_op_batch_ids = json.dumps(
+                            applied[-_OP_BATCH_HISTORY_LIMIT:]
+                        )
+        return self.list_recent_stickers(current_user_id=int(current_user_id))
+
+    def reorder_sticker_packs(self, *, current_user_id: int, pack_ids) -> dict[str, Any]:
+        """Set picker order: listed packs first in the given order, the rest keep
+        their relative order after. Unknown (not installed) pack ids are rejected."""
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for raw in list(pack_ids or []):
+            value = str(raw or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        with chat_write_session() as session:
+            installed = list(
+                session.execute(
+                    select(ChatUserStickerPack)
+                    .where(ChatUserStickerPack.user_id == int(current_user_id))
+                    .order_by(
+                        ChatUserStickerPack.position.asc(),
+                        ChatUserStickerPack.added_at.asc(),
+                    )
+                ).scalars()
+            )
+            installed_by_pack_id = {row.pack_id: row for row in installed}
+            unknown = [pack_id for pack_id in deduped if pack_id not in installed_by_pack_id]
+            if unknown:
+                raise ValueError("Набор стикеров не найден")
+            ordered = [installed_by_pack_id[pack_id] for pack_id in deduped]
+            ordered.extend(row for row in installed if row.pack_id not in seen)
+            for position, row in enumerate(ordered):
+                row.position = position
+        return self._serialize_packs(current_user_id=int(current_user_id))
+
     def _resolve_sticker_file_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         root = self._storage_root.resolve()
         path = (
@@ -766,18 +1294,59 @@ class TelegramStickerService:
             raise LookupError("Файл стикера не найден")
         return {**payload, "path": str(path)}
 
-    def get_sticker_file(self, *, current_user_id: int, sticker_id: str) -> dict[str, Any]:
+    def _accessible_sticker(self, session, *, user_id: int, sticker_id: str):
+        """(sticker, pack) under the uniform entitlement — installed pack OR
+        user's favorite OR a copy in a member conversation; ``None`` otherwise.
+
+        The first query resolves legs 1–2 in one shot (the common picker case);
+        leg 3 runs only on a miss."""
         normalized_sticker_id = str(sticker_id or "").strip()
+        row = session.execute(
+            select(ChatSticker, ChatStickerPack)
+            .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
+            .outerjoin(
+                ChatUserStickerPack,
+                and_(
+                    ChatUserStickerPack.pack_id == ChatStickerPack.id,
+                    ChatUserStickerPack.user_id == int(user_id),
+                ),
+            )
+            .outerjoin(
+                ChatUserFavoriteSticker,
+                and_(
+                    ChatUserFavoriteSticker.sticker_id == ChatSticker.id,
+                    ChatUserFavoriteSticker.user_id == int(user_id),
+                ),
+            )
+            .where(
+                ChatSticker.id == normalized_sticker_id,
+                or_(
+                    ChatUserStickerPack.id.is_not(None),
+                    ChatUserFavoriteSticker.id.is_not(None),
+                ),
+            )
+        ).first()
+        if row is not None:
+            return row
+        if not self._member_conversation_sticker_ids(
+            session,
+            user_id=int(user_id),
+            sticker_ids=[normalized_sticker_id],
+        ):
+            return None
+        return session.execute(
+            select(ChatSticker, ChatStickerPack)
+            .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
+            .where(ChatSticker.id == normalized_sticker_id)
+        ).first()
+
+    def get_sticker_file(self, *, current_user_id: int, sticker_id: str) -> dict[str, Any]:
         with chat_read_session() as session:
-            row = session.execute(
-                select(ChatSticker, ChatStickerPack)
-                .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
-                .join(ChatUserStickerPack, ChatUserStickerPack.pack_id == ChatStickerPack.id)
-                .where(
-                    ChatSticker.id == normalized_sticker_id,
-                    ChatUserStickerPack.user_id == int(current_user_id),
-                )
-            ).first()
+            row = self._accessible_sticker(
+                session,
+                user_id=int(current_user_id),
+                sticker_id=sticker_id,
+            )
             if row is None:
                 raise LookupError("Стикер не найден")
             sticker, pack = row
@@ -921,15 +1490,11 @@ class TelegramStickerService:
             from backend.chat.chat_group_settings import enforce_group_posting_policy
 
             enforce_group_posting_policy(session, conversation, int(current_user_id))
-            row = session.execute(
-                select(ChatSticker, ChatStickerPack)
-                .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)
-                .join(ChatUserStickerPack, ChatUserStickerPack.pack_id == ChatStickerPack.id)
-                .where(
-                    ChatSticker.id == str(sticker_id or "").strip(),
-                    ChatUserStickerPack.user_id == int(current_user_id),
-                )
-            ).first()
+            row = self._accessible_sticker(
+                session,
+                user_id=int(current_user_id),
+                sticker_id=sticker_id,
+            )
             if row is None:
                 raise LookupError("Стикер не найден в ваших наборах")
             sticker, pack = row
@@ -997,6 +1562,10 @@ class TelegramStickerService:
                 reply_to_message_id=reply_to_message_id,
             )
             chat_service._set_request_meta(conversation_kind=persisted.conversation_kind)
+        except FileMessageCommittedError:
+            # The committed message owns the sticker copy; deleting it would
+            # leave the committed attachment dead (DCHAT-05).
+            raise
         except Exception:
             target_path.unlink(missing_ok=True)
             raise

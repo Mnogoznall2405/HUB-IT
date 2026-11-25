@@ -129,9 +129,12 @@ export function FeedbackAdminSection() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [moreError, setMoreError] = useState('');
   const requestRef = useRef(0);
+  const moreRequestRef = useRef(0);
 
   const reload = useCallback(async (filter) => {
     requestRef.current += 1;
+    moreRequestRef.current += 1;
+    setLoadingMore(false);
     const requestId = requestRef.current;
     setLoadState('loading');
     setLoadError('');
@@ -156,20 +159,20 @@ export function FeedbackAdminSection() {
 
   const loadMore = async () => {
     if (loadingMore) return;
-    requestRef.current += 1;
-    const requestId = requestRef.current;
+    moreRequestRef.current += 1;
+    const requestId = moreRequestRef.current;
     setLoadingMore(true);
     setMoreError('');
     try {
       const data = await feedbackAPI.listAdmin({ status: statusFilter, limit: PAGE_SIZE, offset: items.length });
-      if (requestId !== requestRef.current) return;
+      if (requestId !== moreRequestRef.current) return;
       setItems((prev) => mergeUnique(prev, Array.isArray(data?.items) ? data.items : []));
       setTotal(Number(data?.total) || 0);
     } catch (error) {
-      if (requestId !== requestRef.current) return;
+      if (requestId !== moreRequestRef.current) return;
       setMoreError(getFeedbackErrorMessage(error, 'Не удалось загрузить следующие предложения.'));
     } finally {
-      if (requestId === requestRef.current) setLoadingMore(false);
+      if (requestId === moreRequestRef.current) setLoadingMore(false);
     }
   };
 

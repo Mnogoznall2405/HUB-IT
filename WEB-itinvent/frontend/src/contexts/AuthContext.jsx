@@ -4,17 +4,23 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { authAPI } from '../api/auth';
 import { invalidateStickerPacksCache } from '../api/chatStickers';
+import { invalidateChatStickerStore } from '../lib/chatStickerStore';
 import { clearAllChatDrafts } from '../lib/chatDraftsStorage';
 import { disableChatPushSubscription } from '../lib/chatNotifications';
 import { clearAllMailRecentCache } from '../lib/mailRecentCache';
 import { clearMobileOfflineCache } from '../lib/mobileOfflineCache';
 import { isMailSessionEnabled, MAIL_SESSION_CHANGED_EVENT } from '../lib/mailSession';
 import { sweepLogoutSessionData } from '../lib/logoutDataSweep';
+import { safeLocalGetItem, safeLocalRemoveItem, safeLocalSetItem } from '../lib/safeStorage';
 import { clearSWRCache } from '../lib/swrCache';
 import { synchronizePrivateMediaSession } from '../lib/privateMediaSession';
 import { synchronizeBrowserAccount } from '../lib/browserAccountSession';
 
 const AuthContext = createContext(null);
+// Client-side grants are a UX layer only: they decide which routes/buttons the
+// UI shows. The backend re-checks permissions on every request
+// (require_permission across api/v1 routers), so widening these lists can
+// never grant real access — it only risks showing dead ends.
 const alwaysGrantedPermissions = [
   'address_book.read',
   'announcements.read',
@@ -168,6 +174,10 @@ const isLoginRoute = () => {
 };
 
 const SESSION_RECOVERY_RETRY_DELAYS_MS = [1000, 2000, 5000, 15000, 30000];
+// Плановые ретраи ограничены: без лимита офлайн-перезагрузка навсегда висела бы
+// на «Загружаем раздел…». После лимита loading снимается, а online/focus/
+// visibilitychange-слушатели продолжают проверять сессию в фоне.
+const SESSION_RECOVERY_MAX_ATTEMPTS = 8;
 
 const isDefinitiveSessionRejection = (requestError) => {
   const status = Number(requestError?.response?.status || 0);
@@ -186,6 +196,7 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [postAuthUiHold, setPostAuthUiHold] = useState(false);
   const [mailSessionEnabled, setMailSessionEnabled] = useState(() => isMailSessionEnabled());
 
   const sessionRefreshGateRef = useRef(null);
@@ -199,13 +210,15 @@ export const AuthProvider = ({ children }) => {
     currentUserRef.current = null;
     mediaSessionUserKeyRef.current = '';
     clearSWRCache();
-    localStorage.removeItem('user');
+    safeLocalRemoveItem('user');
     synchronizeBrowserAccount();
     clearAllChatDrafts();
     clearAllMailRecentCache();
     sweepLogoutSessionData();
     invalidateStickerPacksCache();
+    invalidateChatStickerStore();
     setUser(null);
+    setPostAuthUiHold(false);
     setLoading(false);
     const generation = sessionGenerationRef.current;
     return synchronizePrivateMediaSession('', { clear: true }).then((cleared) => {
@@ -224,9 +237,9 @@ export const AuthProvider = ({ children }) => {
     currentUserRef.current = currentUser || null;
     setUser(currentUser || null);
     if (currentUser && typeof currentUser === 'object') {
-      localStorage.setItem('user', JSON.stringify(currentUser));
+      safeLocalSetItem('user', JSON.stringify(currentUser));
     } else {
-      localStorage.removeItem('user');
+      safeLocalRemoveItem('user');
     }
     synchronizeBrowserAccount(currentKey);
     return true;
@@ -267,9 +280,14 @@ export const AuthProvider = ({ children }) => {
     return sessionRefreshGateRef.current;
   }, [applySessionUser, invalidateSession]);
 
-  // Restore cached user and validate active cookie session
+  // Restore cached user and validate active cookie session.
+  // The cached profile renders before /auth/me answers (offline tolerance); if
+  // the cookie session belongs to a different account, applySessionUser swaps
+  // the divergent user as soon as validation resolves. The residual risk is a
+  // brief flash of the previous user's UI — accepted trade-off for instant
+  // startup; sensitive data still waits for the server response.
   useEffect(() => {
-    const savedUser = localStorage.getItem('user');
+    const savedUser = safeLocalGetItem('user');
     let cancelled = false;
     if (!savedUser) synchronizeBrowserAccount();
 
@@ -292,7 +310,7 @@ export const AuthProvider = ({ children }) => {
         }
       } catch (e) {
         console.error('Failed to parse saved user:', e);
-        localStorage.removeItem('user');
+        safeLocalRemoveItem('user');
         synchronizeBrowserAccount();
       }
     }
@@ -311,6 +329,10 @@ export const AuthProvider = ({ children }) => {
 
     const scheduleRetry = () => {
       if (cancelled || definitiveRejection || retryTimer !== null) return;
+      if (retryAttempt >= SESSION_RECOVERY_MAX_ATTEMPTS) {
+        setLoading(false);
+        return;
+      }
       const retryDelay = SESSION_RECOVERY_RETRY_DELAYS_MS[
         Math.min(retryAttempt, SESSION_RECOVERY_RETRY_DELAYS_MS.length - 1)
       ];
@@ -412,7 +434,7 @@ export const AuthProvider = ({ children }) => {
         }
       } catch (requestError) {
         if (cancelled || generation !== sessionGenerationRef.current) return;
-        if (isDefinitiveSessionRejection(requestError)) {
+        if (isDefinitiveSessionRejection(requestError) || attempt >= SESSION_RECOVERY_MAX_ATTEMPTS) {
           setLoading(false);
           return;
         }
@@ -427,7 +449,12 @@ export const AuthProvider = ({ children }) => {
     };
 
     const onSharedAuthChanged = (event) => {
-      if (event.key !== 'user' || (event.storageArea && event.storageArea !== localStorage)) {
+      try {
+        if (event.key !== 'user' || (event.storageArea && event.storageArea !== window.localStorage)) {
+          return;
+        }
+      } catch {
+        // Storage access itself can throw when blocked; ignore the event.
         return;
       }
 
@@ -682,7 +709,7 @@ export const AuthProvider = ({ children }) => {
         await clearMobileOfflineCache().catch(() => 0);
         const lastUsername = String(user?.username || '').trim();
         if (lastUsername) {
-          localStorage.setItem('hubit.login.last-username', lastUsername);
+          safeLocalSetItem('hubit.login.last-username', lastUsername);
         }
         // Always clear local user cache
         await invalidateSession();
@@ -717,6 +744,8 @@ export const AuthProvider = ({ children }) => {
     user,
     loading,
     error,
+    postAuthUiHold,
+    setPostAuthUiHold,
     login,
     startTwoFactorSetup,
     verifyTwoFactorSetup,
@@ -734,6 +763,7 @@ export const AuthProvider = ({ children }) => {
     user,
     loading,
     error,
+    postAuthUiHold,
     login,
     startTwoFactorSetup,
     verifyTwoFactorSetup,

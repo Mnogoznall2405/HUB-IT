@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { equipmentAPI } from '../../api/client';
 import { fileNameFromContentDisposition } from '../../lib/documentPreviewKind';
@@ -79,6 +79,11 @@ export function useTransferActJob({
   const transferJobPollSeqRef = useRef(0);
   const transferOperationRef = useRef({ fingerprint: '', operationId: '' });
   const transferRetryInFlightRef = useRef(false);
+  // Unmount aborts every in-flight poll loop — the seq bump makes all pending
+  // iterations return early instead of polling for the full ~10 min window.
+  useEffect(() => () => {
+    transferJobPollSeqRef.current += 1;
+  }, []);
 
   // Point refresh: re-fetch only the transferred rows and upsert them into the
   // grouped cache; falls back to a full refetch if the batch read fails.

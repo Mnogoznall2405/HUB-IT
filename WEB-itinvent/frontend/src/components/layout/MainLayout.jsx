@@ -44,11 +44,13 @@ import GroupIcon from '@mui/icons-material/Group';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import CloudOffRoundedIcon from '@mui/icons-material/CloudOffRounded';
 import WifiRoundedIcon from '@mui/icons-material/WifiRounded';
+import SystemUpdateAltRoundedIcon from '@mui/icons-material/SystemUpdateAltRounded';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import { usePreferences } from '../../contexts/PreferencesContext';
 import apiClient, { chatAPI, mailAPI, settingsAPI } from '../../api/client';
 import { databaseAPI } from '../../api/database';
+import { safeLocalGetItem, safeLocalSetItem } from '../../lib/safeStorage';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { buildOfficeUiTokens, getOfficeEmptyStateSx, getOfficePanelSx, getOfficeQuietActionSx } from '../../theme/officeUiTokens';
 import BrandedRouteLoader from './BrandedRouteLoader';
@@ -157,7 +159,7 @@ import {
   normalizeNotificationPreferences,
   NOTIFICATION_PREFERENCES_CHANGED_EVENT,
 } from '../../lib/notificationPreferences';
-import { getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInstall';
+import { applyPwaUpdate, getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInstall';
 import { prefetchRouteByPath } from '../../lib/routeLoaders';
 import { resolveChatMessageNotificationPlan } from '../../lib/chatSocketNotificationPlan';
 import { playChatMessageSound } from '../../lib/chatMessageSound';
@@ -189,6 +191,7 @@ const DRAWER_WIDTH_CSS_VAR = 'var(--app-density-drawer-width)';
 const DRAWER_RAIL_WIDTH = 68;
 const HUB_POLL_INTERVAL_MS = 20_000;
 const HUB_REALTIME_RECONCILE_INTERVAL_MS = 120_000;
+const HUB_REALTIME_CONNECT_REFRESH_MIN_AGE_MS = 15_000;
 const PWA_BADGE_POLL_INTERVAL_MS = 60_000;
 const SIDEBAR_COLLAPSED_KEY = 'sidebar_collapsed';
 const SIDEBAR_PINNED_KEY = 'sidebar_pinned';
@@ -224,22 +227,17 @@ export function MainLayoutInner({
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pendingNavigation, setPendingNavigation] = useState(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    const saved = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
-    return saved === 'true';
-  });
-  const [sidebarPinned, setSidebarPinned] = useState(() => {
-    try {
-      return localStorage.getItem(SIDEBAR_PINNED_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => (
+    safeLocalGetItem(SIDEBAR_COLLAPSED_KEY) === 'true'
+  ));
+  const [sidebarPinned, setSidebarPinned] = useState(() => (
+    safeLocalGetItem(SIDEBAR_PINNED_KEY) === 'true'
+  ));
   const [sidebarToolsExpanded, setSidebarToolsExpanded] = useState(() => (
-    localStorage.getItem(SIDEBAR_TOOLS_EXPANDED_KEY) !== 'false'
+    safeLocalGetItem(SIDEBAR_TOOLS_EXPANDED_KEY) !== 'false'
   ));
   const [sidebarItExpanded, setSidebarItExpanded] = useState(() => (
-    localStorage.getItem(SIDEBAR_IT_EXPANDED_KEY) !== 'false'
+    safeLocalGetItem(SIDEBAR_IT_EXPANDED_KEY) !== 'false'
   ));
   const [accountMenuAnchorEl, setAccountMenuAnchorEl] = useState(null);
   const navigate = useNavigate();
@@ -287,8 +285,14 @@ export function MainLayoutInner({
   });
   const [windowsNotificationState, setWindowsNotificationState] = useState(() => getWindowsNotificationState());
   const [pwaState, setPwaState] = useState(() => getPwaInstallState());
+  const [pwaUpdateBannerDismissed, setPwaUpdateBannerDismissed] = useState(false);
   const [isOffline, setIsOffline] = useState(() => (typeof navigator !== 'undefined' ? !navigator.onLine : false));
-  const [connectionRestored, setConnectionRestored] = useState(consumeConnectionRestoredMarker);
+  // Потребление маркера — побочный эффект; ленивый useState-инициализатор под
+  // StrictMode вызвал бы его дважды, и второй вызов вернул бы false.
+  const [connectionRestored, setConnectionRestored] = useState(false);
+  useEffect(() => {
+    if (consumeConnectionRestoredMarker()) setConnectionRestored(true);
+  }, []);
   const [offlineCacheMeta, setOfflineCacheMeta] = useState(getMobileOfflineCacheMeta);
   const offlineWasObservedRef = useRef(isOffline || getMobileOfflineState().readOnly);
   const [notificationPermissionBannerDismissed, setNotificationPermissionBannerDismissed] = useState(
@@ -616,13 +620,10 @@ export function MainLayoutInner({
       setPendingNavigation(null);
       return;
     }
-    if (normalizedTargetPath === '/networks') {
-      if (location.pathname === '/networks' || location.pathname.startsWith('/networks/')) {
-        setPendingNavigation(null);
-      }
-      return;
-    }
-    if (location.pathname === normalizedTargetPath) {
+    // Снимаем оверлей при ЛЮБОЙ смене маршрута: PermissionRoute/AboutOnboardingRoute
+    // могут перенаправить не на targetPath — тогда оверлей иначе висит до 10-с таймаута.
+    const fromPath = String(pendingNavigation?.from || '').trim();
+    if (fromPath && location.pathname !== fromPath) {
       setPendingNavigation(null);
     }
   }, [location.pathname, pendingNavigation]);
@@ -1039,11 +1040,7 @@ useEffect(() => {
   const toggleSidebarPinned = useCallback(() => {
     setSidebarPinned((current) => {
       const next = !current;
-      try {
-        localStorage.setItem(SIDEBAR_PINNED_KEY, String(next));
-      } catch {
-        // Storage can be unavailable (private mode); the pin then lasts for the session only.
-      }
+      safeLocalSetItem(SIDEBAR_PINNED_KEY, String(next));
       return next;
     });
     setDrawerOpen(false);
@@ -1052,7 +1049,7 @@ useEffect(() => {
   const toggleSidebar = () => {
     const newState = !sidebarCollapsed;
     setSidebarCollapsed(newState);
-    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(newState));
+    safeLocalSetItem(SIDEBAR_COLLAPSED_KEY, String(newState));
   };
 
   // Fetch available databases
@@ -1123,7 +1120,7 @@ useEffect(() => {
     if (databases.length === 0) return;
 
     const currentId = normalizeDbId(currentDb?.id);
-    const storedId = normalizeDbId(localStorage.getItem('selected_database'));
+    const storedId = normalizeDbId(safeLocalGetItem('selected_database'));
     const preferredId = currentId || storedId;
 
     const selectedDb =
@@ -1141,7 +1138,7 @@ useEffect(() => {
       });
     }
 
-    localStorage.setItem('selected_database', selectedId);
+    safeLocalSetItem('selected_database', selectedId);
   }, [databases, currentDb?.id, currentDb?.name]);
 
   const fetchUnreadCounts = useCallback(async (
@@ -1298,7 +1295,6 @@ useEffect(() => {
     hasChatPermission,
     hasHubNotificationPermission,
     hasMailPermission,
-    isMailRoute,
     showMailArrivalNotifications,
   ]);
 
@@ -1332,6 +1328,8 @@ useEffect(() => {
     try {
       let nextHubItems = [];
       let nextMailItems = [];
+      let hubLoaded = false;
+      let mailLoaded = false;
       const requests = [];
       if (hasHubNotificationPermission) {
         requests.push(
@@ -1344,6 +1342,7 @@ useEffect(() => {
             const readVisible = resolveOrdinaryChatHubReadVisible(response?.data?.hub_chat_ordinary);
             ordinaryChatHubReadVisibleRef.current = readVisible;
             nextHubItems = selectHubBellItems(response, { ordinaryReadVisible: readVisible });
+            hubLoaded = true;
           }),
         );
       }
@@ -1353,12 +1352,14 @@ useEffect(() => {
             limit: 20,
           }).then((data) => {
             nextMailItems = selectMailBellItems(data);
+            mailLoaded = true;
           }),
         );
       }
       await Promise.allSettled(requests);
-      setNotifications(nextHubItems);
-      setMailNotifications(nextMailItems);
+      // Частичный сбой не должен визуально обнулять семейство, чей запрос упал.
+      if (hubLoaded) setNotifications(nextHubItems);
+      if (mailLoaded) setMailNotifications(nextMailItems);
     } catch (error) {
       console.error('Bell inbox refresh failed:', error);
     }
@@ -1706,7 +1707,10 @@ useEffect(() => {
       }, 0);
     };
     const handleConnected = () => {
-      if (hasHubNotificationPermission) {
+      // The mount-time forceFull poll just fetched the same data — skip the duplicate
+      // when it finished recently; reconnects after an outage still refresh.
+      const lastSuccessAt = Number(hubPollLastSuccessAtRef.current || 0);
+      if (hasHubNotificationPermission && Date.now() - lastSuccessAt > HUB_REALTIME_CONNECT_REFRESH_MIN_AGE_MS) {
         scheduleRefresh({ forceFull: true, enableToasts: false });
       }
       scheduleMailRefresh('hub-realtime-connected');
@@ -1764,7 +1768,7 @@ useEffect(() => {
   const toggleToolsGroup = () => {
     setSidebarToolsExpanded((current) => {
       const next = !current;
-      localStorage.setItem(SIDEBAR_TOOLS_EXPANDED_KEY, String(next));
+      safeLocalSetItem(SIDEBAR_TOOLS_EXPANDED_KEY, String(next));
       return next;
     });
   };
@@ -1772,7 +1776,7 @@ useEffect(() => {
   const toggleItGroup = () => {
     setSidebarItExpanded((current) => {
       const next = !current;
-      localStorage.setItem(SIDEBAR_IT_EXPANDED_KEY, String(next));
+      safeLocalSetItem(SIDEBAR_IT_EXPANDED_KEY, String(next));
       return next;
     });
   };
@@ -1837,10 +1841,12 @@ useEffect(() => {
       void (async () => {
         try {
           await mailAPI.markAsRead(messageId, mailboxId);
+          // Мгновенная локальная дельта — иначе TTL-кэш (20 с) показывает завышенный бейдж.
+          applyMailUnreadDelta({ unreadDelta: -1, nextIsRead: true, targetId: messageId, mode: 'messages' });
           window.dispatchEvent(new CustomEvent('mail-needs-refresh'));
           await Promise.all([
             refreshBellInboxRef.current?.(),
-            fetchUnreadCountsRef.current?.(),
+            fetchUnreadCountsRef.current?.(null, { reason: 'mail-notification-read', forceMailUnread: true }),
           ]);
         } catch (error) {
           console.error('Mark mail notification read failed:', error);
@@ -1891,6 +1897,7 @@ useEffect(() => {
     setPendingNavigation({
       path: targetPath,
       label: String(item?.label || '').trim(),
+      from: location.pathname,
     });
     setDrawerOpen(false);
 
@@ -1939,7 +1946,7 @@ useEffect(() => {
         await databaseAPI.switchDatabase(newDbId);
         const selectedId = normalizeDbId(selectedDb.id);
         setCurrentDb({ id: selectedId, name: selectedDb.name });
-        localStorage.setItem('selected_database', selectedId);
+        safeLocalSetItem('selected_database', selectedId);
         window.dispatchEvent(new CustomEvent('database-changed', { detail: { databaseId: selectedId } }));
       } catch (error) {
         console.error('Error switching database:', error);
@@ -2522,6 +2529,42 @@ useEffect(() => {
             </Alert>
           </Box>
         </Collapse>
+
+        {pwaState?.updateAvailable && !pwaUpdateBannerDismissed ? (
+          <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, pb: 0.25 }}>
+            <Alert
+              severity="info"
+              variant="outlined"
+              icon={<SystemUpdateAltRoundedIcon fontSize="inherit" />}
+              onClose={() => setPwaUpdateBannerDismissed(true)}
+              action={(
+                <Button
+                  color="inherit"
+                  size="small"
+                  variant="outlined"
+                  onClick={() => { void applyPwaUpdate(); }}
+                  sx={{ borderColor: 'currentColor', whiteSpace: 'nowrap' }}
+                >
+                  Обновить
+                </Button>
+              )}
+              sx={{
+                width: 'fit-content',
+                maxWidth: 'min(720px, 100%)',
+                mx: 'auto',
+                py: 0.25,
+                px: 1.25,
+                borderRadius: 2.5,
+                alignItems: 'center',
+                '& .MuiAlert-icon': { py: 0.25, mr: 0.75, fontSize: '1.1rem' },
+                '& .MuiAlert-message': { py: 0.25, fontSize: '0.8125rem', lineHeight: 1.35, fontWeight: 600 },
+                '& .MuiAlert-action': { alignItems: 'center', pt: 0, mr: 0 },
+              }}
+            >
+              Доступна новая версия HUB-IT · Обновление перезагрузит приложение.
+            </Alert>
+          </Box>
+        ) : null}
       </Stack>
 
       {/* AppBar */}
@@ -3084,7 +3127,12 @@ useEffect(() => {
         anchor="right"
         open={notificationsOpen}
         onClose={() => setNotificationsOpen(false)}
-        PaperProps={{ sx: { bgcolor: ui.navBg, borderLeft: '1px solid', borderColor: ui.borderSoft, boxShadow: ui.dialogShadow } }}
+        PaperProps={{
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-label': 'Уведомления',
+          sx: { bgcolor: ui.navBg, borderLeft: '1px solid', borderColor: ui.borderSoft, boxShadow: ui.dialogShadow },
+        }}
       >
         <Box sx={{ width: { xs: 340, sm: 400 }, display: 'flex', flexDirection: 'column', height: '100%' }}>
           {/* Header */}

@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
-import { AiBotsAdminSection, resolveAvailableSettingsTabs, SETTINGS_PERMISSION_GROUPS } from './Settings';
+import { AiBotsAdminSection, SETTINGS_PERMISSION_GROUPS } from './Settings';
 
 vi.mock('../api/aiBalance', () => ({ aiBalanceAPI: { get: vi.fn().mockResolvedValue({ balance: null, threshold: 0, low: false, status: 'unknown' }), check: vi.fn(), setThreshold: vi.fn() } }));
 
@@ -22,39 +22,6 @@ vi.mock('../contexts/NotificationContext', () => ({
 }));
 
 const theme = createTheme();
-
-describe('resolveAvailableSettingsTabs', () => {
-  it('includes the dedicated AI Bots tab when settings.ai.manage is granted', () => {
-    const tabs = resolveAvailableSettingsTabs({
-      isAdmin: false,
-      hasPermission: (permission) => permission === 'settings.ai.manage',
-    });
-
-    expect(tabs.some((item) => item.value === 'ai-bots')).toBe(true);
-    expect(tabs.some((item) => item.value === 'env')).toBe(false);
-  });
-
-  it('hides the AI Bots tab when settings.ai.manage is missing', () => {
-    const tabs = resolveAvailableSettingsTabs({
-      isAdmin: true,
-      hasPermission: () => false,
-    });
-
-    expect(tabs.some((item) => item.value === 'ai-bots')).toBe(true);
-    expect(tabs.some((item) => item.value === 'env')).toBe(true);
-  });
-
-  it('keeps permission-gated tabs visible for admin even without explicit custom permissions', () => {
-    const tabs = resolveAvailableSettingsTabs({
-      isAdmin: true,
-      hasPermission: () => false,
-    });
-
-    expect(tabs.some((item) => item.value === 'users')).toBe(true);
-    expect(tabs.some((item) => item.value === 'sessions')).toBe(true);
-    expect(tabs.some((item) => item.value === 'ai-bots')).toBe(true);
-  });
-});
 
 describe('SETTINGS_PERMISSION_GROUPS', () => {
   it('marks the AD viewer baseline as always granted for custom permissions', () => {

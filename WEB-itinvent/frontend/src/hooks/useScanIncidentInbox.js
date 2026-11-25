@@ -124,12 +124,17 @@ export function useScanIncidentInbox(filters, options = {}) {
     // write results after a refresh (stale page appends, stuck flags).
     cancelInFlight();
     const requestId = requestIdRef.current;
+    const controller = new AbortController();
+    abortRef.current = controller;
     if (!silent) setLoadingInitial(true);
     setError(null);
     try {
       const fn = getIncidentsRef.current;
       const first = typeof fn === 'function'
-        ? await fn({ ...normalizedFiltersRef.current, limit: batchSize, offset: 0 })
+        ? await fn(
+          { ...normalizedFiltersRef.current, limit: batchSize, offset: 0 },
+          { signal: controller.signal },
+        )
         : { items: [], total: 0 };
       if (requestId !== requestIdRef.current) return;
       const firstItems = Array.isArray(first?.items) ? first.items : [];
@@ -142,6 +147,7 @@ export function useScanIncidentInbox(filters, options = {}) {
       });
       setLoaded((prev) => Math.max(firstItems.length, Math.min(prev, nextTotal)));
     } catch (nextError) {
+      if (nextError?.name === 'CanceledError' || nextError?.name === 'AbortError' || nextError?.code === 'ERR_CANCELED') return;
       if (requestId === requestIdRef.current) setError(nextError);
     } finally {
       if (requestId === requestIdRef.current) {

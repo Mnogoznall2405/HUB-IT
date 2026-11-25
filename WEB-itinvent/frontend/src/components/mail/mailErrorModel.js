@@ -13,12 +13,16 @@ export const readBlobAsText = (blob) => new Promise((resolve, reject) => {
   }
 });
 
+const GENERIC_AXIOS_ERROR_MESSAGE_RE = /^(request failed with status code \d+|network error|timeout of \d+ms exceeded|request aborted|canceled)$/i;
+
 export const getMailErrorDetail = (requestError, fallbackMessage = '') => {
   const detail = requestError?.response?.data?.detail;
   if (typeof detail === 'string' && detail.trim()) return detail;
   if (detail && typeof detail?.message === 'string' && detail.message.trim()) return detail.message;
   if (typeof requestError?.message === 'string' && requestError.message.trim()) {
-    return requestError.message.trim();
+    const message = requestError.message.trim();
+    // Generic axios/network messages carry no useful detail for the user.
+    if (!GENERIC_AXIOS_ERROR_MESSAGE_RE.test(message)) return message;
   }
   return String(fallbackMessage || '').trim();
 };
@@ -70,7 +74,7 @@ export const getMailErrorDetailAsync = async (requestError, fallbackMessage = ''
           }
         }
         if (!/^<!doctype html/i.test(text) && !/^<html/i.test(text)) {
-          return text;
+          return text.length > 500 ? `${text.slice(0, 500)}…` : text;
         }
       }
     } catch {

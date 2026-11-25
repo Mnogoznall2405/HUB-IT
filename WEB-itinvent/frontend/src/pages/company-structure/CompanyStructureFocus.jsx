@@ -158,6 +158,8 @@ export default function CompanyStructureFocus({
   selectedPath,
   people,
   peopleLoading,
+  peopleError = '',
+  onPeopleRetry,
   focusedPerson,
   onSelect,
   onPeople,
@@ -296,6 +298,8 @@ export default function CompanyStructureFocus({
           <EmployeeDirectoryPanel
             people={people}
             loading={peopleLoading}
+            error={peopleError}
+            onRetry={onPeopleRetry}
             focusedPerson={focusedPerson}
           />
         </Paper>

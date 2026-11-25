@@ -80,7 +80,7 @@ const MAIL_LAYOUT_NODE_SELECTOR = [
 export const sanitizeMailHtmlFragment = (html) => {
   const source = String(html || '').trim();
   if (!source) return '';
-  return DOMPurify.sanitize(source, {
+  const sanitized = DOMPurify.sanitize(source, {
     USE_PROFILES: { html: true },
     FORBID_TAGS: [
       'script', 'style', 'iframe', 'object', 'embed', 'link', 'meta',
@@ -89,6 +89,16 @@ export const sanitizeMailHtmlFragment = (html) => {
     FORBID_ATTR: ['srcdoc'],
     ADD_ATTR: MAIL_PRESENTATION_ATTRS,
   });
+  // target=_blank in signatures/outgoing markup survives sanitization; make
+  // sure noopener/noreferrer is always present so it can't hijack the tab.
+  if (typeof DOMParser === 'undefined') return sanitized;
+  try {
+    const documentNode = new DOMParser().parseFromString(sanitized, 'text/html');
+    applySafeBlankLinkRel(documentNode);
+    return documentNode.body?.innerHTML || sanitized;
+  } catch {
+    return sanitized;
+  }
 };
 
 const sanitizeIncomingMailHtml = sanitizeMailHtmlFragment;
@@ -142,6 +152,17 @@ const applySafeBlankLinkRel = (documentNode) => {
     relSet.add('noopener');
     relSet.add('noreferrer');
     node.setAttribute('rel', Array.from(relSet).join(' '));
+  });
+};
+
+const hardenMailLinks = (documentNode) => {
+  documentNode.querySelectorAll('a[href]').forEach((node) => {
+    const href = String(node.getAttribute('href') || '').trim();
+    if (!isRemoteMailImageSrc(href)) return;
+    const target = String(node.getAttribute('target') || '').trim().toLowerCase();
+    if (!target) {
+      node.setAttribute('target', '_blank');
+    }
   });
 };
 
@@ -514,6 +535,7 @@ export const buildRenderedMailHtml = (html, attachments = [], { allowExternalIma
       }
       imageNode.replaceWith(createMailImagePlaceholder(documentNode, 'missing'));
     });
+    hardenMailLinks(documentNode);
     if (blockRemoteMailResources(documentNode, { allowExternalImages })) {
       hasBlockedExternalImages = true;
     }

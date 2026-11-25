@@ -74,11 +74,12 @@ export default function useMailSelectedPreviewActions({
   }, [performMailReadMutation, selectedConversation, selectedMessage, viewMode]);
 
   const handleArchiveSelectedMessage = useCallback(async () => {
+    if (String(selectedMessage?.folder || folder || '').toLowerCase() === 'drafts') return;
     await runSelectedMessageMutation(
       (messageId) => mailAPI.moveMessage(messageId, withActiveMailboxPayload({ target_folder: 'archive' })),
       'Не удалось отправить письмо в архив.'
     );
-  }, [mailAPI, runSelectedMessageMutation, withActiveMailboxPayload]);
+  }, [folder, mailAPI, runSelectedMessageMutation, selectedMessage?.folder, withActiveMailboxPayload]);
 
   const handleRestoreSelectedMessage = useCallback(async () => {
     await runSelectedMessageMutation(
@@ -92,15 +93,22 @@ export default function useMailSelectedPreviewActions({
 
   const handleDeleteSelectedMessage = useCallback(async (permanentHint) => {
     const itemFolder = selectedMessage?.folder;
-    const permanent = itemFolder ? itemFolder === 'trash' : Boolean(permanentHint);
+    const isDraft = String(itemFolder || folder || '').toLowerCase() === 'drafts';
+    const permanent = !isDraft && (itemFolder ? itemFolder === 'trash' : Boolean(permanentHint));
     if (permanent && !confirmPermanentDelete({ count: 1 })) return;
     let restoreMessageId = '';
     const ok = await runSelectedMessageMutation(
       async (messageId) => {
+        if (isDraft) {
+          await mailAPI.deleteDraft(messageId, {
+            mailboxId: withActiveMailboxPayload({})?.mailbox_id || '',
+          });
+          return;
+        }
         const result = await mailAPI.deleteMessage(messageId, withActiveMailboxPayload({ permanent }));
         restoreMessageId = extractTrashRestoreMessageId(result);
       },
-      'Не удалось удалить письмо.'
+      isDraft ? 'Не удалось удалить черновик.' : 'Не удалось удалить письмо.'
     );
     if (ok && !permanent) {
       onRecoverableDelete?.({
@@ -122,6 +130,7 @@ export default function useMailSelectedPreviewActions({
   const handleMoveSelectedMessage = useCallback(async (targetOverride = '') => {
     const resolvedTarget = String(targetOverride || moveTarget || '');
     if (!resolvedTarget) return;
+    if (String(selectedMessage?.folder || folder || '').toLowerCase() === 'drafts') return;
     const messageId = String(selectedMessage?.id || '').trim();
     let moveResult = null;
     const ok = await runSelectedMessageMutation(

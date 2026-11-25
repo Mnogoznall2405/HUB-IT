@@ -69,7 +69,7 @@ function TabPanel({ value, index, children, fillAvailableHeight = false, forceMo
 }
 
 /* ─── Stickers tab ─── */
-const StickersTab = memo(function StickersTab({ theme, ui, onSendSticker, dense = false, currentUserId = null }) {
+const StickersTab = memo(function StickersTab({ theme, ui, onSendSticker, dense = false, currentUserId = null, visible = true }) {
   return (
     <TelegramStickersTab
       theme={theme}
@@ -77,6 +77,7 @@ const StickersTab = memo(function StickersTab({ theme, ui, onSendSticker, dense 
       onSendSticker={onSendSticker}
       dense={dense}
       currentUserId={currentUserId}
+      visible={visible}
     />
   );
 });
@@ -91,6 +92,9 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
   onClose,
   desktopDocked = false,
   currentUserId = null,
+  // Видимость keep-alive обёртки: док/поповер держат панель смонтированной
+  // под display:none — скрытая вкладка стикеров не должна делать запросов.
+  visible = true,
 }) {
   const [activeTab, setActiveTabState] = useState(() => persistedPanelState.activeTab);
   const setActiveTab = useCallback((value) => {
@@ -239,6 +243,7 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
           onSendSticker={onSendSticker}
           dense={desktopDocked}
           currentUserId={currentUserId}
+          visible={visible && activeTab === 1}
         />
       </TabPanel>
     </Box>

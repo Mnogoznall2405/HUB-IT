@@ -109,6 +109,10 @@ export default function useChatFileSending({
   }, []);
   const mountedRef = useRef(true);
   const preparationGenerationRef = useRef(0);
+  // Ref-guard: preparingFiles is render state and updates a tick later — two
+  // rapid queueSelectedFiles calls would both pass the state guard and the
+  // loser's prepared items would be silently dropped from the selection.
+  const preparingBusyRef = useRef(false);
   useLayoutEffect(() => {
     preparationGenerationRef.current += 1;
     return () => { preparationGenerationRef.current += 1; };
@@ -134,7 +138,7 @@ export default function useChatFileSending({
     setSelectedUploadItems, setFileCaption, setSendMediaAsFiles, setFileDialogOpen, replyMessage, setReplyMessage]);
 
   const queueSelectedFiles = useCallback(async (files, options = {}) => {
-    if (preparingFiles || sendingFiles) return false;
+    if (preparingFiles || sendingFiles || preparingBusyRef.current) return false;
     const isCurrent = beginPreparation();
 
     const incomingFiles = Array.from(files || []).filter(Boolean);
@@ -199,6 +203,7 @@ export default function useChatFileSending({
     if (existingItems.length === 0 || (hasRequestedMediaMode && !canUseRequestedOriginalMode)) {
       setSendMediaAsFiles(false);
     }
+    preparingBusyRef.current = true;
     setPreparingFiles(true);
     setFileUploadProgress(0);
 
@@ -233,6 +238,7 @@ export default function useChatFileSending({
       notifyWarning?.('Не удалось подготовить файлы к отправке.');
       return false;
     } finally {
+      preparingBusyRef.current = false;
       if (mountedRef.current) setPreparingFiles(false);
     }
   }, [
@@ -272,13 +278,14 @@ export default function useChatFileSending({
   ]);
 
   const applySelectedImageEdit = useCallback(async (fileIndex, payload = {}) => {
-    if (preparingFiles || sendingFiles || !payload?.file) return false;
+    if (preparingFiles || sendingFiles || preparingBusyRef.current || !payload?.file) return false;
     const isCurrent = beginPreparation();
     const normalizedIndex = Number(fileIndex);
     if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return false;
     const currentItem = selectedUploadItems[normalizedIndex];
     if (!currentItem) return false;
 
+    preparingBusyRef.current = true;
     setPreparingFiles(true);
     try {
       const preparedEditedItem = await prepareChatUploadFile(payload.file);
@@ -308,6 +315,7 @@ export default function useChatFileSending({
       notifyWarning?.('Не удалось подготовить отредактированное фото к отправке.');
       return false;
     } finally {
+      preparingBusyRef.current = false;
       if (mountedRef.current) setPreparingFiles(false);
     }
   }, [
@@ -322,7 +330,7 @@ export default function useChatFileSending({
   ]);
 
   const resetSelectedImageEdit = useCallback(async (fileIndex) => {
-    if (preparingFiles || sendingFiles) return false;
+    if (preparingFiles || sendingFiles || preparingBusyRef.current) return false;
     const isCurrent = beginPreparation();
     const normalizedIndex = Number(fileIndex);
     if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return false;
@@ -330,6 +338,7 @@ export default function useChatFileSending({
     const originalFile = currentItem?.originalFile || null;
     if (!currentItem || !originalFile) return false;
 
+    preparingBusyRef.current = true;
     setPreparingFiles(true);
     try {
       const restoredItem = await prepareChatUploadFile(originalFile);
@@ -351,6 +360,7 @@ export default function useChatFileSending({
       notifyWarning?.('Не удалось восстановить исходное фото.');
       return false;
     } finally {
+      preparingBusyRef.current = false;
       if (mountedRef.current) setPreparingFiles(false);
     }
   }, [
@@ -633,22 +643,34 @@ export default function useChatFileSending({
 
   const sendVoiceFile = useCallback(async ({ file, duration, mimeType }) => {
     const conversationId = String(activeConversationId || '').trim();
-    if (!conversationId || !file) return;
+    if (!conversationId || !file || sendingFiles) return;
     const clientMessageId = globalThis.crypto?.randomUUID?.()
       || `voice-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const items = [{ file, originalFile: file, media_kind: 'audio', duration_seconds: duration,
       mime_type: mimeType || file.type || 'audio/webm', voiceClientMessageId: clientMessageId }];
+    // Share the abort slot with file sends so the composer cancel control and
+    // the sendingFiles guard coordinate voice uploads like any other upload.
+    const abortController = typeof AbortController === 'function' ? new AbortController() : null;
+    fileUploadAbortRef.current = abortController;
+    setSendingFiles(true);
     try {
       // R20: same no-gap rule — reach the latest window before the voice send.
       await ensureLatestThreadWindow?.();
-      const message = await chatAPI.sendFiles(conversationId, items, { client_message_id: clientMessageId });
+      const message = await chatAPI.sendFiles(conversationId, items, {
+        client_message_id: clientMessageId,
+        signal: abortController?.signal,
+      });
       if (message?.id && mountedRef.current) applyOutgoingThreadMessage(conversationId, message);
     } catch (error) {
       if (!mountedRef.current) return;
+      if (String(error?.code || '') === 'ERR_CANCELED') return;
       retainFailedUpload(conversationId, { items, caption: '', asFiles: false, reply: null });
       notifyApiError(error, 'Не удалось отправить голосовое сообщение. Запись сохранена для повтора.');
+    } finally {
+      if (fileUploadAbortRef.current === abortController) fileUploadAbortRef.current = null;
+      if (mountedRef.current) setSendingFiles(false);
     }
-  }, [activeConversationId, applyOutgoingThreadMessage, ensureLatestThreadWindow, notifyApiError, retainFailedUpload]);
+  }, [activeConversationId, applyOutgoingThreadMessage, ensureLatestThreadWindow, fileUploadAbortRef, notifyApiError, retainFailedUpload, sendingFiles, setSendingFiles]);
 
   const closeFileDialog = useCallback(() => {
     if (preparingFiles || sendingFiles) return;

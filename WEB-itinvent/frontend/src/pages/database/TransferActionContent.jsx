@@ -346,6 +346,11 @@ const TransferActionContent = memo(function TransferActionContent({
                   {failedItem.inv_no}: {failedItem.error}
                 </Typography>
               ))}
+              {result.failed.length > 5 && (
+                <Typography variant="body2" color="error">
+                  …и ещё {result.failed.length - 5}
+                </Typography>
+              )}
               {canRetryFailed && (
                 <Button
                   size="small"

@@ -105,6 +105,7 @@ export default function useMailListDataController({
   const currentListContextKeyRef = useRef(currentListContextKey);
   currentListContextKeyRef.current = currentListContextKey;
   const bootstrapGenerationRef = useRef(0);
+  const bootstrapInFlightRef = useRef(null);
   const listFetchGenerationRef = useRef(0);
   const listRequestAbortRef = useRef(null);
   const listRequestContextKeyRef = useRef('');
@@ -310,6 +311,14 @@ export default function useMailListDataController({
 
   const refreshBootstrap = useCallback(async ({ force = false, live = false } = {}) => {
     const requestScope = String(mailCacheScope || '');
+    const bootstrapCacheKey = buildMailBootstrapCacheKey({ scope: requestScope, limit: mailBootstrapLimit });
+    // Dedupe concurrent bootstrap fetches for the same scope: the scope-effect
+    // and silent revalidate otherwise race into two GET /mail/bootstrap calls.
+    const inFlightKey = `${bootstrapCacheKey}|${live ? 'live' : 'auto'}`;
+    if (bootstrapInFlightRef.current?.key === inFlightKey) {
+      return bootstrapInFlightRef.current.promise;
+    }
+    const pending = (async () => {
     const requestGeneration = ++bootstrapGenerationRef.current;
     const isCurrentBootstrap = () => (
       requestGeneration === bootstrapGenerationRef.current
@@ -322,7 +331,6 @@ export default function useMailListDataController({
         : false;
       return currentContextUsesBootstrapListRef.current && !hasHydratedCurrentList;
     };
-    const bootstrapCacheKey = buildMailBootstrapCacheKey({ scope: requestScope, limit: mailBootstrapLimit });
     const cachedBootstrap = peekSWRCache(bootstrapCacheKey, { staleTimeMs: mailSwrStaleTimeMs });
     const cachedBootstrapState = String(cachedBootstrap?.data?.state || '').trim().toLowerCase();
     const forceBootstrapFetch = force || (cachedBootstrapState && cachedBootstrapState !== 'ok');
@@ -413,6 +421,15 @@ export default function useMailListDataController({
         if (hasRecentHydration) {
           setMailBackgroundRefreshing(false);
         }
+      }
+    }
+    })();
+    bootstrapInFlightRef.current = { key: inFlightKey, promise: pending };
+    try {
+      return await pending;
+    } finally {
+      if (bootstrapInFlightRef.current?.promise === pending) {
+        bootstrapInFlightRef.current = null;
       }
     }
   }, [

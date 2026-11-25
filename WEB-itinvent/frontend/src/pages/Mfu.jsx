@@ -987,7 +987,7 @@ function Mfu() {
             </Box>
             <Tooltip title="Обновить">
               <span>
-                <IconButton onClick={() => reload()} disabled={loading} color="primary">
+                <IconButton onClick={() => reload()} disabled={loading} color="primary" aria-label="Обновить">
                   <RefreshIcon />
                 </IconButton>
               </span>
@@ -1253,7 +1253,7 @@ function Mfu() {
                                     <Typography variant="caption">IP: <b>{device?.ip_address || '-'}</b></Typography>
                                     {device?.ip_address && (
                                       <Tooltip title="Открыть веб-интерфейс">
-                                        <IconButton size="small" component="a" href={`http://${device.ip_address}`} target="_blank" rel="noopener noreferrer" sx={{ p: 0.2 }}>
+                                        <IconButton size="small" component="a" href={`http://${device.ip_address}`} target="_blank" rel="noopener noreferrer" sx={{ p: 0.2 }} aria-label="Открыть веб-интерфейс">
                                           <OpenInNewIcon sx={{ fontSize: '0.9rem' }} color="primary" />
                                         </IconButton>
                                       </Tooltip>
@@ -1295,7 +1295,7 @@ function Mfu() {
           );
         })}
       <Drawer anchor="right" open={drawerOpen} onClose={() => setDrawerOpen(false)}>
-        <Box sx={{ width: { xs: 360, sm: 480 }, p: 2 }}>
+        <Box sx={{ width: { xs: 'min(360px, 100vw)', sm: 480 }, p: 2 }}>
           {selectedDevice ? (
             <>
               <Typography variant="h6" sx={{ fontWeight: 700, mb: 1 }}>{selectedDevice?.model_name || '-'}</Typography>
@@ -1310,7 +1310,7 @@ function Mfu() {
                     <Typography variant="body2"><b>IP:</b> {selectedDevice?.ip_address || '-'}</Typography>
                     {selectedDevice?.ip_address && (
                       <Tooltip title="Открыть веб-интерфейс">
-                        <IconButton size="small" component="a" href={`http://${selectedDevice.ip_address}`} target="_blank" rel="noopener noreferrer" sx={{ p: 0.2 }}>
+                        <IconButton size="small" component="a" href={`http://${selectedDevice.ip_address}`} target="_blank" rel="noopener noreferrer" sx={{ p: 0.2 }} aria-label="Открыть веб-интерфейс">
                           <OpenInNewIcon sx={{ fontSize: '1.1rem' }} color="primary" />
                         </IconButton>
                       </Tooltip>

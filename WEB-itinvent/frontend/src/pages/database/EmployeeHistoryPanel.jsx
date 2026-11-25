@@ -151,10 +151,18 @@ function EmployeeHistoryContent({ ownerNo, databaseId, active, isMobile, onOpenI
   );
 }
 
+const readSelectedDatabaseId = () => {
+  try {
+    return localStorage.getItem('selected_database') || '';
+  } catch {
+    return '';
+  }
+};
+
 export default function EmployeeHistoryPanel(props) {
-  const [databaseId, setDatabaseId] = useState(() => localStorage.getItem('selected_database') || '');
+  const [databaseId, setDatabaseId] = useState(readSelectedDatabaseId);
   useEffect(() => {
-    const changed = () => setDatabaseId(localStorage.getItem('selected_database') || '');
+    const changed = () => setDatabaseId(readSelectedDatabaseId());
     window.addEventListener('database-changed', changed);
     return () => window.removeEventListener('database-changed', changed);
   }, []);

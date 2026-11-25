@@ -145,6 +145,7 @@ export function CreateBranchDialog({
                                     />
                                     <IconButton
                                         size="small"
+                                        aria-label={`Удалить панель ${panel.name || panel.id}`}
                                         onClick={() => removePanel(panel.id)}
                                         disabled={createPanels.length <= 1}
                                         color="error"

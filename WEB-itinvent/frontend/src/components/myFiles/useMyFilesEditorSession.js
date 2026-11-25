@@ -18,10 +18,18 @@ const officePublicPathHint = () => {
   }
   return rememberedPublicPath;
 };
+let loadedDocsApiSrc = '';
 let nextTimingId = 0;
 export const loadDocsApi = (publicPath) => {
-  if (window.DocsAPI?.DocEditor) return Promise.resolve();
   const src = `${publicPath}/web-apps/apps/api/documents/api.js`;
+  // DocsAPI is bound to the document server it was fetched from: a changed
+  // public_path means the stale script must be replaced, not reused. An SDK we
+  // did not track (injected before this module's first load) binds to the
+  // first path requested from it.
+  if (window.DocsAPI?.DocEditor && (!loadedDocsApiSrc || loadedDocsApiSrc === src)) {
+    loadedDocsApiSrc = src;
+    return Promise.resolve();
+  }
   if (!docsApiLoads.has(src)) {
     docsApiLoads.set(src, new Promise((resolve, reject) => {
       const script = document.createElement('script');
@@ -37,6 +45,7 @@ export const loadDocsApi = (publicPath) => {
       script.onload = () => {
         if (!window.DocsAPI?.DocEditor) return fail();
         clearTimeout(timer);
+        loadedDocsApiSrc = src;
         resolve();
       };
       script.onerror = fail;
@@ -67,6 +76,10 @@ const retryDelay = (attempt, error) => {
 export default function useMyFilesEditorSession({ fileId, initialCompare = '', onConfig, onError, onStatusChange, onRequestClose, onTitleChange, onRequestHistory, onRequestRename, onRequestSharingSettings }) {
   const auth = useContext(AuthContext);
   const officeUiTheme = useTheme().palette.mode === 'dark' ? 'theme-dark' : 'theme-light';
+  // Read at request time: a mid-session theme switch must reach the next config
+  // fetch even though the session effect does not restart for it.
+  const officeUiThemeRef = useRef(officeUiTheme);
+  officeUiThemeRef.current = officeUiTheme;
   const accountKey = String(auth?.user?.id ?? auth?.user?.username ?? '');
   const hostRef = useRef(null);
   const actions = useRef({});
@@ -76,6 +89,8 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
   permissions.current = { rename: auth?.hasPermission?.('my_files.write') === true, share: auth?.hasPermission?.('my_files.share') === true };
   const initialCompareRef = useRef(initialCompare);
   initialCompareRef.current = initialCompare;
+  // Version ids already sent to the live editor: a repeated ?compare= must not restart it.
+  const appliedCompareRef = useRef('');
   const [status, setStatus] = useState(initialStatus);
   const [restart, setRestart] = useState(0);
   const [discardAction, setDiscardAction] = useState(null);
@@ -100,11 +115,11 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
     let editor = null;
     let currentConfig = null;
     let currentCapabilities = {};
-    let compareRequested = false;
     // setRevisedFile opens the built-in comparison view on the live editor: the signed
     // revised-file object comes from HUB so Document Server fetches the version itself.
     const startCompare = (versionId) => {
-      if (disposed || terminal || !editor) return;
+      if (disposed || terminal || !editor) return false;
+      appliedCompareRef.current = String(versionId || '');
       Promise.resolve()
         .then(() => myFilesOfficeAPI.compareVersion(fileId, versionId))
         .then((file) => {
@@ -118,6 +133,7 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
             ? 'Версия для сравнения не найдена: у файла ещё нет сохранённых версий.'
             : 'Не удалось запустить сравнение версий.' });
         });
+      return true;
     };
     let currentPublicPath = '';
     let inFlight = false;
@@ -127,6 +143,7 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
     let refreshRequested = false;
     let retryTimer = null;
     let readyTimer = null;
+    let closeFallbackTimer = null;
     let controller = null;
     let attempt = 0;
     let frameReady = false;
@@ -180,10 +197,8 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
         frameReady = true;
         update({ frameReady: true, phase: refreshRequested ? 'refreshing' : 'ready', warning: '' });
         pollPresence();
-        if (!compareRequested && initialCompareRef.current) {
-          compareRequested = true;
-          startCompare(initialCompareRef.current);
-        }
+        const pendingCompare = String(initialCompareRef.current || '');
+        if (pendingCompare && pendingCompare !== appliedCompareRef.current) startCompare(pendingCompare);
       },
       onRequestCompareFile: () => { if (!disposed && !terminal) startCompare('latest'); },
       onUserActionRequired: () => {
@@ -206,7 +221,11 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
         update({ phase: 'refreshing', message: 'Восстанавливаем документ через HUB…' });
         if (!inFlight) schedule('refresh', 0);
       },
-      onRequestClose: () => { if (!disposed) callbacks.current.onRequestClose?.(); },
+      onRequestClose: () => {
+        clearTimeout(closeFallbackTimer);
+        closeFallbackTimer = null;
+        if (!disposed) callbacks.current.onRequestClose?.();
+      },
       onMetaChange: (event) => {
         if (disposed || terminal || typeof event?.data?.title !== 'string') return;
         const title = event.data.title.trim();
@@ -236,7 +255,7 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
       if (hintedPath) loadDocsApi(hintedPath).catch(() => {});
       try {
         const configStartedAt = performance.now();
-        const payload = await myFilesOfficeAPI.getEditorConfig(fileId, { signal: controller.signal, uiTheme: officeUiTheme });
+        const payload = await myFilesOfficeAPI.getEditorConfig(fileId, { signal: controller.signal, uiTheme: officeUiThemeRef.current });
         if (kind === 'initial') checkpointMs = Math.max(0, Number(payload.checkpoint_interval_sec) * 1000 || 0);
         const { config, public_path: publicPath } = payload;
         rememberOfficePublicPath(publicPath);
@@ -302,6 +321,15 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
           attempt = 0;
           // refreshFile does not reload the document: another onDocumentReady is not guaranteed.
           update({ phase: documentReady ? 'ready' : 'opening', message: '', warning: '' });
+          return;
+        }
+        // The refresh path refuses to patch a live editor without key/token;
+        // a first open with an incomplete config must fail just as visibly.
+        if (typeof config?.document?.key !== 'string' || !config.document.key || typeof config?.token !== 'string' || !config.token) {
+          terminal = true;
+          const message = 'HUB не передал полную конфигурацию документа. Попробуйте открыть его заново.';
+          update({ phase: 'error', frameReady: true, message, busy: false });
+          callbacks.current.onError?.(message);
           return;
         }
         const sdkStartedAt = performance.now();
@@ -434,7 +462,25 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
         else setRestart((value) => value + 1);
       },
       close: () => {
-        if (editor && frameReady && typeof editor.requestClose === 'function') editor.requestClose();
+        if (editor && frameReady && typeof editor.requestClose === 'function') {
+          // Упавший iframe DocSpace может не ответить на requestClose() —
+          // локальный fallback, иначе закрытие виснет навсегда (FE-0110).
+          clearTimeout(closeFallbackTimer);
+          closeFallbackTimer = setTimeout(() => {
+            closeFallbackTimer = null;
+            if (disposed) return;
+            if (dirty || unsaved) setDiscardAction('close');
+            else callbacks.current.onRequestClose?.();
+          }, 6000);
+          try {
+            editor.requestClose();
+          } catch {
+            clearTimeout(closeFallbackTimer);
+            closeFallbackTimer = null;
+            if (dirty) setDiscardAction('close');
+            else callbacks.current.onRequestClose?.();
+          }
+        }
         else if (dirty) setDiscardAction('close');
         else callbacks.current.onRequestClose?.();
       },
@@ -445,6 +491,7 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
       controller?.abort();
       clearTimeout(retryTimer);
       clearTimeout(readyTimer);
+      clearTimeout(closeFallbackTimer);
       clearInterval(checkpointTimer);
       clearInterval(presenceTimer);
       window.removeEventListener('online', online);
@@ -457,6 +504,14 @@ export default function useMyFilesEditorSession({ fileId, initialCompare = '', o
       try { editor?.destroyEditor?.(); } catch { /* the frame may already be removed */ }
     };
   }, [fileId, accountKey, restart]);
+
+  // A repeated ?compare= deep-link for the already open document reaches the
+  // live editor instead of being swallowed by the one-shot open path.
+  useEffect(() => {
+    const versionId = String(initialCompare || '');
+    if (!versionId || versionId === appliedCompareRef.current) return;
+    actions.current.compare?.(versionId);
+  }, [initialCompare]);
 
   const requestClose = useCallback(() => actions.current.close?.(), []);
   const retry = useCallback(() => actions.current.retry?.(), []);

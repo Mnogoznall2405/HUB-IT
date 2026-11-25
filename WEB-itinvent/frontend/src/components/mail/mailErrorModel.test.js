@@ -15,7 +15,12 @@ describe('mailErrorModel', () => {
       .toBe('Mailbox failed');
     expect(getMailErrorDetail({ response: { data: { detail: { message: 'Nested detail' } } } }, 'Fallback'))
       .toBe('Nested detail');
-    expect(getMailErrorDetail({ message: 'Network Error' }, 'Fallback')).toBe('Network Error');
+    // Generic axios/network messages carry no useful detail — fall back to the
+    // caller's localized message instead of leaking them into the UI.
+    expect(getMailErrorDetail({ message: 'Network Error' }, 'Fallback')).toBe('Fallback');
+    expect(getMailErrorDetail({ message: 'Request failed with status code 502' }, 'Fallback')).toBe('Fallback');
+    expect(getMailErrorDetail({ message: 'Черновик устарел на сервере' }, 'Fallback'))
+      .toBe('Черновик устарел на сервере');
     expect(getMailErrorDetail({}, 'Fallback')).toBe('Fallback');
   });
 

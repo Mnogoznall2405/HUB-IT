@@ -8,9 +8,13 @@ from backend.api.deps import get_current_database_id, require_permission
 from backend.api.v1.chat._shim import chat_api
 from backend.chat.schemas import (
     ChatMessageResponse,
+    ChatStickerListResponse,
     ChatStickerPackImportRequest,
     ChatStickerPackListResponse,
+    ChatStickerPackOrderRequest,
     ChatStickerPackResponse,
+    ChatStickerRecentListResponse,
+    ChatStickerRecentUpdateRequest,
     ChatStickerSendRequest,
 )
 from backend.chat.telegram_sticker_service import (
@@ -137,6 +141,96 @@ async def remove_chat_sticker_pack(
             telegram_sticker_service.remove_pack,
             current_user_id=int(current_user.id),
             pack_id=pack_id,
+        )
+    except Exception as exc:
+        _raise_sticker_error(exc)
+
+
+@router.post("/sticker-packs/order", response_model=ChatStickerPackListResponse)
+async def reorder_chat_sticker_packs(
+    payload: ChatStickerPackOrderRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        return await chat_api()._run_chat_write_call(
+            telegram_sticker_service.reorder_sticker_packs,
+            current_user_id=int(current_user.id),
+            pack_ids=payload.pack_ids,
+        )
+    except Exception as exc:
+        _raise_sticker_error(exc)
+
+
+@router.get("/stickers/favorites", response_model=ChatStickerListResponse)
+async def list_chat_favorite_stickers(
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    try:
+        return await chat_api()._run_chat_read_call(
+            telegram_sticker_service.list_favorite_stickers,
+            current_user_id=int(current_user.id),
+        )
+    except Exception as exc:
+        _raise_sticker_error(exc)
+
+
+@router.put("/stickers/favorites/{sticker_id}", response_model=ChatStickerListResponse)
+async def add_chat_favorite_sticker(
+    sticker_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        return await chat_api()._run_chat_write_call(
+            telegram_sticker_service.add_favorite_sticker,
+            current_user_id=int(current_user.id),
+            sticker_id=sticker_id,
+        )
+    except Exception as exc:
+        _raise_sticker_error(exc)
+
+
+@router.delete("/stickers/favorites/{sticker_id}", response_model=ChatStickerListResponse)
+async def remove_chat_favorite_sticker(
+    sticker_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        return await chat_api()._run_chat_write_call(
+            telegram_sticker_service.remove_favorite_sticker,
+            current_user_id=int(current_user.id),
+            sticker_id=sticker_id,
+        )
+    except Exception as exc:
+        _raise_sticker_error(exc)
+
+
+@router.get("/stickers/recent", response_model=ChatStickerRecentListResponse)
+async def list_chat_recent_stickers(
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    try:
+        return await chat_api()._run_chat_read_call(
+            telegram_sticker_service.list_recent_stickers,
+            current_user_id=int(current_user.id),
+        )
+    except Exception as exc:
+        _raise_sticker_error(exc)
+
+
+@router.put("/stickers/recent", response_model=ChatStickerRecentListResponse)
+async def replace_chat_recent_stickers(
+    payload: ChatStickerRecentUpdateRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        return await chat_api()._run_chat_write_call(
+            telegram_sticker_service.replace_recent_stickers,
+            current_user_id=int(current_user.id),
+            sticker_ids=payload.sticker_ids,
+            base_version=payload.base_version,
+            clear=payload.clear,
+            ops=[{"op": entry.op, "sticker_id": entry.sticker_id} for entry in payload.ops],
+            op_batch_id=payload.op_batch_id,
         )
     except Exception as exc:
         _raise_sticker_error(exc)

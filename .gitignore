@@ -258,6 +258,8 @@ scripts/livekit/livekit.yaml
 
 # Scratch/debug artifacts (_-prefix convention, not for VCS)
 scripts/_*
+# Shared migrator safety contract is a real module, not scratch (imported by migrate_*_sqlite_to_postgres.py)
+!scripts/_migration_safety.py
 tmp_*.py
 
 # Generated screenshot artifacts (NativeScreenshots test output)

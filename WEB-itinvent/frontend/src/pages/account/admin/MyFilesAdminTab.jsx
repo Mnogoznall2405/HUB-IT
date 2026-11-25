@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
@@ -45,6 +45,7 @@ const formatDateTime = (value) => {
 };
 
 function QuotaEditor({ row, saving, onSave }) {
+  const { notifyWarning } = useNotification();
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState('');
   const currentGb = Math.round(Number(row.quota_limit_bytes || 0) / (1024 ** 3));
@@ -55,9 +56,13 @@ function QuotaEditor({ row, saving, onSave }) {
   };
 
   const submit = async () => {
+    if (saving) return;
     const trimmed = String(value).trim();
     const gb = trimmed === '' ? 0 : Number(trimmed);
-    if (trimmed !== '' && (!Number.isFinite(gb) || gb < 1 || gb > QUOTA_MAX_GB)) return;
+    if (trimmed !== '' && (!Number.isFinite(gb) || gb < 1 || gb > QUOTA_MAX_GB)) {
+      notifyWarning(`Укажите целое число от 1 до ${QUOTA_MAX_GB} ГБ или оставьте поле пустым для стандартного лимита.`);
+      return;
+    }
     const ok = await onSave(row, gb > 0 ? gb : null);
     if (ok) setEditing(false);
   };
@@ -108,19 +113,24 @@ function MyFilesStats({ canManageUsers = false, onOpenFiles }) {
   const [query, setQuery] = useState('');
   const [savingUserId, setSavingUserId] = useState(0);
 
+  const loadSeq = useRef(0);
+
   const load = useCallback(async ({ q = query } = {}) => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     try {
       const payload = await myFilesAPI.listAdminUserStats({ limit: 500, q });
+      if (seq !== loadSeq.current) return;
       setStats({
         items: Array.isArray(payload?.items) ? payload.items : [],
         total: Number(payload?.total || 0),
         totals: payload?.totals || {},
       });
     } catch (error) {
+      if (seq !== loadSeq.current) return;
       notifyApiError(error, 'Не удалось загрузить статистику «Мой диск».', { dedupeMode: 'recent' });
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [notifyApiError, query]);
 

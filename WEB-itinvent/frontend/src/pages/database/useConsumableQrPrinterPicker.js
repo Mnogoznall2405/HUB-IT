@@ -77,6 +77,7 @@ export function useConsumableQrPrinterPicker({ open = false, item = null, initia
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [printerQuery, setPrinterQueryState] = useState('');
   const [searchResults, setSearchResults] = useState(null);
+  const [searchError, setSearchError] = useState(false);
   const [searching, setSearching] = useState(false);
   const [selectedPrinter, setSelectedPrinter] = useState(null);
   const searchSeqRef = useRef(0);
@@ -146,11 +147,13 @@ export function useConsumableQrPrinterPicker({ open = false, item = null, initia
     if (!query) {
       searchSeqRef.current += 1;
       setSearchResults(null);
+      setSearchError(false);
       setSearching(false);
       return undefined;
     }
     const seq = ++searchSeqRef.current;
     setSearching(true);
+    setSearchError(false);
     const timer = setTimeout(() => {
       equipmentAPI.searchUniversal(query, 1, SEARCH_LIMIT)
         .then((response) => {
@@ -159,7 +162,7 @@ export function useConsumableQrPrinterPicker({ open = false, item = null, initia
           setSearchResults(onlyPrinterLike(dedupePrinters(rows)));
         })
         .catch(() => {
-          if (searchSeqRef.current === seq) setSearchResults([]);
+          if (searchSeqRef.current === seq) setSearchError(true);
         })
         .finally(() => {
           if (searchSeqRef.current === seq) setSearching(false);
@@ -180,6 +183,7 @@ export function useConsumableQrPrinterPicker({ open = false, item = null, initia
     printerQuery,
     setPrinterQuery,
     searchResults,
+    searchError,
     searching,
     selectedPrinter,
     selectPrinter,
