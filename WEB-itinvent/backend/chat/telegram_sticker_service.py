@@ -869,7 +869,13 @@ class TelegramStickerService:
                     ChatMember.left_at.is_(None),
                 ),
             )
-            .where(or_(*(ChatMessageAttachment.file_name.like(pattern) for pattern in patterns)))
+            # media_kind фильтр обязателен: имя файла обычного upload
+            # контролируется пользователем, без фильтра crafted-имя
+            # sticker-<id>--x.png подделывало бы leg-3 entitlement.
+            .where(
+                ChatMessageAttachment.media_kind == "sticker",
+                or_(*(ChatMessageAttachment.file_name.like(pattern) for pattern in patterns)),
+            )
             .distinct()
         ).scalars()
         # Extract the real sticker id from each matched file name and keep only
