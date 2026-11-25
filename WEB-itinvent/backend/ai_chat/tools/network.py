@@ -962,6 +962,12 @@ def _resolve_mac_from_itinvent(identifier: str, context: AiToolExecutionContext)
 
     identifier_stripped = identifier.strip()
     database_id = context.effective_database_id
+    if not database_id:
+        # A11 P0 UNSAFE-2: without a resolved database the queries below hit the
+        # DEFAULT database (get_database_config(None) falls back) — a dangling
+        # assignment / denied explicit id would leak another DB's device data
+        # into the WOL draft preview. Fail closed: no enrichment, no SQL.
+        return None
 
     # Try resolving by hostname first
     result = queries.resolve_pc_context_by_mac_or_hostname(

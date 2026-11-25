@@ -5614,6 +5614,12 @@ class AiChatService:
                 request_json=_json_dumps(
                     {
                         "effective_database_id": resolved_database_id,
+                        # A11 P0 UNSAFE-1: keep the raw client-requested id.
+                        # When an explicit id fails validation the resolved
+                        # value is None — without the raw marker the execute
+                        # handoff re-resolved None as "absent" and silently
+                        # substituted pinned/default (measured fail-open).
+                        "requested_database_id": _normalize_text(effective_database_id) or None,
                     }
                 ),
                 result_json="{}",
@@ -7788,7 +7794,16 @@ class AiChatService:
             user_payload=user_payload,
             effective_database_id=resolve_effective_database_id(
                 user_payload=user_payload,
-                explicit_database_id=_normalize_text(request_payload.get("effective_database_id")) or None,
+                # A11 P0 UNSAFE-1: when the stored resolution is empty but the
+                # client explicitly requested a database, re-validate THAT id —
+                # junk resolves to None (controlled denial in every tool) instead
+                # of the legacy silent fall-through to pinned/default. Runs that
+                # never carried an explicit id keep implicit re-resolution.
+                explicit_database_id=(
+                    _normalize_text(request_payload.get("effective_database_id"))
+                    or _normalize_text(request_payload.get("requested_database_id"))
+                    or None
+                ),
             ),
             # AG-2: a run only sees tools allowed by the employee's portal
             # permissions; AiToolRegistry.execute re-checks per call.
