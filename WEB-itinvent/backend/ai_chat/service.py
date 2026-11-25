@@ -7863,6 +7863,15 @@ class AiChatService:
                     "diagnostic": diagnostic,
                     "sources": payload.get("sources") or [],
                 }
+                # Surface result cardinality + ACL downgrade flags for
+                # benchmark/audit checks without storing the full payload.
+                if isinstance(payload_data, dict):
+                    for _key in ("total", "count", "returned_count"):
+                        _val = payload_data.get(_key)
+                        if isinstance(_val, int):
+                            trace[f"result_{_key}"] = int(_val)
+                    if payload_data.get("scope_downgraded"):
+                        trace["scope_downgraded"] = True
                 if tool_id == EMPLOYEE_TOOL and isinstance(payload_data.get("comparison_1c"), dict):
                     trace["comparison_snapshot"] = comparison_snapshot(payload_data)
                     comparison = payload_data["comparison_1c"]

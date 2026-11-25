@@ -29,9 +29,11 @@ only for names not already set (test DB URLs etc. win).
 """
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -389,6 +391,9 @@ def _summarize_trace(trace: dict) -> dict:
         "items": len(items) if items is not None else None,
         "rows": len(rows) if rows is not None else None,
         "total": data.get("total"),
+        "result_total": trace.get("result_total"),
+        "result_count": trace.get("result_count"),
+        "scope_downgraded": bool(trace.get("scope_downgraded")),
         "truncated": bool(data.get("truncated") or data.get("has_more")),
     }
 
@@ -458,12 +463,33 @@ _FLAG_KEYS = sorted(
     if k.startswith("AI_") and (k.endswith("_ENABLED") or k in {"AI_JEV_ROUTING", "AI_SANDBOX_ENABLED"})
 )
 
+def _sha256_file(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _git_head() -> str:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(ROOT), stderr=subprocess.DEVNULL)
+        return out.decode("ascii", "replace").strip()
+    except Exception:
+        return ""
+
+
 results = {
     "env": {
+        "label": LABEL,
+        "code_sha": _git_head(),
+        "corpus_sha256": _sha256_file(corpus_path),
+        "seed_sha256": _sha256_file(ROOT / "documentation" / "technical" / "ai-architecture-audit" / "a9-artifacts" / "bench_seed.py"),
         "AI_JEV_ROUTING": os.environ.get("AI_JEV_ROUTING"),
         "AI_PROMPT_OPTIMIZATION_ENABLED": os.environ.get("AI_PROMPT_OPTIMIZATION_ENABLED"),
         "AI_SUMMARY_BACKGROUND_ENABLED": os.environ.get("AI_SUMMARY_BACKGROUND_ENABLED"),
         "ROUTERAI_MODEL": os.environ.get("ROUTERAI_MODEL"),
+        "OPENROUTER_MODEL": os.environ.get("OPENROUTER_MODEL"),
         "JEV_MODEL": os.environ.get("JEV_MODEL") or "(default)",
         "provider": _args.provider,
         "flags": {k: os.environ.get(k) for k in _FLAG_KEYS},
@@ -518,6 +544,8 @@ for idx, scenario in enumerate(scenarios, 1):
     expected = list(scenario.get("expected_tools") or [])
     forbidden = list(scenario.get("forbidden") or [])
     required_facts = [str(f) for f in (scenario.get("required_facts") or []) if str(f).strip()]
+    forbidden_facts = [str(f) for f in (scenario.get("forbidden_facts") or []) if str(f).strip()]
+    expect = scenario.get("expect") if isinstance(scenario.get("expect"), dict) else {}
     bot = bot_no_tools if category == "CHAT" else bot_all
     # §8 ACL: a scenario may pin a different seeded user as the actor.
     scn_actor = _seed_users.get(str(scenario.get("actor") or "")) or actor
@@ -569,6 +597,31 @@ for idx, scenario in enumerate(scenarios, 1):
 
         facts_found = [f for f in required_facts if f.lower() in answer_body.lower()]
         facts_missing = [f for f in required_facts if f.lower() not in answer_body.lower()]
+        forbidden_facts_hit = [f for f in forbidden_facts if f.lower() in answer_body.lower()]
+
+        # --- exact-expect checks (§2): tool result cardinality / ACL flags ---
+        expect_failures = []
+        if "tool_result_total" in expect:
+            want_total = int(expect["tool_result_total"])
+            got = [t.get("result_total") for t in executed if t.get("result_total") is not None]
+            if want_total not in [int(v) for v in got]:
+                expect_failures.append(f"tool_result_total: want {want_total}, got {got or 'no trace'}")
+        if expect.get("scope_downgraded") is not None:
+            want_sd = bool(expect["scope_downgraded"])
+            got_sd = any(t.get("scope_downgraded") for t in executed)
+            if got_sd != want_sd:
+                expect_failures.append(f"scope_downgraded: want {want_sd}, got {got_sd}")
+        if expect.get("tool_error") is not None:
+            want_te = bool(expect["tool_error"])
+            got_te = any(t.get("error") for t in executed)
+            if got_te != want_te:
+                expect_failures.append(f"tool_error: want {want_te}, got {got_te}")
+        for _flag in ("direct_read_hit", "fast_path_hit"):
+            if expect.get(_flag) is not None:
+                want_f = bool(expect[_flag])
+                got_f = bool(usage_json.get(_flag))
+                if got_f != want_f:
+                    expect_failures.append(f"{_flag}: want {want_f}, got {got_f}")
 
         # --- tokens / cost (missing usage is reported, not zeroed) --------
         in_tok = sum(int(r["usage"]["prompt_tokens"]) for r in recs
@@ -601,10 +654,10 @@ for idx, scenario in enumerate(scenarios, 1):
             outcome = "failed"
 
         # --- correctness ---------------------------------------------------
-        checks = bool(expected or forbidden or required_facts)
+        checks = bool(expected or forbidden or required_facts or forbidden_facts or expect)
         if outcome == "failed":
             correctness = "FAIL" if checks else "NO_CHECK"
-        elif expected_missing or forbidden_hit or facts_missing:
+        elif expected_missing or forbidden_hit or facts_missing or forbidden_facts_hit or expect_failures:
             correctness = "FAIL"
         elif not checks:
             correctness = "NO_CHECK"
@@ -655,7 +708,11 @@ for idx, scenario in enumerate(scenarios, 1):
                 "expected_missing": expected_missing,
                 "forbidden_hit": forbidden_hit,
             },
-            "facts": {"required": required_facts, "found": facts_found, "missing": facts_missing},
+            "facts": {
+                "required": required_facts, "found": facts_found, "missing": facts_missing,
+                "forbidden": forbidden_facts, "forbidden_hit": forbidden_facts_hit,
+            },
+            "expect": {"spec": expect, "failures": expect_failures},
             "flags": {
                 "fast_path_hit": bool(usage_json.get("fast_path_hit")),
                 "direct_read_hit": bool(usage_json.get("direct_read_hit")),

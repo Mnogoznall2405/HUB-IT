@@ -161,15 +161,31 @@ def seed_users(user_service) -> dict:
 
 
 def seed_tasks(hub_service, users: dict, *, count: int = 100) -> list[dict]:
-    """100 tasks: first 10 for bench_actor (8 open + 2 done), rest to others."""
+    """100 tasks: first 10 for bench_actor (8 open + 2 done), rest round-robin
+    among the OTHER users — bench_actor must stay out of the rotation so his
+    "my tasks" view is exactly the first 10 (exact-count checks)."""
     actor = users["bench_actor"]
-    assignee_ids = [int(u["id"]) for u in users.values()]
+    assignee_ids = [int(u["id"]) for name, u in users.items() if name != "bench_actor"]
     controller = users["bench_admin"]
     existing = hub_service.list_tasks(
         user_id=int(controller["id"]), scope="all", status_filter="",
         q="Бенч-задача", limit=500, allow_all_scope=True)
-    if int(existing.get("total") or 0) >= count:
-        return list(existing.get("items") or [])
+    existing_items = list(existing.get("items") or [])
+    # Stale-detection: an older seed put bench_actor into the round-robin,
+    # inflating his "my tasks" beyond the first 10. If he participates in any
+    # task numbered > 10 the distribution is stale -> wipe and reseed.
+    actor_id = int(actor["id"])
+    actor_tasks = hub_service.list_tasks(
+        user_id=actor_id, scope="my", status_filter="",
+        q="Бенч-задача", limit=500, allow_all_scope=False)
+    stale = int(actor_tasks.get("total") or 0) > 10
+    if stale:
+        for item in existing_items:
+            hub_service.delete_task(
+                task_id=str(item.get("id") or ""), actor_user_id=int(controller["id"]), is_admin=True)
+        existing_items = []
+    elif int(existing.get("total") or 0) >= count:
+        return existing_items
     project_id = None
     try:
         project = hub_service.create_task_project(name="Бенч-проект", code="BENCH")
