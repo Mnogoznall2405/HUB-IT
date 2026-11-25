@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import Box from '@mui/material/Box';
+// NOTE: keep this as a barrel import — a deep `@mui/material/Box` import becomes a
+// separate Vite optimizeDeps entry whose esbuild code-split chunk omits the
+// `init_createTheme()` call before `createTheme_default()` (esbuild 0.27.7 defect),
+// crashing dev mode with "createTheme_default is not a function".
+import { Box } from '@mui/material';
 
 import ChatThread from '../../components/chat/ChatThread';
 import ChatEmojiDock from '../../components/chat/ChatEmojiDock';
