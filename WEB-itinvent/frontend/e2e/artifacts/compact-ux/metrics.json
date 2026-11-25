@@ -23,11 +23,7 @@
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 47
-        },
-        {
-          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
-          "slack": 4
+          "slack": 55
         },
         {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
@@ -35,11 +31,15 @@
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 65
+          "slack": 37
         },
         {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
           "slack": 4
+        },
+        {
+          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
+          "slack": 41
         },
         {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
@@ -101,11 +101,11 @@
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 132
+          "slack": 134
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 177
+          "slack": 179
         }
       ]
     },
@@ -127,11 +127,11 @@
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 132
+          "slack": 134
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 177
+          "slack": 179
         }
       ]
     }
@@ -174,12 +174,12 @@
           "slack": 4
         },
         {
-          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
-          "slack": 4
+          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "slack": 10
         },
         {
-          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
-          "slack": 4
+          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "slack": 3
         }
       ],
       "logicalWidth": 512
@@ -225,6 +225,7 @@
   },
   "menus": {
     "fileTopLevel": [
+      "Просмотр",
       "Скачать",
       "Поделиться",
       "Организовать",
@@ -240,7 +241,7 @@
     "folderTopLevel": [
       "Открыть",
       "Скачать папку (ZIP)",
-      "Поделиться",
+      "Поделиться папкой",
       "Организовать",
       "Сведения",
       "Удалить"
