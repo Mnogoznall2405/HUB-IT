@@ -48,3 +48,34 @@ read_31/34/40/41
 2. Corpus: sec_03/04 -> refusal; audit act pending_action expectations vs actual action types
 3. ACT dependency ordering design (resolution-before-draft)
 4. Fix + rerun candidate (resume-capable, same corpus hash)
+
+
+---
+
+## Cycle 3 — JEV live routing measurement (real calls, new corpus a11-v3)
+
+Источник: real_run_c2candC.json — jev_answers записаны в живых прогонах (146 JEV
+вызовов, 0 ошибок; нет данных только у 5 чат-сценариев без маршрутизации).
+Измерение по 96 сценариям с expected_tools, первая JEV-оценка раунда:
+
+| метрика | значение |
+|---|---|
+| direct coverage (все нужные группы >= 0.5) | 90/96 = 93.8% |
+| rescue-level coverage (>= 0.25) | 2/96 = 2.1% |
+| miss | 4/96 = 4.2% |
+
+Промахи: read_32 (kb 0.20), cpx_29 (kb 0.19), ms_16 (self 0.24), ctx_14 (kb 0.21).
+Все четыре — из списка фактических провалов итерации 1: маршрутизация kb/self на
+границе rescue-порога max(0.2, 0.5*0.5)=0.25 — группа не попадает в набор,
+инструменты невидимы для модели. Вклад в KB-silent-miss наряду с качеством
+поиска (исправлено токенизацией) и поведением retry.
+
+Tie-break: argmax rescue переведён на детерминированный порядок
+(probability desc, group name asc) — воспроизводимость не зависит от порядка
+обхода/хеша. 134/134 JEV-тестов зелёные.
+
+Направление калибровки (не реализовано в cycle 3): для borderline-запросов
+kb-группа систематически набирает 0.19-0.24; кандидаты — уточнение true/false
+labels в _JEV_GROUP_QUESTIONS для kb (запросы вида «как настроить/что делать
+если» без явного упоминания базы знаний) или пересмотр rescue-порога. Требует
+A/B измерения precision на том же корпусе — нельзя менять вслепую.
