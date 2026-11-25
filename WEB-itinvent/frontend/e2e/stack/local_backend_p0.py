@@ -71,8 +71,31 @@ def _seed_with_td_user() -> None:
             full_name="E2E Refresh",
             email="e2e_refresh@example.com",
         )
+    # Dedicated users for the extended multi-tab spec (FE-0083): each test gets
+    # its own account (enrollment is sticky), and the last test switches users.
+    mt_users = [
+        ("e2e_mt", "e2e-local-mt-pass", "E2E Multitab"),
+        ("e2e_mt2", "e2e-local-mt2-pass", "E2E Multitab Two"),
+        ("e2e_mt3", "e2e-local-mt3-pass", "E2E Multitab Three"),
+        ("e2e_mt4", "e2e-local-mt4-pass", "E2E Multitab Four"),
+        ("e2e_mt5", "e2e-local-mt5-pass", "E2E Multitab Five"),
+        ("e2e_mt6", "e2e-local-mt6-pass", "E2E Multitab Six"),
+    ]
+    for name, password, full_name in mt_users:
+        if user_service.get_by_username(name) is None:
+            user_service.create_user(
+                name,
+                password=password,
+                role="operator",
+                full_name=full_name,
+                email=f"{name}@example.com",
+            )
     now = datetime.now(timezone.utc)
     with app_session() as session:
+        for name, _, _ in mt_users:
+            row = session.scalars(select(AppUser).where(AppUser.username == name)).one()
+            if row.about_onboarding_completed_at is None:
+                row.about_onboarding_completed_at = now
         for name in ("e2e_td", "e2e_refresh"):
             row = session.scalars(select(AppUser).where(AppUser.username == name)).one()
             if row.about_onboarding_completed_at is None:

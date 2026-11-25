@@ -18,7 +18,7 @@ const FRONTEND_ROOT = fileURLToPath(new URL('..', import.meta.url));
 export default defineConfig({
   ...base,
   testDir: fileURLToPath(new URL('.', import.meta.url)),
-  testMatch: 'remediation-p0.spec.js',
+  testMatch: ['remediation-p0.spec.js', 'remediation-multitab.spec.js'],
   outputDir: fileURLToPath(new URL('../../../output/remediation-p0', import.meta.url)),
   workers: 1,
   use: {
