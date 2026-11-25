@@ -42,3 +42,54 @@
 - **Доказано smoke'ом**: пайплайн здоров end-to-end — read_01 через OpenRouter PASS/SUCCESS с исполненным `office.tasks.search`, рабочим JEV (1 вызов) и ответом 805 chars. JEV через OpenRouter fallback работает.
 - **Fail-fast §16 проверен в боевых условиях**: baseA корректно abort после 6 подряд 402 вместо прожига корпуса.
 - Хэш P0-коммита: директива цитирует `751190ee`, локальный лог показывал `990885ee` — сверить при финальном отчёте.
+
+
+---
+
+# Cycle 3 — статус (2026-11-25)
+
+## Закрыто и закоммичено
+
+- P0 SEC: sec_04 доказан корректным отказом (0 секретов, 0 tool calls, policy refusal);
+  валидатор откалиброван — forbidden facts = реальные секретные значения,
+  expected_outcome считается check'ом. SEC 2->1 был дефектом калибровки, не security-регрессией.
+- P0 security-аудит HEAD 710a3efe (независимый, статический): release-blocking проблем
+  в diff НЕТ. Findings в A11_CYCLE3_SECURITY_AUDIT.md: F-D1 (исправлен), F-D2/F-C1 medium,
+  pre-existing: sensitive args в result_json, disabled bot не отменяет pending.
+- KB silent-miss СИСТЕМНЫЙ фикс: kb_service.list_articles требовал verbatim substring
+  всего запроса — многословные запросы не матчились никогда, base выживал случайными
+  однословными retry. Теперь токенизированный AND + OR-ranked fallback с стеммингом-lite.
+  Все 6 реальных failing-запросов находят seeded-статьи. 22/22 kb тестов.
+- mem_08: guard против галлюцинированных записей уничтожал корректные recall-ответы
+  (regex «предпочтени…сохран» матчил честный ответ). Interrogative triggers исключены.
+- mem_05: калибровка — факт «не используй английский» faithfully перефразирован
+  «исключительно русский». Валидатор any-of facts (a|b), corpus v4.
+- F-D1: dedup записывает raw+prepared сигнатуры (повтор identical raw call больше
+  не ускользает когда draft_policy.prepare трансформирует). 132/132 тестов.
+- JEV: детерминированный tie-break (prob desc, name asc); live routing measurement
+  на новом корпусе реальными вызовами: 93.8% direct coverage, промахи read_32/cpx_29/
+  ms_16/ctx_14 на границе rescue-порога — коррелируют с фактическими провалами.
+- act_05: harness normalization — pending action type «office.mail.send» (dots)
+  vs проверка «mail_send» (underscore). Дефект корпуса, не поведения.
+- Артефакты real_run_c2baseA/c2candC в репозитории с SHA; PR#74 MERGEABLE/CLEAN
+  против main 4d4dba1f; provider blocker снят (баланс пополнен).
+
+## В работе
+
+- ACT-трек (субагент): bench-сотрудники — directory-only, не portal users; контурный
+  seed фикс + аудит резолв-путей draft tools (act_02/08 внутренний резолв фейлится
+  при успешном внешнем).
+- DOCS+CTX-трек (субагент): doc_04/05/07 format-choice stall, doc_08 rows-schema +
+  report-intent hijack, doc_10/ctx_08 me.files.search empty-query schema defect.
+- Точечная real-LLM верификация исправлений (real_run_c3verify.json):
+  read_28/49, cpx_29, mem_05/08, sec_02/03/04/09, act_05.
+
+## Открыто
+
+- Полный candidate rerun после интеграции ACT/DOCS фиксов (--resume).
+- 2 падающих smart-memory e2e (correction/action-state): логически не связаны с
+  cycle-3 diff — перепроверить после интеграции субагентских правок.
+- ms_16/ctx_14 self/kb routing на границе rescue — калибровка group questions
+  требует A/B precision измерения, не вслепую.
+- Pre-existing security follow-ups: redact args в telemetry, pending cancel при
+  disable, status/location draft orphan actions — решение о скоупе за пользователем.
