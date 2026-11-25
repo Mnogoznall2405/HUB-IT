@@ -382,6 +382,7 @@ describe('chatStickerStore', () => {
         { op: 'bump', sticker_id: 'sticker-y' },
         { op: 'bump', sticker_id: 'sticker-x' },
       ],
+      batchId: expect.any(String),
     });
   });
 
@@ -432,6 +433,7 @@ describe('chatStickerStore', () => {
     expect(chatStickersAPI.pushRecentStickers).toHaveBeenLastCalledWith({
       baseVersion: 2,
       ops: [{ op: 'bump', sticker_id: 'sticker-y' }],
+      batchId: expect.any(String),
     });
   });
 
@@ -453,6 +455,7 @@ describe('chatStickerStore', () => {
         { op: 'bump', sticker_id: 'sticker-x' },
         { op: 'remove', sticker_id: 'sticker-y' },
       ],
+      batchId: expect.any(String),
     });
 
     chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [], version: 2 });
@@ -507,7 +510,84 @@ describe('chatStickerStore', () => {
     expect(chatStickersAPI.pushRecentStickers).toHaveBeenLastCalledWith({
       baseVersion: 0,
       ops: [{ op: 'bump', sticker_id: 'sticker-x' }],
+      batchId: expect.any(String),
     });
+  });
+
+  it('keeps the same batchId across retries of an unchanged journal', async () => {
+    ensureChatStickerData(scope);
+    await flushPromises();
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+
+    // Ответ потерян в пути (flush отклонён): журнал не изменился —
+    // повторная отправка обязана нести ТОТ ЖЕ op_batch_id, иначе серверная
+    // дедупликация не распознает уже применённый пакет.
+    chatStickersAPI.pushRecentStickers.mockRejectedValueOnce(new Error('lost response'));
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    await expect(flush()).resolves.toMatchObject({ ok: false });
+    const firstBatchId = chatStickersAPI.pushRecentStickers.mock.calls.at(-1)[0].batchId;
+    expect(firstBatchId).toBeTruthy();
+
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [stickerX], version: 1 });
+    await expect(flush()).resolves.toEqual({ ok: true });
+    const secondBatchId = chatStickersAPI.pushRecentStickers.mock.calls.at(-1)[0].batchId;
+    expect(secondBatchId).toBe(firstBatchId);
+  });
+
+  it('rotates the batchId when the journal composition changes', async () => {
+    ensureChatStickerData(scope);
+    await flushPromises();
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+
+    chatStickersAPI.pushRecentStickers.mockRejectedValueOnce(new Error('offline'));
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    await expect(flush()).resolves.toMatchObject({ ok: false });
+    const firstBatchId = chatStickersAPI.pushRecentStickers.mock.calls.at(-1)[0].batchId;
+
+    // Новая операция между retry: состав журнала изменился — переиспользовать
+    // batchId нельзя, сервер счёл бы новые операции уже применёнными.
+    rememberRecentSticker(scopeKey(), 'sticker-y');
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({
+      items: [stickerY, stickerX],
+      version: 1,
+    });
+    await expect(flush()).resolves.toEqual({ ok: true });
+    const secondBatchId = chatStickersAPI.pushRecentStickers.mock.calls.at(-1)[0].batchId;
+    expect(secondBatchId).toBeTruthy();
+    expect(secondBatchId).not.toBe(firstBatchId);
+
+    // Подтверждённый пакет «израсходован»: следующий за ним flush — новый id.
+    rememberRecentSticker(scopeKey(), 'sticker-y');
+    await expect(flush()).resolves.toEqual({ ok: true });
+    const thirdBatchId = chatStickersAPI.pushRecentStickers.mock.calls.at(-1)[0].batchId;
+    expect(thirdBatchId).toBeTruthy();
+    expect(thirdBatchId).not.toBe(secondBatchId);
+  });
+
+  it('sends the same batchId for overlapping flushes of the same journal', async () => {
+    const first = deferred();
+    const second = deferred();
+    chatStickersAPI.pushRecentStickers
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    ensureChatStickerData(scope);
+    await flushPromises();
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+
+    // Два параллельных flush'а одного и того же журнала (дебаунс +
+    // поверхностный PUT) — оба несут один batchId, сервер дедуплицирует
+    // второй как уже применённый пакет.
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    const pendingA = flush();
+    const pendingB = flush();
+    expect(chatStickersAPI.pushRecentStickers).toHaveBeenCalledTimes(2);
+    expect(chatStickersAPI.pushRecentStickers.mock.calls[0][0].batchId)
+      .toBe(chatStickersAPI.pushRecentStickers.mock.calls[1][0].batchId);
+
+    first.resolve({ items: [stickerX], version: 1 });
+    second.resolve({ items: [stickerX], version: 1 });
+    await pendingA;
+    await pendingB;
   });
 
   it('drops queued ops and the pending flush on store invalidation', async () => {

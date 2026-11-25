@@ -33,7 +33,7 @@ def _load(path: Path, connection, scope: str) -> dict:
 
 
 def test_all_gated_revisions_are_covered():
-    assert len(CHAT_REVISIONS) == 23
+    assert len(CHAT_REVISIONS) == 24
 
 
 @pytest.mark.parametrize("path", CHAT_REVISIONS, ids=lambda path: path.name[:13])

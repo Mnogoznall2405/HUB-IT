@@ -533,6 +533,178 @@ def test_recents_ops_replayed_bump_is_idempotent(sticker_env):
 
 
 # ---------------------------------------------------------------------------
+# Recents: op_batch_id replay dedup (response lost after commit)
+# ---------------------------------------------------------------------------
+
+
+def test_recents_op_batch_replay_returns_state_without_reapplying(sticker_env):
+    """The same op_batch_id applied twice: the second call is an idempotent
+    replay — same version, no rail mutation, no extra version bump."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1, s2, s3 = _new_id(), _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1, s2, s3])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    svc.replace_recent_stickers(current_user_id=USER_A, sticker_ids=[s1, s2])
+    first = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "bump", "sticker_id": s3}],
+        op_batch_id="batch-0001",
+    )
+    assert _recent_ids(first) == [s3, s1, s2]
+    assert first["version"] == 2
+
+    # Response lost → client retries the SAME batch: no-op, current state.
+    replay = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "bump", "sticker_id": s3}],
+        op_batch_id="batch-0001",
+        base_version=0,
+    )
+    assert _recent_ids(replay) == [s3, s1, s2]
+    assert replay["version"] == 2
+
+
+def test_recents_op_batch_replay_does_not_resurrect_cleared_entry(sticker_env):
+    """Scenario (a): bump X commits but its response is lost; device B clears
+    the rail; A's retry of the SAME batch must NOT bring X back."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1, s2 = _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1, s2])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "bump", "sticker_id": s1}],
+        op_batch_id="batch-bump-x",
+    )
+    # Device B explicitly clears — a different write that legitimately lands.
+    cleared = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "clear"}],
+        op_batch_id="batch-clear-b",
+    )
+    assert cleared["items"] == []
+
+    # A's retry of its already-applied bump: dedup → s1 stays cleared.
+    replay = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "bump", "sticker_id": s1}],
+        op_batch_id="batch-bump-x",
+    )
+    assert replay["items"] == []
+    assert replay["version"] == cleared["version"]
+
+
+def test_recents_op_batch_replay_clear_does_not_wipe_newer_entries(sticker_env):
+    """Scenario (b): a committed clear loses its response; device B bumps Y;
+    the retried clear batch is a no-op, so Y survives."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1, s2 = _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1, s2])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    svc.replace_recent_stickers(current_user_id=USER_A, sticker_ids=[s1])
+    cleared = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "clear"}],
+        op_batch_id="batch-clear-a",
+    )
+    assert cleared["items"] == []
+    # Device B sends a new sticker while A's response was in flight.
+    bumped = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "bump", "sticker_id": s2}],
+        op_batch_id="batch-bump-b",
+    )
+    assert _recent_ids(bumped) == [s2]
+
+    # A retries its clear: already recorded → no-op, s2 is NOT wiped.
+    replay = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "clear"}],
+        op_batch_id="batch-clear-a",
+    )
+    assert _recent_ids(replay) == [s2]
+    assert replay["version"] == bumped["version"]
+
+
+def test_recents_op_batch_concurrent_same_journal_flush_is_noop(sticker_env):
+    """Scenario (c): two overlapping flushes of the SAME journal composition
+    carry the same op_batch_id — the second is a no-op; a genuinely new
+    batch id still applies normally."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1, s2, s3 = _new_id(), _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1, s2, s3])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    ops = [{"op": "bump", "sticker_id": s1}, {"op": "bump", "sticker_id": s2}]
+    first = svc.replace_recent_stickers(
+        current_user_id=USER_A, ops=ops, op_batch_id="batch-pair",
+    )
+    duplicate = svc.replace_recent_stickers(
+        current_user_id=USER_A, ops=ops, op_batch_id="batch-pair",
+    )
+    assert _recent_ids(duplicate) == _recent_ids(first) == [s2, s1]
+    assert duplicate["version"] == first["version"] == 1
+
+    # A different batch id is a new user intent — applies normally.
+    next_batch = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "bump", "sticker_id": s3}],
+        op_batch_id="batch-next",
+    )
+    assert _recent_ids(next_batch) == [s3, s2, s1]
+    assert next_batch["version"] == 2
+
+
+def test_recents_op_batch_id_not_recorded_without_one(sticker_env):
+    """Requests without op_batch_id (older clients) apply normally and keep
+    the recorded id — a retry of the last batch still dedups afterwards."""
+    svc = sticker_env.service
+    _seed_pack(sticker_env, pack_id="pack-1", short_name="p1")
+    s1, s2 = _new_id(), _new_id()
+    _seed_stickers(sticker_env, pack_id="pack-1", sticker_ids=[s1, s2])
+    _install_pack(sticker_env, user_id=USER_A, pack_id="pack-1")
+
+    svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "bump", "sticker_id": s1}],
+        op_batch_id="batch-one",
+    )
+    # Legacy client PUT (no batch id) — applied, version bumps as usual.
+    legacy = svc.replace_recent_stickers(
+        current_user_id=USER_A, ops=[{"op": "bump", "sticker_id": s2}],
+    )
+    assert _recent_ids(legacy) == [s2, s1]
+    assert legacy["version"] == 2
+
+    # Retry of the first recorded batch — still deduped (no resurrection).
+    replay = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "bump", "sticker_id": s1}],
+        op_batch_id="batch-one",
+    )
+    assert _recent_ids(replay) == [s2, s1]
+    assert replay["version"] == 2
+
+    # The same batch id REUSED for different ops is a new batch key-wise but
+    # identical to the recorded id — documented edge: such a payload would be
+    # deduped; clients rotate batchId whenever journal composition changes,
+    # so a real client never produces this.
+    replay_different_ops = svc.replace_recent_stickers(
+        current_user_id=USER_A,
+        ops=[{"op": "clear"}],
+        op_batch_id="batch-one",
+    )
+    assert _recent_ids(replay_different_ops) == [s2, s1]
+
+
+# ---------------------------------------------------------------------------
 # Uniform entitlement: recents PUT/GET filter
 # ---------------------------------------------------------------------------
 
@@ -793,6 +965,12 @@ def test_0178_upgrade_preserves_recents_and_downgrade_works(tmp_path):
 
     inspector = sa.inspect(engine)
     assert inspector.has_table("chat_user_recent_sticker_state")
+    # 0180: the op-batch dedup column is created with the state table.
+    state_columns = {
+        col["name"]
+        for col in inspector.get_columns("chat_user_recent_sticker_state")
+    }
+    assert "applied_op_batch_ids" in state_columns
     with engine.connect() as connection:
         recents = connection.execute(
             sa.text("SELECT sticker_id FROM chat_user_recent_stickers WHERE user_id = :u"),
@@ -804,6 +982,16 @@ def test_0178_upgrade_preserves_recents_and_downgrade_works(tmp_path):
         ).scalars().all()
     assert recents == [sticker_id]
     assert favorites == [sticker_id]
+
+    # 0180 downgrade: only the dedup column goes away, the table stays.
+    command.downgrade(cfg, "20261124_0179")
+    inspector = sa.inspect(engine)
+    assert inspector.has_table("chat_user_recent_sticker_state")
+    state_columns = {
+        col["name"]
+        for col in inspector.get_columns("chat_user_recent_sticker_state")
+    }
+    assert "applied_op_batch_ids" not in state_columns
 
     # 0179 downgrade: only the state table goes away.
     command.downgrade(cfg, "20261124_0178")

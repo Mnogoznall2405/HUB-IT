@@ -706,11 +706,24 @@ class ChatStickerRecentUpdateRequest(BaseModel):
     ``clear`` — with ``ops``: an implicit leading ``clear`` op; with legacy
     ``sticker_ids``: replace the rail with exactly ``sticker_ids``
     (``[]`` empties it).
+    ``op_batch_id`` — optional idempotency key for the ops batch. The
+    client keeps one id per flush and retries it unchanged when the
+    response is lost; the server keeps a bounded history of applied batch
+    ids per user and answers an already-recorded id with the current
+    ``{items, version}`` without reapplying the delta. Requests without it
+    apply normally.
     """
     sticker_ids: list[str] = Field(default_factory=list)
     base_version: Optional[int] = Field(default=None, ge=0)
     clear: bool = False
     ops: list[ChatStickerRecentOp] = Field(default_factory=list, max_length=500)
+    op_batch_id: Optional[str] = Field(default=None, max_length=36)
+
+    @field_validator("op_batch_id", mode="before")
+    @classmethod
+    def _normalize_op_batch_id(cls, value):
+        text = str(value or "").strip()
+        return text or None
 
 
 class ChatStickerPackOrderRequest(BaseModel):

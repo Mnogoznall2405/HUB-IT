@@ -246,9 +246,12 @@ export const chatStickersAPI = {
   // воскресить сознательно удалённые записи, потому что delta называет
   // только реально затронутые id. ``stickerIds`` — legacy bump-head merge
   // для миграции локальной копии при version===0; ``clear`` — полная замена
-  // (или ведущий clear перед ops). Ответ {items, version} — авторитетный
-  // merge-результат, применяемый store как новая база.
-  pushRecentStickers: async ({ ops = [], stickerIds = null, baseVersion = null, clear = false } = {}) => {
+  // (или ведущий clear перед ops). ``batchId`` — idempotency key пакета:
+  // клиент сохраняет его между retry, и сервер отвечает на повторную
+  // доставку того же пакета текущим состоянием без повторного применения.
+  // Ответ {items, version} — авторитетный merge-результат, применяемый
+  // store как новая база.
+  pushRecentStickers: async ({ ops = [], stickerIds = null, baseVersion = null, clear = false, batchId = null } = {}) => {
     const body = {};
     const normalizedOps = (Array.isArray(ops) ? ops : [])
       .map((entry) => ({
@@ -267,6 +270,8 @@ export const chatStickersAPI = {
     }
     if (clear === true) body.clear = true;
     if (Number.isFinite(baseVersion)) body.base_version = baseVersion;
+    const normalizedBatchId = String(batchId || '').trim();
+    if (normalizedBatchId) body.op_batch_id = normalizedBatchId;
     const response = await apiClient.put('/chat/stickers/recent', body);
     return response.data;
   },

@@ -110,6 +110,12 @@ os.environ.update(
         "CHAT_SURFACE": "full",
         "HUBIT_RUNTIME_ROLE": "embedded",
         "JWT_SECRET_KEY": "e2e-local-jwt-secret-not-for-production",
+        # Login encrypts the session password via encrypt_secret(), which
+        # fails closed when MAIL_CREDENTIALS_KEY is unset. Test-only
+        # passphrase: outside production it is SHA-256-derived into a Fernet
+        # key; it decrypts only ciphertexts written inside this throwaway
+        # stack, never production values.
+        "MAIL_CREDENTIALS_KEY": "e2e-local-mail-key-not-for-production",
         "AUTH_COOKIE_SECURE": "false",
         # Background loops that would otherwise reach for LDAP / SQL Server /
         # external services — none of that exists in the test stack.

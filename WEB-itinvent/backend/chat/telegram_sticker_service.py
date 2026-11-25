@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import filecmp
+import json
 from io import BytesIO
 import logging
 import os
@@ -59,6 +60,10 @@ _MAX_STICKER_BYTES = 5 * 1024 * 1024
 _MAX_STICKER_PREVIEW_BYTES = 512 * 1024
 _MAX_PACK_BYTES = 100 * 1024 * 1024
 _RECENT_STICKERS_LIMIT = 50
+# Bounded dedup window for ``op_batch_id``: a client only retries its current
+# journal batch, so 100 recorded ids covers far more retries than any real
+# flush sequence while keeping the state-row JSON small.
+_OP_BATCH_HISTORY_LIMIT = 100
 _PREVIEW_MAX_DIMENSION = 128
 _PREVIEW_CACHE_MARKER = ".previews-v2"
 _TELEGRAM_API_HOST = "api.telegram.org"
@@ -85,6 +90,22 @@ class TelegramStickerImportError(ValueError):
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _applied_op_batch_ids(state) -> list[str]:
+    """Parse the dedup history stored on the recents state row.
+
+    Tolerant to absent/corrupt payloads: anything unreadable degrades to an
+    empty list (the incoming batch then simply applies — the same behaviour
+    as a request without ``op_batch_id``).
+    """
+    try:
+        raw = json.loads(getattr(state, "applied_op_batch_ids", None) or "[]")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [value for value in (str(item or "").strip() for item in raw) if value]
 
 
 def parse_telegram_sticker_pack_name(value: object) -> str:
@@ -1016,6 +1037,7 @@ class TelegramStickerService:
         base_version=None,
         clear: bool = False,
         ops=None,
+        op_batch_id=None,
     ) -> dict[str, Any]:
         """Versioned op-based sync of the recents rail.
 
@@ -1030,6 +1052,20 @@ class TelegramStickerService:
           no longer resurrect entries another device cleared or removed
           (a ``bump`` of a cleared id is legitimate: the device genuinely
           re-sent it).
+        * ``op_batch_id`` — optional per-batch idempotency key. A client
+          flush keeps one id across retries; when the response is lost after
+          the write committed, the retry carries the SAME batch id and the
+          server answers with the current ``{items, version}`` WITHOUT
+          reapplying the delta — a re-sent ``bump`` can no longer resurrect
+          what another device removed while the response was in flight, and
+          a re-sent ``clear`` cannot wipe ids added since. Applied ids are
+          recorded (bounded history, ``_OP_BATCH_HISTORY_LIMIT``)
+          atomically under the same ``FOR UPDATE`` row lock on the first
+          successful apply — a history rather than a single last id because
+          the replayed batch is not necessarily the most recent write:
+          another device's batch may have committed in between. Requests
+          without it (older clients) apply normally and leave the recorded
+          ids untouched.
         * ``clear=True`` — with ``ops``: an implicit leading ``clear`` op;
           without ``ops`` (legacy list push): the rail is replaced by exactly
           ``sticker_ids`` (``[]`` empties it).
@@ -1045,7 +1081,8 @@ class TelegramStickerService:
           device synced in between and reconcile from the response.
         * Every successful PUT bumps ``version`` by exactly 1; the per-user
           state row is created lazily and locked ``FOR UPDATE`` for the
-          duration of the write so concurrent PUTs serialize.
+          duration of the write so concurrent PUTs serialize. An idempotent
+          batch replay does NOT bump ``version``.
         * Sticker ids the user cannot reference under the uniform entitlement
           are silently dropped, same as unknown ids.
         """
@@ -1068,6 +1105,7 @@ class TelegramStickerService:
             elif kind in ("bump", "remove") and sticker_id:
                 normalized_ops.append((kind, sticker_id))
         has_ops = bool(normalized_ops)
+        normalized_batch_id = str(op_batch_id or "").strip() or None
         now = utcnow()
         with chat_write_session() as session:
             # Lock the per-user state row for the whole read-merge-write cycle:
@@ -1099,48 +1137,38 @@ class TelegramStickerService:
                 # Re-read under FOR UPDATE either way: our own row, or the
                 # competitor's once its transaction commits.
                 state = _state_for_update()
-            if base_version is not None and state is not None and int(base_version) != int(state.version or 0):
-                logger.debug(
-                    "chat recents base_version mismatch user_id=%s base=%s current=%s — merging anyway",
-                    int(current_user_id),
-                    base_version,
-                    int(state.version or 0),
-                )
-            bump_ids = [sid for kind, sid in normalized_ops if kind == "bump"]
-            accessible_ids = self._accessible_sticker_ids(
-                session,
-                user_id=int(current_user_id),
-                sticker_ids=deduped + bump_ids,
+            # Idempotent replay: the SAME batch already committed (its response
+            # was lost on the wire). Reapplying its ops would resurrect what a
+            # later write has legitimately changed — return the current state
+            # untouched instead. The check sits under the FOR UPDATE lock, so
+            # a replay racing the original commit sees the recorded id, never
+            # a half-applied batch.
+            batch_replay = bool(
+                normalized_batch_id
+                and state is not None
+                and normalized_batch_id in _applied_op_batch_ids(state)
             )
-            if has_ops:
-                existing_rows = list(
-                    session.execute(
-                        select(ChatUserRecentSticker)
-                        .where(ChatUserRecentSticker.user_id == int(current_user_id))
-                        .order_by(
-                            ChatUserRecentSticker.position.asc(),
-                            ChatUserRecentSticker.id.asc(),
-                        )
-                    ).scalars()
+            if batch_replay:
+                logger.debug(
+                    "chat recents op batch replay user_id=%s batch_id=%s — returning current state",
+                    int(current_user_id),
+                    normalized_batch_id,
                 )
-                rail = [row.sticker_id for row in existing_rows]
-                if clear:
-                    # The flag is an implicit leading clear op — the explicit
-                    # ops then replay in order on top of the emptied rail.
-                    rail = []
-                for kind, sticker_id in normalized_ops:
-                    if kind == "clear":
-                        rail = []
-                    elif kind == "remove":
-                        rail = [item for item in rail if item != sticker_id]
-                    elif sticker_id in accessible_ids:
-                        rail = [sticker_id] + [item for item in rail if item != sticker_id]
-                merged_ids = rail
             else:
-                client_front = [value for value in deduped if value in accessible_ids]
-                if clear:
-                    merged_ids = client_front
-                else:
+                if base_version is not None and state is not None and int(base_version) != int(state.version or 0):
+                    logger.debug(
+                        "chat recents base_version mismatch user_id=%s base=%s current=%s — merging anyway",
+                        int(current_user_id),
+                        base_version,
+                        int(state.version or 0),
+                    )
+                bump_ids = [sid for kind, sid in normalized_ops if kind == "bump"]
+                accessible_ids = self._accessible_sticker_ids(
+                    session,
+                    user_id=int(current_user_id),
+                    sticker_ids=deduped + bump_ids,
+                )
+                if has_ops:
                     existing_rows = list(
                         session.execute(
                             select(ChatUserRecentSticker)
@@ -1151,31 +1179,65 @@ class TelegramStickerService:
                             )
                         ).scalars()
                     )
-                    front_set = set(client_front)
-                    merged_ids = client_front + [
-                        row.sticker_id for row in existing_rows if row.sticker_id not in front_set
-                    ]
-            merged_ids = merged_ids[:_RECENT_STICKERS_LIMIT]
-            # Bulk delete now: the chat session defers ORM deletes to flush time,
-            # so session.delete() would insert the new rows before removing the old
-            # ones and trip the (user_id, sticker_id) unique constraint.
-            session.execute(
-                delete(ChatUserRecentSticker).where(
-                    ChatUserRecentSticker.user_id == int(current_user_id)
-                )
-            )
-            for position, sticker_id in enumerate(merged_ids):
-                session.add(
-                    ChatUserRecentSticker(
-                        user_id=int(current_user_id),
-                        sticker_id=sticker_id,
-                        position=position,
-                        updated_at=now,
+                    rail = [row.sticker_id for row in existing_rows]
+                    if clear:
+                        # The flag is an implicit leading clear op — the explicit
+                        # ops then replay in order on top of the emptied rail.
+                        rail = []
+                    for kind, sticker_id in normalized_ops:
+                        if kind == "clear":
+                            rail = []
+                        elif kind == "remove":
+                            rail = [item for item in rail if item != sticker_id]
+                        elif sticker_id in accessible_ids:
+                            rail = [sticker_id] + [item for item in rail if item != sticker_id]
+                    merged_ids = rail
+                else:
+                    client_front = [value for value in deduped if value in accessible_ids]
+                    if clear:
+                        merged_ids = client_front
+                    else:
+                        existing_rows = list(
+                            session.execute(
+                                select(ChatUserRecentSticker)
+                                .where(ChatUserRecentSticker.user_id == int(current_user_id))
+                                .order_by(
+                                    ChatUserRecentSticker.position.asc(),
+                                    ChatUserRecentSticker.id.asc(),
+                                )
+                            ).scalars()
+                        )
+                        front_set = set(client_front)
+                        merged_ids = client_front + [
+                            row.sticker_id for row in existing_rows if row.sticker_id not in front_set
+                        ]
+                merged_ids = merged_ids[:_RECENT_STICKERS_LIMIT]
+                # Bulk delete now: the chat session defers ORM deletes to flush time,
+                # so session.delete() would insert the new rows before removing the old
+                # ones and trip the (user_id, sticker_id) unique constraint.
+                session.execute(
+                    delete(ChatUserRecentSticker).where(
+                        ChatUserRecentSticker.user_id == int(current_user_id)
                     )
                 )
-            if state is not None:
-                state.version = int(state.version or 0) + 1
-                state.updated_at = now
+                for position, sticker_id in enumerate(merged_ids):
+                    session.add(
+                        ChatUserRecentSticker(
+                            user_id=int(current_user_id),
+                            sticker_id=sticker_id,
+                            position=position,
+                            updated_at=now,
+                        )
+                    )
+                if state is not None:
+                    state.version = int(state.version or 0) + 1
+                    state.updated_at = now
+                    if normalized_batch_id:
+                        applied = _applied_op_batch_ids(state)
+                        applied.append(normalized_batch_id)
+                        state.applied_op_batch_ids = json.dumps(
+                            applied[-_OP_BATCH_HISTORY_LIMIT:]
+                        )
         return self.list_recent_stickers(current_user_id=int(current_user_id))
 
     def reorder_sticker_packs(self, *, current_user_id: int, pack_ids) -> dict[str, Any]:

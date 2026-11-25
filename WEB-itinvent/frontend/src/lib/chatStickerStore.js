@@ -80,6 +80,12 @@ const getScopeMeta = (scopeKey) => {
       // хронологическом порядке, дедуп по sticker_id. Отправляется дельтой
       // в PUT /chat/stickers/recent — см. секцию «Недавние».
       recentOps: [],
+      // Idempotency key текущего пакета операций. Стабилен между retry
+      // одного и того же содержимого журнала (потерянный ответ → повторная
+      // отправка ТОГО ЖЕ batchId → сервер отвечает no-op), но ротируется
+      // при смене состава журнала: новая операция или подтверждение части
+      // пакета делают следующий flush новым пакетом.
+      recentOpsBatchId: null,
       derived: null,
       packsStaleRetries: 0,
     };
@@ -607,12 +613,25 @@ export const toggleFavoriteSticker = (scopeKey, sticker) => {
 // хронологический — промежуточные состояния недостижимы), clear стирает
 // журнал целиком — прежние операции полностью перекрываются очисткой.
 const pushRecentJournalOp = (meta, op) => {
+  // Состав журнала меняется → текущий batchId больше не описывает пакет:
+  // повтор старого id посчитал бы новые операции уже применёнными.
+  meta.recentOpsBatchId = null;
   if (op.type === 'clear') {
     meta.recentOps = [op];
     return;
   }
   meta.recentOps = meta.recentOps.filter((item) => item.stickerId !== op.stickerId);
   meta.recentOps.push(op);
+};
+
+// Идентификатор пакета для серверной дедупликации. randomUUID где
+// доступен (uuid, 36 символов — ровно в колонку), fallback — такая же
+// длина, чтобы валидация max_length=36 не резала legacy-окружения.
+const newRecentOpsBatchId = () => {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return `batch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 16)}`.slice(0, 36);
 };
 
 // Проигрыш журнала поверх базы — тот же порядок, что на сервере:
@@ -663,7 +682,14 @@ const applyRecentsSyncPayload = (scopeKey, epochAtStart, payload, confirmedOps =
   applyScopeUpdate(scopeKey, epochAtStart, (rec) => {
     if (confirmedOps.length > 0) {
       const confirmed = new Set(confirmedOps);
+      const before = meta.recentOps.length;
       meta.recentOps = meta.recentOps.filter((op) => !confirmed.has(op));
+      if (meta.recentOps.length !== before) {
+        // Пакет подтверждён — его id израсходован. Оставшиеся операции
+        // (накопленные за время полёта) уйдут следующим flush'ем уже как
+        // новый пакет с новым batchId.
+        meta.recentOpsBatchId = null;
+      }
     }
     const payloadIds = (Array.isArray(payload?.items) ? payload.items : [])
       .map((item) => String(item?.id || item || '').trim())
@@ -685,16 +711,22 @@ const applyRecentsSyncPayload = (scopeKey, epochAtStart, payload, confirmedOps =
   });
 };
 
-// Flush журнала операций: {base_version, ops} на сервер; пакет снимается
-// с журнала только при подтверждении — при ошибке операции остаются и
-// довозятся следующим flush'ем или переходом в онлайн.
+// Flush журнала операций: {base_version, ops, op_batch_id} на сервер;
+// пакет снимается с журнала только при подтверждении — при ошибке
+// операции остаются и довозятся следующим flush'ем или переходом в
+// онлайн. batchId стабилен между retry того же содержимого журнала:
+// если ответ потерялся после коммита, повторный PUT с тем же id
+// отрабатывает на сервере как идемпотентный no-op (применённые batch-id
+// хранятся в chat_user_recent_sticker_state.applied_op_batch_ids).
 const flushRecentStickerOps = (scopeKey) => {
   const record = scopeRecords.get(scopeKey);
   const meta = scopeMetas.get(scopeKey);
   if (!record || !meta || meta.recentOps.length === 0) {
     return Promise.resolve({ ok: true });
   }
+  if (!meta.recentOpsBatchId) meta.recentOpsBatchId = newRecentOpsBatchId();
   const batch = [...meta.recentOps];
+  const batchId = meta.recentOpsBatchId;
   const baseVersion = Number(record.recents.version) || 0;
   const epochAtStart = stickerStoreEpoch;
   const ops = batch.map((op) => (
@@ -702,7 +734,7 @@ const flushRecentStickerOps = (scopeKey) => {
       ? { op: 'clear' }
       : { op: op.type, sticker_id: op.stickerId }
   ));
-  return chatStickersAPI.pushRecentStickers({ baseVersion, ops })
+  return chatStickersAPI.pushRecentStickers({ baseVersion, ops, batchId })
     .then((payload) => {
       applyRecentsSyncPayload(scopeKey, epochAtStart, payload, batch);
       return { ok: true };

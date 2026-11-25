@@ -528,6 +528,17 @@ class ChatUserRecentStickerState(Base):
     in between (``base_version`` mismatch on write) and distinguishes "never
     synced" (no row, version 0) from "explicitly cleared" (row with a bumped
     version and an empty rail). The row is created lazily on the first PUT.
+
+    ``applied_op_batch_ids`` is a JSON array of recently applied ops-batch
+    ids (bounded): a client retry that re-delivers an already-recorded
+    ``op_batch_id`` is answered with the current ``{items, version}``
+    without reapplying the delta, so a response lost in flight cannot
+    resurrect entries another device has since cleared. A history is kept
+    rather than a single last id because the replayed batch is not
+    necessarily the newest write — another device's batch may have
+    committed in between. ``NULL``/``[]`` for state rows written before
+    batch dedup and for clients that never send one — such PUTs apply
+    normally.
     """
 
     __tablename__ = "chat_user_recent_sticker_state"
@@ -535,6 +546,7 @@ class ChatUserRecentStickerState(Base):
 
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    applied_op_batch_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
