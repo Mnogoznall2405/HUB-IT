@@ -1,0 +1,380 @@
+{
+  "env": {
+    "AI_JEV_ROUTING": "1",
+    "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+    "AI_SUMMARY_BACKGROUND_ENABLED": "0",
+    "ROUTERAI_MODEL": "google/gemini-3.7-flash",
+    "JEV_MODEL": "(default)",
+    "env_keys_loaded": 449,
+    "registered_tools": 100,
+    "code_root": "C:\\Project\\HUB-IT-a10-wt"
+  },
+  "scenarios": [
+    {
+      "id": "a10_direct_01",
+      "category": "DIRECT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 185741,
+      "llm_calls": 5,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.14
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.97
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.17
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          }
+        }
+      ],
+      "tool_calls": [
+        "ai.request_tool_group",
+        "me.account.status",
+        "directory.people.search",
+        "me.equipment"
+      ],
+      "expected_hit": [
+        "me.account.status"
+      ],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 3844,
+        "llm_out": 4463,
+        "jev_total": 3407,
+        "est_in": 15286
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013629
+      },
+      "answer_len": 438,
+      "answer_head": "Не удалось автоматически определить ваш рабочий телефон, так как текущая учётная запись не сопоставлена с профилем в Active Directory или ITinvent.\n\n## Детали\nАвтоматический поиск по текущему пользователю не дал результатов. Чтобы найти ваш",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_direct_02",
+      "category": "DIRECT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 56498,
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.23
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          }
+        }
+      ],
+      "tool_calls": [
+        "me.equipment"
+      ],
+      "expected_hit": [
+        "me.equipment"
+      ],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 3559,
+        "jev_total": 3411,
+        "est_in": 6278
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136458
+      },
+      "answer_len": 490,
+      "answer_head": "Не удалось получить список оборудования: ваша учётная запись не сопоставлена с карточкой сотрудника в базе ITinvent.\n\n## Причина\nВ системе учета ITinvent отсутствует привязка вашей учётной записи (не найдено совпадений по e-mail или ФИО), п",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_fast_01",
+      "category": "FASTPATH",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 4990,
+      "llm_calls": 1,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.88
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.89
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          }
+        }
+      ],
+      "tool_calls": [
+        "directory.people.search"
+      ],
+      "expected_hit": [
+        "directory.people.search"
+      ],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 2957,
+        "llm_out": 131,
+        "jev_total": 3435,
+        "est_in": 2634
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137466
+      },
+      "answer_len": 95,
+      "answer_head": "## Результат\n- `directory.people.search`, показано: 0, всего: 0\n  - source: 1c_zup_address_book",
+      "result_message": true,
+      "fast_path_hit": true,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_fast_03",
+      "category": "FASTPATH",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 19439,
+      "llm_calls": 5,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.3
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          }
+        }
+      ],
+      "tool_calls": [
+        "ai.request_tool_group",
+        "directory.department.get",
+        "ai.request_tool_group",
+        "kb.articles.search"
+      ],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.directory.branches"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 20041,
+        "llm_out": 522,
+        "jev_total": 3407,
+        "est_in": 17708
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013629
+      },
+      "answer_len": 416,
+      "answer_head": "К сожалению, не удалось найти список филиалов в базе знаний и справочнике структуры компании.\n\n## Причина\nВ подключённых источниках (справочник подразделений и база знаний) отсутствуют записи по общему списку филиалов, а доступ к учетной си",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    }
+  ],
+  "started_at": "2026-11-24T12:46:10.306929+00:00",
+  "aggregate": {
+    "scenarios": 4,
+    "run_ok": 4,
+    "llm_calls_total": 13,
+    "jev_calls_total": 4,
+    "tool_calls_total": 10,
+    "tokens_in_total": 26842,
+    "tokens_out_total": 8675,
+    "jev_tokens_total": 13660,
+    "est_in_total": 41906,
+    "cost_usd_total": 0.000546504,
+    "wall_ms_total": 266668,
+    "expected_coverage": [
+      3,
+      4
+    ],
+    "forbidden_violations": 0
+  },
+  "finished_at": "2026-11-24T12:50:37.304928+00:00"
+}

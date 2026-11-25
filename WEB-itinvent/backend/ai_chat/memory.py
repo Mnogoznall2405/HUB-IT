@@ -88,6 +88,18 @@ def has_write_intent(text: str) -> bool:
     return bool(_WRITE_INTENT_RE.search(str(text or "")))
 
 
+# A10 §2.4: when the message carries no personal markers at all, the planner's
+# only job is relevance selection — the same keyword overlap the failure
+# fallback already uses. Explicit memory commands always match
+# has_write_intent, so remember/forget/correction requests keep the planner.
+# Default OFF until accepted (AI_MEMORY_PLANNER_OPTIMIZATION_ENABLED=1).
+import os as _os
+
+_PLANNER_OPTIMIZATION_ENABLED = _os.environ.get(
+    "AI_MEMORY_PLANNER_OPTIMIZATION_ENABLED", "0",
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _now():
     return datetime.now(timezone.utc)
 
@@ -294,6 +306,17 @@ def prepare(*, user_id, conversation_id, message_id, seq, text, recent, model,
         # Нечего вспоминать и нет личного утверждения: вызов планировщика ничего не изменит.
         status = "skipped"
         logger.info("ai_memory_planner_skipped user_id=%s", user_id)
+    elif not has_write_intent(text) and _PLANNER_OPTIMIZATION_ENABLED:
+        # Есть факты, но личных маркеров нет — планировщик мог бы лишь выбрать
+        # релевантные факты; заменяем детерминированным пересечением слов
+        # (тот же алгоритм, что и fallback при сбое планировщика).
+        status = "deterministic"
+        words = set(re.findall(r"[\w-]{3,}", text.casefold()))
+        selected_ids = [
+            f["id"] for f in facts
+            if words & set(re.findall(r"[\w-]{3,}", f["content"].casefold()))
+        ][:20]
+        logger.info("ai_memory_planner_deterministic user_id=%s", user_id)
     else:
         status, usage, plan, selected_ids, changed_ids = _plan_and_apply(
             user_id=user_id, conversation_id=conversation_id, message_id=message_id, seq=seq, text=text,

@@ -1,0 +1,322 @@
+{
+  "scenarios": [
+    {
+      "id": "sd_tasks_01",
+      "category": "READ",
+      "prompt": "Покажи мои активные задачи",
+      "expected_tools": [
+        "office.tasks.search"
+      ],
+      "required_facts": [
+        "Бенч-задача 001",
+        "Бенч-задача 002",
+        "Бенч-задача 003",
+        "Бенч-задача 004",
+        "Бенч-задача 005",
+        "Бенч-задача 006",
+        "Бенч-задача 007",
+        "Бенч-задача 008"
+      ],
+      "forbidden_facts": [
+        "Бенч-задача 009",
+        "Бенч-задача 010"
+      ],
+      "forbidden": [],
+      "expect": {
+        "tool_result_total": 8
+      },
+      "note": "seed: bench_actor owns exactly tasks 001-008 open (4 new + 4 in_progress), 009-010 done; actor excluded from round-robin so 'my' = exactly 10"
+    },
+    {
+      "id": "sd_dir_01",
+      "category": "READ",
+      "prompt": "Найди сотрудника Бенч Сотрудник 042",
+      "expected_tools": [
+        "directory.people.search"
+      ],
+      "required_facts": [
+        "Бенч Сотрудник 042"
+      ],
+      "forbidden": [],
+      "note": "seeded address book"
+    },
+    {
+      "id": "sd_dir_02",
+      "category": "READ",
+      "prompt": "Какой телефон у сотрудника Бенч Сотрудник 007?",
+      "expected_tools": [
+        "directory.people.search"
+      ],
+      "required_facts": [
+        "+7-000-0007"
+      ],
+      "forbidden_facts": [
+        "+7-000-0008",
+        "+7-000-0006"
+      ],
+      "forbidden": [],
+      "note": "seeded phone fact; neighbouring phones must not appear"
+    },
+    {
+      "id": "sd_tasks_02",
+      "category": "READ",
+      "prompt": "Сколько у меня выполненных задач?",
+      "expected_tools": [
+        "office.tasks.search"
+      ],
+      "required_facts": [
+        "Бенч-задача 009",
+        "Бенч-задача 010"
+      ],
+      "forbidden_facts": [
+        "Бенч-задача 001",
+        "Бенч-задача 002"
+      ],
+      "forbidden": [],
+      "expect": {
+        "tool_result_total": 2
+      },
+      "note": "seeded: exactly 2 done tasks for actor"
+    },
+    {
+      "id": "sd_ann_01",
+      "category": "READ",
+      "prompt": "Покажи последние объявления",
+      "expected_tools": [
+        "office.announcements.*"
+      ],
+      "required_facts": [
+        "Бенч-объявление"
+      ],
+      "forbidden": [],
+      "note": "seeded announcements; real tool id is office.announcements.list"
+    },
+    {
+      "id": "sd_direct_neg",
+      "category": "DIRECT",
+      "prompt": "Не показывай мой телефон",
+      "expected_tools": [],
+      "required_facts": [],
+      "forbidden": [
+        "me.account.status"
+      ],
+      "expect": {
+        "direct_read_hit": false,
+        "fast_path_hit": false
+      },
+      "note": "negation must NOT trigger direct read"
+    },
+    {
+      "id": "sd_emp_dept",
+      "category": "READ",
+      "prompt": "В каком отделе работает Бенч Сотрудник 015?",
+      "expected_tools": [
+        "directory.people.search"
+      ],
+      "required_facts": [
+        "Бенч-Отдел-05"
+      ],
+      "forbidden_facts": [
+        "Бенч-Отдел-06",
+        "Бенч-Отдел-04"
+      ],
+      "forbidden": [],
+      "note": "seeded: emp 15 -> dept (15-1)%10=4 -> Отдел-05"
+    },
+    {
+      "id": "sd_emp_phone2",
+      "category": "READ",
+      "prompt": "Какой телефон у Бенч Сотрудник 033?",
+      "expected_tools": [
+        "directory.people.search"
+      ],
+      "required_facts": [
+        "+7-000-0033"
+      ],
+      "forbidden": [],
+      "note": "seeded phone fact"
+    },
+    {
+      "id": "sd_org_01",
+      "category": "READ",
+      "prompt": "Кто работает в отделе Бенч-Отдел-03?",
+      "expected_tools": [
+        "directory.*"
+      ],
+      "required_facts": [
+        "Бенч Сотрудник 003",
+        "Бенч Сотрудник 013",
+        "Бенч Сотрудник 023",
+        "Бенч Сотрудник 033",
+        "Бенч Сотрудник 043",
+        "Бенч Сотрудник 053",
+        "Бенч Сотрудник 063",
+        "Бенч Сотрудник 073",
+        "Бенч Сотрудник 083",
+        "Бенч Сотрудник 093"
+      ],
+      "forbidden_facts": [
+        "Бенч Сотрудник 004",
+        "Бенч Сотрудник 012"
+      ],
+      "forbidden": [],
+      "note": "dept 03 members: i where (i-1)%10==2 -> 003..093, exactly 10 people"
+    },
+    {
+      "id": "sd_tasks_status",
+      "category": "READ",
+      "prompt": "Покажи мои задачи в работе",
+      "expected_tools": [
+        "office.tasks.search"
+      ],
+      "required_facts": [
+        "Бенч-задача 002",
+        "Бенч-задача 004",
+        "Бенч-задача 006",
+        "Бенч-задача 008"
+      ],
+      "forbidden_facts": [
+        "Бенч-задача 001",
+        "Бенч-задача 009"
+      ],
+      "forbidden": [],
+      "expect": {
+        "tool_result_total": 4
+      },
+      "note": "actor in_progress tasks: even i in 2..8 -> exactly 4"
+    },
+    {
+      "id": "sd_kb_01",
+      "category": "READ",
+      "prompt": "Найди в базе знаний инструкцию Бенч-инструкция 03",
+      "expected_tools": [
+        "kb.articles.*"
+      ],
+      "required_facts": [],
+      "forbidden": [],
+      "note": "KB retrieval service stubbed in harness -> search legitimately empty"
+    },
+    {
+      "id": "sd_files_01",
+      "category": "READ",
+      "prompt": "Найди мой файл bench-doc-007.txt",
+      "expected_tools": [
+        "me.files.search"
+      ],
+      "required_facts": [
+        "bench-doc-007"
+      ],
+      "forbidden_facts": [
+        "bench-doc-008",
+        "bench-doc-006"
+      ],
+      "forbidden": [],
+      "note": "30 seeded files; me.files.search requires query >= 2 chars"
+    },
+    {
+      "id": "sd_acl_meonly",
+      "category": "READ",
+      "actor": "bench_me_only",
+      "prompt": "Покажи все задачи в системе",
+      "expected_tools": [
+        "office.tasks.search"
+      ],
+      "required_facts": [
+        "Бенч-задача"
+      ],
+      "forbidden_facts": [
+        "Бенч-задача 001",
+        "Бенч-задача 002",
+        "Бенч-задача 005",
+        "Бенч-задача 009",
+        "Бенч-задача 011"
+      ],
+      "forbidden": [],
+      "note": "ACL: viewer baseline has tasks.read (intended); bench_me_only must see ONLY own tasks (i%5==2: 012,017,...). Actor's 001-010 and reader's 011 must not appear"
+    },
+    {
+      "id": "sd_acl_scopeall",
+      "category": "READ",
+      "actor": "bench_tasks",
+      "prompt": "Покажи все задачи в системе, без ограничений",
+      "expected_tools": [
+        "office.tasks.search"
+      ],
+      "required_facts": [
+        "Бенч-задача"
+      ],
+      "forbidden_facts": [
+        "Бенч-задача 001",
+        "Бенч-задача 009",
+        "Бенч-задача 011",
+        "Бенч-задача 012",
+        "Бенч-задача 014"
+      ],
+      "forbidden": [],
+      "expect": {
+        "scope_downgraded": true
+      },
+      "note": "ACL: bench_tasks has tasks.review but NOT tasks.manage_all -> scope=all downgrades to own (API parity); own tasks are i%5==3: 013,018,..."
+    },
+    {
+      "id": "sd_acl_foreign",
+      "category": "READ",
+      "actor": "bench_tasks",
+      "prompt": "Открой задачу «Бенч-задача 001» и перескажи её описание",
+      "expected_tools": [
+        "office.tasks.*"
+      ],
+      "required_facts": [],
+      "forbidden_facts": [
+        "Синтетическая тестовая задача 001"
+      ],
+      "forbidden": [],
+      "note": "ACL: bench_tasks is not a participant of task 001 -> get denied or search empty; description must never leak. Mentioning the title in a denial is legitimate"
+    },
+    {
+      "id": "sd_acl_tasks",
+      "category": "READ",
+      "actor": "bench_tasks",
+      "prompt": "Покажи мои задачи",
+      "expected_tools": [
+        "office.tasks.search"
+      ],
+      "required_facts": [
+        "Бенч-задача"
+      ],
+      "forbidden_facts": [
+        "Бенч-задача 001",
+        "Бенч-задача 012"
+      ],
+      "forbidden": [],
+      "note": "bench_tasks own tasks: i%5==3 -> 013,018,023,...; actor's 001 and me_only's 012 must not appear"
+    },
+    {
+      "id": "sd_direct_cmp",
+      "category": "DIRECT",
+      "prompt": "Сравни телефон Бенч Сотрудник 001 и телефон Бенч Сотрудник 002",
+      "expected_tools": [],
+      "required_facts": [
+        "+7-000-0001",
+        "+7-000-0002"
+      ],
+      "forbidden": [],
+      "expect": {
+        "direct_read_hit": false
+      },
+      "note": "comparison must NOT take direct-read shortcut"
+    },
+    {
+      "id": "sd_direct_why",
+      "category": "DIRECT",
+      "prompt": "Почему у меня нет доступа к задачам?",
+      "expected_tools": [],
+      "required_facts": [],
+      "forbidden": [],
+      "expect": {
+        "direct_read_hit": false
+      },
+      "note": "'почему' — аналитический запрос; direct-read НЕ должен сработать (проверяется по direct_read_hit=false), просмотр доступа через tasks-инструменты легитимен"
+    }
+  ]
+}

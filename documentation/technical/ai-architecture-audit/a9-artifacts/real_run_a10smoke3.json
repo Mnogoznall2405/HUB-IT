@@ -1,0 +1,283 @@
+{
+  "env": {
+    "AI_JEV_ROUTING": "1",
+    "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+    "AI_SUMMARY_BACKGROUND_ENABLED": "0",
+    "ROUTERAI_MODEL": "google/gemini-3.7-flash",
+    "JEV_MODEL": "(default)",
+    "env_keys_loaded": 449,
+    "registered_tools": 100,
+    "code_root": "C:\\Project\\HUB-IT-a10-wt"
+  },
+  "scenarios": [
+    {
+      "id": "a10_direct_03",
+      "category": "DIRECT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 40836,
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.34
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.43
+          }
+        }
+      ],
+      "tool_calls": [
+        "me.account.status"
+      ],
+      "expected_hit": [],
+      "expected_missing": [
+        "ad.user.password_status"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 3279,
+        "jev_total": 3401,
+        "est_in": 6698
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136038
+      },
+      "answer_len": 417,
+      "answer_head": "Не удалось определить срок действия пароля, так как данные учетной записи Active Directory недоступны.\n\n## Статус учетной записи\nВаша учетная запись на портале не привязана к Active Directory, поэтому получить информацию о сроке действия и ",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_mem_01",
+      "category": "MEMORY",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 7672,
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.14
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.45
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 4113,
+        "llm_out": 145,
+        "jev_total": 3437,
+        "est_in": 3440
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013755
+      },
+      "answer_len": 103,
+      "answer_head": "Принято! Сохранил ваше предпочтение: формировать отчёты в формате DOCX.\n\n_Учтена личная память: 1 факт_",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_act_01",
+      "category": "ACT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 50922,
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.97
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.37
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.99
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          }
+        }
+      ],
+      "tool_calls": [
+        "office.mail.contacts.resolve"
+      ],
+      "expected_hit": [],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 8565,
+        "llm_out": 1965,
+        "jev_total": 3473,
+        "est_in": 7901
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000139062
+      },
+      "answer_len": 178,
+      "answer_head": "Не удалось найти сотрудника «Иванов» в адресной книге для создания черновика письма.\n\n## Уточнение данных\nУточните, пожалуйста, адрес электронной почты или полные ФИО получателя.",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    }
+  ],
+  "started_at": "2026-11-24T12:54:15.659596+00:00",
+  "aggregate": {
+    "scenarios": 3,
+    "run_ok": 3,
+    "llm_calls_total": 7,
+    "jev_calls_total": 3,
+    "tool_calls_total": 2,
+    "tokens_in_total": 12678,
+    "tokens_out_total": 5389,
+    "jev_tokens_total": 10311,
+    "est_in_total": 18039,
+    "cost_usd_total": 0.00041265,
+    "wall_ms_total": 99430,
+    "expected_coverage": [
+      0,
+      1
+    ],
+    "forbidden_violations": 0
+  },
+  "finished_at": "2026-11-24T12:55:55.272156+00:00"
+}

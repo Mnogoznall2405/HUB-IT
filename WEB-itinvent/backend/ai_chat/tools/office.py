@@ -29,6 +29,7 @@ from backend.services.authorization_service import (
     PERM_MAIL_ACCESS,
     PERM_TASKS_CREATE,
     PERM_TASKS_READ,
+    PERM_TASKS_MANAGE_ALL,
     PERM_TASKS_REVIEW,
     PERM_TASKS_WRITE,
     authorization_service,
@@ -498,7 +499,13 @@ class TasksSearchTool(AiTool):
         if assignee_user_id is None and args.assignee_query:
             assignee = _resolve_single_user(query=args.assignee_query, candidates=hub_service.list_assignees(), kind="assignee")
             assignee_user_id = _to_int(assignee.get("id"))
-        allow_all = bool(_has_permission(context, PERM_TASKS_REVIEW) or _is_admin(context))
+        # ACL parity with GET /tasks (hub.py): scope=all requires
+        # tasks.manage_all (or admin), not the broader review permission.
+        allow_all = bool(_has_permission(context, PERM_TASKS_MANAGE_ALL) or _is_admin(context))
+        # Parity with GET /tasks: "all" without manage rights returns 403.
+        # For the AI a silent downgrade would read as "these are ALL tasks" —
+        # keep the useful degraded result but surface it as partial explicitly.
+        scope_downgraded = args.scope == "all" and not allow_all
         limit = _cap_limit(args.limit)
         payloads = [
             hub_service.list_tasks(
@@ -526,19 +533,26 @@ class TasksSearchTool(AiTool):
             raw_items = raw_items[:limit]
         items = [_task_preview(item) for item in raw_items]
         total = sum(int(part.get("total") or len(part.get("items") or [])) for part in payloads)
+        data: dict[str, Any] = {
+            "items": items,
+            "count": len(items),
+            "returned_count": len(items),
+            "total": total,
+            "limit": int(payload.get("limit") or args.limit),
+            "truncated": total > len(items),
+            "filters": payload.get("filters") or {},
+        }
+        if scope_downgraded:
+            data["scope_downgraded"] = True
+            data["notice"] = (
+                "Requested scope 'all' exceeds the user's permissions; "
+                "results are limited to tasks where the user participates."
+            )
         return AiToolResult(
             tool_id=self.tool_id,
             ok=True,
             database_id=None,
-            data={
-                "items": items,
-                "count": len(items),
-                "returned_count": len(items),
-                "total": total,
-                "limit": int(payload.get("limit") or args.limit),
-                "truncated": total > len(items),
-                "filters": payload.get("filters") or {},
-            },
+            data=data,
         )
 
 

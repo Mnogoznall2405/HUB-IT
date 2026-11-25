@@ -1,0 +1,1360 @@
+{
+  "env": {
+    "AI_JEV_ROUTING": "1",
+    "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+    "AI_SUMMARY_BACKGROUND_ENABLED": "0",
+    "ROUTERAI_MODEL": null,
+    "JEV_MODEL": "(default)",
+    "env_keys_loaded": 449,
+    "registered_tools": 100,
+    "code_root": "C:\\Project\\HUB-IT-a10-wt"
+  },
+  "scenarios": [
+    {
+      "id": "a10_direct_01",
+      "category": "DIRECT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 15065,
+      "llm_calls": 4,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.16
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.96
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.18
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          }
+        }
+      ],
+      "tool_calls": [
+        "ai.request_tool_group",
+        "directory.people.search"
+      ],
+      "expected_hit": [],
+      "expected_missing": [
+        "me.account.status"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 8154,
+        "llm_out": 646,
+        "jev_total": 3407,
+        "est_in": 11150
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013629
+      },
+      "answer_len": 736,
+      "answer_head": "## Результат\n- `ai.request_tool_group`\n  - requested_group: directory\n  - accepted: True\n  - code: accepted\n  - reason: Для поиска контактных данных и рабочего телефона текущего сотрудника в корпоративном справочнике.\n  - usage_rules: Compa",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_direct_02",
+      "category": "DIRECT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 2138,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.27
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "me.equipment"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3411,
+        "est_in": 2917
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136458
+      },
+      "answer_len": 36,
+      "answer_head": "Какое оборудование за мной числится?",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_direct_03",
+      "category": "DIRECT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 10627,
+      "llm_calls": 3,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.39
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.41
+          }
+        }
+      ],
+      "tool_calls": [
+        "me.account.status"
+      ],
+      "expected_hit": [],
+      "expected_missing": [
+        "ad.user.password_status"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 3898,
+        "llm_out": 473,
+        "jev_total": 3401,
+        "est_in": 6698
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136038
+      },
+      "answer_len": 126,
+      "answer_head": "## Результат\n- `me.account.status`: ошибка - Ваша учётная запись портала не из Active Directory — статус пароля AD недоступен.",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_direct_04",
+      "category": "DIRECT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 4941,
+      "llm_calls": 2,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "office.tasks.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 621,
+        "llm_out": 66,
+        "jev_total": 3409,
+        "est_in": 3606
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136374
+      },
+      "answer_len": 26,
+      "answer_head": "Покажи мои активные задачи",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_fast_01",
+      "category": "FASTPATH",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 1347,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.88
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.9
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "directory.people.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3435,
+        "est_in": 2634
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137466
+      },
+      "answer_len": 34,
+      "answer_head": "Найди сотрудника по фамилии Иванов",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_fast_02",
+      "category": "FASTPATH",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 10569,
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.96
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          }
+        }
+      ],
+      "tool_calls": [
+        "mfu.devices.low_toner"
+      ],
+      "expected_hit": [
+        "mfu.devices.low_toner"
+      ],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 6630,
+        "llm_out": 785,
+        "jev_total": 3443,
+        "est_in": 5801
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137802
+      },
+      "answer_len": 197,
+      "answer_head": "Принтеров и МФУ с низким уровнем тонера (15% и менее) не обнаружено.\n\n## Состояние расходных материалов\n- **Установленный порог:** ≤ 15%\n- **Количество устройств:** 0\n\nИсточник: ITinvent / ITINVENT",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_fast_03",
+      "category": "FASTPATH",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 7403,
+      "llm_calls": 2,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.16
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.28
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          }
+        }
+      ],
+      "tool_calls": [
+        "ai.request_tool_group"
+      ],
+      "expected_hit": [],
+      "expected_missing": [
+        "itinvent.directory.branches"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 2659,
+        "llm_out": 476,
+        "jev_total": 3407,
+        "est_in": 5603
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013629
+      },
+      "answer_len": 613,
+      "answer_head": "## Результат\n- `ai.request_tool_group`\n  - requested_group: directory\n  - accepted: True\n  - code: accepted\n  - reason: Получение списка филиалов из корпоративного справочника\n  - usage_rules: Company directory: phones, e-mails, position, d",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_fast_04",
+      "category": "FASTPATH",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 6155,
+      "llm_calls": 2,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.22
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.76
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "me.it_requests"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 631,
+        "llm_out": 93,
+        "jev_total": 3419,
+        "est_in": 3259
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136794
+      },
+      "answer_len": 34,
+      "answer_head": "Какие у меня открытые заявки в 1С?",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_multi_01",
+      "category": "MULTI",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 4671,
+      "llm_calls": 2,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.94
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.35
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.95
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [
+        "me.equipment",
+        "office.tasks.search"
+      ],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 635,
+        "llm_out": 91,
+        "jev_total": 3435,
+        "est_in": 4367
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137466
+      },
+      "answer_len": 59,
+      "answer_head": "Покажи моё оборудование и мои активные задачи одним ответом",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_multi_02",
+      "category": "MULTI",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 5554,
+      "llm_calls": 2,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.94
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.17
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          }
+        }
+      ],
+      "tool_calls": [
+        "mfu.devices.list"
+      ],
+      "expected_hit": [],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 3087,
+        "llm_out": 220,
+        "jev_total": 3447,
+        "est_in": 7135
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013797
+      },
+      "answer_len": 930,
+      "answer_head": "## Результат\n- `mfu.devices.list`, запрос: 204, показано: 20, всего: 20\n  - 157204.0, МФУ, Xerox Versalink B405\n  - 157214.0, МФУ, Kyosera Ecosys M2040d\n  - 100180.0, МФУ, Kyosera Ecosys M2040d\n  - 157201.0, МФУ, Canon i-SENSYS MF419x\n  - 1",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_amb_01",
+      "category": "AMBIG",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 1978,
+      "llm_calls": 1,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.51
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.31
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.39
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.45
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 0,
+        "llm_out": 0,
+        "jev_total": 3409,
+        "est_in": 2674
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136374
+      },
+      "answer_len": 24,
+      "answer_head": "Что у нас с оргтехникой?",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_amb_02",
+      "category": "AMBIG",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "completed",
+      "run_stage": "completed",
+      "wall_ms": 7013,
+      "llm_calls": 1,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.19
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.44
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.43
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 2658,
+        "llm_out": 678,
+        "jev_total": 3415,
+        "est_in": 2306
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136626
+      },
+      "answer_len": 96,
+      "answer_head": "Уточните, пожалуйста, чей номер телефона или какие модели/устройства требуется найти и сравнить.",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_mem_01",
+      "category": "MEMORY",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 9851,
+      "llm_calls": 2,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.42
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 636,
+        "llm_out": 135,
+        "jev_total": 3437,
+        "est_in": 3440
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.00013755
+      },
+      "answer_len": 44,
+      "answer_head": "Запомни: я предпочитаю отчёты в формате docx",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_mem_02",
+      "category": "MEMORY",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 6257,
+      "llm_calls": 2,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.16
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.72
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 699,
+        "llm_out": 242,
+        "jev_total": 3415,
+        "est_in": 2321
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000136626
+      },
+      "answer_len": 39,
+      "answer_head": "Забудь всё, что ты знаешь про мой отдел",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_act_01",
+      "category": "ACT",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 5229,
+      "llm_calls": 2,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.97
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.32
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.99
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 722,
+        "llm_out": 98,
+        "jev_total": 3473,
+        "est_in": 4132
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000139062
+      },
+      "answer_len": 62,
+      "answer_head": "Отправь Иванову письмо с темой 'Тест A10' и текстом 'Проверка'",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    },
+    {
+      "id": "a10_reuse_01",
+      "category": "REUSE",
+      "run_ok": true,
+      "run_error": null,
+      "run_status": "failed",
+      "run_stage": "failed",
+      "wall_ms": 4866,
+      "llm_calls": 2,
+      "llm_call_errors": 1,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          }
+        }
+      ],
+      "tool_calls": [],
+      "expected_hit": [],
+      "expected_missing": [],
+      "forbidden_hit": [],
+      "tokens": {
+        "llm_in": 711,
+        "llm_out": 135,
+        "jev_total": 3445,
+        "est_in": 2736
+      },
+      "cost_usd": {
+        "llm": 0.0,
+        "jev": 0.000137886
+      },
+      "answer_len": 70,
+      "answer_head": "Найди оборудование Иванова, а потом покажи ещё раз то же самое списком",
+      "result_message": true,
+      "fast_path_hit": false,
+      "direct_read_hit": false
+    }
+  ],
+  "started_at": "2026-11-24T15:07:39.187858+00:00",
+  "aggregate": {
+    "scenarios": 16,
+    "run_ok": 16,
+    "llm_calls_total": 31,
+    "jev_calls_total": 16,
+    "tool_calls_total": 6,
+    "tokens_in_total": 31741,
+    "tokens_out_total": 4138,
+    "jev_tokens_total": 54808,
+    "est_in_total": 70779,
+    "cost_usd_total": 0.002193072,
+    "wall_ms_total": 103664,
+    "expected_coverage": [
+      1,
+      10
+    ],
+    "forbidden_violations": 0
+  },
+  "finished_at": "2026-11-24T15:09:23.327608+00:00"
+}
