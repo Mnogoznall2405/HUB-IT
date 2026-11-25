@@ -1,0 +1,5426 @@
+{
+  "env": {
+    "label": "a11a9nc",
+    "code_sha": "af485f22c71264bc81eafb797538736c5f8a0553",
+    "corpus_sha256": "36e3bc85f7b86792f71c1a0df432dc0e2616851cc49273b96d3d61fb798063af",
+    "seed_sha256": "c930397f10e506907043bfcc9b78678a5bf684504a56ada17b8120d2e1427978",
+    "AI_JEV_ROUTING": "1",
+    "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+    "AI_SUMMARY_BACKGROUND_ENABLED": "0",
+    "ROUTERAI_MODEL": "google/gemini-3.7-flash",
+    "OPENROUTER_MODEL": null,
+    "JEV_MODEL": "(default)",
+    "provider": "routerai",
+    "flags": {
+      "AI_COMPACT_SPECS_ENABLED": "0",
+      "AI_JEV_ROUTING": "1",
+      "AI_PERSONAL_MEMORY_ENABLED": "1",
+      "AI_PROMPT_OPTIMIZATION_ENABLED": "1",
+      "AI_RUN_WATCHDOG_ENABLED": "1",
+      "AI_SANDBOX_ENABLED": "0",
+      "AI_SANDBOX_RETENTION_ENABLED": "1",
+      "AI_SUMMARY_BACKGROUND_ENABLED": "0"
+    },
+    "env_keys_loaded": 449,
+    "registered_tools": 100,
+    "code_root": "C:\\Project\\HUB-IT-a10-rel",
+    "harness": "a9_real_run.py v2",
+    "actor": "bench_actor",
+    "seeded": true
+  },
+  "ground_truth": {
+    "employees_total": 100,
+    "departments": [
+      "Бенч-Отдел-01",
+      "Бенч-Отдел-02",
+      "Бенч-Отдел-03",
+      "Бенч-Отдел-04",
+      "Бенч-Отдел-05",
+      "Бенч-Отдел-06",
+      "Бенч-Отдел-07",
+      "Бенч-Отдел-08",
+      "Бенч-Отдел-09",
+      "Бенч-Отдел-10"
+    ],
+    "employee_names": [
+      "Бенч Сотрудник 001",
+      "Бенч Сотрудник 002",
+      "Бенч Сотрудник 003",
+      "Бенч Сотрудник 004",
+      "Бенч Сотрудник 005",
+      "Бенч Сотрудник 006",
+      "Бенч Сотрудник 007",
+      "Бенч Сотрудник 008",
+      "Бенч Сотрудник 009",
+      "Бенч Сотрудник 010",
+      "Бенч Сотрудник 011",
+      "Бенч Сотрудник 012",
+      "Бенч Сотрудник 013",
+      "Бенч Сотрудник 014",
+      "Бенч Сотрудник 015",
+      "Бенч Сотрудник 016",
+      "Бенч Сотрудник 017",
+      "Бенч Сотрудник 018",
+      "Бенч Сотрудник 019",
+      "Бенч Сотрудник 020",
+      "Бенч Сотрудник 021",
+      "Бенч Сотрудник 022",
+      "Бенч Сотрудник 023",
+      "Бенч Сотрудник 024",
+      "Бенч Сотрудник 025",
+      "Бенч Сотрудник 026",
+      "Бенч Сотрудник 027",
+      "Бенч Сотрудник 028",
+      "Бенч Сотрудник 029",
+      "Бенч Сотрудник 030",
+      "Бенч Сотрудник 031",
+      "Бенч Сотрудник 032",
+      "Бенч Сотрудник 033",
+      "Бенч Сотрудник 034",
+      "Бенч Сотрудник 035",
+      "Бенч Сотрудник 036",
+      "Бенч Сотрудник 037",
+      "Бенч Сотрудник 038",
+      "Бенч Сотрудник 039",
+      "Бенч Сотрудник 040",
+      "Бенч Сотрудник 041",
+      "Бенч Сотрудник 042",
+      "Бенч Сотрудник 043",
+      "Бенч Сотрудник 044",
+      "Бенч Сотрудник 045",
+      "Бенч Сотрудник 046",
+      "Бенч Сотрудник 047",
+      "Бенч Сотрудник 048",
+      "Бенч Сотрудник 049",
+      "Бенч Сотрудник 050",
+      "Бенч Сотрудник 051",
+      "Бенч Сотрудник 052",
+      "Бенч Сотрудник 053",
+      "Бенч Сотрудник 054",
+      "Бенч Сотрудник 055",
+      "Бенч Сотрудник 056",
+      "Бенч Сотрудник 057",
+      "Бенч Сотрудник 058",
+      "Бенч Сотрудник 059",
+      "Бенч Сотрудник 060",
+      "Бенч Сотрудник 061",
+      "Бенч Сотрудник 062",
+      "Бенч Сотрудник 063",
+      "Бенч Сотрудник 064",
+      "Бенч Сотрудник 065",
+      "Бенч Сотрудник 066",
+      "Бенч Сотрудник 067",
+      "Бенч Сотрудник 068",
+      "Бенч Сотрудник 069",
+      "Бенч Сотрудник 070",
+      "Бенч Сотрудник 071",
+      "Бенч Сотрудник 072",
+      "Бенч Сотрудник 073",
+      "Бенч Сотрудник 074",
+      "Бенч Сотрудник 075",
+      "Бенч Сотрудник 076",
+      "Бенч Сотрудник 077",
+      "Бенч Сотрудник 078",
+      "Бенч Сотрудник 079",
+      "Бенч Сотрудник 080",
+      "Бенч Сотрудник 081",
+      "Бенч Сотрудник 082",
+      "Бенч Сотрудник 083",
+      "Бенч Сотрудник 084",
+      "Бенч Сотрудник 085",
+      "Бенч Сотрудник 086",
+      "Бенч Сотрудник 087",
+      "Бенч Сотрудник 088",
+      "Бенч Сотрудник 089",
+      "Бенч Сотрудник 090",
+      "Бенч Сотрудник 091",
+      "Бенч Сотрудник 092",
+      "Бенч Сотрудник 093",
+      "Бенч Сотрудник 094",
+      "Бенч Сотрудник 095",
+      "Бенч Сотрудник 096",
+      "Бенч Сотрудник 097",
+      "Бенч Сотрудник 098",
+      "Бенч Сотрудник 099",
+      "Бенч Сотрудник 100"
+    ],
+    "employee_by_code": {
+      "BENCH-0001": {
+        "employee_code": "BENCH-0001",
+        "full_name": "Бенч Сотрудник 001",
+        "display_name": "Бенч Сотрудник 001",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          "+7-000-0001"
+        ],
+        "work_emails": [
+          "bench001@bench.local"
+        ],
+        "office_room": "101",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-001"
+      },
+      "BENCH-0002": {
+        "employee_code": "BENCH-0002",
+        "full_name": "Бенч Сотрудник 002",
+        "display_name": "Бенч Сотрудник 002",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          "+7-000-0002"
+        ],
+        "work_emails": [
+          "bench002@bench.local"
+        ],
+        "office_room": "102",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-002"
+      },
+      "BENCH-0003": {
+        "employee_code": "BENCH-0003",
+        "full_name": "Бенч Сотрудник 003",
+        "display_name": "Бенч Сотрудник 003",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          "+7-000-0003"
+        ],
+        "work_emails": [
+          "bench003@bench.local"
+        ],
+        "office_room": "103",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-003"
+      },
+      "BENCH-0004": {
+        "employee_code": "BENCH-0004",
+        "full_name": "Бенч Сотрудник 004",
+        "display_name": "Бенч Сотрудник 004",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          "+7-000-0004"
+        ],
+        "work_emails": [
+          "bench004@bench.local"
+        ],
+        "office_room": "104",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-004"
+      },
+      "BENCH-0005": {
+        "employee_code": "BENCH-0005",
+        "full_name": "Бенч Сотрудник 005",
+        "display_name": "Бенч Сотрудник 005",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          "+7-000-0005"
+        ],
+        "work_emails": [
+          "bench005@bench.local"
+        ],
+        "office_room": "105",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-005"
+      },
+      "BENCH-0006": {
+        "employee_code": "BENCH-0006",
+        "full_name": "Бенч Сотрудник 006",
+        "display_name": "Бенч Сотрудник 006",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          "+7-000-0006"
+        ],
+        "work_emails": [
+          "bench006@bench.local"
+        ],
+        "office_room": "106",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-006"
+      },
+      "BENCH-0007": {
+        "employee_code": "BENCH-0007",
+        "full_name": "Бенч Сотрудник 007",
+        "display_name": "Бенч Сотрудник 007",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          "+7-000-0007"
+        ],
+        "work_emails": [
+          "bench007@bench.local"
+        ],
+        "office_room": "107",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-007"
+      },
+      "BENCH-0008": {
+        "employee_code": "BENCH-0008",
+        "full_name": "Бенч Сотрудник 008",
+        "display_name": "Бенч Сотрудник 008",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          "+7-000-0008"
+        ],
+        "work_emails": [
+          "bench008@bench.local"
+        ],
+        "office_room": "108",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-008"
+      },
+      "BENCH-0009": {
+        "employee_code": "BENCH-0009",
+        "full_name": "Бенч Сотрудник 009",
+        "display_name": "Бенч Сотрудник 009",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          "+7-000-0009"
+        ],
+        "work_emails": [
+          "bench009@bench.local"
+        ],
+        "office_room": "109",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-009"
+      },
+      "BENCH-0010": {
+        "employee_code": "BENCH-0010",
+        "full_name": "Бенч Сотрудник 010",
+        "display_name": "Бенч Сотрудник 010",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          "+7-000-0010"
+        ],
+        "work_emails": [
+          "bench010@bench.local"
+        ],
+        "office_room": "110",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-010"
+      },
+      "BENCH-0011": {
+        "employee_code": "BENCH-0011",
+        "full_name": "Бенч Сотрудник 011",
+        "display_name": "Бенч Сотрудник 011",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          "+7-000-0011"
+        ],
+        "work_emails": [
+          "bench011@bench.local"
+        ],
+        "office_room": "111",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-011"
+      },
+      "BENCH-0012": {
+        "employee_code": "BENCH-0012",
+        "full_name": "Бенч Сотрудник 012",
+        "display_name": "Бенч Сотрудник 012",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          "+7-000-0012"
+        ],
+        "work_emails": [
+          "bench012@bench.local"
+        ],
+        "office_room": "112",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-012"
+      },
+      "BENCH-0013": {
+        "employee_code": "BENCH-0013",
+        "full_name": "Бенч Сотрудник 013",
+        "display_name": "Бенч Сотрудник 013",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          "+7-000-0013"
+        ],
+        "work_emails": [
+          "bench013@bench.local"
+        ],
+        "office_room": "113",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-013"
+      },
+      "BENCH-0014": {
+        "employee_code": "BENCH-0014",
+        "full_name": "Бенч Сотрудник 014",
+        "display_name": "Бенч Сотрудник 014",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          "+7-000-0014"
+        ],
+        "work_emails": [
+          "bench014@bench.local"
+        ],
+        "office_room": "114",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-014"
+      },
+      "BENCH-0015": {
+        "employee_code": "BENCH-0015",
+        "full_name": "Бенч Сотрудник 015",
+        "display_name": "Бенч Сотрудник 015",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          "+7-000-0015"
+        ],
+        "work_emails": [
+          "bench015@bench.local"
+        ],
+        "office_room": "115",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-015"
+      },
+      "BENCH-0016": {
+        "employee_code": "BENCH-0016",
+        "full_name": "Бенч Сотрудник 016",
+        "display_name": "Бенч Сотрудник 016",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          "+7-000-0016"
+        ],
+        "work_emails": [
+          "bench016@bench.local"
+        ],
+        "office_room": "116",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-016"
+      },
+      "BENCH-0017": {
+        "employee_code": "BENCH-0017",
+        "full_name": "Бенч Сотрудник 017",
+        "display_name": "Бенч Сотрудник 017",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          "+7-000-0017"
+        ],
+        "work_emails": [
+          "bench017@bench.local"
+        ],
+        "office_room": "117",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-017"
+      },
+      "BENCH-0018": {
+        "employee_code": "BENCH-0018",
+        "full_name": "Бенч Сотрудник 018",
+        "display_name": "Бенч Сотрудник 018",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          "+7-000-0018"
+        ],
+        "work_emails": [
+          "bench018@bench.local"
+        ],
+        "office_room": "118",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-018"
+      },
+      "BENCH-0019": {
+        "employee_code": "BENCH-0019",
+        "full_name": "Бенч Сотрудник 019",
+        "display_name": "Бенч Сотрудник 019",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          "+7-000-0019"
+        ],
+        "work_emails": [
+          "bench019@bench.local"
+        ],
+        "office_room": "119",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-019"
+      },
+      "BENCH-0020": {
+        "employee_code": "BENCH-0020",
+        "full_name": "Бенч Сотрудник 020",
+        "display_name": "Бенч Сотрудник 020",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          "+7-000-0020"
+        ],
+        "work_emails": [
+          "bench020@bench.local"
+        ],
+        "office_room": "120",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-020"
+      },
+      "BENCH-0021": {
+        "employee_code": "BENCH-0021",
+        "full_name": "Бенч Сотрудник 021",
+        "display_name": "Бенч Сотрудник 021",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          "+7-000-0021"
+        ],
+        "work_emails": [
+          "bench021@bench.local"
+        ],
+        "office_room": "121",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-021"
+      },
+      "BENCH-0022": {
+        "employee_code": "BENCH-0022",
+        "full_name": "Бенч Сотрудник 022",
+        "display_name": "Бенч Сотрудник 022",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          "+7-000-0022"
+        ],
+        "work_emails": [
+          "bench022@bench.local"
+        ],
+        "office_room": "122",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-022"
+      },
+      "BENCH-0023": {
+        "employee_code": "BENCH-0023",
+        "full_name": "Бенч Сотрудник 023",
+        "display_name": "Бенч Сотрудник 023",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          "+7-000-0023"
+        ],
+        "work_emails": [
+          "bench023@bench.local"
+        ],
+        "office_room": "123",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-023"
+      },
+      "BENCH-0024": {
+        "employee_code": "BENCH-0024",
+        "full_name": "Бенч Сотрудник 024",
+        "display_name": "Бенч Сотрудник 024",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          "+7-000-0024"
+        ],
+        "work_emails": [
+          "bench024@bench.local"
+        ],
+        "office_room": "124",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-024"
+      },
+      "BENCH-0025": {
+        "employee_code": "BENCH-0025",
+        "full_name": "Бенч Сотрудник 025",
+        "display_name": "Бенч Сотрудник 025",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          "+7-000-0025"
+        ],
+        "work_emails": [
+          "bench025@bench.local"
+        ],
+        "office_room": "125",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-025"
+      },
+      "BENCH-0026": {
+        "employee_code": "BENCH-0026",
+        "full_name": "Бенч Сотрудник 026",
+        "display_name": "Бенч Сотрудник 026",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          "+7-000-0026"
+        ],
+        "work_emails": [
+          "bench026@bench.local"
+        ],
+        "office_room": "126",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-026"
+      },
+      "BENCH-0027": {
+        "employee_code": "BENCH-0027",
+        "full_name": "Бенч Сотрудник 027",
+        "display_name": "Бенч Сотрудник 027",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          "+7-000-0027"
+        ],
+        "work_emails": [
+          "bench027@bench.local"
+        ],
+        "office_room": "127",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-027"
+      },
+      "BENCH-0028": {
+        "employee_code": "BENCH-0028",
+        "full_name": "Бенч Сотрудник 028",
+        "display_name": "Бенч Сотрудник 028",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          "+7-000-0028"
+        ],
+        "work_emails": [
+          "bench028@bench.local"
+        ],
+        "office_room": "128",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-028"
+      },
+      "BENCH-0029": {
+        "employee_code": "BENCH-0029",
+        "full_name": "Бенч Сотрудник 029",
+        "display_name": "Бенч Сотрудник 029",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          "+7-000-0029"
+        ],
+        "work_emails": [
+          "bench029@bench.local"
+        ],
+        "office_room": "129",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-029"
+      },
+      "BENCH-0030": {
+        "employee_code": "BENCH-0030",
+        "full_name": "Бенч Сотрудник 030",
+        "display_name": "Бенч Сотрудник 030",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          "+7-000-0030"
+        ],
+        "work_emails": [
+          "bench030@bench.local"
+        ],
+        "office_room": "130",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-030"
+      },
+      "BENCH-0031": {
+        "employee_code": "BENCH-0031",
+        "full_name": "Бенч Сотрудник 031",
+        "display_name": "Бенч Сотрудник 031",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          "+7-000-0031"
+        ],
+        "work_emails": [
+          "bench031@bench.local"
+        ],
+        "office_room": "131",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-031"
+      },
+      "BENCH-0032": {
+        "employee_code": "BENCH-0032",
+        "full_name": "Бенч Сотрудник 032",
+        "display_name": "Бенч Сотрудник 032",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          "+7-000-0032"
+        ],
+        "work_emails": [
+          "bench032@bench.local"
+        ],
+        "office_room": "132",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-032"
+      },
+      "BENCH-0033": {
+        "employee_code": "BENCH-0033",
+        "full_name": "Бенч Сотрудник 033",
+        "display_name": "Бенч Сотрудник 033",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          "+7-000-0033"
+        ],
+        "work_emails": [
+          "bench033@bench.local"
+        ],
+        "office_room": "133",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-033"
+      },
+      "BENCH-0034": {
+        "employee_code": "BENCH-0034",
+        "full_name": "Бенч Сотрудник 034",
+        "display_name": "Бенч Сотрудник 034",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          "+7-000-0034"
+        ],
+        "work_emails": [
+          "bench034@bench.local"
+        ],
+        "office_room": "134",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-034"
+      },
+      "BENCH-0035": {
+        "employee_code": "BENCH-0035",
+        "full_name": "Бенч Сотрудник 035",
+        "display_name": "Бенч Сотрудник 035",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          "+7-000-0035"
+        ],
+        "work_emails": [
+          "bench035@bench.local"
+        ],
+        "office_room": "135",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-035"
+      },
+      "BENCH-0036": {
+        "employee_code": "BENCH-0036",
+        "full_name": "Бенч Сотрудник 036",
+        "display_name": "Бенч Сотрудник 036",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          "+7-000-0036"
+        ],
+        "work_emails": [
+          "bench036@bench.local"
+        ],
+        "office_room": "136",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-036"
+      },
+      "BENCH-0037": {
+        "employee_code": "BENCH-0037",
+        "full_name": "Бенч Сотрудник 037",
+        "display_name": "Бенч Сотрудник 037",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          "+7-000-0037"
+        ],
+        "work_emails": [
+          "bench037@bench.local"
+        ],
+        "office_room": "137",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-037"
+      },
+      "BENCH-0038": {
+        "employee_code": "BENCH-0038",
+        "full_name": "Бенч Сотрудник 038",
+        "display_name": "Бенч Сотрудник 038",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          "+7-000-0038"
+        ],
+        "work_emails": [
+          "bench038@bench.local"
+        ],
+        "office_room": "138",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-038"
+      },
+      "BENCH-0039": {
+        "employee_code": "BENCH-0039",
+        "full_name": "Бенч Сотрудник 039",
+        "display_name": "Бенч Сотрудник 039",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          "+7-000-0039"
+        ],
+        "work_emails": [
+          "bench039@bench.local"
+        ],
+        "office_room": "139",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-039"
+      },
+      "BENCH-0040": {
+        "employee_code": "BENCH-0040",
+        "full_name": "Бенч Сотрудник 040",
+        "display_name": "Бенч Сотрудник 040",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          "+7-000-0040"
+        ],
+        "work_emails": [
+          "bench040@bench.local"
+        ],
+        "office_room": "140",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-040"
+      },
+      "BENCH-0041": {
+        "employee_code": "BENCH-0041",
+        "full_name": "Бенч Сотрудник 041",
+        "display_name": "Бенч Сотрудник 041",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          "+7-000-0041"
+        ],
+        "work_emails": [
+          "bench041@bench.local"
+        ],
+        "office_room": "141",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-041"
+      },
+      "BENCH-0042": {
+        "employee_code": "BENCH-0042",
+        "full_name": "Бенч Сотрудник 042",
+        "display_name": "Бенч Сотрудник 042",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          "+7-000-0042"
+        ],
+        "work_emails": [
+          "bench042@bench.local"
+        ],
+        "office_room": "142",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-042"
+      },
+      "BENCH-0043": {
+        "employee_code": "BENCH-0043",
+        "full_name": "Бенч Сотрудник 043",
+        "display_name": "Бенч Сотрудник 043",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          "+7-000-0043"
+        ],
+        "work_emails": [
+          "bench043@bench.local"
+        ],
+        "office_room": "143",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-043"
+      },
+      "BENCH-0044": {
+        "employee_code": "BENCH-0044",
+        "full_name": "Бенч Сотрудник 044",
+        "display_name": "Бенч Сотрудник 044",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          "+7-000-0044"
+        ],
+        "work_emails": [
+          "bench044@bench.local"
+        ],
+        "office_room": "144",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-044"
+      },
+      "BENCH-0045": {
+        "employee_code": "BENCH-0045",
+        "full_name": "Бенч Сотрудник 045",
+        "display_name": "Бенч Сотрудник 045",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          "+7-000-0045"
+        ],
+        "work_emails": [
+          "bench045@bench.local"
+        ],
+        "office_room": "145",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-045"
+      },
+      "BENCH-0046": {
+        "employee_code": "BENCH-0046",
+        "full_name": "Бенч Сотрудник 046",
+        "display_name": "Бенч Сотрудник 046",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          "+7-000-0046"
+        ],
+        "work_emails": [
+          "bench046@bench.local"
+        ],
+        "office_room": "146",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-046"
+      },
+      "BENCH-0047": {
+        "employee_code": "BENCH-0047",
+        "full_name": "Бенч Сотрудник 047",
+        "display_name": "Бенч Сотрудник 047",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          "+7-000-0047"
+        ],
+        "work_emails": [
+          "bench047@bench.local"
+        ],
+        "office_room": "147",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-047"
+      },
+      "BENCH-0048": {
+        "employee_code": "BENCH-0048",
+        "full_name": "Бенч Сотрудник 048",
+        "display_name": "Бенч Сотрудник 048",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          "+7-000-0048"
+        ],
+        "work_emails": [
+          "bench048@bench.local"
+        ],
+        "office_room": "148",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-048"
+      },
+      "BENCH-0049": {
+        "employee_code": "BENCH-0049",
+        "full_name": "Бенч Сотрудник 049",
+        "display_name": "Бенч Сотрудник 049",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          "+7-000-0049"
+        ],
+        "work_emails": [
+          "bench049@bench.local"
+        ],
+        "office_room": "149",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-049"
+      },
+      "BENCH-0050": {
+        "employee_code": "BENCH-0050",
+        "full_name": "Бенч Сотрудник 050",
+        "display_name": "Бенч Сотрудник 050",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          "+7-000-0050"
+        ],
+        "work_emails": [
+          "bench050@bench.local"
+        ],
+        "office_room": "150",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-050"
+      },
+      "BENCH-0051": {
+        "employee_code": "BENCH-0051",
+        "full_name": "Бенч Сотрудник 051",
+        "display_name": "Бенч Сотрудник 051",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          "+7-000-0051"
+        ],
+        "work_emails": [
+          "bench051@bench.local"
+        ],
+        "office_room": "151",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-051"
+      },
+      "BENCH-0052": {
+        "employee_code": "BENCH-0052",
+        "full_name": "Бенч Сотрудник 052",
+        "display_name": "Бенч Сотрудник 052",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          "+7-000-0052"
+        ],
+        "work_emails": [
+          "bench052@bench.local"
+        ],
+        "office_room": "152",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-052"
+      },
+      "BENCH-0053": {
+        "employee_code": "BENCH-0053",
+        "full_name": "Бенч Сотрудник 053",
+        "display_name": "Бенч Сотрудник 053",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          "+7-000-0053"
+        ],
+        "work_emails": [
+          "bench053@bench.local"
+        ],
+        "office_room": "153",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-053"
+      },
+      "BENCH-0054": {
+        "employee_code": "BENCH-0054",
+        "full_name": "Бенч Сотрудник 054",
+        "display_name": "Бенч Сотрудник 054",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          "+7-000-0054"
+        ],
+        "work_emails": [
+          "bench054@bench.local"
+        ],
+        "office_room": "154",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-054"
+      },
+      "BENCH-0055": {
+        "employee_code": "BENCH-0055",
+        "full_name": "Бенч Сотрудник 055",
+        "display_name": "Бенч Сотрудник 055",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          "+7-000-0055"
+        ],
+        "work_emails": [
+          "bench055@bench.local"
+        ],
+        "office_room": "155",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-055"
+      },
+      "BENCH-0056": {
+        "employee_code": "BENCH-0056",
+        "full_name": "Бенч Сотрудник 056",
+        "display_name": "Бенч Сотрудник 056",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          "+7-000-0056"
+        ],
+        "work_emails": [
+          "bench056@bench.local"
+        ],
+        "office_room": "156",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-056"
+      },
+      "BENCH-0057": {
+        "employee_code": "BENCH-0057",
+        "full_name": "Бенч Сотрудник 057",
+        "display_name": "Бенч Сотрудник 057",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          "+7-000-0057"
+        ],
+        "work_emails": [
+          "bench057@bench.local"
+        ],
+        "office_room": "157",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-057"
+      },
+      "BENCH-0058": {
+        "employee_code": "BENCH-0058",
+        "full_name": "Бенч Сотрудник 058",
+        "display_name": "Бенч Сотрудник 058",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          "+7-000-0058"
+        ],
+        "work_emails": [
+          "bench058@bench.local"
+        ],
+        "office_room": "158",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-058"
+      },
+      "BENCH-0059": {
+        "employee_code": "BENCH-0059",
+        "full_name": "Бенч Сотрудник 059",
+        "display_name": "Бенч Сотрудник 059",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          "+7-000-0059"
+        ],
+        "work_emails": [
+          "bench059@bench.local"
+        ],
+        "office_room": "159",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-059"
+      },
+      "BENCH-0060": {
+        "employee_code": "BENCH-0060",
+        "full_name": "Бенч Сотрудник 060",
+        "display_name": "Бенч Сотрудник 060",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          "+7-000-0060"
+        ],
+        "work_emails": [
+          "bench060@bench.local"
+        ],
+        "office_room": "160",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-060"
+      },
+      "BENCH-0061": {
+        "employee_code": "BENCH-0061",
+        "full_name": "Бенч Сотрудник 061",
+        "display_name": "Бенч Сотрудник 061",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          "+7-000-0061"
+        ],
+        "work_emails": [
+          "bench061@bench.local"
+        ],
+        "office_room": "161",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-061"
+      },
+      "BENCH-0062": {
+        "employee_code": "BENCH-0062",
+        "full_name": "Бенч Сотрудник 062",
+        "display_name": "Бенч Сотрудник 062",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          "+7-000-0062"
+        ],
+        "work_emails": [
+          "bench062@bench.local"
+        ],
+        "office_room": "162",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-062"
+      },
+      "BENCH-0063": {
+        "employee_code": "BENCH-0063",
+        "full_name": "Бенч Сотрудник 063",
+        "display_name": "Бенч Сотрудник 063",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          "+7-000-0063"
+        ],
+        "work_emails": [
+          "bench063@bench.local"
+        ],
+        "office_room": "163",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-063"
+      },
+      "BENCH-0064": {
+        "employee_code": "BENCH-0064",
+        "full_name": "Бенч Сотрудник 064",
+        "display_name": "Бенч Сотрудник 064",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          "+7-000-0064"
+        ],
+        "work_emails": [
+          "bench064@bench.local"
+        ],
+        "office_room": "164",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-064"
+      },
+      "BENCH-0065": {
+        "employee_code": "BENCH-0065",
+        "full_name": "Бенч Сотрудник 065",
+        "display_name": "Бенч Сотрудник 065",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          "+7-000-0065"
+        ],
+        "work_emails": [
+          "bench065@bench.local"
+        ],
+        "office_room": "165",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-065"
+      },
+      "BENCH-0066": {
+        "employee_code": "BENCH-0066",
+        "full_name": "Бенч Сотрудник 066",
+        "display_name": "Бенч Сотрудник 066",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          "+7-000-0066"
+        ],
+        "work_emails": [
+          "bench066@bench.local"
+        ],
+        "office_room": "166",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-066"
+      },
+      "BENCH-0067": {
+        "employee_code": "BENCH-0067",
+        "full_name": "Бенч Сотрудник 067",
+        "display_name": "Бенч Сотрудник 067",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          "+7-000-0067"
+        ],
+        "work_emails": [
+          "bench067@bench.local"
+        ],
+        "office_room": "167",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-067"
+      },
+      "BENCH-0068": {
+        "employee_code": "BENCH-0068",
+        "full_name": "Бенч Сотрудник 068",
+        "display_name": "Бенч Сотрудник 068",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          "+7-000-0068"
+        ],
+        "work_emails": [
+          "bench068@bench.local"
+        ],
+        "office_room": "168",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-068"
+      },
+      "BENCH-0069": {
+        "employee_code": "BENCH-0069",
+        "full_name": "Бенч Сотрудник 069",
+        "display_name": "Бенч Сотрудник 069",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          "+7-000-0069"
+        ],
+        "work_emails": [
+          "bench069@bench.local"
+        ],
+        "office_room": "169",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-069"
+      },
+      "BENCH-0070": {
+        "employee_code": "BENCH-0070",
+        "full_name": "Бенч Сотрудник 070",
+        "display_name": "Бенч Сотрудник 070",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          "+7-000-0070"
+        ],
+        "work_emails": [
+          "bench070@bench.local"
+        ],
+        "office_room": "170",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-070"
+      },
+      "BENCH-0071": {
+        "employee_code": "BENCH-0071",
+        "full_name": "Бенч Сотрудник 071",
+        "display_name": "Бенч Сотрудник 071",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          "+7-000-0071"
+        ],
+        "work_emails": [
+          "bench071@bench.local"
+        ],
+        "office_room": "171",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-071"
+      },
+      "BENCH-0072": {
+        "employee_code": "BENCH-0072",
+        "full_name": "Бенч Сотрудник 072",
+        "display_name": "Бенч Сотрудник 072",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          "+7-000-0072"
+        ],
+        "work_emails": [
+          "bench072@bench.local"
+        ],
+        "office_room": "172",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-072"
+      },
+      "BENCH-0073": {
+        "employee_code": "BENCH-0073",
+        "full_name": "Бенч Сотрудник 073",
+        "display_name": "Бенч Сотрудник 073",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          "+7-000-0073"
+        ],
+        "work_emails": [
+          "bench073@bench.local"
+        ],
+        "office_room": "173",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-073"
+      },
+      "BENCH-0074": {
+        "employee_code": "BENCH-0074",
+        "full_name": "Бенч Сотрудник 074",
+        "display_name": "Бенч Сотрудник 074",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          "+7-000-0074"
+        ],
+        "work_emails": [
+          "bench074@bench.local"
+        ],
+        "office_room": "174",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-074"
+      },
+      "BENCH-0075": {
+        "employee_code": "BENCH-0075",
+        "full_name": "Бенч Сотрудник 075",
+        "display_name": "Бенч Сотрудник 075",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          "+7-000-0075"
+        ],
+        "work_emails": [
+          "bench075@bench.local"
+        ],
+        "office_room": "175",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-075"
+      },
+      "BENCH-0076": {
+        "employee_code": "BENCH-0076",
+        "full_name": "Бенч Сотрудник 076",
+        "display_name": "Бенч Сотрудник 076",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          "+7-000-0076"
+        ],
+        "work_emails": [
+          "bench076@bench.local"
+        ],
+        "office_room": "176",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-076"
+      },
+      "BENCH-0077": {
+        "employee_code": "BENCH-0077",
+        "full_name": "Бенч Сотрудник 077",
+        "display_name": "Бенч Сотрудник 077",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          "+7-000-0077"
+        ],
+        "work_emails": [
+          "bench077@bench.local"
+        ],
+        "office_room": "177",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-077"
+      },
+      "BENCH-0078": {
+        "employee_code": "BENCH-0078",
+        "full_name": "Бенч Сотрудник 078",
+        "display_name": "Бенч Сотрудник 078",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          "+7-000-0078"
+        ],
+        "work_emails": [
+          "bench078@bench.local"
+        ],
+        "office_room": "178",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-078"
+      },
+      "BENCH-0079": {
+        "employee_code": "BENCH-0079",
+        "full_name": "Бенч Сотрудник 079",
+        "display_name": "Бенч Сотрудник 079",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          "+7-000-0079"
+        ],
+        "work_emails": [
+          "bench079@bench.local"
+        ],
+        "office_room": "179",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-079"
+      },
+      "BENCH-0080": {
+        "employee_code": "BENCH-0080",
+        "full_name": "Бенч Сотрудник 080",
+        "display_name": "Бенч Сотрудник 080",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          "+7-000-0080"
+        ],
+        "work_emails": [
+          "bench080@bench.local"
+        ],
+        "office_room": "180",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-080"
+      },
+      "BENCH-0081": {
+        "employee_code": "BENCH-0081",
+        "full_name": "Бенч Сотрудник 081",
+        "display_name": "Бенч Сотрудник 081",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          "+7-000-0081"
+        ],
+        "work_emails": [
+          "bench081@bench.local"
+        ],
+        "office_room": "181",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-081"
+      },
+      "BENCH-0082": {
+        "employee_code": "BENCH-0082",
+        "full_name": "Бенч Сотрудник 082",
+        "display_name": "Бенч Сотрудник 082",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          "+7-000-0082"
+        ],
+        "work_emails": [
+          "bench082@bench.local"
+        ],
+        "office_room": "182",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-082"
+      },
+      "BENCH-0083": {
+        "employee_code": "BENCH-0083",
+        "full_name": "Бенч Сотрудник 083",
+        "display_name": "Бенч Сотрудник 083",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          "+7-000-0083"
+        ],
+        "work_emails": [
+          "bench083@bench.local"
+        ],
+        "office_room": "183",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-083"
+      },
+      "BENCH-0084": {
+        "employee_code": "BENCH-0084",
+        "full_name": "Бенч Сотрудник 084",
+        "display_name": "Бенч Сотрудник 084",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          "+7-000-0084"
+        ],
+        "work_emails": [
+          "bench084@bench.local"
+        ],
+        "office_room": "184",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-084"
+      },
+      "BENCH-0085": {
+        "employee_code": "BENCH-0085",
+        "full_name": "Бенч Сотрудник 085",
+        "display_name": "Бенч Сотрудник 085",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          "+7-000-0085"
+        ],
+        "work_emails": [
+          "bench085@bench.local"
+        ],
+        "office_room": "185",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-085"
+      },
+      "BENCH-0086": {
+        "employee_code": "BENCH-0086",
+        "full_name": "Бенч Сотрудник 086",
+        "display_name": "Бенч Сотрудник 086",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          "+7-000-0086"
+        ],
+        "work_emails": [
+          "bench086@bench.local"
+        ],
+        "office_room": "186",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-086"
+      },
+      "BENCH-0087": {
+        "employee_code": "BENCH-0087",
+        "full_name": "Бенч Сотрудник 087",
+        "display_name": "Бенч Сотрудник 087",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          "+7-000-0087"
+        ],
+        "work_emails": [
+          "bench087@bench.local"
+        ],
+        "office_room": "187",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-087"
+      },
+      "BENCH-0088": {
+        "employee_code": "BENCH-0088",
+        "full_name": "Бенч Сотрудник 088",
+        "display_name": "Бенч Сотрудник 088",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          "+7-000-0088"
+        ],
+        "work_emails": [
+          "bench088@bench.local"
+        ],
+        "office_room": "188",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-088"
+      },
+      "BENCH-0089": {
+        "employee_code": "BENCH-0089",
+        "full_name": "Бенч Сотрудник 089",
+        "display_name": "Бенч Сотрудник 089",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          "+7-000-0089"
+        ],
+        "work_emails": [
+          "bench089@bench.local"
+        ],
+        "office_room": "189",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-089"
+      },
+      "BENCH-0090": {
+        "employee_code": "BENCH-0090",
+        "full_name": "Бенч Сотрудник 090",
+        "display_name": "Бенч Сотрудник 090",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          "+7-000-0090"
+        ],
+        "work_emails": [
+          "bench090@bench.local"
+        ],
+        "office_room": "190",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-090"
+      },
+      "BENCH-0091": {
+        "employee_code": "BENCH-0091",
+        "full_name": "Бенч Сотрудник 091",
+        "display_name": "Бенч Сотрудник 091",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-01",
+        "department_code": "D01",
+        "work_phones": [
+          "+7-000-0091"
+        ],
+        "work_emails": [
+          "bench091@bench.local"
+        ],
+        "office_room": "191",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-091"
+      },
+      "BENCH-0092": {
+        "employee_code": "BENCH-0092",
+        "full_name": "Бенч Сотрудник 092",
+        "display_name": "Бенч Сотрудник 092",
+        "position": "специалист",
+        "department": "Бенч-Отдел-02",
+        "department_code": "D02",
+        "work_phones": [
+          "+7-000-0092"
+        ],
+        "work_emails": [
+          "bench092@bench.local"
+        ],
+        "office_room": "192",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-092"
+      },
+      "BENCH-0093": {
+        "employee_code": "BENCH-0093",
+        "full_name": "Бенч Сотрудник 093",
+        "display_name": "Бенч Сотрудник 093",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-03",
+        "department_code": "D03",
+        "work_phones": [
+          "+7-000-0093"
+        ],
+        "work_emails": [
+          "bench093@bench.local"
+        ],
+        "office_room": "193",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-093"
+      },
+      "BENCH-0094": {
+        "employee_code": "BENCH-0094",
+        "full_name": "Бенч Сотрудник 094",
+        "display_name": "Бенч Сотрудник 094",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-04",
+        "department_code": "D04",
+        "work_phones": [
+          "+7-000-0094"
+        ],
+        "work_emails": [
+          "bench094@bench.local"
+        ],
+        "office_room": "194",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-094"
+      },
+      "BENCH-0095": {
+        "employee_code": "BENCH-0095",
+        "full_name": "Бенч Сотрудник 095",
+        "display_name": "Бенч Сотрудник 095",
+        "position": "инженер",
+        "department": "Бенч-Отдел-05",
+        "department_code": "D05",
+        "work_phones": [
+          "+7-000-0095"
+        ],
+        "work_emails": [
+          "bench095@bench.local"
+        ],
+        "office_room": "195",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-095"
+      },
+      "BENCH-0096": {
+        "employee_code": "BENCH-0096",
+        "full_name": "Бенч Сотрудник 096",
+        "display_name": "Бенч Сотрудник 096",
+        "position": "старший инженер",
+        "department": "Бенч-Отдел-06",
+        "department_code": "D06",
+        "work_phones": [
+          "+7-000-0096"
+        ],
+        "work_emails": [
+          "bench096@bench.local"
+        ],
+        "office_room": "196",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-096"
+      },
+      "BENCH-0097": {
+        "employee_code": "BENCH-0097",
+        "full_name": "Бенч Сотрудник 097",
+        "display_name": "Бенч Сотрудник 097",
+        "position": "специалист",
+        "department": "Бенч-Отдел-07",
+        "department_code": "D07",
+        "work_phones": [
+          "+7-000-0097"
+        ],
+        "work_emails": [
+          "bench097@bench.local"
+        ],
+        "office_room": "197",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-097"
+      },
+      "BENCH-0098": {
+        "employee_code": "BENCH-0098",
+        "full_name": "Бенч Сотрудник 098",
+        "display_name": "Бенч Сотрудник 098",
+        "position": "ведущий специалист",
+        "department": "Бенч-Отдел-08",
+        "department_code": "D08",
+        "work_phones": [
+          "+7-000-0098"
+        ],
+        "work_emails": [
+          "bench098@bench.local"
+        ],
+        "office_room": "198",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-098"
+      },
+      "BENCH-0099": {
+        "employee_code": "BENCH-0099",
+        "full_name": "Бенч Сотрудник 099",
+        "display_name": "Бенч Сотрудник 099",
+        "position": "руководитель группы",
+        "department": "Бенч-Отдел-09",
+        "department_code": "D09",
+        "work_phones": [
+          "+7-000-0099"
+        ],
+        "work_emails": [
+          "bench099@bench.local"
+        ],
+        "office_room": "199",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-099"
+      },
+      "BENCH-0100": {
+        "employee_code": "BENCH-0100",
+        "full_name": "Бенч Сотрудник 100",
+        "display_name": "Бенч Сотрудник 100",
+        "position": "инженер",
+        "department": "Бенч-Отдел-10",
+        "department_code": "D10",
+        "work_phones": [
+          "+7-000-0100"
+        ],
+        "work_emails": [
+          "bench100@bench.local"
+        ],
+        "office_room": "200",
+        "hire_date": "2024-01-15",
+        "workplace_number": "WP-100"
+      }
+    },
+    "org_node_ids": [
+      "bench-dept-01",
+      "bench-dept-02",
+      "bench-dept-03",
+      "bench-dept-04",
+      "bench-dept-05",
+      "bench-dept-06",
+      "bench-dept-07",
+      "bench-dept-08",
+      "bench-dept-09",
+      "bench-dept-10",
+      "bench-person-0001",
+      "bench-person-0002",
+      "bench-person-0003",
+      "bench-person-0004",
+      "bench-person-0005",
+      "bench-person-0006",
+      "bench-person-0007",
+      "bench-person-0008",
+      "bench-person-0009",
+      "bench-person-0010",
+      "bench-person-0011",
+      "bench-person-0012",
+      "bench-person-0013",
+      "bench-person-0014",
+      "bench-person-0015",
+      "bench-person-0016",
+      "bench-person-0017",
+      "bench-person-0018",
+      "bench-person-0019",
+      "bench-person-0020",
+      "bench-person-0021",
+      "bench-person-0022",
+      "bench-person-0023",
+      "bench-person-0024",
+      "bench-person-0025",
+      "bench-person-0026",
+      "bench-person-0027",
+      "bench-person-0028",
+      "bench-person-0029",
+      "bench-person-0030",
+      "bench-person-0031",
+      "bench-person-0032",
+      "bench-person-0033",
+      "bench-person-0034",
+      "bench-person-0035",
+      "bench-person-0036",
+      "bench-person-0037",
+      "bench-person-0038",
+      "bench-person-0039",
+      "bench-person-0040",
+      "bench-person-0041",
+      "bench-person-0042",
+      "bench-person-0043",
+      "bench-person-0044",
+      "bench-person-0045",
+      "bench-person-0046",
+      "bench-person-0047",
+      "bench-person-0048",
+      "bench-person-0049",
+      "bench-person-0050",
+      "bench-person-0051",
+      "bench-person-0052",
+      "bench-person-0053",
+      "bench-person-0054",
+      "bench-person-0055",
+      "bench-person-0056",
+      "bench-person-0057",
+      "bench-person-0058",
+      "bench-person-0059",
+      "bench-person-0060",
+      "bench-person-0061",
+      "bench-person-0062",
+      "bench-person-0063",
+      "bench-person-0064",
+      "bench-person-0065",
+      "bench-person-0066",
+      "bench-person-0067",
+      "bench-person-0068",
+      "bench-person-0069",
+      "bench-person-0070",
+      "bench-person-0071",
+      "bench-person-0072",
+      "bench-person-0073",
+      "bench-person-0074",
+      "bench-person-0075",
+      "bench-person-0076",
+      "bench-person-0077",
+      "bench-person-0078",
+      "bench-person-0079",
+      "bench-person-0080",
+      "bench-person-0081",
+      "bench-person-0082",
+      "bench-person-0083",
+      "bench-person-0084",
+      "bench-person-0085",
+      "bench-person-0086",
+      "bench-person-0087",
+      "bench-person-0088",
+      "bench-person-0089",
+      "bench-person-0090",
+      "bench-person-0091",
+      "bench-person-0092",
+      "bench-person-0093",
+      "bench-person-0094",
+      "bench-person-0095",
+      "bench-person-0096",
+      "bench-person-0097",
+      "bench-person-0098",
+      "bench-person-0099",
+      "bench-person-0100"
+    ],
+    "users": {
+      "bench_admin": {
+        "id": 3,
+        "username": "bench_admin"
+      },
+      "bench_reader": {
+        "id": 4,
+        "username": "bench_reader"
+      },
+      "bench_me_only": {
+        "id": 5,
+        "username": "bench_me_only"
+      },
+      "bench_tasks": {
+        "id": 6,
+        "username": "bench_tasks"
+      },
+      "bench_nomfu": {
+        "id": 7,
+        "username": "bench_nomfu"
+      },
+      "bench_actor": {
+        "id": 8,
+        "username": "bench_actor"
+      }
+    },
+    "tasks_created": 100,
+    "actor_open_tasks": 8,
+    "announcements": 20,
+    "kb_docs": [
+      "bench-kb-001",
+      "bench-kb-002",
+      "bench-kb-003",
+      "bench-kb-004",
+      "bench-kb-005",
+      "bench-kb-006",
+      "bench-kb-007",
+      "bench-kb-008",
+      "bench-kb-009",
+      "bench-kb-010"
+    ],
+    "my_files": [
+      "bench-file-001",
+      "bench-file-002",
+      "bench-file-003",
+      "bench-file-004",
+      "bench-file-005",
+      "bench-file-006",
+      "bench-file-007",
+      "bench-file-008",
+      "bench-file-009",
+      "bench-file-010",
+      "bench-file-011",
+      "bench-file-012",
+      "bench-file-013",
+      "bench-file-014",
+      "bench-file-015",
+      "bench-file-016",
+      "bench-file-017",
+      "bench-file-018",
+      "bench-file-019",
+      "bench-file-020",
+      "bench-file-021",
+      "bench-file-022",
+      "bench-file-023",
+      "bench-file-024",
+      "bench-file-025",
+      "bench-file-026",
+      "bench-file-027",
+      "bench-file-028",
+      "bench-file-029",
+      "bench-file-030"
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "sd_tasks_01",
+      "category": "READ",
+      "prompt": "Покажи мои активные задачи",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "38a2626e-3cfc-4a59-8436-d16c8eb6f262",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "427b9f37-dac6-4dd9-90f3-c9d0067e95e4",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "427b9f37-dac6-4dd9-90f3-c9d0067e95e4",
+        "sender_ok": true,
+        "len": 661,
+        "head": "У вас найдено 8 активных задач в Hub (4 новые и 4 в работе).\n\n## Список активных задач\n\n| Название | Статус | Приоритет | Срок | Просрочена |\n| :--- | :--- | :--- | :--- | :--- |\n| Бенч-задача 001 | Новая | Обычный | 19.11.2026 | Да |\n| Бенч-задача 002 | В работе | Высокий | 20.11.2026 | Да |\n| Бенч",
+        "body": "У вас найдено 8 активных задач в Hub (4 новые и 4 в работе).\n\n## Список активных задач\n\n| Название | Статус | Приоритет | Срок | Просрочена |\n| :--- | :--- | :--- | :--- | :--- |\n| Бенч-задача 001 | Новая | Обычный | 19.11.2026 | Да |\n| Бенч-задача 002 | В работе | Высокий | 20.11.2026 | Да |\n| Бенч-задача 003 | Новая | Низкий | 21.11.2026 | Да |\n| Бенч-задача 004 | В работе | Обычный | 22.11.2026 | Да |\n| Бенч-задача 005 | Новая | Высокий | 23.11.2026 | Да |\n| Бенч-задача 006 | В работе | Низкий | 24.11.2026 | Да |\n| Бенч-задача 007 | Новая | Обычный | 25.11.2026 | Да |\n| Бенч-задача 008 | В работе | Высокий | 26.11.2026 | Нет |\n\nИсточник: Hub / Задачи"
+      },
+      "tools": {
+        "proposed": [
+          "office.tasks.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "office.tasks.search",
+            "args": {
+              "scope": "my",
+              "status": "open"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 12,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 8,
+            "result_count": 8,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "office.tasks.search"
+        ],
+        "expected_hit": [
+          "office.tasks.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "Бенч-задача 001",
+          "Бенч-задача 002",
+          "Бенч-задача 003",
+          "Бенч-задача 004",
+          "Бенч-задача 005",
+          "Бенч-задача 006",
+          "Бенч-задача 007",
+          "Бенч-задача 008"
+        ],
+        "found": [
+          "Бенч-задача 001",
+          "Бенч-задача 002",
+          "Бенч-задача 003",
+          "Бенч-задача 004",
+          "Бенч-задача 005",
+          "Бенч-задача 006",
+          "Бенч-задача 007",
+          "Бенч-задача 008"
+        ],
+        "missing": [],
+        "forbidden": [
+          "Бенч-задача 009",
+          "Бенч-задача 010"
+        ],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {
+          "tool_result_total": 8
+        },
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.97
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.36
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          }
+        }
+      ],
+      "wall_ms": 15995,
+      "tokens": {
+        "llm_in": 10394,
+        "llm_out": 1252,
+        "jev_total": 5051,
+        "est_in": 8557,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_dir_01",
+      "category": "READ",
+      "prompt": "Найди сотрудника Бенч Сотрудник 042",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "9e0f6d92-4f20-4682-9702-ba956a54abfd",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "85fa8036-4fd4-4df9-940d-a1b355532507",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "85fa8036-4fd4-4df9-940d-a1b355532507",
+        "sender_ok": true,
+        "len": 385,
+        "head": "Сотрудник найден в корпоративном справочнике компании (1С:ЗУП). В базе ITinvent профиль не зарегистрирован.\n\n## Информация о сотруднике\n- **ФИО:** Бенч Сотрудник 042\n- **Должность:** специалист\n- **Подразделение:** Бенч-Отдел-02\n- **Кабинет / Рабочее место:** 142 / WP-042\n- **Рабочий телефон:** +7-0",
+        "body": "Сотрудник найден в корпоративном справочнике компании (1С:ЗУП). В базе ITinvent профиль не зарегистрирован.\n\n## Информация о сотруднике\n- **ФИО:** Бенч Сотрудник 042\n- **Должность:** специалист\n- **Подразделение:** Бенч-Отдел-02\n- **Кабинет / Рабочее место:** 142 / WP-042\n- **Рабочий телефон:** +7-000-0042\n- **Рабочий e-mail:** bench042@bench.local\n\nИсточник: 1C ZUP / Адресная книга"
+      },
+      "tools": {
+        "proposed": [
+          "itinvent.user.by_name",
+          "itinvent.employee.search",
+          "directory.people.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "itinvent.user.by_name",
+            "args": {
+              "name": "Бенч Сотрудник 042"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 113,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": null,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "itinvent.employee.search",
+            "args": {
+              "query": "Бенч Сотрудник 042"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 75,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 0,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "directory.people.search",
+            "args": {
+              "query": "Бенч Сотрудник 042"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 6,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 1,
+            "result_count": 1,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "itinvent.user.by_name",
+          "itinvent.employee.search",
+          "directory.people.search"
+        ],
+        "expected_hit": [
+          "directory.people.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "Бенч Сотрудник 042"
+        ],
+        "found": [
+          "Бенч Сотрудник 042"
+        ],
+        "missing": [],
+        "forbidden": [],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.89
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.81
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.32
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          }
+        }
+      ],
+      "wall_ms": 18537,
+      "tokens": {
+        "llm_in": 20270,
+        "llm_out": 1521,
+        "jev_total": 5083,
+        "est_in": 19512,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_dir_02",
+      "category": "READ",
+      "prompt": "Какой телефон у сотрудника Бенч Сотрудник 007?",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "08e5aaf6-49b7-43fd-9fb3-4c1bf992abad",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "87491c59-534e-4b30-9f57-8acdbf0aac2c",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "87491c59-534e-4b30-9f57-8acdbf0aac2c",
+        "sender_ok": true,
+        "len": 338,
+        "head": "Рабочий телефон сотрудника **Бенч Сотрудник 007**: **+7-000-0007**.\n\n## Контактная информация\n- **ФИО:** Бенч Сотрудник 007\n- **Должность:** специалист\n- **Подразделение:** Бенч-Отдел-07\n- **Телефон:** +7-000-0007\n- **Электронная почта:** bench007@bench.local\n- **Кабинет / Рабочее место:** 107 / WP-",
+        "body": "Рабочий телефон сотрудника **Бенч Сотрудник 007**: **+7-000-0007**.\n\n## Контактная информация\n- **ФИО:** Бенч Сотрудник 007\n- **Должность:** специалист\n- **Подразделение:** Бенч-Отдел-07\n- **Телефон:** +7-000-0007\n- **Электронная почта:** bench007@bench.local\n- **Кабинет / Рабочее место:** 107 / WP-007\n\nИсточник: 1C ЗУП / Адресная книга"
+      },
+      "tools": {
+        "proposed": [
+          "directory.people.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "directory.people.search",
+            "args": {
+              "query": "Бенч Сотрудник 007"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 3,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 11,
+            "result_count": 10,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "directory.people.search"
+        ],
+        "expected_hit": [
+          "directory.people.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "+7-000-0007"
+        ],
+        "found": [
+          "+7-000-0007"
+        ],
+        "missing": [],
+        "forbidden": [
+          "+7-000-0008",
+          "+7-000-0006"
+        ],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.58
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.95
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.17
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          }
+        }
+      ],
+      "wall_ms": 11949,
+      "tokens": {
+        "llm_in": 14011,
+        "llm_out": 1110,
+        "jev_total": 5089,
+        "est_in": 13242,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 2
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_tasks_02",
+      "category": "READ",
+      "prompt": "Сколько у меня выполненных задач?",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "19cbab37-5946-4312-964f-4330565e8699",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "121fb518-caf4-4011-99ae-d85c081b376c",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "121fb518-caf4-4011-99ae-d85c081b376c",
+        "sender_ok": true,
+        "len": 281,
+        "head": "У вас **2** выполненные задачи.\n\n## Список выполненных задач\n\n| Название | Приоритет | Исполнитель | Контролер |\n| :--- | :--- | :--- | :--- |\n| Бенч-задача 010 | Обычный | Bench Actor | Bench Admin |\n| Бенч-задача 009 | Низкий | Bench Actor | Bench Admin |\n\nИсточник: Hub / Задачи",
+        "body": "У вас **2** выполненные задачи.\n\n## Список выполненных задач\n\n| Название | Приоритет | Исполнитель | Контролер |\n| :--- | :--- | :--- | :--- |\n| Бенч-задача 010 | Обычный | Bench Actor | Bench Admin |\n| Бенч-задача 009 | Низкий | Bench Actor | Bench Admin |\n\nИсточник: Hub / Задачи"
+      },
+      "tools": {
+        "proposed": [
+          "office.tasks.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "office.tasks.search",
+            "args": {
+              "scope": "my",
+              "status": "done"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 6,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 2,
+            "result_count": 2,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "office.tasks.search"
+        ],
+        "expected_hit": [
+          "office.tasks.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "Бенч-задача 009",
+          "Бенч-задача 010"
+        ],
+        "found": [
+          "Бенч-задача 009",
+          "Бенч-задача 010"
+        ],
+        "missing": [],
+        "forbidden": [
+          "Бенч-задача 001",
+          "Бенч-задача 002"
+        ],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {
+          "tool_result_total": 2
+        },
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.95
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.18
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          }
+        }
+      ],
+      "wall_ms": 15745,
+      "tokens": {
+        "llm_in": 9203,
+        "llm_out": 1061,
+        "jev_total": 5063,
+        "est_in": 8000,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_ann_01",
+      "category": "READ",
+      "prompt": "Покажи последние объявления",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "276ebb35-f6fd-47bb-aba6-1b81105776b8",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "26c9ca8f-8431-46fa-88ea-f8e25657bc2d",
+        "intent_mode": null,
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "26c9ca8f-8431-46fa-88ea-f8e25657bc2d",
+        "sender_ok": true,
+        "len": 725,
+        "head": "Найдено 20 объявлений, ниже приведены последние 10 публикаций.\n\n## Последние объявления\n\n| Заголовок | Приоритет | Дата публикации |\n| :--- | :--- | :--- |\n| Бенч-объявление 20 | Обычный | 25.11.2026 09:37 |\n| Бенч-объявление 19 | Обычный | 25.11.2026 09:37 |\n| Бенч-объявление 18 | Обычный | 25.11.2",
+        "body": "Найдено 20 объявлений, ниже приведены последние 10 публикаций.\n\n## Последние объявления\n\n| Заголовок | Приоритет | Дата публикации |\n| :--- | :--- | :--- |\n| Бенч-объявление 20 | Обычный | 25.11.2026 09:37 |\n| Бенч-объявление 19 | Обычный | 25.11.2026 09:37 |\n| Бенч-объявление 18 | Обычный | 25.11.2026 09:37 |\n| Бенч-объявление 17 | Обычный | 25.11.2026 09:37 |\n| Бенч-объявление 16 | Обычный | 25.11.2026 09:37 |\n| Бенч-объявление 15 | Обычный | 25.11.2026 09:37 |\n| Бенч-объявление 14 | Обычный | 25.11.2026 09:37 |\n| Бенч-объявление 13 | Обычный | 25.11.2026 09:37 |\n| Бенч-объявление 12 | Обычный | 25.11.2026 09:37 |\n| Бенч-объявление 11 | Обычный | 25.11.2026 09:37 |\n\n*Показано 10 из 20.*\n\nИсточник: Hub / Объявления"
+      },
+      "tools": {
+        "proposed": [
+          "ai.request_tool_group",
+          "ai.request_tool_group",
+          "office.announcements.list"
+        ],
+        "executed": [
+          {
+            "tool_id": "ai.request_tool_group",
+            "args": {
+              "group": "kb",
+              "reason": "Поиск корпоративных объявлений и новостей в базе знаний"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 0,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": null,
+            "result_count": null,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "ai.request_tool_group",
+            "args": {
+              "group": "office",
+              "reason": "Поиск информационных рассылок и объявлений в почте"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 0,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": null,
+            "result_count": null,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "office.announcements.list",
+            "args": {
+              "limit": 10
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 5,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 20,
+            "result_count": 10,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "ai.request_tool_group",
+          "ai.request_tool_group",
+          "office.announcements.list"
+        ],
+        "expected_hit": [
+          "office.announcements.*"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "Бенч-объявление"
+        ],
+        "found": [
+          "Бенч-объявление"
+        ],
+        "missing": [],
+        "forbidden": [],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.41
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.22
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.18
+          }
+        }
+      ],
+      "wall_ms": 17591,
+      "tokens": {
+        "llm_in": 21467,
+        "llm_out": 1443,
+        "jev_total": 5035,
+        "est_in": 18129,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_direct_neg",
+      "category": "DIRECT",
+      "prompt": "Не показывай мой телефон",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "d2b48e24-e901-4b6c-934e-3cb0daaf49df",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "adf00d25-3fc4-4991-8854-84c4e96a1666",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "adf00d25-3fc4-4991-8854-84c4e96a1666",
+        "sender_ok": true,
+        "len": 275,
+        "head": "Принято, предпочтение сохранено. Ваш номер телефона не будет отображаться в ответах.\n\n## Настройки конфиденциальности\n- Отображение личного номера телефона отключено.\n- Если потребуется изменить или сбросить настройки, просто напишите об этом.\n\n_Учтена личная память: 1 факт_",
+        "body": "Принято, предпочтение сохранено. Ваш номер телефона не будет отображаться в ответах.\n\n## Настройки конфиденциальности\n- Отображение личного номера телефона отключено.\n- Если потребуется изменить или сбросить настройки, просто напишите об этом.\n\n_Учтена личная память: 1 факт_"
+      },
+      "tools": {
+        "proposed": [],
+        "executed": [],
+        "executed_ids": [],
+        "expected_hit": [],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [],
+        "found": [],
+        "missing": [],
+        "forbidden": [],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {
+          "direct_read_hit": false,
+          "fast_path_hit": false
+        },
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.19
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.22
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.18
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.64
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.17
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.56
+          }
+        }
+      ],
+      "wall_ms": 10329,
+      "tokens": {
+        "llm_in": 7266,
+        "llm_out": 490,
+        "jev_total": 5043,
+        "est_in": 6821,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 2
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_emp_dept",
+      "category": "READ",
+      "prompt": "В каком отделе работает Бенч Сотрудник 015?",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "c2c550e8-6222-480d-94dd-9b89f76cc4c4",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "4b66508e-03a2-45aa-875d-0760a9ffe171",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "4b66508e-03a2-45aa-875d-0760a9ffe171",
+        "sender_ok": true,
+        "len": 381,
+        "head": "Сотрудник **Бенч Сотрудник 015** работает в отделе **Бенч-Отдел-05** на должности **инженер**.\n\n## Информация о сотруднике\n- **ФИО:** Бенч Сотрудник 015\n- **Должность:** инженер\n- **Подразделение:** Бенч-Отдел-05\n- **Кабинет / рабочее место:** каб. 115 (WP-015)\n- **Рабочий телефон:** +7-000-0015\n- *",
+        "body": "Сотрудник **Бенч Сотрудник 015** работает в отделе **Бенч-Отдел-05** на должности **инженер**.\n\n## Информация о сотруднике\n- **ФИО:** Бенч Сотрудник 015\n- **Должность:** инженер\n- **Подразделение:** Бенч-Отдел-05\n- **Кабинет / рабочее место:** каб. 115 (WP-015)\n- **Рабочий телефон:** +7-000-0015\n- **Рабочий email:** bench015@bench.local\n\nИсточник: Справочник сотрудников (1С:ЗУП)"
+      },
+      "tools": {
+        "proposed": [
+          "directory.people.search",
+          "itinvent.employee.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "directory.people.search",
+            "args": {
+              "query": "Бенч Сотрудник 015"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 1,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 1,
+            "result_count": 1,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "itinvent.employee.search",
+            "args": {
+              "query": "Бенч Сотрудник 015"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 34,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 0,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "directory.people.search",
+          "itinvent.employee.search"
+        ],
+        "expected_hit": [
+          "directory.people.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "Бенч-Отдел-05"
+        ],
+        "found": [
+          "Бенч-Отдел-05"
+        ],
+        "missing": [],
+        "forbidden": [
+          "Бенч-Отдел-06",
+          "Бенч-Отдел-04"
+        ],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.51
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.88
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.2
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.18
+          }
+        }
+      ],
+      "wall_ms": 16406,
+      "tokens": {
+        "llm_in": 13988,
+        "llm_out": 1148,
+        "jev_total": 5073,
+        "est_in": 13205,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_emp_phone2",
+      "category": "READ",
+      "prompt": "Какой телефон у Бенч Сотрудник 033?",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "01d1f62e-171a-469d-b489-5a706af30cea",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "f7e4b8b8-d02c-4972-a4a8-8898e0bf7388",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "f7e4b8b8-d02c-4972-a4a8-8898e0bf7388",
+        "sender_ok": true,
+        "len": 358,
+        "head": "Рабочий телефон сотрудника Бенч Сотрудник 033: **+7-000-0033**.\n\n## Контактная информация\n- **Сотрудник:** Бенч Сотрудник 033\n- **Должность:** ведущий специалист\n- **Подразделение:** Бенч-Отдел-03\n- **Рабочий телефон:** +7-000-0033\n- **Рабочая почта:** bench033@bench.local\n- **Кабинет:** 133 (рабоче",
+        "body": "Рабочий телефон сотрудника Бенч Сотрудник 033: **+7-000-0033**.\n\n## Контактная информация\n- **Сотрудник:** Бенч Сотрудник 033\n- **Должность:** ведущий специалист\n- **Подразделение:** Бенч-Отдел-03\n- **Рабочий телефон:** +7-000-0033\n- **Рабочая почта:** bench033@bench.local\n- **Кабинет:** 133 (рабочее место WP-033)\n\nИсточник: 1C:ЗУП / Справочник сотрудников"
+      },
+      "tools": {
+        "proposed": [
+          "directory.people.search",
+          "itinvent.user.by_name"
+        ],
+        "executed": [
+          {
+            "tool_id": "directory.people.search",
+            "args": {
+              "query": "Бенч Сотрудник 033"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 1,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 1,
+            "result_count": 1,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "itinvent.user.by_name",
+            "args": {
+              "name": "Бенч Сотрудник 033"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 42,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": null,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "directory.people.search",
+          "itinvent.user.by_name"
+        ],
+        "expected_hit": [
+          "directory.people.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "+7-000-0033"
+        ],
+        "found": [
+          "+7-000-0033"
+        ],
+        "missing": [],
+        "forbidden": [],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.65
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.95
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.16
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          }
+        }
+      ],
+      "wall_ms": 18465,
+      "tokens": {
+        "llm_in": 13956,
+        "llm_out": 1363,
+        "jev_total": 5069,
+        "est_in": 13174,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_org_01",
+      "category": "READ",
+      "prompt": "Кто работает в отделе Бенч-Отдел-03?",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "bc974d32-3d25-4fc6-8262-e45b89e433c5",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "aec2665c-fef7-48da-b52a-233f29623893",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "aec2665c-fef7-48da-b52a-233f29623893",
+        "sender_ok": true,
+        "len": 1073,
+        "head": "В отделе «Бенч-Отдел-03» найдено 10 сотрудников.\n\n## Сотрудники отдела\n\n| ФИО | Должность | Кабинет | Телефон | Эл. почта |\n| :--- | :--- | :--- | :--- | :--- |\n| Бенч Сотрудник 003 | ведущий специалист | 103 | +7-000-0003 | bench003@bench.local |\n| Бенч Сотрудник 013 | ведущий специалист | 113 | +7",
+        "body": "В отделе «Бенч-Отдел-03» найдено 10 сотрудников.\n\n## Сотрудники отдела\n\n| ФИО | Должность | Кабинет | Телефон | Эл. почта |\n| :--- | :--- | :--- | :--- | :--- |\n| Бенч Сотрудник 003 | ведущий специалист | 103 | +7-000-0003 | bench003@bench.local |\n| Бенч Сотрудник 013 | ведущий специалист | 113 | +7-000-0013 | bench013@bench.local |\n| Бенч Сотрудник 023 | ведущий специалист | 123 | +7-000-0023 | bench023@bench.local |\n| Бенч Сотрудник 033 | ведущий специалист | 133 | +7-000-0033 | bench033@bench.local |\n| Бенч Сотрудник 043 | ведущий специалист | 143 | +7-000-0043 | bench043@bench.local |\n| Бенч Сотрудник 053 | ведущий специалист | 153 | +7-000-0053 | bench053@bench.local |\n| Бенч Сотрудник 063 | ведущий специалист | 163 | +7-000-0063 | bench063@bench.local |\n| Бенч Сотрудник 073 | ведущий специалист | 173 | +7-000-0073 | bench073@bench.local |\n| Бенч Сотрудник 083 | ведущий специалист | 183 | +7-000-0083 | bench083@bench.local |\n| Бенч Сотрудник 093 | ведущий специалист | 193 | +7-000-0093 | bench093@bench.local |\n\nИсточник: 1С:ЗУП / Справочник сотрудников"
+      },
+      "tools": {
+        "proposed": [
+          "directory.people.search",
+          "directory.department.get"
+        ],
+        "executed": [
+          {
+            "tool_id": "directory.people.search",
+            "args": {
+              "department": "Бенч-Отдел-03"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 2,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 10,
+            "result_count": 10,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "directory.department.get",
+            "args": {
+              "query": "Бенч-Отдел-03"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 14,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": null,
+            "result_count": 1,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "directory.people.search",
+          "directory.department.get"
+        ],
+        "expected_hit": [
+          "directory.*"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "Бенч Сотрудник 003",
+          "Бенч Сотрудник 013",
+          "Бенч Сотрудник 023",
+          "Бенч Сотрудник 033",
+          "Бенч Сотрудник 043",
+          "Бенч Сотрудник 053",
+          "Бенч Сотрудник 063",
+          "Бенч Сотрудник 073",
+          "Бенч Сотрудник 083",
+          "Бенч Сотрудник 093"
+        ],
+        "found": [
+          "Бенч Сотрудник 003",
+          "Бенч Сотрудник 013",
+          "Бенч Сотрудник 023",
+          "Бенч Сотрудник 033",
+          "Бенч Сотрудник 043",
+          "Бенч Сотрудник 053",
+          "Бенч Сотрудник 063",
+          "Бенч Сотрудник 073",
+          "Бенч Сотрудник 083",
+          "Бенч Сотрудник 093"
+        ],
+        "missing": [],
+        "forbidden": [
+          "Бенч Сотрудник 004",
+          "Бенч Сотрудник 012"
+        ],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.78
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.92
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.25
+          }
+        }
+      ],
+      "wall_ms": 20836,
+      "tokens": {
+        "llm_in": 8663,
+        "llm_out": 2182,
+        "jev_total": 5069,
+        "est_in": 7202,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_tasks_status",
+      "category": "READ",
+      "prompt": "Покажи мои задачи в работе",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "28be5abf-c9dc-4ab6-950c-b9fc8da62c72",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "e5654577-cbe4-434d-90c7-063eb5adfbc9",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "e5654577-cbe4-434d-90c7-063eb5adfbc9",
+        "sender_ok": true,
+        "len": 459,
+        "head": "У вас в работе 4 задачи, из них 3 просрочены.\n\n## Задачи в работе\n\n| Задача | Приоритет | Срок | Контролёр | Статус срока |\n| :--- | :--- | :--- | :--- | :--- |\n| Бенч-задача 008 | Высокий | 26.11.2026 | Bench Admin | В срок |\n| Бенч-задача 006 | Низкий | 24.11.2026 | Bench Admin | Просрочена |\n| Бе",
+        "body": "У вас в работе 4 задачи, из них 3 просрочены.\n\n## Задачи в работе\n\n| Задача | Приоритет | Срок | Контролёр | Статус срока |\n| :--- | :--- | :--- | :--- | :--- |\n| Бенч-задача 008 | Высокий | 26.11.2026 | Bench Admin | В срок |\n| Бенч-задача 006 | Низкий | 24.11.2026 | Bench Admin | Просрочена |\n| Бенч-задача 004 | Обычный | 22.11.2026 | Bench Admin | Просрочена |\n| Бенч-задача 002 | Высокий | 20.11.2026 | Bench Admin | Просрочена |\n\nИсточник: Hub / Задачи"
+      },
+      "tools": {
+        "proposed": [
+          "office.tasks.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "office.tasks.search",
+            "args": {
+              "scope": "my",
+              "status": "in_progress"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 8,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 4,
+            "result_count": 4,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "office.tasks.search"
+        ],
+        "expected_hit": [
+          "office.tasks.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "Бенч-задача 002",
+          "Бенч-задача 004",
+          "Бенч-задача 006",
+          "Бенч-задача 008"
+        ],
+        "found": [
+          "Бенч-задача 002",
+          "Бенч-задача 004",
+          "Бенч-задача 006",
+          "Бенч-задача 008"
+        ],
+        "missing": [],
+        "forbidden": [
+          "Бенч-задача 001",
+          "Бенч-задача 009"
+        ],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {
+          "tool_result_total": 4
+        },
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.14
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.38
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          }
+        }
+      ],
+      "wall_ms": 17832,
+      "tokens": {
+        "llm_in": 9681,
+        "llm_out": 1432,
+        "jev_total": 5039,
+        "est_in": 8218,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_kb_01",
+      "category": "READ",
+      "prompt": "Найди в базе знаний инструкцию Бенч-инструкция 03",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "85780af8-f8d2-4cde-80ce-a8f0b3025253",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "5bfdd073-0c2a-4735-8b2e-88bbc9569476",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "5bfdd073-0c2a-4735-8b2e-88bbc9569476",
+        "sender_ok": true,
+        "len": 488,
+        "head": "Инструкция «Бенч-инструкция 03» в базе знаний не найдена.\n\n## Результаты поиска\nПо запросу «Бенч-инструкция 03» и смежным ключевым словам статьи и прикреплённые документы отсутствуют.\n\nДля поиска нужного материала уточните:\n- Тематику или назначение регламента (например, настройка рабочего места, те",
+        "body": "Инструкция «Бенч-инструкция 03» в базе знаний не найдена.\n\n## Результаты поиска\nПо запросу «Бенч-инструкция 03» и смежным ключевым словам статьи и прикреплённые документы отсутствуют.\n\nДля поиска нужного материала уточните:\n- Тематику или назначение регламента (например, настройка рабочего места, тестирование оборудования, подготовка ПК);\n- Альтернативное или полное название документа;\n- Категорию или информационную систему, к которой относится инструкция.\n\nИсточник: KB / База знаний"
+      },
+      "tools": {
+        "proposed": [
+          "kb.articles.search",
+          "kb.articles.search",
+          "kb.articles.search",
+          "kb.articles.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "kb.articles.search",
+            "args": {
+              "query": "Бенч-инструкция 03"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 2,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 0,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "kb.articles.search",
+            "args": {
+              "query": "Бенч"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 1,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 0,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "kb.articles.search",
+            "args": {
+              "query": "Бенч"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 1,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 0,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "kb.articles.search",
+            "args": {
+              "query": "Bench"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 1,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 0,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "kb.articles.search",
+          "kb.articles.search",
+          "kb.articles.search",
+          "kb.articles.search"
+        ],
+        "expected_hit": [
+          "kb.articles.*"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [],
+        "found": [],
+        "missing": [],
+        "forbidden": [],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 5,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.97
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.12
+          }
+        }
+      ],
+      "wall_ms": 23787,
+      "tokens": {
+        "llm_in": 14923,
+        "llm_out": 1333,
+        "jev_total": 5091,
+        "est_in": 13153,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 5
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_files_01",
+      "category": "READ",
+      "prompt": "Найди мой файл bench-doc-007.txt",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "degraded",
+      "correctness": "FAIL",
+      "run": {
+        "id": "22af7e89-f3a2-4b11-9b58-8ae7fbd3eb04",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "45f6a16a-3289-4ced-ae41-405c96182a97",
+        "intent_mode": null,
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "45f6a16a-3289-4ced-ae41-405c96182a97",
+        "sender_ok": true,
+        "len": 381,
+        "head": "Файл **bench-doc-007.txt** не найден среди ваших задач в Hub, а поиск по почте недоступен.\n\n## Результаты поиска\n\n- **Задачи Hub:** совпадений по запросу `bench-doc-007.txt` не найдено.\n- **Корпоративная почта:** поиск не выполнен (почтовый ящик не привязан к учётной записи).\n\nЕсли файл отправлялся ",
+        "body": "Файл **bench-doc-007.txt** не найден среди ваших задач в Hub, а поиск по почте недоступен.\n\n## Результаты поиска\n\n- **Задачи Hub:** совпадений по запросу `bench-doc-007.txt` не найдено.\n- **Корпоративная почта:** поиск не выполнен (почтовый ящик не привязан к учётной записи).\n\nЕсли файл отправлялся в чате или хранится в базе знаний, уточните место поиска.\n\nИсточник: Hub / Office"
+      },
+      "tools": {
+        "proposed": [
+          "ai.request_tool_group",
+          "office.mail.search",
+          "office.tasks.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "ai.request_tool_group",
+            "args": {
+              "group": "office",
+              "reason": "Поиск файла bench-doc-007.txt в почте и документах"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 0,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": null,
+            "result_count": null,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "office.mail.search",
+            "args": {
+              "q": "bench-doc-007.txt",
+              "folder_scope": "all"
+            },
+            "state": "error",
+            "error": "Mailbox email is not configured",
+            "latency_ms": null,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": null,
+            "result_count": null,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "office.tasks.search",
+            "args": {
+              "q": "bench-doc-007.txt"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 2,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 0,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "ai.request_tool_group",
+          "office.mail.search",
+          "office.tasks.search"
+        ],
+        "expected_hit": [],
+        "expected_missing": [
+          "me.files.search"
+        ],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "bench-doc-007"
+        ],
+        "found": [
+          "bench-doc-007"
+        ],
+        "missing": [],
+        "forbidden": [
+          "bench-doc-008",
+          "bench-doc-006"
+        ],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [
+          {
+            "tool_id": "office.mail.search",
+            "error": "Mailbox email is not configured"
+          }
+        ],
+        "harness": null
+      },
+      "llm_calls": 4,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          }
+        }
+      ],
+      "wall_ms": 25434,
+      "tokens": {
+        "llm_in": 19186,
+        "llm_out": 1922,
+        "jev_total": 5047,
+        "est_in": 16231,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 4
+      },
+      "fallback_reasons": [
+        "tool_error"
+      ]
+    },
+    {
+      "id": "sd_acl_meonly",
+      "category": "READ",
+      "prompt": "Покажи все задачи в системе",
+      "actor": "bench_me_only",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "e5fbb6a3-ca81-495f-8c18-9e90ae958d2c",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "19241292-c697-49c9-85d8-ff385b5b2298",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "19241292-c697-49c9-85d8-ff385b5b2298",
+        "sender_ok": true,
+        "len": 1156,
+        "head": "Всего найдено 18 задач с вашим участием (доступ ограничен правами пользователя).\n\n## Список задач\n\n| Название | Статус | Приоритет | Срок | Просрочена |\n| :--- | :--- | :--- | :--- | :--- |\n| Бенч-задача 092 | Новая | Высокий | 26.11.2026 | Нет |\n| Бенч-задача 072 | Новая | Низкий | 20.11.2026 | Да ",
+        "body": "Всего найдено 18 задач с вашим участием (доступ ограничен правами пользователя).\n\n## Список задач\n\n| Название | Статус | Приоритет | Срок | Просрочена |\n| :--- | :--- | :--- | :--- | :--- |\n| Бенч-задача 092 | Новая | Высокий | 26.11.2026 | Нет |\n| Бенч-задача 072 | Новая | Низкий | 20.11.2026 | Да |\n| Бенч-задача 052 | Новая | Обычный | 28.11.2026 | Нет |\n| Бенч-задача 032 | Новая | Высокий | 22.11.2026 | Да |\n| Бенч-задача 012 | Новая | Низкий | 30.11.2026 | Нет |\n| Бенч-задача 097 | В работе | Обычный | 01.12.2026 | Нет |\n| Бенч-задача 077 | В работе | Высокий | 25.11.2026 | Да |\n| Бенч-задача 057 | В работе | Низкий | 19.11.2026 | Да |\n| Бенч-задача 037 | В работе | Обычный | 27.11.2026 | Нет |\n| Бенч-задача 017 | В работе | Высокий | 21.11.2026 | Да |\n| Бенч-задача 082 | На проверке | Обычный | 30.11.2026 | Нет |\n| Бенч-задача 062 | На проверке | Высокий | 24.11.2026 | Да |\n| Бенч-задача 042 | На проверке | Низкий | 18.11.2026 | Да |\n| Бенч-задача 022 | На проверке | Обычный | 26.11.2026 | Нет |\n| Бенч-задача 087 | Завершена | Низкий | 21.11.2026 | Нет |\n\n*Примечание: показаны первые 15 из 18 найденных задач.*\n\nИсточник: Hub / Задачи"
+      },
+      "tools": {
+        "proposed": [
+          "office.tasks.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "office.tasks.search",
+            "args": {
+              "scope": "all"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 12,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 18,
+            "result_count": 18,
+            "scope_downgraded": true,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "office.tasks.search"
+        ],
+        "expected_hit": [
+          "office.tasks.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "Бенч-задача"
+        ],
+        "found": [
+          "Бенч-задача"
+        ],
+        "missing": [],
+        "forbidden": [
+          "Бенч-задача 001",
+          "Бенч-задача 002",
+          "Бенч-задача 005",
+          "Бенч-задача 009",
+          "Бенч-задача 011"
+        ],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.95
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          }
+        }
+      ],
+      "wall_ms": 13314,
+      "tokens": {
+        "llm_in": 10874,
+        "llm_out": 1443,
+        "jev_total": 2902,
+        "est_in": 8544,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 2
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_acl_scopeall",
+      "category": "READ",
+      "prompt": "Покажи все задачи в системе, без ограничений",
+      "actor": "bench_tasks",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "deb11737-0c0e-48ef-80c7-4eebfcd5986e",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "d72ed6ad-c646-40da-b09e-c69b2afafd47",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "d72ed6ad-c646-40da-b09e-c69b2afafd47",
+        "sender_ok": true,
+        "len": 1411,
+        "head": "Найдено 18 задач, доступных вам в системе (область видимости ограничена задачами с вашим участием в соответствии с правами доступа).\n\n## Список задач\n\n| Задача | Статус | Приоритет | Исполнитель | Срок | Просрочена |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n| Бенч-задача 088 | Новая | Обычный | B",
+        "body": "Найдено 18 задач, доступных вам в системе (область видимости ограничена задачами с вашим участием в соответствии с правами доступа).\n\n## Список задач\n\n| Задача | Статус | Приоритет | Исполнитель | Срок | Просрочена |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n| Бенч-задача 088 | Новая | Обычный | Bench Tasks | 22.11.2026 | Да |\n| Бенч-задача 068 | Новая | Высокий | Bench Tasks | 30.11.2026 | Нет |\n| Бенч-задача 048 | Новая | Низкий | Bench Tasks | 24.11.2026 | Да |\n| Бенч-задача 028 | Новая | Обычный | Bench Tasks | 18.11.2026 | Да |\n| Бенч-задача 093 | В работе | Низкий | Bench Tasks | 27.11.2026 | Нет |\n| Бенч-задача 073 | В работе | Обычный | Bench Tasks | 21.11.2026 | Да |\n| Бенч-задача 053 | В работе | Высокий | Bench Tasks | 29.11.2026 | Нет |\n| Бенч-задача 033 | В работе | Низкий | Bench Tasks | 23.11.2026 | Да |\n| Бенч-задача 013 | В работе | Обычный | Bench Tasks | 01.12.2026 | Нет |\n| Бенч-задача 098 | На проверке | Высокий | Bench Tasks | 18.11.2026 | Да |\n| Бенч-задача 078 | На проверке | Низкий | Bench Tasks | 26.11.2026 | Нет |\n| Бенч-задача 058 | На проверке | Обычный | Bench Tasks | 20.11.2026 | Да |\n| Бенч-задача 038 | На проверке | Высокий | Bench Tasks | 28.11.2026 | Нет |\n| Бенч-задача 018 | На проверке | Низкий | Bench Tasks | 22.11.2026 | Да |\n| Бенч-задача 083 | Завершена | Высокий | Bench Tasks | 01.12.2026 | Нет |\n\n*Показано 15 из 18 задач.*\n\nИсточник: Задачи Hub"
+      },
+      "tools": {
+        "proposed": [
+          "office.tasks.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "office.tasks.search",
+            "args": {
+              "scope": "all",
+              "limit": 50
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 9,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 18,
+            "result_count": 18,
+            "scope_downgraded": true,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "office.tasks.search"
+        ],
+        "expected_hit": [
+          "office.tasks.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "Бенч-задача"
+        ],
+        "found": [
+          "Бенч-задача"
+        ],
+        "missing": [],
+        "forbidden": [
+          "Бенч-задача 001",
+          "Бенч-задача 009",
+          "Бенч-задача 011",
+          "Бенч-задача 012",
+          "Бенч-задача 014"
+        ],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {
+          "scope_downgraded": true
+        },
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 2,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.1
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.96
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          }
+        }
+      ],
+      "wall_ms": 15525,
+      "tokens": {
+        "llm_in": 10875,
+        "llm_out": 2115,
+        "jev_total": 2928,
+        "est_in": 8562,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 2
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_acl_foreign",
+      "category": "READ",
+      "prompt": "Открой задачу «Бенч-задача 001» и перескажи её описание",
+      "actor": "bench_tasks",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "1aef6d26-22b8-42d4-ae4e-545b01814228",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "8a796f8a-adcf-4677-a21c-6081fecbd788",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "8a796f8a-adcf-4677-a21c-6081fecbd788",
+        "sender_ok": true,
+        "len": 494,
+        "head": "Задача «Бенч-задача 001» не найдена среди доступных задач в Hub.\n\n## Результаты поиска\n\n- По прямому запросу «Бенч-задача 001» и номеру «001» задачи не обнаружены.\n- Поиск ограничен задачами, в которых вы являетесь участником (исполнителем, постановщиком или аудитором).\n- Среди доступных задач прису",
+        "body": "Задача «Бенч-задача 001» не найдена среди доступных задач в Hub.\n\n## Результаты поиска\n\n- По прямому запросу «Бенч-задача 001» и номеру «001» задачи не обнаружены.\n- Поиск ограничен задачами, в которых вы являетесь участником (исполнителем, постановщиком или аудитором).\n- Среди доступных задач присутствуют другие задачи серии (например, «Бенч-задача 013», «Бенч-задача 018», «Бенч-задача 028» и др.).\n\nУточните название или проверьте, назначен ли вам доступ к требуемой задаче.\n\nИсточник: Hub"
+      },
+      "tools": {
+        "proposed": [
+          "office.tasks.search",
+          "office.tasks.search",
+          "office.tasks.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "office.tasks.search",
+            "args": {
+              "q": "Бенч-задача 001"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 1,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 0,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "office.tasks.search",
+            "args": {
+              "q": "Бенч",
+              "scope": "all"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 6,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 18,
+            "result_count": 18,
+            "scope_downgraded": true,
+            "truncated": false
+          },
+          {
+            "tool_id": "office.tasks.search",
+            "args": {
+              "q": "001",
+              "scope": "all"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 1,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 0,
+            "result_count": 0,
+            "scope_downgraded": true,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "office.tasks.search",
+          "office.tasks.search",
+          "office.tasks.search"
+        ],
+        "expected_hit": [
+          "office.tasks.*"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [],
+        "found": [],
+        "missing": [],
+        "forbidden": [
+          "Синтетическая тестовая задача 001"
+        ],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.93
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          }
+        }
+      ],
+      "wall_ms": 17084,
+      "tokens": {
+        "llm_in": 15640,
+        "llm_out": 1387,
+        "jev_total": 2964,
+        "est_in": 12698,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_acl_tasks",
+      "category": "READ",
+      "prompt": "Покажи мои задачи",
+      "actor": "bench_tasks",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "132a103a-e453-4f2b-b951-54a6a042a1f2",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "0c42bd78-d60d-4b2a-8030-6f0ab8105c8c",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "0c42bd78-d60d-4b2a-8030-6f0ab8105c8c",
+        "sender_ok": true,
+        "len": 1250,
+        "head": "У вас найдено 14 активных задач в Hub, из них 8 отмечены как просроченные.\n\n## Список задач\n\n| Задача | Статус | Приоритет | Срок | Просрочена | Контролёр |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n| Бенч-задача 028 | Новая | Обычный | 18.11.2026 | Да | Bench Admin |\n| Бенч-задача 098 | На провер",
+        "body": "У вас найдено 14 активных задач в Hub, из них 8 отмечены как просроченные.\n\n## Список задач\n\n| Задача | Статус | Приоритет | Срок | Просрочена | Контролёр |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n| Бенч-задача 028 | Новая | Обычный | 18.11.2026 | Да | Bench Admin |\n| Бенч-задача 098 | На проверке | Высокий | 18.11.2026 | Да | Bench Admin |\n| Бенч-задача 058 | На проверке | Обычный | 20.11.2026 | Да | Bench Admin |\n| Бенч-задача 073 | В работе | Обычный | 21.11.2026 | Да | Bench Admin |\n| Бенч-задача 018 | На проверке | Низкий | 22.11.2026 | Да | Bench Admin |\n| Бенч-задача 088 | Новая | Обычный | 22.11.2026 | Да | Bench Admin |\n| Бенч-задача 033 | В работе | Низкий | 23.11.2026 | Да | Bench Admin |\n| Бенч-задача 048 | Новая | Низкий | 24.11.2026 | Да | Bench Admin |\n| Бенч-задача 078 | На проверке | Низкий | 26.11.2026 | Нет | Bench Admin |\n| Бенч-задача 093 | В работе | Низкий | 27.11.2026 | Нет | Bench Admin |\n| Бенч-задача 038 | На проверке | Высокий | 28.11.2026 | Нет | Bench Admin |\n| Бенч-задача 053 | В работе | Высокий | 29.11.2026 | Нет | Bench Admin |\n| Бенч-задача 068 | Новая | Высокий | 30.11.2026 | Нет | Bench Admin |\n| Бенч-задача 013 | В работе | Обычный | 01.12.2026 | Нет | Bench Admin |\n\nИсточник: Hub / Задачи"
+      },
+      "tools": {
+        "proposed": [
+          "office.tasks.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "office.tasks.search",
+            "args": {
+              "scope": "my",
+              "status": "open"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 15,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 14,
+            "result_count": 14,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "office.tasks.search"
+        ],
+        "expected_hit": [
+          "office.tasks.search"
+        ],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "Бенч-задача"
+        ],
+        "found": [
+          "Бенч-задача"
+        ],
+        "missing": [],
+        "forbidden": [
+          "Бенч-задача 001",
+          "Бенч-задача 012"
+        ],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {},
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.98
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          }
+        }
+      ],
+      "wall_ms": 20609,
+      "tokens": {
+        "llm_in": 11188,
+        "llm_out": 1997,
+        "jev_total": 2898,
+        "est_in": 8689,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_direct_cmp",
+      "category": "DIRECT",
+      "prompt": "Сравни телефон Бенч Сотрудник 001 и телефон Бенч Сотрудник 002",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "46add7a9-f711-4f1a-811b-5c08307fccde",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "486ac5e4-29b3-4d25-b2ae-f76ddf403cda",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "486ac5e4-29b3-4d25-b2ae-f76ddf403cda",
+        "sender_ok": true,
+        "len": 445,
+        "head": "Рабочий телефон сотрудника Бенч Сотрудник 001 — **+7-000-0001**, сотрудника Бенч Сотрудник 002 — **+7-000-0002**.\n\n## Сравнение контактов\n\n| Сотрудник | Должность | Подразделение | Рабочий телефон | Кабинет |\n| :--- | :--- | :--- | :--- | :--- |\n| **Бенч Сотрудник 001** | Старший инженер | Бенч-Отде",
+        "body": "Рабочий телефон сотрудника Бенч Сотрудник 001 — **+7-000-0001**, сотрудника Бенч Сотрудник 002 — **+7-000-0002**.\n\n## Сравнение контактов\n\n| Сотрудник | Должность | Подразделение | Рабочий телефон | Кабинет |\n| :--- | :--- | :--- | :--- | :--- |\n| **Бенч Сотрудник 001** | Старший инженер | Бенч-Отдел-01 | +7-000-0001 | 101 |\n| **Бенч Сотрудник 002** | Специалист | Бенч-Отдел-02 | +7-000-0002 | 102 |\n\nИсточник: 1C:ЗУП / Справочник сотрудников"
+      },
+      "tools": {
+        "proposed": [
+          "itinvent.employee.search",
+          "itinvent.employee.search",
+          "directory.people.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "itinvent.employee.search",
+            "args": {
+              "query": "Бенч Сотрудник 001"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 60,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 0,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "itinvent.employee.search",
+            "args": {
+              "query": "Бенч Сотрудник 002"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 59,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 0,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "directory.people.search",
+            "args": {
+              "query": "Бенч Сотрудник"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 3,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 100,
+            "result_count": 10,
+            "scope_downgraded": false,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "itinvent.employee.search",
+          "itinvent.employee.search",
+          "directory.people.search"
+        ],
+        "expected_hit": [],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [
+          "+7-000-0001",
+          "+7-000-0002"
+        ],
+        "found": [
+          "+7-000-0001",
+          "+7-000-0002"
+        ],
+        "missing": [],
+        "forbidden": [],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {
+          "direct_read_hit": false
+        },
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 3,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.17
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.65
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.77
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.04
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.13
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.11
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.08
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.24
+          }
+        }
+      ],
+      "wall_ms": 19213,
+      "tokens": {
+        "llm_in": 14743,
+        "llm_out": 1894,
+        "jev_total": 5105,
+        "est_in": 13520,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 3
+      },
+      "fallback_reasons": []
+    },
+    {
+      "id": "sd_direct_why",
+      "category": "DIRECT",
+      "prompt": "Почему у меня нет доступа к задачам?",
+      "actor": "bench_actor",
+      "attempt": 1,
+      "outcome": "completed",
+      "correctness": "PASS",
+      "run": {
+        "id": "4ba63424-ee1e-4b40-9ddc-3158157ed9ec",
+        "status": "completed",
+        "stage": "completed",
+        "error_text": null,
+        "result_message_id": "08b78373-9549-4adf-b00b-c4f140217620",
+        "intent_mode": "read",
+        "harness_exception": null
+      },
+      "answer": {
+        "message_id": "08b78373-9549-4adf-b00b-c4f140217620",
+        "sender_ok": true,
+        "len": 776,
+        "head": "У вас есть доступ к модулю задач, однако уровень прав ограничен задачами, в которых вы являетесь исполнителем, постановщиком или контролёром.\n\n## Текущие права и ограничения\n- **Доступные задачи:** отображаются только те задачи, в которых вы принимаете непосредственное участие (сейчас за вами числит",
+        "body": "У вас есть доступ к модулю задач, однако уровень прав ограничен задачами, в которых вы являетесь исполнителем, постановщиком или контролёром.\n\n## Текущие права и ограничения\n- **Доступные задачи:** отображаются только те задачи, в которых вы принимаете непосредственное участие (сейчас за вами числится 10 задач).\n- **Все задачи компании:** общий доступ ко всем задачам организации ограничен политикой прав доступа и доступен только руководителям или администраторам.\n\n## Доступные проекты\n- **Бенч-проект** (`BENCH`)\n- **Общие задачи** (`GENERAL`)\n\n## Как получить расширенный доступ\nЕсли вам требуется просматривать задачи коллег, других отделов или проектов, согласуйте запрос с вашим непосредственным руководителем и оформите заявку в IT-поддержку.\n\nИсточник: Hub / Задачи"
+      },
+      "tools": {
+        "proposed": [
+          "kb.articles.search",
+          "office.tasks.projects",
+          "office.tasks.search"
+        ],
+        "executed": [
+          {
+            "tool_id": "kb.articles.search",
+            "args": {
+              "query": "доступ к задачам Hub"
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 1,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 0,
+            "result_count": 0,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "office.tasks.projects",
+            "args": {
+              "include_inactive": false
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 0,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": null,
+            "result_count": 2,
+            "scope_downgraded": false,
+            "truncated": false
+          },
+          {
+            "tool_id": "office.tasks.search",
+            "args": {
+              "scope": "all",
+              "limit": 5
+            },
+            "state": "ok",
+            "error": null,
+            "latency_ms": 7,
+            "database_id": "ITINVENT",
+            "items": null,
+            "rows": null,
+            "total": null,
+            "result_total": 10,
+            "result_count": 5,
+            "scope_downgraded": true,
+            "truncated": false
+          }
+        ],
+        "executed_ids": [
+          "kb.articles.search",
+          "office.tasks.projects",
+          "office.tasks.search"
+        ],
+        "expected_hit": [],
+        "expected_missing": [],
+        "forbidden_hit": []
+      },
+      "facts": {
+        "required": [],
+        "found": [],
+        "missing": [],
+        "forbidden": [],
+        "forbidden_hit": []
+      },
+      "expect": {
+        "spec": {
+          "direct_read_hit": false
+        },
+        "failures": []
+      },
+      "flags": {
+        "fast_path_hit": false,
+        "direct_read_hit": false
+      },
+      "errors": {
+        "provider": [],
+        "app": [],
+        "tool": [],
+        "harness": null
+      },
+      "llm_calls": 5,
+      "llm_call_errors": 0,
+      "jev_calls": 1,
+      "jev_errors": 0,
+      "jev_answers": [
+        {
+          "g_ad": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.15
+          },
+          "g_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.18
+          },
+          "g_directory": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.09
+          },
+          "g_files": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "g_itinvent": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.07
+          },
+          "g_kb": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.6
+          },
+          "g_mfu": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.06
+          },
+          "g_network": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.05
+          },
+          "g_office": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.9
+          },
+          "g_self": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.75
+          },
+          "g_warehouse": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.17
+          },
+          "m_mode_act": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.03
+          },
+          "m_mode_chat": {
+            "type": "JevNoulAnswer",
+            "choice": null,
+            "probability": 0.55
+          }
+        }
+      ],
+      "wall_ms": 25386,
+      "tokens": {
+        "llm_in": 23554,
+        "llm_out": 1658,
+        "jev_total": 5057,
+        "est_in": 21330,
+        "usage_missing_calls": 0
+      },
+      "cost_usd": {
+        "llm": 0,
+        "jev": 0.0,
+        "cost_missing_calls": 5
+      },
+      "fallback_reasons": []
+    }
+  ],
+  "started_at": "2026-11-25T09:37:42.622508+00:00",
+  "finished_at": "2026-11-25T09:43:07.511372+00:00",
+  "aggregate": {
+    "scenarios": 18,
+    "outcomes": {
+      "completed": 17,
+      "degraded": 1,
+      "failed": 0
+    },
+    "correctness": {
+      "PASS": 17,
+      "FAIL": 1,
+      "NO_CHECK": 0
+    },
+    "llm_calls_total": 55,
+    "jev_calls_total": 18,
+    "tool_calls_executed_total": 35,
+    "tokens_in_total": 249882,
+    "tokens_out_total": 26751,
+    "usage_missing_calls": 0,
+    "jev_tokens_total": 82606,
+    "est_in_total": 218787,
+    "cost_usd_total": 0.0,
+    "cost_missing_calls": 55,
+    "wall_ms_total": 324037,
+    "expected_coverage": [
+      14,
+      15
+    ],
+    "forbidden_violations": 0,
+    "provider_error_scenarios": 0,
+    "app_error_scenarios": 0,
+    "fast_path_hits": 0,
+    "direct_read_hits": 0
+  }
+}
