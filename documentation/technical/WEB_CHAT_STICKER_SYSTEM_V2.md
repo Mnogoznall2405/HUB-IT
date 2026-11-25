@@ -598,3 +598,51 @@ warm), зафиксирована в «Отклонённых альтернат
 | eslint изменённых файлов | файлы под env-scope (`components/chat`): **0 ошибок**; `src/api`/`src/lib` — тот же класс `no-undef` на browser-globals, что и у 807 существующих файлов baseline (конфиг покрывает globals только chat-дерево/mail) — известный gap конфигурации, не дефект кода |
 | `vite build --outDir ../../output/vite-trial` | **OK** (63 с, только стандартные chunk-size предупреждения) |
 | send_echo чистый A/B | флаг снят, таблицы в (m) |
+
+### o) Follow-up 25.11: op-batch dedup + PG-гейт + e2e env
+
+Закрыты два гэпа матрицы (n) и одна оставшаяся гонка op-протокола.
+
+**`op_batch_id` — дедупликация под потерянный ответ.** Op-протокол (l)
+делает stale-list невозможным, но lost response всё ещё опасен: retry
+был бы вторым применением той же дельты — `bump` мог воскресить то, что
+другое устройство успело очистить, `clear` — снести добавленное за время
+полёта ответа. Теперь клиент держит один стабильный `batchId` на состав
+журнала (`meta.recentOpsBatchId` в `chatStickerStore`: генерируется при
+переходе журнала в непустой, стабилен на retry и на параллельных flush'ах
+одного журнала, ротируется при изменении состава). Сервер под той же
+`FOR UPDATE`-блокировкой state-строки проверяет id по **bounded-истории**
+`chat_user_recent_sticker_state.applied_op_batch_ids` (JSON, cap 100 —
+миграция `20261125_0180`): уже записанный id → ответ текущим
+`{items, version}` без повторного применения и без bump'а версии.
+История, а не один last-id — повторяемый пакет не обязан быть последней
+записью (между apply и retry может лечь пакет другого устройства).
+
+Совместимость: старый клиент без поля → применяется как раньше; новый
+клиент на сервере без 0180 → pydantic игнорирует лишнее поле (graceful
+degrade). Порядок релиза: миграция 0180 до/вместе с кодом сервера —
+стандартный alembic-first.
+
+**PG-гейт выполнен** (гэп из n-матрицы): portable PostgreSQL 17,
+изолированный кластер `127.0.0.1:55433` (`pg-v31-data`), scratch-БД
+`stgt_*` — `tests/test_pg_sticker_gate.py`: chat-scope upgrade→head,
+колонки/таблицы, replay no-op под FOR UPDATE, два потока сериализуются
+(version 2 и 3), downgrade→0177 и повторный upgrade. 2/2 PASS.
+
+**E2E `MAIL_CREDENTIALS_KEY`:** `e2e/stack/local_backend.py` сидит
+test-only passphrase (вне production — SHA-256→Fernet); стек самодостаточен
+без внешнего env. Логин проверен POST `/api/v1/auth/login` →
+`authenticated` при удалённой переменной.
+
+| Проверка | Результат |
+|---|---|
+| backend `test_chat_sticker_favorites.py` | **29/29** (+5: replay-после-clear, replay-clear-после-bump, параллельные flush'и, version-не-bump, legacy-совместимость) |
+| `tests/test_pg_sticker_gate.py` (PG 17 scratch) | **2/2** |
+| `tests/test_chat_sticker_favorites.py` + telegram + preview + scope | 15+26+2+55 **PASS**; один head `20261125_0180` |
+| frontend `chatStickerStore` + `chatStickers` | **24+17 = 41/41** (+3 batchId-теста: стабильность на retry, ротация при новых ops, один id у параллельных flush'ей) |
+
+Известное окружение: Playwright в worktree `.codex_tmp/integ-fr` падает
+белой страницей — vite dep-optimizer (vite 7.3.2/esbuild 0.27.7)
+генерирует битый MUI-чанк `createTheme_default is not a function`
+(`@mui/material/Box`), воспроизводится после чистки `.vite`; версии
+node_modules идентичны main-worktree — проблема среды, не кода ветки.

@@ -93,16 +93,71 @@ prod-сборка + `vite preview`, backend через decoy.
   обслуживает старые клиенты; новый клиент на старом сервере деградирует
   в legacy-режим без ошибок.
 
+### Follow-up 2026-11-25: op-batch dedup + PG-гейт + e2e env
+
+После мерджа на ветке доделаны три гэта из «Блокеры» ниже:
+
+- **Op-batch dedup (`op_batch_id`)** — lost-response идемпотентность PUT
+  `/chat/stickers/recent`. Клиент держит один стабильный `batchId` на
+  composition журнала (`meta.recentOpsBatchId` в `chatStickerStore`,
+  ротируется при изменении состава, стабилен на retry и на параллельных
+  flush'ах одного журнала); сервер хранит **bounded-историю** применённых
+  batch-id (`chat_user_recent_sticker_state.applied_op_batch_ids`, JSON,
+  cap 100) и под той же `FOR UPDATE`-блокировкой отвечает текущим
+  `{items, version}` без повторного применения и без bump'а версии.
+  История, а не один last-id: повторяемый пакет не обязан быть последней
+  записью — между ним и retry мог лечь пакет другого устройства. Новая
+  миграция `20261125_0180_chat_recent_sticker_op_batch` (idempotent,
+  create-if-missing в реальной схеме `chat`/`public`).
+- **PG-гейт выполнен** на изолированном portable PostgreSQL 17
+  (`127.0.0.1:55433`, scratch-кластер `pg-v31-data`): новый файл
+  `tests/test_pg_sticker_gate.py` — scratch-БД `stgt_*`, chat-scope
+  upgrade→head на реальном PG, проверка таблиц/колонок (`applied_op_batch_ids`,
+  `position`), replay no-op под FOR UPDATE, параллельные потоки
+  сериализуются (version 2 и 3), downgrade→`20261124_0177` и повторный
+  upgrade. **2/2 PASS.** Production `hubit_chat` не затрагивался.
+- **E2E env-гэп закрыт:** `e2e/stack/local_backend.py` теперь сидит
+  test-only `MAIL_CREDENTIALS_KEY` (`e2e-local-mail-key-not-for-production`,
+  вне production SHA-256→Fernet). Логин проверен прямым POST
+  `/api/v1/auth/login` на поднятом стеке без env — `status=authenticated`.
+
+#### Совместимость `op_batch_id`
+
+- **Старый клиент + новый сервер:** `op_batch_id` отсутствует → `None` →
+  dedup не срабатывает, PUT применяется как раньше (покрыто
+  `test_recents_op_batch_id_not_recorded_without_one`).
+- **Новый клиент + старый сервер (v2 без 0180):** pydantic v2 по умолчанию
+  игнорирует лишнее поле — `op_batch_id` отбрасывается, ops применяются
+  без дедупликации (graceful degrade, как до фичи).
+- **Порядок выката — alembic 0180 до/вместе с кодом сервера** (стандартный
+  релизный порядок: миграция, затем рестарт). Новый ORM читает колонку
+  `applied_op_batch_ids` в SELECT — на БД без 0180 запрос упадёт; это то же
+  требование, что и у любой новой колонки.
+
+#### Проверки follow-up (worktree `.codex_tmp/integ-fr`, 2026-11-25)
+
+| Проверка | Результат |
+|---|---|
+| `WEB-itinvent/backend/tests/test_chat_sticker_favorites.py` | **29/29 PASS** — +5 новых: 3 lost-response сценария (replay после чужого clear, replay clear после чужого bump, параллельные flush'и одного журнала), version не ре-bump'ится, legacy-без-batch-id совместимость |
+| `tests/test_pg_sticker_gate.py` на PG 17 scratch | **2/2 PASS** (upgrade/dedup/concurrent/downgrade/re-upgrade) |
+| Sticker + scope suites (root `tests/`) | `test_chat_sticker_favorites` 15/15, `test_chat_telegram_stickers` 26/26, `test_chat_attachment_sticker_preview` 2/2, `test_chat_migrations_scope_independent` 55/55 |
+| Alembic heads | один head `20261125_0180` |
+| Frontend unit | `chatStickerStore.test.js` 24/24 (включая 3 новых batchId-теста: стабильность на retry, ротация на новых ops, один id у параллельных flush'ей) + `chatStickers.test.js` 17/17 |
+| E2E login без `MAIL_CREDENTIALS_KEY` | `POST /api/v1/auth/login` → `authenticated` на e2e-стеке |
+
+Известная проблема окружения (не связана с изменениями): Playwright-прогон
+в этом worktree падает белой страницей — vite dep-optimizer генерирует
+битый MUI-чанк (`createTheme_default is not a function`,
+`@mui/material/Box`, vite 7.3.2/esbuild 0.27.7); воспроизводится и после
+очистки `node_modules/.vite`, версии node_modules идентичны main-worktree.
+Логин-путь проверен напрямую через HTTP (см. выше); браузерный e2e-прогон
+на этой машине требует починки dep-cache/установки в отдельном прогоне.
+
 ### Блокеры / гэпы
 
-- **PG-гейт не выполнен:** на хосте нет disposable PostgreSQL (порт 5432
-  закрыт, psql/psql-сервис/portable отсутствуют; единственный PG — живой
-  `hubit_chat`, DDL на нём запрещён). Покрытие: статическая цепь + sqlite
-  upgrade/downgrade (0176→head упражнён напрямую) + scope-тесты (23 ревизии).
-  Тот же гэп фиксировался на самой ветке (PG 17.6 прошлого прохода недоступен).
-- **E2E env-гэп:** после мерджа батчей логин в e2e-стеке требует
-  `MAIL_CREDENTIALS_KEY` — сейчас передаётся только через env при запуске;
-  `e2e/stack/local_backend.py` его не сидит. Если другие e2e-прогоны падают на
-  `apiLogin` 400 — причина эта.
+- ~~PG-гейт не выполнен~~ — выполнен на изолированном кластере (см. follow-up).
+- ~~E2E env-гэп `MAIL_CREDENTIALS_KEY`~~ — закрыт сидом в `local_backend.py`.
+- **Браузерный e2e на этом хосте:** vite dep-optimizer выдаёт битый
+  MUI-чанк (см. follow-up проверки) — окружение, не код ветки.
 - Одновременно с мерджем на ветку лёг `d50ca236` (fix инертности Login +
   Escape keepMounted-модалок) — он поверх `e6aa9251`, сохранён.
