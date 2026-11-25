@@ -172,6 +172,33 @@ def _resolve_single_project(query: str) -> dict[str, Any]:
     return matches[0]
 
 
+def _default_task_project() -> dict[str, Any] | None:
+    """Project pre-selected when the user does not name one.
+
+    Parity with the task-create UI (useTaskCreateForm.js ``defaultCreateProject``):
+    the general project when it exists, otherwise the first active project.
+    The chosen project is shown on the confirmation card, so the user can
+    correct it before anything is created — exactly like in the web form.
+    """
+    try:
+        projects = [
+            row for row in hub_service.list_task_projects(include_inactive=False)
+            if isinstance(row, dict)
+        ]
+    except Exception:
+        return None
+    if not projects:
+        return None
+    for row in projects:
+        if (
+            _normalize_text(row.get("id")) == "general-tasks"
+            or _normalize_text(row.get("code")).upper() == "GENERAL"
+            or _normalize_text(row.get("name")).lower() == "общие задачи"
+        ):
+            return row
+    return projects[0]
+
+
 class MailSearchArgs(BaseModel):
     q: str = Field(default="", max_length=500)
     mailbox_id: Optional[str] = Field(default=None, max_length=128)
@@ -697,6 +724,13 @@ class TaskCreateDraftTool(AiTool):
             project = _resolve_single_project(args.project_query)
             payload["project_id"] = _normalize_text(project.get("id"))
             payload["project_name"] = _normalize_text(project.get("name"))
+        if not payload.get("project_id"):
+            # UI parity: the web form pre-selects the general project instead of
+            # blocking task creation; the draft card shows the project for review.
+            default_project = _default_task_project()
+            if default_project:
+                payload["project_id"] = _normalize_text(default_project.get("id"))
+                payload["project_name"] = _normalize_text(default_project.get("name"))
         if not payload.get("assignee_user_id"):
             raise ValueError("assignee_user_id or exact assignee_query is required")
         if not payload.get("controller_user_id"):

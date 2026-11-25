@@ -9,6 +9,11 @@ prefix "Бенч", safe to re-run (idempotent by fixed ids/codes):
   * 10 org-structure department nodes + one member node per employee;
   * AppUser accounts with distinct permission sets (REAL permission names
     from authorization_service — verified against the tools' checks);
+  * portal AppUser accounts for the FIRST 10 bench employees
+    (bench_emp001..010, full_name exactly "Бенч Сотрудник NNN") — without them
+    task-assignee/chat-peer/mail-contact resolution has nothing to find,
+    because every resolve path reads the portal user directory, not the
+    address book (A11 cycle-3 act-triage);
   * 100 hub tasks (mixed statuses/assignees/due dates);
   * 20 announcements;
   * 10 KB documents (ai_kb_documents + chunks);
@@ -60,6 +65,18 @@ PERMS_TASKS = [
     "tasks.read", "tasks.create", "tasks.write", "tasks.review",
     "address_book.read", "company_structure.read",
 ]
+# Portal accounts of the bench employees themselves: enough to be task
+# assignees, chat peers and mail contacts — a plausible regular portal user.
+PERMS_EMPLOYEE = [
+    "chat.read", "chat.write", "chat.ai.use",
+    "tasks.read", "tasks.write",
+    "announcements.read", "kb.read",
+    "company_structure.read", "address_book.read",
+    "my_files.read",
+]
+# Only the first N address-book employees get portal accounts: the contour
+# mirrors production, where most directory people are NOT portal users.
+BENCH_EMPLOYEE_USER_COUNT = 10
 
 
 def _utcnow():
@@ -156,6 +173,58 @@ def seed_users(user_service) -> dict:
             username=name, password="bench-pass", role="viewer", auth_source="local",
             full_name=name.replace("_", " ").title(), is_active=True,
             use_custom_permissions=True, custom_permissions=perms,
+        )
+    return out
+
+
+def seed_employee_users(user_service, employees: list[dict], *, count: int = BENCH_EMPLOYEE_USER_COUNT) -> dict:
+    """Portal AppUser accounts for the first `count` bench employees.
+
+    A11 cycle-3: act_02/act_08 traces showed that task-assignee, chat-peer and
+    mail-contact resolution all read the PORTAL user directory (user_service),
+    while bench employees existed only in the address-book JSON — so every
+    resolve path came back empty even though directory.people.search found them.
+
+    Account fields deliberately mirror the address-book row, which is the only
+    available link between the two directories (AppUser has no employee_code):
+    same full_name ("Бенч Сотрудник NNN"), same first work email, same
+    department name, position as job_title. Idempotent: existing accounts are
+    repaired to the expected shape instead of duplicated.
+    """
+    out = {}
+    for i, emp in enumerate(employees[:count], 1):
+        username = f"bench_emp{i:03d}"
+        full_name = str(emp.get("full_name") or _fio(i))
+        emails = [str(x).strip() for x in list(emp.get("work_emails") or []) if str(x or "").strip()]
+        email = emails[0] if emails else f"bench{i:03d}@bench.local"
+        department = str(emp.get("department") or "").strip() or None
+        job_title = str(emp.get("position") or "").strip() or None
+        existing = user_service.get_by_username(username)
+        if existing:
+            repair: dict = {}
+            if str(existing.get("full_name") or "") != full_name:
+                repair["full_name"] = full_name
+            if str(existing.get("email") or "") != email:
+                repair["email"] = email
+            if str(existing.get("department") or "") != str(department or ""):
+                repair["department"] = department
+            if str(existing.get("job_title") or "") != str(job_title or ""):
+                repair["job_title"] = job_title
+            if not bool(existing.get("is_active", True)):
+                repair["is_active"] = True
+            if not bool(existing.get("use_custom_permissions")):
+                repair["use_custom_permissions"] = True
+                repair["custom_permissions"] = PERMS_EMPLOYEE
+            if repair:
+                user_service.update_user(int(existing["id"]), **repair)
+                existing = user_service.get_by_username(username) or existing
+            out[username] = existing
+            continue
+        out[username] = user_service.create_user(
+            username=username, password="bench-pass", role="viewer", auth_source="local",
+            full_name=full_name, email=email,
+            department=department, job_title=job_title,
+            is_active=True, use_custom_permissions=True, custom_permissions=PERMS_EMPLOYEE,
         )
     return out
 
@@ -494,11 +563,45 @@ def seed_my_files(users: dict, *, count: int = 30) -> list[str]:
     return ids
 
 
+def _invalidate_user_directory_caches(contour_user_service) -> None:
+    """Drop stale user-directory caches after seeding.
+
+    The resolution paths (hub_service.list_assignees, tools/chat.py,
+    action_cards) read the MODULE-LEVEL user_service singleton, not the
+    contour instance the harness seeds through. Both point at the same bench
+    DB, but the singleton caches list_users for 60s and hub_service caches the
+    assignee directory for 300s — without invalidation early scenarios could
+    resolve against pre-seed data. Best-effort: cache internals are a
+    implementation detail, never fatal for seeding.
+    """
+    try:
+        from backend.services.user_service import user_service as singleton_user_service
+
+        for service in {id(contour_user_service): contour_user_service, id(singleton_user_service): singleton_user_service}.values():
+            invalidate = getattr(service, "_invalidate_users_cache", None)
+            if callable(invalidate):
+                invalidate()
+    except Exception:
+        pass
+    try:
+        from backend.services.hub_service import hub_service as singleton_hub_service
+
+        with singleton_hub_service._user_directory_cache_lock:
+            singleton_hub_service._user_directory_cache.clear()
+    except Exception:
+        pass
+
+
 def seed_all(*, user_service, hub_service, task_count: int = 100) -> dict:
     """Seed the full synthetic contour; returns ground truth for checking."""
     employees = seed_address_book()
     org_ids = seed_org_structure(employees)
     users = seed_users(user_service)
+    # Portal accounts for the first bench employees — deliberately NOT merged
+    # into `users`: the task round-robin distribution and the harness bot-access
+    # grants must stay exactly as before.
+    employee_users = seed_employee_users(user_service, employees)
+    _invalidate_user_directory_caches(user_service)
     tasks = seed_tasks(hub_service, users, count=task_count)
     anns = seed_announcements(hub_service, users)
     kb_ids = seed_kb()
@@ -514,6 +617,10 @@ def seed_all(*, user_service, hub_service, task_count: int = 100) -> dict:
         "employees": employees,
         "org_node_ids": org_ids,
         "users": {k: {"id": int(v["id"]), "username": v["username"]} for k, v in users.items()},
+        "employee_users": {
+            k: {"id": int(v["id"]), "username": v["username"], "full_name": v.get("full_name")}
+            for k, v in employee_users.items()
+        },
         "tasks_created": len(tasks),
         "actor_open_tasks": 8,
         "announcements": len(anns),
