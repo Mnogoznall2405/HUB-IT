@@ -51,18 +51,22 @@ test('after login the user returns to the originally requested page', async ({ p
   await expect(page).toHaveURL(/\/chat/);
 });
 
-const USERNAME2 = process.env.E2E_USERNAME2;
-const PASSWORD2 = process.env.E2E_PASSWORD2;
 const USERNAME3 = process.env.E2E_USERNAME3;
 const PASSWORD3 = process.env.E2E_PASSWORD3;
 
+const USERNAME5 = process.env.E2E_USERNAME5;
+const PASSWORD5 = process.env.E2E_PASSWORD5;
+
 test('non-admin is redirected out of the admin area', async ({ page }) => {
-  test.skip(!USERNAME2 || !PASSWORD2, 'need a non-admin user (E2E_USERNAME2/E2E_PASSWORD2)');
+  // Needs a user without any admin-area permission. Ordinary operators carry
+  // scan.tasks, which legitimately opens /admin/hub-desktop — only a viewer
+  // (or a permission-trimmed account) is bounced by AdminAreaRoute.
+  test.skip(!USERNAME5 || !PASSWORD5, 'need a user without admin-area permissions (E2E_USERNAME5/E2E_PASSWORD5)');
 
   await page.goto('/login');
   const form = page.getByTestId('password-auth-form');
-  await form.locator('input[name="username"]').fill(USERNAME2);
-  await form.locator('input[name="password"]').fill(PASSWORD2);
+  await form.locator('input[name="username"]').fill(USERNAME5);
+  await form.locator('input[name="password"]').fill(PASSWORD5);
   await form.getByRole('button', { name: 'Войти', exact: true }).click();
   await page.waitForURL((url) => !url.pathname.startsWith('/login'), { timeout: 30_000 });
   await expect(page.getByTestId('password-auth-form')).toBeHidden();

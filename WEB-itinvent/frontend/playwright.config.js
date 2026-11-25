@@ -31,6 +31,12 @@ if (LOCAL) {
   process.env.E2E_PASSWORD2 ||= 'e2e-local-user-pass';
   process.env.E2E_USERNAME3 ||= 'e2e_fresh';
   process.env.E2E_PASSWORD3 ||= 'e2e-local-fresh-pass';
+  // Onboarded third account: e2e_fresh stays on the /about gate by design.
+  process.env.E2E_USERNAME4 ||= 'e2e_joiner';
+  process.env.E2E_PASSWORD4 ||= 'e2e-local-joiner-pass';
+  // No admin-area permission: operators carry scan.tasks -> /admin/hub-desktop.
+  process.env.E2E_USERNAME5 ||= 'e2e_viewer';
+  process.env.E2E_PASSWORD5 ||= 'e2e-local-viewer-pass';
   process.env.E2E_SEND ||= '1';
   process.env.E2E_FILES_WORKER ||= '1';
 }

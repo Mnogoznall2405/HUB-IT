@@ -8,6 +8,20 @@ const SCREENSHOT_DIR = fileURLToPath(new URL('../../../output/playwright/', impo
 test.skip(process.env.E2E_LOCAL !== '1', 'address-book E2E runs only against the local stack');
 test.skip(!USERNAME || !PASSWORD, 'E2E_USERNAME/E2E_PASSWORD not set');
 
+// The browser-notification permission banner shifts the column height and lets a
+// wheel over the list chain-scroll it — the layout assertions here measure the
+// page without that banner, so dismiss it for every test.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('itinvent_notification_permission_banner_dismissed', '1');
+    // The rail prefetches a route's lazy chunk on focus/hover; loading the
+    // my-files loader runs the one-time grant-deploy window.location.reload()
+    // (routeLoaders.js ensureMyFilesGrantDeployReload). Pretend this session
+    // already took it, so the keyboard focus walk below is not reloaded away.
+    sessionStorage.setItem('hubit:my-files:grant-download-v2', '1');
+  });
+});
+
 const LONG_DEPARTMENT = 'Управление цифровых технологий мониторинга и сопровождения корпоративной инфраструктуры центрального аппарата';
 const LONG_CITY = 'Нижнекамско-Верхнесерединский пригородный муниципальный округ';
 const UNBROKEN_DEPARTMENT = 'ОченьДлинноеПодразделение'.repeat(20);
@@ -245,7 +259,9 @@ test('desktop 1280: integrated header, rail, menu, notifications, no overflow', 
   }));
   expect(listDims.scrollHeight).toBeGreaterThan(listDims.clientHeight);
   const toolbarBefore = await page.getByTestId('address-book-header-row1').boundingBox();
-  await listScroll.hover();
+  // Hover the gutter, not a row: a row tooltip sits under the cursor and can
+  // break the wheel-event scroll chain before the list receives the delta.
+  await listScroll.hover({ position: { x: 6, y: 300 } });
   await page.mouse.wheel(0, 4000);
   await expect(page.locator('[data-testid^="address-book-entry-row"]').last()).toBeInViewport();
   const scrollTop = await listScroll.evaluate((el) => el.scrollTop);

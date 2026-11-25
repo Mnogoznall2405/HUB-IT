@@ -12,8 +12,11 @@ const U1 = process.env.E2E_USERNAME;
 const P1 = process.env.E2E_PASSWORD;
 const U2 = process.env.E2E_USERNAME2;
 const P2 = process.env.E2E_PASSWORD2;
-const U3 = process.env.E2E_USERNAME3;
-const P3 = process.env.E2E_PASSWORD3;
+// The "third user" needs a finished onboarding: E2E_USERNAME3 is e2e_fresh on
+// the local stack, which intentionally lands on the /about gate after login.
+// The seeded fourth account (e2e_joiner) is already past it.
+const U3 = process.env.E2E_USERNAME4 || process.env.E2E_USERNAME3;
+const P3 = process.env.E2E_PASSWORD4 || process.env.E2E_PASSWORD3;
 
 test.skip(
   !(U1 && P1 && U2 && P2 && U3 && P3),
@@ -212,8 +215,19 @@ test('join requests: the link leaves a request, the owner approves it in the gro
     await pageA.getByTestId('chat-join-request-approve').click();
     await expect(pageA.getByText('Заявок нет.')).toBeVisible({ timeout: 15_000 });
 
-    await openGroup(pageB, group.id);
-    await expect(pageB.getByTestId('chat-composer-textarea')).toBeVisible({ timeout: 30_000 });
+    // Wait until the outsider's membership is readable, then let the chat
+    // bootstrap retry the open: a dropped bootstrap fetch (flaky dev proxy)
+    // leaves the URL fallback at /chat, and a fresh navigation recovers it.
+    await expect
+      .poll(
+        async () => (await pageB.request.get(`/api/v1/chat/conversations/${group.id}`)).status(),
+        { timeout: 30_000 },
+      )
+      .toBe(200);
+    await expect(async () => {
+      await openGroup(pageB, group.id);
+      await expect(pageB.getByTestId('chat-composer-textarea')).toBeVisible({ timeout: 8_000 });
+    }).toPass({ timeout: 60_000, intervals: [2_000, 5_000, 10_000] });
   } finally {
     await contextA.close();
     await contextB.close();

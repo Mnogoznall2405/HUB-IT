@@ -6,7 +6,7 @@
       "docOverflow": 0,
       "leaks": [
         {
-          "id": "MuiAlert-action css-ki1hdl-MuiAlert-action",
+          "id": "MuiAlert-action css-1mzcepu",
           "slack": 7
         },
         {
@@ -22,24 +22,24 @@
           "slack": 4
         },
         {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 47
+          "id": "MuiTypography-root MuiTypography-body2 css-1f4qokt",
+          "slack": 57
         },
         {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
           "slack": 4
         },
         {
-          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
-          "slack": 4
-        },
-        {
-          "id": "MuiTypography-root MuiTypography-body2 css-10dgj8s-MuiTypogr",
-          "slack": 65
+          "id": "MuiTypography-root MuiTypography-body2 css-1f4qokt",
+          "slack": 38
         },
         {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
           "slack": 4
+        },
+        {
+          "id": "MuiTypography-root MuiTypography-body2 css-1f4qokt",
+          "slack": 43
         },
         {
           "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
@@ -52,11 +52,11 @@
       "docOverflow": 0,
       "leaks": [
         {
-          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "id": "MuiListItemIcon-root css-cmlait",
           "slack": 10
         },
         {
-          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "id": "MuiBadge-root css-1rzb3uu",
           "slack": 10
         },
         {
@@ -70,11 +70,11 @@
       "docOverflow": 0,
       "leaks": [
         {
-          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "id": "MuiListItemIcon-root css-cmlait",
           "slack": 10
         },
         {
-          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "id": "MuiBadge-root css-1rzb3uu",
           "slack": 10
         },
         {
@@ -88,11 +88,11 @@
       "docOverflow": 0,
       "leaks": [
         {
-          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "id": "MuiListItemIcon-root css-cmlait",
           "slack": 10
         },
         {
-          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "id": "MuiBadge-root css-1rzb3uu",
           "slack": 10
         },
         {
@@ -101,11 +101,11 @@
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 132
+          "slack": 136
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 177
+          "slack": 180
         }
       ]
     },
@@ -114,11 +114,11 @@
       "docOverflow": 0,
       "leaks": [
         {
-          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "id": "MuiListItemIcon-root css-cmlait",
           "slack": 10
         },
         {
-          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "id": "MuiBadge-root css-1rzb3uu",
           "slack": 10
         },
         {
@@ -127,11 +127,11 @@
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 132
+          "slack": 136
         },
         {
           "id": "MuiTypography-root MuiTypography-body2 MuiTypography-noWrap ",
-          "slack": 177
+          "slack": 180
         }
       ]
     }
@@ -142,7 +142,7 @@
       "docOverflow": 0,
       "leaks": [
         {
-          "id": "MuiAlert-action css-ki1hdl-MuiAlert-action",
+          "id": "MuiAlert-action css-1mzcepu",
           "slack": 7
         },
         {
@@ -174,12 +174,12 @@
           "slack": 4
         },
         {
-          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
-          "slack": 4
+          "id": "MuiBadge-root css-1rzb3uu",
+          "slack": 10
         },
         {
-          "id": "MuiButtonBase-root MuiCheckbox-root MuiCheckbox-colorPrimary",
-          "slack": 4
+          "id": "MuiListItemIcon-root css-cmlait",
+          "slack": 3
         }
       ],
       "logicalWidth": 512
@@ -189,11 +189,11 @@
       "docOverflow": 0,
       "leaks": [
         {
-          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "id": "MuiListItemIcon-root css-cmlait",
           "slack": 10
         },
         {
-          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "id": "MuiBadge-root css-1rzb3uu",
           "slack": 10
         },
         {
@@ -208,11 +208,11 @@
       "docOverflow": 0,
       "leaks": [
         {
-          "id": "MuiListItemIcon-root css-becsky-MuiListItemIcon-root",
+          "id": "MuiListItemIcon-root css-cmlait",
           "slack": 10
         },
         {
-          "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+          "id": "MuiBadge-root css-1rzb3uu",
           "slack": 10
         },
         {
@@ -225,6 +225,7 @@
   },
   "menus": {
     "fileTopLevel": [
+      "Просмотр",
       "Скачать",
       "Поделиться",
       "Организовать",
@@ -240,7 +241,7 @@
     "folderTopLevel": [
       "Открыть",
       "Скачать папку (ZIP)",
-      "Поделиться",
+      "Поделиться папкой",
       "Организовать",
       "Сведения",
       "Удалить"
@@ -265,11 +266,11 @@
     "docOverflow": 0,
     "leaks": [
       {
-        "id": "MuiListItemIcon-root css-15bxwbv-MuiListItemIcon-root",
+        "id": "MuiListItemIcon-root css-1wkog8m",
         "slack": 10
       },
       {
-        "id": "MuiBadge-root css-1c32n2y-MuiBadge-root",
+        "id": "MuiBadge-root css-1rzb3uu",
         "slack": 10
       },
       {

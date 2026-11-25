@@ -109,10 +109,11 @@ const getRetentionTitle = (item) => {
 
 const VISUALLY_HIDDEN_SX = {
   position: 'absolute',
-  width: 1,
-  height: 1,
+  // MUI sx treats numeric width/height <= 1 as a percentage, not pixels.
+  width: '1px',
+  height: '1px',
   p: 0,
-  m: -1,
+  m: '-1px',
   overflow: 'hidden',
   clip: 'rect(0 0 0 0)',
   whiteSpace: 'nowrap',

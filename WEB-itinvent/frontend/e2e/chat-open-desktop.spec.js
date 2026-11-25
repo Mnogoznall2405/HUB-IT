@@ -40,7 +40,16 @@ for (const scenario of [
     });
     await page.route('**/api/v1/auth/sso/begin', (route) => { starts++; return route.fulfill({ status: 403 }); });
     await page.goto(scenario.path);
-    await expect(page.getByTestId('password-auth-form')).toBeVisible();
+    // Internal zone shows the SSO method picker — the password form sits behind
+    // the explicit "login with password" button (Login.jsx windowsSsoPrimary);
+    // external zone renders the form directly. Auto-begin must not fire either way.
+    const passwordForm = page.getByTestId('password-auth-form');
+    const ssoPicker = page.getByTestId('windows-sso-login');
+    await expect(passwordForm.or(ssoPicker)).toBeVisible();
+    if (await ssoPicker.isVisible().catch(() => false)) {
+      await page.getByTestId('show-password-login').click();
+    }
+    await expect(passwordForm).toBeVisible();
     await page.waitForTimeout(1000);
     expect(starts).toBe(0);
   });

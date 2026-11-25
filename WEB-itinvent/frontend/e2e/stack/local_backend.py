@@ -7,8 +7,11 @@ database — app/chat runtime state lives in ``e2e/stack/.state/`` and is wiped
 on every run.
 
 Seed users (test-only credentials, never real accounts):
-    e2e_admin / e2e-local-admin-pass   (role=admin)
-    e2e_user  / e2e-local-user-pass    (role=operator)
+    e2e_admin  / e2e-local-admin-pass   (role=admin)
+    e2e_user   / e2e-local-user-pass    (role=operator)
+    e2e_joiner / e2e-local-joiner-pass  (role=operator, onboarded third account)
+    e2e_viewer / e2e-local-viewer-pass  (role=viewer, no admin-area permissions)
+    e2e_fresh  / e2e-local-fresh-pass   (role=operator, about-onboarding NOT done)
 """
 from __future__ import annotations
 
@@ -116,6 +119,10 @@ os.environ.update(
         # key; it decrypts only ciphertexts written inside this throwaway
         # stack, never production values.
         "MAIL_CREDENTIALS_KEY": "e2e-local-mail-key-not-for-production",
+        # Public my-files share links encrypt the token with
+        # MY_FILES_SHARE_TOKEN_KEY; test-only passphrase — it decrypts only
+        # ciphertexts written inside this throwaway stack, never production.
+        "MY_FILES_SHARE_TOKEN_KEY": "e2e-local-share-key-not-for-production",
         "AUTH_COOKIE_SECURE": "false",
         # Background loops that would otherwise reach for LDAP / SQL Server /
         # external services — none of that exists in the test stack.
@@ -171,6 +178,19 @@ os.environ.update(
         # любому пользователю при первом list_packs.
         "CHAT_DEFAULT_STICKER_PACKS": "e2e_test_pack,e2e_big_pack",
         "TELEGRAM_BOT_TOKEN": "",
+        # Send-later specs assert config.scheduled_messages_enabled and the
+        # scheduler loop; the chat schema is fully created on SQLite either way.
+        "CHAT_SCHEDULED_MESSAGES_ENABLED": "1",
+        # Spec suites seed a fresh group per test; the production burst guard
+        # (5/min) is meant for abuse, not for a serial suite that creates ~20
+        # groups in minutes. 60/min is the service-side maximum — still bounded.
+        "CHAT_GROUP_CREATE_PER_MINUTE": "60",
+        # my-files suites bulk-seed 20-30 rows via the upload API; the
+        # production per-user active-jobs cap (5) 429s the serial seed before
+        # the inline worker drains. Relax the seed-side caps, still bounded.
+        "MY_FILES_MAX_ACTIVE_JOBS_PER_USER": "60",
+        "MY_FILES_MAX_UPLOADING_PER_USER": "30",
+        "MY_FILES_UPLOAD_LIMIT_PER_USER": "60",
     }
 )
 
@@ -218,6 +238,13 @@ def _seed() -> None:
     for username, password, role, full_name in (
         ("e2e_admin", "e2e-local-admin-pass", "admin", "E2E Админ"),
         ("e2e_user", "e2e-local-user-pass", "operator", "E2E Пользователь"),
+        # Onboarded third account for flows that need a user past the /about
+        # gate (group invite joins, multi-party scenarios).
+        ("e2e_joiner", "e2e-local-joiner-pass", "operator", "E2E Вступающий"),
+        # Viewer holds no admin-area permission (operators have scan.tasks, which
+        # legitimately opens /admin/hub-desktop) — the account the admin-area
+        # route guard must bounce back to the landing page.
+        ("e2e_viewer", "e2e-local-viewer-pass", "viewer", "E2E Наблюдатель"),
         # Fresh account: no about_onboarding_completed_at — drives the
         # /about onboarding gate and its return-path flow in auth-guards.
         ("e2e_fresh", "e2e-local-fresh-pass", "operator", "E2E Новый"),

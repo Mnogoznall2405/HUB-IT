@@ -179,7 +179,7 @@ test('pagination preserves the file filter and opens the next page', async ({ pa
   const state = await setup(page, { rows: Array.from({ length: 27 }, (_, index) => file(`file-${index}`, `Отчёт ${index}.docx`)) });
   await openFiles(page);
   await expect(page.getByRole('button', { name: 'Отчёт 0.docx', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: /next page/i }).click();
+  await page.getByRole('button', { name: /следующую страницу|next page/i }).click();
   await expect(page.getByRole('button', { name: 'Отчёт 25.docx', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Отчёт 0.docx', exact: true })).toHaveCount(0);
   expect(state.calls.filter(call => call.path === '/my-files/admin/files').at(-1).query.offset).toBe('25');

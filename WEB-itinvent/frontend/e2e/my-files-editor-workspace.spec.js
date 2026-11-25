@@ -83,6 +83,9 @@ test('the visible history button opens the selected document and keeps both live
   expect(calls.every(path => path.includes('/file-b/'))).toBe(true);
   await history.getByRole('button', { name: 'Вернуться из истории' }).click();
   await expect(text(page, 'file-b')).toHaveText('Неотправленные правки B');
+  // The SDK close event reaches HUB through a postMessage round-trip: the history
+  // frame detaches a few moments after the click resolves.
+  await expect(page.locator('#document-panel-file-b').getByTestId('my-files-native-history')).toHaveCount(0);
   await expect(page.locator('#document-panel-file-b iframe')).toHaveAttribute('data-editor-instance', instance);
   await page.getByRole('tab', { name: /file-a.docx/ }).click();
   await expect(text(page, 'file-a')).toHaveText('Неотправленные правки A');
