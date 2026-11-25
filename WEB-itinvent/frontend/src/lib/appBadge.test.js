@@ -34,6 +34,37 @@ describe('syncAppBadge', () => {
     });
   });
 
+  it('skips the service-worker relay under automation (webdriver)', async () => {
+    // SW-scope navigator.setAppBadge is a fatal mojo IPC in automation shells
+    // (chrome-headless-shell lacks the BadgeService binder); the page call is safe.
+    const setAppBadge = vi.fn().mockResolvedValue(undefined);
+    const postMessage = vi.fn();
+    Object.defineProperty(globalThis.navigator, 'setAppBadge', {
+      configurable: true,
+      value: setAppBadge,
+    });
+    Object.defineProperty(globalThis.navigator, 'webdriver', {
+      configurable: true,
+      value: true,
+    });
+    Object.defineProperty(globalThis.navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        ready: Promise.resolve({
+          active: { postMessage },
+        }),
+        controller: null,
+      },
+    });
+
+    const synced = await syncAppBadge(4);
+
+    expect(synced).toBe(true);
+    expect(setAppBadge).toHaveBeenCalledWith(4);
+    expect(postMessage).not.toHaveBeenCalled();
+    delete globalThis.navigator.webdriver;
+  });
+
   it('clears badge and notifies the service worker with zero', async () => {
     const clearAppBadge = vi.fn().mockResolvedValue(undefined);
     const postMessage = vi.fn();

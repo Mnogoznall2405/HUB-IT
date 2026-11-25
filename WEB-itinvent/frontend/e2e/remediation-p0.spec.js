@@ -331,12 +331,13 @@ test('FE-0059 strict: ротация закоммичена на сервере,
     expect(rotated.status()).toBe(200);
     const setCookie = rotated.headers()['set-cookie'] || '';
     expect(setCookie).toContain('itinvent_refresh_token');
+    const newPair = setCookie.match(/itinvent_refresh_token=([^;]+)/)?.[1] || null;
     await api.dispose();
-    return Date.now();
+    return { committedAt: Date.now(), newRefresh: newPair };
   };
 
   // --- Сценарий A: ротация на сервере закоммичена, ответ клиенту потерян,
-  // клиент ретраит ВНУТРИ grace (3s на стенде) — grace-serve возвращает ту же
+  // клиент ретраит ВНУТРИ grace (10s на стенде) — grace-serve возвращает ту же
   // пару и сессия остаётся живой.
   await rotateServerSide();
   // Login-эпоха (<10s) замаскировала бы transport-ветку — чистим маркеры.
@@ -362,7 +363,8 @@ test('FE-0059 strict: ротация закоммичена на сервере,
 
   // --- Сценарий B: ротация закоммичена, ответ потерян, реальный POST только
   // ПОСЛЕ истечения grace → дефинитивный отказ (ограничение протокола).
-  const committedAt = await rotateServerSide();
+  const { committedAt, newRefresh } = await rotateServerSide();
+  expect(newRefresh, 'rotated refresh cookie captured').toBeTruthy();
   // Свежая эпоха сценария A (<10s) заставила бы lock-путь честно пропустить
   // refresh — чистим маркеры, чтобы клиент реально шёл на бэкенд.
   await clearRefreshMarkers();
@@ -400,6 +402,16 @@ test('FE-0059 strict: ротация закоммичена на сервере,
   await expect.poll(() => finalPosts, { timeout: 15_000 }).toBe(1);
   await expect(page).toHaveURL(/\/login/, { timeout: 30_000 });
   expect(await page.evaluate(() => window.localStorage.getItem('user'))).toBeNull();
+  // Жизнеспособность новой пары: post-grace отказ старого jti — это
+  // revoked_jti, а НЕ отзыв всей token family. Rotated-пара, которую клиент
+  // так и не получил, остаётся валидной на сервере — проверяем честно.
+  const verifier = await request.newContext({
+    baseURL: BACKEND,
+    extraHTTPHeaders: { Cookie: `itinvent_refresh_token=${newRefresh}` },
+  });
+  const replay = await verifier.post('/api/v1/auth/refresh');
+  await verifier.dispose();
+  expect(replay.status()).toBe(200);
   // Ограничение протокола: rotated-пара на сервере жива, но клиент её никогда
   // не получил — восстановление невозможно без ослабления replay-защиты.
 });
@@ -468,12 +480,19 @@ test("FE-0198 strict: обязательный trusted-device prompt — рег�
   await page.waitForTimeout(500);
   await expect(dialog).toBeVisible();
 
-  // 2) Reload во время обязательного prompt: сессия уже зафиксирована —
-  // /login честно редиректит на пост-логин страницу (сессия не теряется).
+  // 2) Reload во время обязательного prompt: обязательный enrollment НЕ обходится —
+  // сессия жива, но /login удерживает пользователя и prompt открывается снова.
   await page.reload();
-  await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 30_000 });
-  // Авторизованный вход в HUB доступен — значит reload не разлогинил.
-  await enterHub(page);
+  await dialog.waitFor({ state: "visible", timeout: 30_000 });
+  expect(page.url()).toContain("/login");
+  await expect(page.getByTestId("main-layout-content")).toHaveCount(0);
+  // 'Не сейчас' остаётся скрыт после reload.
+  await expect(skipButton(dialog)).toBeHidden();
+  // Прямой deep-link в приложение тоже отброшен обратно на /login.
+  await page.goto("/dashboard");
+  await page.waitForURL((url) => url.pathname.startsWith("/login"), { timeout: 30_000 });
+  await dialog.waitFor({ state: "visible", timeout: 30_000 });
+  await expect(page.getByTestId("main-layout-content")).toHaveCount(0);
   // Новый вход — required prompt появляется снова (устройств всё ещё 0).
   await context.clearCookies();
   await page.evaluate(() => window.localStorage.clear());
@@ -551,4 +570,99 @@ test("FE-0198 strict: unsupported WebAuthn — required-подсказка, 'П�
   await expect(registerButton(dialog)).toHaveCount(0);
   await continueButton(dialog).click();
   await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 30_000 });
+});
+
+// ---------- ChatCallsProvider lifecycle (SPA, no forced reload) ----------
+
+const CALLS_USER_A = { user: "e2e_calls", pass: "e2e-local-calls-pass" };
+const CALLS_USER_B = { user: "e2e_calls2", pass: "e2e-local-calls2-pass" };
+
+// В chat-shell account-футер живёт в overlay-drawer за ☰ «Открыть главное
+// меню»; на страницах с постоянным рельсом кнопка видна сразу.
+const logoutViaUiP0 = async (page) => {
+  const accountBtn = page.locator('[data-testid^="main-layout-account-button-"]:visible');
+  if ((await accountBtn.count()) === 0) {
+    await page.locator('[aria-label="Открыть главное меню"]:visible').first().click();
+  }
+  await accountBtn.first().click();
+  await page.getByRole('menuitem', { name: 'Выход' }).click();
+};
+
+test("ChatCallsProvider lifecycle: guest-lazy, SPA mount/unmount, смена пользователя, без stale-подписок", async ({ page }) => {
+  test.setTimeout(180_000);
+  // Инструментация window-слушателей WS-событий звонков: mount подписывает,
+  // unmount обязан снять — stale-подписка видна как add без remove.
+  await page.addInitScript(() => {
+    const probe = { events: [] };
+    window.__callProbe = probe;
+    const WATCHED = new Set(["chat-ws-call-invite", "chat-ws-call-updated"]);
+    const origAdd = window.addEventListener.bind(window);
+    const origRemove = window.removeEventListener.bind(window);
+    window.addEventListener = (type, listener, options) => {
+      if (WATCHED.has(type)) probe.events.push({ op: "add", type });
+      return origAdd(type, listener, options);
+    };
+    window.removeEventListener = (type, listener, options) => {
+      if (WATCHED.has(type)) probe.events.push({ op: "rm", type });
+      return origRemove(type, listener, options);
+    };
+  });
+  // Стенд не отдаёт LiveKit → enabled:false; для проверки жизненного цикла
+  // подписок подменяем config на enabled:true (иначе провайдер слушателей не ставит).
+  let configRequests = 0;
+  await page.route("**/api/v1/chat/calls/config", async (route) => {
+    configRequests += 1;
+    await route.fulfill({ status: 200, contentType: "application/json", body: '{"enabled":true}' });
+  });
+  const probe = async () => page.evaluate(() => window.__callProbe?.events || []);
+  const liveListeners = async () => {
+    const ev = await probe();
+    let live = 0;
+    for (const e of ev) live += e.op === "add" ? 1 : -1;
+    return live;
+  };
+
+  // 1) Гость на публичных маршрутах: lazy-чанк и config не трогаются.
+  const { secret: secretA } = await enrollTotpViaApi(CALLS_USER_A);
+  const { secret: secretB } = await enrollTotpViaApi(CALLS_USER_B);
+  await page.goto("/about");
+  await page.waitForTimeout(2500);
+  expect(configRequests).toBe(0);
+  expect(await liveListeners()).toBe(0);
+  await page.goto("/shared-files/no-such-token");
+  await page.waitForTimeout(2000);
+  expect(configRequests).toBe(0);
+  expect(await liveListeners()).toBe(0);
+
+  // 2) SPA-логин (форма + TOTP, без полной перезагрузки) → провайдер смонтирован.
+  await loginWithTotp(page, CALLS_USER_A, secretA);
+  await expect.poll(() => configRequests, { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
+  await expect.poll(() => liveListeners(), { timeout: 15_000 }).toBe(2);
+  const cfgAfterA = configRequests;
+
+  // 3) SPA-logout через UI → провайдер размонтирован: подписки сняты до нуля,
+  //    новых calls/config нет на гостевом экране.
+  await logoutViaUiP0(page);
+  await page.waitForURL(/\/login/, { timeout: 30_000 });
+  await expect.poll(() => liveListeners(), { timeout: 15_000 }).toBe(0);
+  await page.waitForTimeout(2500);
+  expect(configRequests).toBe(cfgAfterA);
+
+  // 4) Смена пользователя: свежий mount — config снова запрошен и живых
+  //    подписок ровно 2 (не 4 → старые сняты, stale callsValue нет).
+  await loginWithTotp(page, CALLS_USER_B, secretB);
+  await expect.poll(() => configRequests, { timeout: 15_000 }).toBeGreaterThan(cfgAfterA);
+  await expect.poll(() => liveListeners(), { timeout: 15_000 }).toBe(2);
+
+  // 5) Порядок событий: для каждого invite-listener должен быть парный remove —
+  //    утечка видна как add без rm.
+  const ev = await probe();
+  const adds = ev.filter((e) => e.op === "add").length;
+  const removes = ev.filter((e) => e.op === "rm").length;
+  expect(adds - removes).toBe(2);
+
+  // 6) Финальный SPA-logout → полное размонтирование.
+  await logoutViaUiP0(page);
+  await page.waitForURL(/\/login/, { timeout: 30_000 });
+  await expect.poll(() => liveListeners(), { timeout: 15_000 }).toBe(0);
 });

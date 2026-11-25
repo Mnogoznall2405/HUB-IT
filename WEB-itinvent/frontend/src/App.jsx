@@ -12,6 +12,7 @@ import BrandedRouteLoader from './components/layout/BrandedRouteLoader';
 import ScrollToTop from './components/layout/ScrollToTop';
 import { canAccessAdminArea } from './components/account/accountNavigationConfig';
 import { forceAppHardReload, isRouteChunkLoadError } from './lib/routeChunkRecovery';
+import { resolveTrustedDeviceRegistrationMode } from './lib/trustedDeviceEnrollment';
 import {
   needsAboutOnboarding,
   peekPostAuthReturnPath,
@@ -154,19 +155,67 @@ const resolveFirstAccessiblePath = (hasPermission, user) => {
   return match ? match.path : '/login';
 };
 
+// FE-0198: an external-zone session without any discoverable trusted device
+// must complete mandatory enrollment before entering the hub. Evaluated on the
+// authenticated user payload (/auth/me emits network_zone + device count), so
+// it survives a full page reload — React post-auth holds do not. The verdict
+// mirrors the prompt's own capability probe: when this device cannot create a
+// passkey at all ('unsupported'), the documented escape applies and the
+// session is not gated.
+const TRUSTED_DEVICE_GATE_CACHE = new Map();
+
+const trustedDeviceGateKey = (user) => {
+  const external = String(user?.network_zone || '').trim().toLowerCase() === 'external';
+  const noDevices = Number(user?.discoverable_trusted_devices_count || 0) <= 0;
+  return external && noDevices ? String(user?.id ?? user?.username ?? 'session') : '';
+};
+
+const useTrustedDeviceGate = (user) => {
+  const key = trustedDeviceGateKey(user);
+  const [verdict, setVerdict] = useState(() => (key ? TRUSTED_DEVICE_GATE_CACHE.get(key) || 'pending' : 'no'));
+  useEffect(() => {
+    if (!key) {
+      setVerdict('no');
+      return undefined;
+    }
+    const cached = TRUSTED_DEVICE_GATE_CACHE.get(key);
+    if (cached) {
+      setVerdict(cached);
+      return undefined;
+    }
+    let cancelled = false;
+    resolveTrustedDeviceRegistrationMode()
+      .then((registrationMode) => {
+        const next = registrationMode?.mode === 'unsupported' ? 'no' : 'required';
+        TRUSTED_DEVICE_GATE_CACHE.set(key, next);
+        if (!cancelled) setVerdict(next);
+      })
+      .catch(() => {
+        if (!cancelled) setVerdict('no');
+      });
+    return () => { cancelled = true; };
+  }, [key]);
+  return verdict;
+};
+
 /**
  * Protected Route component - redirects to login if not authenticated
  */
 const ProtectedRoute = ({ children }) => {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, loading, user } = useAuth();
   const location = useLocation();
+  const deviceGate = useTrustedDeviceGate(user);
 
-  if (loading) {
+  if (loading || (isAuthenticated() && deviceGate === 'pending')) {
     return <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>Loading...</Box>;
   }
 
   if (!isAuthenticated()) {
     rememberPostAuthReturnPath(`${location.pathname}${location.search}${location.hash}`);
+    return <Navigate to="/login" replace />;
+  }
+
+  if (deviceGate === 'required') {
     return <Navigate to="/login" replace />;
   }
 
@@ -229,6 +278,7 @@ const PostAuthNavigate = ({ destination, consumeReturnPath }) => {
 
 const LoginRoute = () => {
   const { hasPermission, isAuthenticated, loading, postAuthUiHold, user } = useAuth();
+  const deviceGate = useTrustedDeviceGate(user);
 
   if (loading) {
     return <PageFallback />;
@@ -237,6 +287,13 @@ const LoginRoute = () => {
   // Login owns post-auth screens (backup codes, trusted-device sheet); it lifts
   // the hold only when it commits the navigation itself.
   if (!isAuthenticated() || postAuthUiHold) {
+    return <Login />;
+  }
+
+  // Reload during mandatory trusted-device enrollment: the session is already
+  // authenticated but must not leave /login until a device is registered.
+  // 'pending' renders Login too — its own gate effect resolves the same probe.
+  if (deviceGate !== 'no') {
     return <Login />;
   }
 

@@ -80,6 +80,9 @@ def _seed_with_td_user() -> None:
         ("e2e_mt4", "e2e-local-mt4-pass", "E2E Multitab Four"),
         ("e2e_mt5", "e2e-local-mt5-pass", "E2E Multitab Five"),
         ("e2e_mt6", "e2e-local-mt6-pass", "E2E Multitab Six"),
+        # ChatCallsProvider lifecycle: SPA login/logout + user switch.
+        ("e2e_calls", "e2e-local-calls-pass", "E2E Calls One"),
+        ("e2e_calls2", "e2e-local-calls2-pass", "E2E Calls Two"),
     ]
     for name, password, full_name in mt_users:
         if user_service.get_by_username(name) is None:

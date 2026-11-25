@@ -358,6 +358,11 @@ async function writeCachedAppBadgeCount(value) {
 }
 
 async function syncSwAppBadge(value) {
+  // WARNING: navigator.setAppBadge/clearAppBadge in the SW scope is a FATAL
+  // mojo call (process kill, uncatchable) in environments that expose the API
+  // without a BadgeService binder — e.g. chrome-headless-shell. There is no
+  // safe feature probe; the page-side relay (appBadge.js) therefore skips this
+  // under navigator.webdriver. Real Chrome binds the interface correctly.
   const nextValue = await writeCachedAppBadgeCount(value);
   try {
     if (nextValue > 0 && typeof navigator.setAppBadge === 'function') {
