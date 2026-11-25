@@ -30,7 +30,7 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 
-def _make_user(*, permissions: list[str], role: str = "viewer"):
+def _make_user(*, permissions: list[str], role: str = "viewer", assigned_database: str | None = None):
     from backend.models.auth import User
 
     return User(
@@ -45,7 +45,7 @@ def _make_user(*, permissions: list[str], role: str = "viewer"):
         custom_permissions=permissions,
         auth_source="local",
         telegram_id=None,
-        assigned_database=None,
+        assigned_database=assigned_database,
         mailbox_email=None,
         mailbox_login=None,
         mail_profile_mode="manual",
@@ -1897,6 +1897,7 @@ def test_equipment_transfer_execution_service_matches_route_process(monkeypatch)
 
 def test_ai_transfer_confirm_uses_shared_service_without_owner_creation(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_confirm_service.db")
+    _patch_ai_tool_database_catalog(monkeypatch)
     appdb_db = importlib.import_module("backend.appdb.db")
     action_cards = importlib.import_module("backend.ai_chat.action_cards")
 
@@ -1931,8 +1932,8 @@ def test_ai_transfer_confirm_uses_shared_service_without_owner_creation(tmp_path
 
     monkeypatch.setattr(action_cards, "execute_equipment_transfer", fake_execute)
 
-    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
-    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"], assigned_database="ITINVENT"))
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"], assigned_database="ITINVENT"))
 
     assert confirmed["status"] == "confirmed"
     assert confirmed["result"]["upload_reminder_created"] is True
@@ -1987,6 +1988,7 @@ def test_ai_helpdesk_request_confirm_creates_one_it_task(tmp_path, monkeypatch):
 
 def test_ai_transfer_confirm_sends_generated_act_to_chat(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_confirm_sends_act.db")
+    _patch_ai_tool_database_catalog(monkeypatch)
     appdb_db = importlib.import_module("backend.appdb.db")
     action_cards = importlib.import_module("backend.ai_chat.action_cards")
 
@@ -2042,8 +2044,8 @@ def test_ai_transfer_confirm_sends_generated_act_to_chat(tmp_path, monkeypatch):
     monkeypatch.setattr("backend.chat.service.chat_service", FakeChatService())
     monkeypatch.setattr(action_cards, "_publish_chat_message_created", lambda **kwargs: None)
 
-    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
-    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"], assigned_database="ITINVENT"))
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"], assigned_database="ITINVENT"))
 
     assert confirmed["status"] == "confirmed"
     assert confirmed["result"]["chat_act_delivery"]["sent_count"] == 1
@@ -2056,6 +2058,7 @@ def test_ai_transfer_confirm_sends_generated_act_to_chat(tmp_path, monkeypatch):
 
 def test_ai_action_confirm_is_idempotent_and_expiry_blocks_execution(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_confirm.db")
+    _patch_ai_tool_database_catalog(monkeypatch)
     appdb_db = importlib.import_module("backend.appdb.db")
     app_models = importlib.import_module("backend.appdb.models")
     action_cards = importlib.import_module("backend.ai_chat.action_cards")
@@ -2079,7 +2082,7 @@ def test_ai_action_confirm_is_idempotent_and_expiry_blocks_execution(tmp_path, m
     monkeypatch.setattr("backend.ai_chat.action_cards.queries.set_consumable_stock_qty", fake_set_qty)
     monkeypatch.setattr("backend.ai_chat.action_cards.invalidate_equipment_cache", lambda db_id=None: None)
 
-    user = _make_user(permissions=["database.write"])
+    user = _make_user(permissions=["database.write"], assigned_database="ITINVENT")
     confirmed = action_cards.confirm_action(action_id=card["id"], current_user=user)
     repeated = action_cards.confirm_action(action_id=card["id"], current_user=user)
 

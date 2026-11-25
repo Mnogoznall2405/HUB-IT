@@ -13,10 +13,12 @@ Plus unit coverage of ``resolve_effective_database_id`` explicit-junk handling.
 from __future__ import annotations
 
 import importlib
+import json
 
 import pytest
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from test_ai_chat_runtime import _configure_local_backend_runtime, _patch_ai_tool_database_catalog
 
@@ -402,6 +404,10 @@ def _run_scripted_ai_run(tmp_path, monkeypatch, *, explicit_database_id, db_file
     """
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, db_file)
     _patch_ai_tool_database_catalog(monkeypatch)
+    # backend.config is frozen at first import; in a shared pytest process the
+    # ambient default may be the production database instead of test_db, which
+    # would make the absent-database fall-through assertion order-dependent.
+    _pin_default_test_database(monkeypatch)
 
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
     chat_service_module = importlib.import_module("backend.chat.service")
@@ -654,4 +660,306 @@ def test_acts_pending_no_query_when_effective_database_unresolved(monkeypatch):
     assert result["ok"] is False
     assert reminder_calls == [], (
         "db_id=None widens list_open_reminders to every database — it must not be called at all"
+    )
+
+
+# ---------------------------------------------------------------------------
+# A11 §3 confirm-time database revalidation: the draft scope must be re-checked
+# against the CURRENT catalog / user assignment / bot multi-db targets before
+# any SQL or JSON mutation. A scope that was valid at draft time but is no
+# longer valid at confirm time must produce a controlled ``failed`` card with
+# ZERO mutation calls.
+# ---------------------------------------------------------------------------
+
+
+def _patch_dynamic_ai_catalog(monkeypatch, catalog_rows):
+    """Patch the AI tool catalog to re-read ``catalog_rows`` on every call.
+
+    Mutating the list in place between draft creation and confirm simulates a
+    database being removed from the catalog mid-flight.
+    """
+    tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
+    monkeypatch.setattr(
+        tools_context_module,
+        "get_all_db_configs",
+        lambda: list(catalog_rows),
+    )
+
+
+def _pin_default_test_database(monkeypatch):
+    """Pin ``config.database.database`` so the catalog composition is deterministic.
+
+    ``backend.config`` is a frozen import-time singleton and the configured
+    default database is always part of the AI catalog options. Depending on
+    which test module imported it first in a shared pytest process, the ambient
+    value may be the production one instead of ``test_db`` — the confirm-time
+    tests must not depend on import order.
+    """
+    tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
+    monkeypatch.setattr(tools_context_module.config.database, "database", "test_db", raising=False)
+
+
+def _make_confirm_user(*, role="viewer", assigned_database=None, permissions=None):
+    effective_permissions = permissions if permissions is not None else ["database.write"]
+    return SimpleNamespace(
+        id=99,
+        username="operator_user",
+        full_name="Operator User",
+        role=role,
+        is_active=True,
+        permissions=effective_permissions,
+        use_custom_permissions=True,
+        custom_permissions=effective_permissions,
+        assigned_database=assigned_database,
+        telegram_id=None,
+    )
+
+
+def _create_transfer_card(action_cards, *, database_id, run_id="run-confirm"):
+    return action_cards.create_pending_action(
+        action_type=action_cards.ACTION_TRANSFER,
+        conversation_id="conv-confirm-scope",
+        run_id=run_id,
+        requester_user_id=99,
+        database_id=database_id,
+        payload={"inv_nos": ["101"], "new_employee": "New Owner", "new_employee_no": 55},
+        preview={"title": "Передача оборудования", "summary": "Передать 1 поз."},
+    )
+
+
+def _patch_transfer_recorder(monkeypatch, action_cards):
+    calls: list[dict[str, object]] = []
+
+    def fake_execute(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success_count": 1,
+            "failed_count": 0,
+            "transferred": [{"inv_no": "101", "hist_id": 77}],
+            "failed": [],
+            "acts": [],
+            "upload_reminder_created": False,
+            "upload_reminder_task_id": None,
+            "upload_reminder_id": None,
+            "upload_reminder_warning": None,
+            "upload_reminder_controller_username": None,
+            "upload_reminder_controller_fallback_used": False,
+        }
+
+    monkeypatch.setattr(action_cards, "execute_equipment_transfer", fake_execute)
+    return calls
+
+
+def test_confirm_fails_closed_when_database_removed_from_catalog_after_draft(tmp_path, monkeypatch):
+    # The draft was created for ITINVENT while it was a valid catalog entry;
+    # by confirm time ITINVENT is gone. The mutation must never run — even
+    # though the user's assignment still names ITINVENT verbatim.
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_confirm_catalog_removed.db")
+    catalog_rows = [
+        {"id": "ITINVENT", "name": "ITINVENT"},
+        {"id": "OBJ-ITINVENT", "name": "OBJ-ITINVENT"},
+    ]
+    _patch_dynamic_ai_catalog(monkeypatch, catalog_rows)
+    _pin_default_test_database(monkeypatch)
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = _create_transfer_card(action_cards, database_id="ITINVENT")
+    transfer_calls = _patch_transfer_recorder(monkeypatch, action_cards)
+
+    # The database disappears from the catalog between draft and confirm.
+    catalog_rows[:] = [{"id": "OBJ-ITINVENT", "name": "OBJ-ITINVENT"}]
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_confirm_user(assigned_database="ITINVENT"),
+    )
+
+    assert confirmed["status"] == "failed"
+    error_text = str(confirmed["error_text"]).lower()
+    assert "недоступна" in error_text or "удалена" in error_text
+    assert transfer_calls == [], "SQL mutation must not run when the draft database left the catalog"
+
+
+def test_confirm_denies_non_admin_when_assignment_changed_after_draft(tmp_path, monkeypatch):
+    # Card drafted for ITINVENT; at confirm time the user's effective database
+    # is OBJ-ITINVENT. Strict equality fails -> controlled denial, no mutation.
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_confirm_assignment_changed.db")
+    _patch_ai_tool_database_catalog(monkeypatch)
+    _pin_default_test_database(monkeypatch)
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = _create_transfer_card(action_cards, database_id="ITINVENT")
+    transfer_calls = _patch_transfer_recorder(monkeypatch, action_cards)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_confirm_user(assigned_database="OBJ-ITINVENT"),
+    )
+
+    assert confirmed["status"] == "failed"
+    assert "изменилось" in str(confirmed["error_text"]).lower() or "не совпадает" in str(confirmed["error_text"]).lower()
+    assert transfer_calls == [], "SQL mutation must not run when the user assignment no longer matches the draft"
+
+
+def test_confirm_non_admin_unchanged_assignment_positive_control(tmp_path, monkeypatch):
+    # Positive control: same user, same assignment as at draft time -> the
+    # confirm executes exactly once, scoped to the draft database. If the
+    # negative tests above ever turn mock-echo, this one catches it.
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_confirm_assignment_positive.db")
+    _patch_ai_tool_database_catalog(monkeypatch)
+    _pin_default_test_database(monkeypatch)
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = _create_transfer_card(action_cards, database_id="ITINVENT")
+    transfer_calls = _patch_transfer_recorder(monkeypatch, action_cards)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_confirm_user(assigned_database="ITINVENT"),
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert len(transfer_calls) == 1
+    assert transfer_calls[0]["db_id"] == "ITINVENT"
+
+
+def _seed_admin_multi_db_bot(appdb_db, app_models, database_url, *, allowed_databases):
+    with appdb_db.app_session(database_url) as session:
+        session.add(
+            app_models.AppAiBot(
+                id="bot-confirm-scope",
+                slug="bot-confirm-scope",
+                title="Confirm Scope Bot",
+                tool_settings_json=json.dumps({
+                    "multi_db_mode": "admin_multi_db",
+                    "allowed_databases": list(allowed_databases),
+                }),
+            )
+        )
+        session.add(
+            app_models.AppAiBotRun(
+                id="run-confirm-scope",
+                bot_id="bot-confirm-scope",
+                conversation_id="conv-confirm-scope",
+                user_id=99,
+                trigger_message_id="msg-1",
+                status="completed",
+            )
+        )
+
+
+def test_confirm_admin_multi_db_denies_target_excluded_after_draft(tmp_path, monkeypatch):
+    # The bot admin multi-db targets covered OBJ-ITINVENT at draft time; before
+    # confirm the target list is narrowed to ITINVENT only. The confirm must be
+    # denied even though the user is an admin and the database still exists.
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_confirm_admin_target_excluded.db")
+    _patch_ai_tool_database_catalog(monkeypatch)
+    _pin_default_test_database(monkeypatch)
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    _seed_admin_multi_db_bot(appdb_db, app_models, database_url, allowed_databases=["ITINVENT", "OBJ-ITINVENT"])
+    card = _create_transfer_card(action_cards, database_id="OBJ-ITINVENT", run_id="run-confirm-scope")
+    transfer_calls = _patch_transfer_recorder(monkeypatch, action_cards)
+
+    # The target is excluded from the bot configuration between draft and confirm.
+    with appdb_db.app_session(database_url) as session:
+        bot = session.get(app_models.AppAiBot, "bot-confirm-scope")
+        bot.tool_settings_json = json.dumps({
+            "multi_db_mode": "admin_multi_db",
+            "allowed_databases": ["ITINVENT"],
+        })
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_confirm_user(role="admin"),
+    )
+
+    assert confirmed["status"] == "failed"
+    assert "targets" in str(confirmed["error_text"]).lower() or "разрешённые" in str(confirmed["error_text"]).lower()
+    assert transfer_calls == [], "SQL mutation must not run when the database left the bot multi-db targets"
+
+
+def test_confirm_admin_multi_db_target_retained_positive_control(tmp_path, monkeypatch):
+    # Positive counterpart: OBJ-ITINVENT stays in the target list -> the same
+    # confirm succeeds and the mutation is scoped exactly to the draft database.
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_confirm_admin_target_retained.db")
+    _patch_ai_tool_database_catalog(monkeypatch)
+    _pin_default_test_database(monkeypatch)
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    _seed_admin_multi_db_bot(appdb_db, app_models, database_url, allowed_databases=["ITINVENT", "OBJ-ITINVENT"])
+    card = _create_transfer_card(action_cards, database_id="OBJ-ITINVENT", run_id="run-confirm-scope")
+    transfer_calls = _patch_transfer_recorder(monkeypatch, action_cards)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_confirm_user(role="admin"),
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert len(transfer_calls) == 1
+    assert transfer_calls[0]["db_id"] == "OBJ-ITINVENT"
+
+
+def test_confirm_works_uses_row_database_id_not_payload_db_name(tmp_path, monkeypatch):
+    # Canonical scope is ``row.database_id``; ``payload["db_name"]`` is only a
+    # legacy fallback. A card whose payload carries a divergent db_name must
+    # execute against the row scope — the value confirm revalidation checked.
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_confirm_works_canonical.db")
+    _patch_ai_tool_database_catalog(monkeypatch)
+    _pin_default_test_database(monkeypatch)
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_WORKS_CARTRIDGE,
+        conversation_id="conv-works",
+        run_id="run-works",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={
+            "db_name": "OBJ-ITINVENT",
+            "inv_no": "P-100",
+            "serial_number": "SN-100",
+            "equipment_id": 100,
+            "model_name": "Printer",
+            "cartridge_color": "Черный",
+        },
+        preview={"title": "Замена картриджа", "summary": "P-100"},
+    )
+
+    captured: list[dict[str, object]] = []
+
+    class FakeWorksManager:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def add_cartridge_replacement(self, **kwargs):
+            captured.append(kwargs)
+            return {"id": "rec-1", "db_name": kwargs.get("db_name")}
+
+    monkeypatch.setattr("backend.json_db.works.WorksManager", FakeWorksManager)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_confirm_user(assigned_database="ITINVENT"),
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert len(captured) == 1
+    assert captured[0]["db_name"] == "ITINVENT", (
+        "works execution must use the confirm-validated row.database_id, not payload db_name"
     )
