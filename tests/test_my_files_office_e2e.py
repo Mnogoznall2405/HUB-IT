@@ -1480,7 +1480,7 @@ def test_a_department_in_a_library_follows_its_current_members(env):
     ]
 
 
-def test_files_cannot_be_moved_between_a_person_and_a_library(env):
+def test_regular_patch_cannot_transfer_files_between_owners(env):
     library = _make_library(env, members=[_member("user", COLLAB, "edit")])
     env.as_user(COLLAB)
     library_folder = env.client.post("/api/v1/my-files/folders", json={"name": "Общая", "library_id": library}).json()["id"]
@@ -1684,6 +1684,117 @@ def test_a_copy_crosses_between_the_disk_and_a_library_by_roles(env):
     actions = [action for action, _actor, _details in _journal(env, source)]
     assert actions.count("file_copied") == 2
     assert "file_copy_created" in [action for action, _actor, _details in _journal(env, copied["id"])]
+
+
+def test_move_to_library_preserves_identity_and_revokes_old_public_access(env, monkeypatch):
+    monkeypatch.setenv("MY_FILES_SHARE_TOKEN_KEY", "test-my-files-share-token-key")
+    library = _make_library(env, members=[_member("user", COLLAB, "view")])
+    first = env.upload("move.txt", b"unchanged contents")
+    second = env.upload("remain.txt", b"second")
+    share = env.client.post(f"/api/v1/my-files/{first}/share").json()["token"]
+    selection = env.client.post("/api/v1/my-files/selection-shares", json={"file_ids": [first, second]})
+    assert selection.status_code == 201, selection.text
+    token = selection.json()["token"]
+    selection_path = f"/api/v1/my-files/public-folders/{token}"
+    grant = env.client.post(f"{selection_path}/files/{first}/download-grant")
+    assert grant.status_code == 200
+
+    env.as_user(COLLAB)
+    assert env.client.post(f"/api/v1/my-files/{first}/move-to-library", json={"library_id": library}).status_code == 404
+    env.as_user(OWNER)
+    moved = env.client.post(f"/api/v1/my-files/{first}/move-to-library", json={"library_id": library})
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["id"] == first
+    assert moved.json()["retention_days"] == 0
+    assert [item["id"] for item in env.client.get("/api/v1/my-files").json()["items"]] == [second]
+    assert [item["id"] for item in _library_list(env, library).json()["items"]] == [first]
+    assert env.service.quota(user_id=OWNER)["used_bytes"] == len(b"second")
+    assert env.client.get(f"/api/v1/my-files/public/{share}").status_code == 404
+    assert [item["id"] for item in env.client.get(selection_path).json()["items"]] == [second]
+    assert env.client.get("/api/v1" + grant.json()["download_path"]).status_code == 404
+    assert env.content(first) == b"unchanged contents"
+
+
+def test_move_to_library_keeps_office_history_and_charges_it_to_the_destination(env):
+    library = _make_library(env, members=[_member("user", COLLAB, "view")])
+    file_id = env.upload("versioned.docx", b"original")
+    config = env.editor_config(file_id)
+    assert env.callback(config, status_code=1, document=b"", users=[str(OWNER)]).json() == {"error": 0}
+    move_path = f"/api/v1/my-files/{file_id}/move-to-library"
+    assert env.client.post(move_path, json={"library_id": library}).status_code == 400
+    assert env.callback(config, status_code=2, document=b"updated", users=[str(OWNER)]).json() == {"error": 0}
+    moved = env.client.post(move_path, json={"library_id": library})
+    assert moved.status_code == 200, moved.text
+    assert env.service.quota(user_id=OWNER)["used_bytes"] == 0
+    library_info = next(item for item in env.client.get("/api/v1/my-files/libraries").json()["items"] if item["id"] == library)
+    assert library_info["used_bytes"] == len(b"originalupdated")
+    env.as_user(COLLAB)
+    result = env.client.get(f"/api/v1/my-files/{file_id}/office/history")
+    assert result.status_code == 200, result.text
+    assert [item["version"] for item in result.json()["history"]] == [1, 2]
+
+
+def test_move_to_library_rejects_foreign_destination_and_quota_without_touching_source(env):
+    source = env.upload("oversize.txt", b"contents")
+    library = _make_library(env, quota=1)
+    folder = env.service.create_folder(actor=_user(OWNER), name="Личная папка")["id"]
+    move = f"/api/v1/my-files/{source}/move-to-library"
+    assert env.client.post(move, json={"library_id": library, "folder_id": folder}).status_code == 404
+    assert env.client.post(move, json={"library_id": library}).status_code == 400
+    assert env.content(source) == b"contents"
+    assert _library_list(env, library).json()["items"] == []
+
+
+def test_selection_share_only_exposes_chosen_files_and_revokes_preissued_grants(env, monkeypatch):
+    monkeypatch.setenv("MY_FILES_SHARE_TOKEN_KEY", "test-my-files-share-token-key")
+    first = env.upload("a.txt", b"first")
+    second = env.upload("b.txt", b"second")
+    unrelated = env.upload("c.txt", b"third")
+    manage = "/api/v1/my-files/selection-shares"
+    assert env.client.post(manage, json={"file_ids": [first, first]}).status_code == 400
+    env.as_user(COLLAB)
+    assert env.client.post(manage, json={"file_ids": [first, second]}).status_code == 404
+    env.as_user(OWNER)
+    result = env.client.post(manage, json={"file_ids": [first, second]})
+    assert result.status_code == 201, result.text
+    token = result.json()["token"]
+    public = f"/api/v1/my-files/public-folders/{token}"
+    assert env.client.get(manage).json()[0]["token"] == token
+    env.as_user(COLLAB)
+    assert env.client.get(manage).json() == []
+    assert env.client.delete(f"{manage}/{token}").status_code == 404
+    listing = env.client.get(public)
+    assert listing.json()["is_selection"]
+    assert {item["id"] for item in listing.json()["items"]} == {first, second}
+    assert env.client.post(f"{public}/files/{unrelated}/download-grant").status_code == 404
+    assert env.client.get(f"{public}/files/{unrelated}/preview").status_code == 404
+    grant_path = env.client.post(f"{public}/files/{first}/download-grant").json()["download_path"]
+    grant2_path = env.client.post(f"{public}/files/{second}/download-grant").json()["download_path"]
+    assert env.client.get("/api/v1" + grant_path).content == b"first"
+    env.as_user(OWNER)
+    assert env.client.delete(f"{manage}/{token}").status_code == 204
+    assert env.client.get(public).status_code == 404
+    assert env.client.get("/api/v1" + grant2_path).status_code == 404
+
+
+def test_selection_share_migration_keeps_ordinary_download_grants_on_rollback():
+    path = Path(__file__).resolve().parents[1] / "WEB-itinvent/backend/alembic/versions/20261126_0183_my_file_selection_shares.py"
+    migration = runpy.run_path(str(path))
+    with sa.create_engine("sqlite://").begin() as connection:
+        operations = Operations(MigrationContext.configure(connection))
+        connection.execute(sa.text("CREATE TABLE my_file_download_grants (token_hash VARCHAR(64) PRIMARY KEY)"))
+        for step in ("upgrade", "downgrade"):
+            with Operations.context(operations.migration_context):
+                migration[step]()
+            if step == "upgrade":
+                assert sa.inspect(connection).has_table("my_file_selection_shares")
+                connection.execute(sa.text(
+                    "INSERT INTO my_file_download_grants (token_hash, selection_token_hash) "
+                    "VALUES ('ordinary', NULL), ('selection', 'selection-hash')"
+                ))
+        assert not sa.inspect(connection).has_table("my_file_selection_shares")
+        assert [column["name"] for column in sa.inspect(connection).get_columns("my_file_download_grants")] == ["token_hash"]
+        assert connection.execute(sa.text("SELECT token_hash FROM my_file_download_grants")).scalars().all() == ["ordinary"]
 
 
 def test_copies_respect_the_target_quota_and_the_size_cap(env, monkeypatch):

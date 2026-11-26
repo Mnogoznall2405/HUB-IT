@@ -35,9 +35,12 @@ from backend.models.my_files import (
     MyFileFolderListResponse,
     MyFileFolderResponse,
     MyFileFolderUpdateRequest,
+    MyFileLibraryMoveRequest,
     MyFileListResponse,
     MyFileQuotaResponse,
     MyFileResponse,
+    MyFileSelectionShareRequest,
+    MyFileSelectionShareResponse,
     MyFileShareResponse,
     MyFileTrashResponse,
     MyFileUpdateRequest,
@@ -473,6 +476,52 @@ async def get_public_my_files_folder(
     except MyFilesNotFoundError as exc:
         enforce_public_miss_limit(request)
         raise _service_error_to_secure_http(exc) from exc
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+
+
+@router.post("/selection-shares", response_model=MyFileSelectionShareResponse, status_code=status.HTTP_201_CREATED)
+async def create_my_files_selection_share(
+    payload: MyFileSelectionShareRequest,
+    request: Request,
+    response: Response,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_SHARE)),
+) -> dict:
+    _enforce_trusted_browser_origin(request)
+    _set_public_response_headers(response)
+    try:
+        return await run_in_threadpool(
+            my_files_service.create_selection_share, actor=current_user,
+            file_ids=payload.file_ids, meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+
+
+@router.get("/selection-shares", response_model=list[MyFileSelectionShareResponse])
+async def list_my_files_selection_shares(
+    response: Response,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_SHARE)),
+) -> list[dict]:
+    _set_public_response_headers(response)
+    try:
+        return await run_in_threadpool(my_files_service.list_selection_shares, actor=current_user)
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+
+
+@router.delete("/selection-shares/{token}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_my_files_selection_share(
+    token: str,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_SHARE)),
+) -> Response:
+    _enforce_trusted_browser_origin(request)
+    try:
+        await run_in_threadpool(
+            my_files_service.revoke_selection_share, actor=current_user, token=token, meta=_request_meta(request),
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as exc:
         raise _service_error_to_secure_http(exc) from exc
 
@@ -1183,6 +1232,23 @@ async def update_my_file(
             folder_id=payload.folder_id if "folder_id" in fields_set else _UNSET,
             is_favorite=payload.is_favorite if "is_favorite" in fields_set else _UNSET,
             meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post("/{file_id}/move-to-library", response_model=MyFileResponse)
+async def move_my_file_to_library(
+    file_id: str,
+    payload: MyFileLibraryMoveRequest,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> dict:
+    _enforce_trusted_browser_origin(request)
+    try:
+        return await run_in_threadpool(
+            my_files_service.move_file_to_library, actor=current_user, file_id=file_id,
+            library_id=payload.library_id, folder_id=payload.folder_id, meta=_request_meta(request),
         )
     except Exception as exc:
         raise _service_error_to_http(exc) from exc

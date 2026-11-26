@@ -151,8 +151,8 @@ class MyFilesCollabService:
 
     # -- access -----------------------------------------------------------------------------
 
-    def _live_row_locked(self, session, file_id: str) -> AppMyFile:
-        row = session.get(AppMyFile, _normalize_text(file_id))
+    def _live_row_locked(self, session, file_id: str, *, for_update: bool = False) -> AppMyFile:
+        row = session.get(AppMyFile, _normalize_text(file_id), with_for_update=for_update)
         now = _utc_now()
         if (
             row is None
@@ -334,7 +334,7 @@ class MyFilesCollabService:
                 or row.deleted_at is not None
                 or row.status != STATUS_READY
                 or _normalize_text(row.office_session_key)
-                or self._session_mode(session, row, document_key) != "same"
+                or self._session_mode(session, row, document_key) == "stale"
             ):
                 return
             row.office_session_key = document_key
@@ -860,8 +860,8 @@ class MyFilesCollabService:
 
     # -- collaborators ----------------------------------------------------------------------
 
-    def _owned_row_locked(self, session, file_id: str, owner_user_id: int) -> AppMyFile:
-        row = self._live_row_locked(session, file_id)
+    def _owned_row_locked(self, session, file_id: str, owner_user_id: int, *, for_update: bool = False) -> AppMyFile:
+        row = self._live_row_locked(session, file_id, for_update=for_update)
         if not self.files.may_manage_file_access_locked(session, row, owner_user_id):
             raise MyFilesNotFoundError("File not found")
         return row
@@ -1071,7 +1071,7 @@ class MyFilesCollabService:
         """Replace the whole list: ``members`` are ``(user_id, role)`` pairs, the last pair of a user wins."""
         database_url = self.files._database_url_or_raise()
         with app_session(database_url) as session:
-            row = self._owned_row_locked(session, file_id, owner_user_id)
+            row = self._owned_row_locked(session, file_id, owner_user_id, for_update=True)
             principal = int(row.owner_user_id) if int(row.owner_user_id) > 0 else int(row.uploaded_by_user_id or 0)
             wanted = self._wanted_members(members, principal)
             self._require_active_users(session, wanted)

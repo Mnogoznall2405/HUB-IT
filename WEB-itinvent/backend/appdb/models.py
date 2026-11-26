@@ -1205,6 +1205,21 @@ class AppMyFileAudit(AppBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppMyFileSelectionShare(AppBase):
+    __tablename__ = "my_file_selection_shares"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_selection_shares_owner", "created_by_user_id", "expires_at"),
+        schema=APP_SCHEMA,
+    )
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    token_enc: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    members_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class AppMyFileDownloadGrant(AppBase):
     __tablename__ = "my_file_download_grants"
     __table_args__ = _table_args(
@@ -1218,6 +1233,7 @@ class AppMyFileDownloadGrant(AppBase):
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     file_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     folder_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    selection_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

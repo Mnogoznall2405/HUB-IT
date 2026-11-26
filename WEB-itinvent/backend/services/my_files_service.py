@@ -38,6 +38,7 @@ from backend.appdb.models import (
     AppMyFileLibrary,
     AppMyFileLibraryMember,
     AppMyFilePreview,
+    AppMyFileSelectionShare,
     AppMyFileVersion,
     AppDepartment,
     AppDepartmentMembership,
@@ -79,6 +80,8 @@ MAX_RETENTION_DAYS = 30
 # expires_at выставляется далеко в будущее (без миграции NOT NULL -> NULL).
 FOREVER_RETENTION_DAYS = 0
 FOREVER_EXPIRES_DAYS = 36500
+SELECTION_SHARE_PREFIX = "selection-"
+SELECTION_SHARE_DAYS = 7
 USER_QUOTA_BYTES = 50 * 1024 * 1024 * 1024
 # Hard ceiling for per-user quota overrides set by admins.
 USER_QUOTA_MAX_BYTES = 400 * 1024 * 1024 * 1024
@@ -2516,6 +2519,10 @@ class MyFilesService:
                 raise MyFilesNotFoundError("Folder not found")
             owner_user_id = int(row.owner_user_id)
             folder_ids = [row.id, *self._folder_descendant_ids_locked(session, owner_user_id=owner_user_id, folder_id=row.id)]
+            folder_rows = session.scalars(
+                select(AppMyFileFolder).where(AppMyFileFolder.id.in_(folder_ids))
+                .order_by(AppMyFileFolder.id).with_for_update()
+            ).all()
             now = _utc_now()
 
             files = session.scalars(
@@ -2523,7 +2530,7 @@ class MyFilesService:
                     AppMyFile.owner_user_id == owner_user_id,
                     AppMyFile.folder_id.in_(folder_ids),
                     AppMyFile.deleted_at.is_(None),
-                )
+                ).order_by(AppMyFile.id).with_for_update()
             ).all()
             for file_row in files:
                 if _normalize_text(file_row.spool_path):
@@ -2541,9 +2548,7 @@ class MyFilesService:
                     )
                 )
 
-            for folder_row in session.scalars(
-                select(AppMyFileFolder).where(AppMyFileFolder.id.in_(folder_ids))
-            ).all():
+            for folder_row in folder_rows:
                 self._clear_share(folder_row)
                 folder_row.deleted_at = now
                 folder_row.updated_at = now
@@ -2776,7 +2781,7 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         actor_id = _actor_id(actor)
         with app_session(database_url) as session:
-            row = session.get(AppMyFile, _normalize_text(file_id))
+            row = session.get(AppMyFile, _normalize_text(file_id), with_for_update=True)
             if row is None or row.deleted_at is not None or not self.may_act_locked(session, actor_id, row.owner_user_id):
                 raise MyFilesNotFoundError("File not found")
             owner_user_id = int(row.owner_user_id)
@@ -2802,6 +2807,57 @@ class MyFilesService:
                 row.updated_at = _utc_now()
                 self._write_audit(session, action="file_updated", row=row, actor=actor, meta=meta)
             return self._response(row, session=session)
+
+    def move_file_to_library(
+        self, *, actor: Any, file_id: str, library_id: str,
+        folder_id: str | None = None, meta: MyFilesRequestMeta | None = None,
+    ) -> dict[str, Any]:
+        actor_id = _actor_id(actor)
+        with self._reservation_lock, app_session(self._database_url_or_raise()) as session:
+            library = session.get(AppMyFileLibrary, _normalize_text(library_id), with_for_update=True) if self._libraries_present(session) else None
+            if library is None or library.deleted_at is not None:
+                raise MyFilesNotFoundError("Library not found")
+            target_owner = int(library.owner_user_id)
+            if not self.may_act_locked(session, actor_id, target_owner):
+                raise MyFilesNotFoundError("Library not found")
+            target_folder = _normalize_text(folder_id) or None
+            if target_folder:
+                folder = session.get(AppMyFileFolder, target_folder, with_for_update=True)
+                if folder is None or folder.deleted_at is not None or int(folder.owner_user_id) != target_owner:
+                    raise MyFilesNotFoundError("Folder not found")
+            self._lock_reservation_locked(session, target_owner)
+            row = session.get(AppMyFile, _normalize_text(file_id), with_for_update=True)
+            if row is None or row.deleted_at is not None or actor_id <= 0 or int(row.owner_user_id) != actor_id:
+                raise MyFilesNotFoundError("File not found")
+            now = _utc_now()
+            if row.status != STATUS_READY or not self._security_scan_allows_access(row) or (_coerce_utc(row.expires_at) or now) <= now:
+                raise MyFilesValidationError("Only ready, unexpired files can be moved")
+            if _normalize_text(row.office_session_key):
+                raise MyFilesValidationError("Close the document editor before moving the file")
+            size = int(row.original_size_bytes or 0)
+            has_history = self._collab_tables_present(session)
+            if has_history:
+                size += int(session.scalar(
+                    select(func.coalesce(func.sum(AppMyFileVersion.original_size_bytes + AppMyFileVersion.office_changes_size_bytes), 0))
+                    .where(AppMyFileVersion.file_id == row.id)
+                ) or 0)
+            if self._quota_used_locked(session, target_owner) + size > self._user_quota_limit_locked(session, target_owner):
+                raise MyFilesValidationError("Destination library storage quota exceeded")
+            self._clear_share(row)
+            if has_history:
+                session.execute(delete(AppMyFileCollaborator).where(AppMyFileCollaborator.file_id == row.id))
+            session.execute(delete(AppMyFileDownloadGrant).where(AppMyFileDownloadGrant.file_id == row.id))
+            # The blob IDs and version rows remain intact; quota follows the file's owner.
+            row.owner_user_id = target_owner
+            row.uploaded_by_user_id = actor_id
+            row.folder_id = target_folder
+            row.is_favorite = False
+            row.retention_days = FOREVER_RETENTION_DAYS
+            row.expires_at = now + timedelta(days=FOREVER_EXPIRES_DAYS)
+            row.updated_at = now
+            self._write_audit(session, action="file_moved_to_library", row=row, actor=actor, meta=meta)
+            return {**self._response(row, session=session, viewer_user_id=actor_id),
+                    "library_id": library.id, "library_name": library.name}
 
     def list_files(
         self,
@@ -4834,7 +4890,7 @@ class MyFilesService:
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
-            row = session.get(AppMyFile, _normalize_text(file_id))
+            row = session.get(AppMyFile, _normalize_text(file_id), with_for_update=True)
             if row is None or row.deleted_at is not None or not self._may_share_file_locked(session, row, user_id):
                 raise MyFilesNotFoundError("File not found")
             if row.status != STATUS_READY:
@@ -4959,6 +5015,77 @@ class MyFilesService:
             raise MyFilesNotFoundError("Folder not found")
         return row
 
+    def create_selection_share(
+        self, *, actor: Any, file_ids: list[str], meta: MyFilesRequestMeta | None = None,
+    ) -> dict[str, Any]:
+        ids = list(dict.fromkeys(_normalize_text(item) for item in file_ids))
+        if not 2 <= len(ids) <= 100 or "" in ids:
+            raise MyFilesValidationError("Select between 2 and 100 distinct files")
+        actor_id = _actor_id(actor)
+        now = _utc_now()
+        token = SELECTION_SHARE_PREFIX + secrets.token_urlsafe(32)
+        expires_at = now + timedelta(days=SELECTION_SHARE_DAYS)
+        with app_session(self._database_url_or_raise()) as session:
+            files = session.scalars(select(AppMyFile).where(AppMyFile.id.in_(ids)).order_by(AppMyFile.id)).all()
+            if len(files) != len(ids) or any(not self._may_share_file_locked(session, row, actor_id) for row in files):
+                raise MyFilesNotFoundError("File not found")
+            if any(not self._selection_file_available(row, now) for row in files):
+                raise MyFilesValidationError("Only ready, unexpired files can be shared")
+            session.execute(delete(AppMyFileSelectionShare).where(
+                AppMyFileSelectionShare.created_by_user_id == actor_id, AppMyFileSelectionShare.expires_at <= now,
+            ))
+            session.add(AppMyFileSelectionShare(
+                token_hash=_hash_token(token), token_enc=self._encrypt_share_token(token),
+                created_by_user_id=actor_id, members_json=json.dumps({row.id: row.owner_user_id for row in files}),
+                created_at=now, expires_at=expires_at,
+            ))
+            self._write_audit(session, action="selection_share_created", row=None, actor=actor, meta=meta,
+                              details=f"file_count={len(files)}")
+        return self._selection_share_response(token, expires_at, len(files))
+
+    @staticmethod
+    def _selection_share_response(token: str, expires_at: datetime, file_count: int) -> dict[str, Any]:
+        return {"token": token, "public_path": f"/shared-folders/{token}",
+                "expires_at": expires_at, "file_count": file_count}
+
+    def list_selection_shares(self, *, actor: Any) -> list[dict[str, Any]]:
+        with app_session(self._database_url_or_raise()) as session:
+            rows = session.scalars(select(AppMyFileSelectionShare).where(
+                AppMyFileSelectionShare.created_by_user_id == _actor_id(actor),
+                AppMyFileSelectionShare.expires_at > _utc_now(),
+            ).order_by(AppMyFileSelectionShare.created_at.desc())).all()
+            return [self._selection_share_response(self._decrypt_share_token(row.token_enc), row.expires_at,
+                                                   len(json.loads(row.members_json))) for row in rows]
+
+    def revoke_selection_share(self, *, actor: Any, token: str, meta: MyFilesRequestMeta | None = None) -> None:
+        with app_session(self._database_url_or_raise()) as session:
+            row = session.get(AppMyFileSelectionShare, _hash_token(token), with_for_update=True)
+            if row is None or row.created_by_user_id != _actor_id(actor):
+                raise MyFilesNotFoundError("Link not found")
+            session.delete(row)
+            self._write_audit(session, action="selection_share_revoked", row=None, actor=actor, meta=meta)
+
+    @staticmethod
+    def _selection_token(token: str) -> bool:
+        return token.startswith(SELECTION_SHARE_PREFIX) and len(token) == len(SELECTION_SHARE_PREFIX) + 43
+
+    @staticmethod
+    def _selection_file_available(row: AppMyFile, now: datetime) -> bool:
+        return (row.deleted_at is None and row.status == STATUS_READY and (_coerce_utc(row.expires_at) or now) > now
+                and MyFilesService._security_scan_allows_access(row))
+
+    @staticmethod
+    def _selection_share_locked(session, token_hash: str, now: datetime) -> AppMyFileSelectionShare:
+        row = session.get(AppMyFileSelectionShare, token_hash)
+        if row is None or (_coerce_utc(row.expires_at) or now) <= now:
+            raise MyFilesNotFoundError("Link not found")
+        return row
+
+    def _selection_member_allowed(self, session, share, members, row, now) -> bool:
+        return (row is not None and row.id in members and int(row.owner_user_id) == members[row.id]
+                and self._selection_file_available(row, now)
+                and self._may_share_file_locked(session, row, share.created_by_user_id))
+
     def _public_folder_file_rows_locked(self, session, folder: AppMyFileFolder) -> tuple[list[str], dict[str, str]]:
         subtree_ids = [
             folder.id,
@@ -4985,12 +5112,22 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         now = _utc_now()
         with app_session(database_url) as session:
-            folder = self._public_folder_locked(session, token)
-            subtree_ids, path_by_id = self._public_folder_file_rows_locked(session, folder)
+            selection = self._selection_token(token)
+            if selection:
+                share = self._selection_share_locked(session, _hash_token(token), now)
+                members = json.loads(share.members_json)
+                file_scope = AppMyFile.id.in_(members)
+                path_by_id = {}
+                folder_name, created_at = "Выбранные файлы", share.created_at
+            else:
+                folder = self._public_folder_locked(session, token)
+                subtree_ids, path_by_id = self._public_folder_file_rows_locked(session, folder)
+                file_scope = AppMyFile.folder_id.in_(subtree_ids)
+                folder_name, created_at = _normalize_text(folder.name), folder.share_created_at
             files = session.scalars(
                 select(AppMyFile)
                 .where(
-                    AppMyFile.folder_id.in_(subtree_ids),
+                    file_scope,
                     AppMyFile.deleted_at.is_(None),
                     AppMyFile.status == STATUS_READY,
                     AppMyFile.expires_at > now,
@@ -5012,6 +5149,8 @@ class MyFilesService:
             for file_row in files:
                 if not self._security_scan_allows_access(file_row):
                     continue
+                if selection and not self._selection_member_allowed(session, share, members, file_row, now):
+                    continue
                 preview = preview_map.get(_normalize_text(file_row.blob_id))
                 preview_available = bool(
                     preview is not None
@@ -5029,16 +5168,22 @@ class MyFilesService:
                     "expires_at": _coerce_utc(file_row.expires_at),
                 })
             return {
-                "folder_name": _normalize_text(folder.name),
-                "share_created_at": _coerce_utc(folder.share_created_at),
+                "folder_name": folder_name,
+                "share_created_at": _coerce_utc(created_at),
+                "is_selection": selection,
                 "items": items,
             }
 
-    def _public_folder_file_context_locked(self, session, *, token: str, file_id: str) -> tuple[AppMyFile, DownloadPayload]:
-        folder = self._public_folder_locked(session, token)
-        subtree_ids, _paths = self._public_folder_file_rows_locked(session, folder)
+    def _public_folder_member_locked(self, session, *, token: str, file_id: str) -> AppMyFile:
         row = session.get(AppMyFile, _normalize_text(file_id))
         now = _utc_now()
+        if self._selection_token(token):
+            share = self._selection_share_locked(session, _hash_token(token), now)
+            if not self._selection_member_allowed(session, share, json.loads(share.members_json), row, now):
+                raise MyFilesNotFoundError("File not found")
+            return row
+        folder = self._public_folder_locked(session, token)
+        subtree_ids, _paths = self._public_folder_file_rows_locked(session, folder)
         if (
             row is None
             or row.folder_id not in subtree_ids
@@ -5048,8 +5193,11 @@ class MyFilesService:
             or not self._security_scan_allows_access(row)
         ):
             raise MyFilesNotFoundError("File not found")
-        payload = self._download_payload_for_row_locked(session, row)
-        return row, payload
+        return row
+
+    def _public_folder_file_context_locked(self, session, *, token: str, file_id: str) -> tuple[AppMyFile, DownloadPayload]:
+        row = self._public_folder_member_locked(session, token=token, file_id=file_id)
+        return row, self._download_payload_for_row_locked(session, row)
 
     def get_public_folder_file_preview_meta(self, *, token: str, file_id: str) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
@@ -5070,24 +5218,15 @@ class MyFilesService:
         grant_token = secrets.token_urlsafe(32)
         now = _utc_now()
         with app_session(database_url) as session:
-            folder = self._public_folder_locked(session, token)
-            subtree_ids, _paths = self._public_folder_file_rows_locked(session, folder)
-            row = session.get(AppMyFile, _normalize_text(file_id))
-            if (
-                row is None
-                or row.folder_id not in subtree_ids
-                or row.deleted_at is not None
-                or row.status != STATUS_READY
-                or (_coerce_utc(row.expires_at) or now) <= now
-            ):
-                raise MyFilesNotFoundError("File not found")
-            if not self._security_scan_allows_access(row):
-                raise MyFilesValidationError("File is waiting for security scan")
+            row = self._public_folder_member_locked(session, token=token, file_id=file_id)
             self._purge_stale_download_grants_locked(session)
+            is_selection = self._selection_token(token)
             grant = AppMyFileDownloadGrant(
                 token_hash=_hash_token(grant_token),
                 file_id=row.id,
-                owner_user_id=int(row.owner_user_id),
+                selection_token_hash=_hash_token(token) if is_selection else None,
+                # A pre-0183 runtime must not redeem this as an ordinary owner grant.
+                owner_user_id=0 if is_selection else int(row.owner_user_id),
                 expires_at=now + timedelta(seconds=ttl_seconds),
                 used_at=None,
                 created_at=now,
@@ -5699,6 +5838,13 @@ class MyFilesService:
                 row = session.get(AppMyFile, file_id)
                 if row is None or row.deleted_at is not None:
                     raise MyFilesNotFoundError("File not found")
+                if grant.selection_token_hash:
+                    share = self._selection_share_locked(session, grant.selection_token_hash, now)
+                    if not self._selection_member_allowed(session, share, json.loads(share.members_json), row, now):
+                        raise MyFilesNotFoundError("File not found")
+                    payload = self._download_payload_for_row_locked(session, row)
+                    self._write_audit(session, action="public_download_started", row=row, meta=meta, actor_user_id=0)
+                    return payload
                 is_owner = row.owner_user_id == owner_user_id
                 # Access is checked again at redemption, so a revoked collaborator's grant is useless.
                 if not is_owner and not self.effective_role_locked(session, row, owner_user_id):
@@ -5774,6 +5920,7 @@ class MyFilesService:
                 )
                 .order_by(AppMyFile.expires_at.asc())
                 .limit(max(1, int(limit or 100)))
+                .with_for_update(skip_locked=True)
             ).all()
             for row in rows:
                 try:

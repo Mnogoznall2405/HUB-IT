@@ -62,6 +62,8 @@ import MainLayout from '../components/layout/MainLayout';
 import MyFileAuditDialog from '../components/myFiles/MyFileAuditDialog';
 import MyFilesCollaboratorsDialog from '../components/myFiles/MyFilesCollaboratorsDialog';
 import MyFilesCopyDialog from '../components/myFiles/MyFilesCopyDialog';
+import MyFilesLibraryMoveDialog from '../components/myFiles/MyFilesLibraryMoveDialog';
+import MyFilesSelectionSharesDialog from '../components/myFiles/MyFilesSelectionSharesDialog';
 import MyFilesDetailsPanel from '../components/myFiles/MyFilesDetailsPanel';
 import MyFilesLibraryDialog from '../components/myFiles/MyFilesLibraryDialog';
 import MyFilesOfficeEditorDialog from '../components/myFiles/MyFilesOfficeEditorDialog';
@@ -261,6 +263,8 @@ export default function MyFiles() {
   const [folderNameInput, setFolderNameInput] = useState('');
   const [renameDialog, setRenameDialog] = useState({ open: false, kind: '', id: '', name: '' });
   const [moveDialog, setMoveDialog] = useState({ open: false, kind: '', id: '', targetFolderId: '' });
+  const [libraryMoveFiles, setLibraryMoveFiles] = useState([]);
+  const [selectionShareIds, setSelectionShareIds] = useState(null);
   const [folderActionsMenu, setFolderActionsMenu] = useState({ folder: null, anchorPosition: null });
   const [folderSubmenu, setFolderSubmenu] = useState('');
   const [selectedKeys, setSelectedKeys] = useState(() => new Set());
@@ -1055,6 +1059,8 @@ export default function MyFiles() {
     setCreateFolderOpen(false);
     setRenameDialog({ open: false, kind: '', id: '', name: '' });
     setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' });
+    setLibraryMoveFiles([]);
+    setSelectionShareIds(null);
     setAuditDialogFile(null);
     setCopyDialogFile(null);
     setCollaboratorsFile(null);
@@ -1852,6 +1858,17 @@ export default function MyFiles() {
     },
     [visibleItems, selectedKeys, extraSelectedRows],
   );
+  const selectionShareAvailable = !rowsStale && selectedFiles.length >= 2 && selectedFiles.length <= 100
+    && selectedFiles.length === selectedKeys.size
+    && selectedFiles.every((file) => entryAccess(file).canShare && READY_STATUSES.has(String(file.status).toLowerCase()));
+  const writableMoveLibraries = libraries.filter((entry) => ['edit', 'manage'].includes(entry.my_role));
+  const libraryMoveCandidates = moveDialog.kind === 'bulk'
+    ? (selectedFiles.length === selectedKeys.size ? selectedFiles : [])
+    : (moveDialog.kind === 'file' ? items.filter((item) => String(item.id) === String(moveDialog.id)) : []);
+  const canMoveToLibrary = !isLibraryView && !isSharedView && !rowsStale && canWrite && writableMoveLibraries.length > 0
+    && libraryMoveCandidates.length > 0
+    && libraryMoveCandidates.every((file) => !file.library_id && !file.shared_with_me
+      && READY_STATUSES.has(String(file.status).toLowerCase()));
 
   const thumbObserverRef = useRef(null);
   const thumbNodesRef = useRef(new Map());
@@ -2822,6 +2839,12 @@ export default function MyFiles() {
                 >
                   Переместить
                 </Button>
+                {selectionShareAvailable && (
+                  <Button size="small" startIcon={<LinkOutlinedIcon />} disabled={bulkBusy}
+                    onClick={() => setSelectionShareIds(selectedFiles.map((file) => file.id))}>
+                    Создать ссылку
+                  </Button>
+                )}
                 <Button
                   size="small"
                   color="error"
@@ -2837,6 +2860,12 @@ export default function MyFiles() {
                 </Button>
               </Paper>
             ) : null}
+            {!isTrashView && hasPermission('my_files.share') && (
+              <Button size="small" startIcon={<LinkOutlinedIcon />} sx={{ mb: 1 }}
+                onClick={() => setSelectionShareIds([])}>
+                Ссылки на подборки файлов
+              </Button>
+            )}
 
             {showRetentionNotice && !isLibraryView ? (
               <Alert
@@ -3552,13 +3581,19 @@ export default function MyFiles() {
             </Stack>
           </DialogContent>
           <DialogActions>
+            {!pendingFolderSummary ? (
+              <Button onClick={() => fileInputRef.current?.click()} disabled={uploading || !canWrite}>
+                Добавить файлы
+              </Button>
+            ) : null}
             <Button onClick={closeUploadDialog} disabled={uploading}>Отмена</Button>
             <Button
               variant="contained"
               onClick={confirmUpload}
               disabled={uploading || (pendingUploadFiles.length === 0 && pendingFolderFiles.length === 0)}
             >
-              {pendingFolderSummary ? 'Загрузить папку' : 'Загрузить'}
+              {pendingFolderSummary ? 'Загрузить папку' : pendingUploadFiles.length > 1
+                ? `Загрузить файлы (${pendingUploadFiles.length})` : 'Загрузить'}
             </Button>
           </DialogActions>
         </Dialog>
@@ -3707,6 +3742,14 @@ export default function MyFiles() {
             </Select>
           </DialogContent>
           <DialogActions>
+            {canMoveToLibrary && (
+              <Button disabled={bulkBusy} onClick={() => {
+                setLibraryMoveFiles(libraryMoveCandidates);
+                setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' });
+              }}>
+                В общую папку…
+              </Button>
+            )}
             <Button onClick={() => setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' })}>Отмена</Button>
             <Button
               variant="contained"
@@ -3724,6 +3767,23 @@ export default function MyFiles() {
             </Button>
           </DialogActions>
         </Dialog>
+        {libraryMoveFiles.length > 0 && (
+          <MyFilesLibraryMoveDialog files={libraryMoveFiles} libraries={writableMoveLibraries}
+            isCurrent={() => authUserKeyRef.current === authUserKey}
+            onClose={() => setLibraryMoveFiles([])}
+            onMoved={(ids, finished) => {
+              const moved = new Set(ids.map(String));
+              setLibraryMoveFiles((current) => finished ? [] : current.filter((file) => !moved.has(String(file.id))));
+              if (!moved.size) return;
+              setSelectedKeys((current) => new Set([...current].filter((key) => !key.startsWith('file:') || !moved.has(key.slice(5)))));
+              void postMutationLoadData({ silent: true });
+              void refreshQuota();
+              if (finished) notifySuccess('Файлы перемещены в общую папку.', { source: 'my-files-move-library' });
+            }} />
+        )}
+        {selectionShareIds !== null && (
+          <MyFilesSelectionSharesDialog fileIds={selectionShareIds} onClose={() => setSelectionShareIds(null)} />
+        )}
 
         <Dialog
           open={Boolean(confirmState)}

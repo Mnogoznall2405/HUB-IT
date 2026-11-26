@@ -32,7 +32,7 @@ const resolveError = (error) => {
   }
   const status = Number(error?.response?.status || 0);
   if (!status || status >= 500) return 'Не удалось связаться с сервером. Повторите попытку позже.';
-  return 'Папка недоступна — ссылка отключена или срок хранения истёк.';
+  return 'Файлы недоступны — ссылка отключена или срок хранения истёк.';
 };
 
 const resolveDownloadError = (error) => {
@@ -139,7 +139,7 @@ export default function SharedFolder() {
           HUB-IT
         </Typography>
         <Typography variant="body2" sx={{ color: MUTED, fontWeight: 500 }}>
-          Общая папка
+          {payload?.is_selection ? 'Публичная ссылка' : 'Общая папка'}
         </Typography>
       </Box>
 
@@ -195,10 +195,10 @@ export default function SharedFolder() {
                   {payload.folder_name || 'Папка'}
                 </Typography>
                 <Typography variant="body2" sx={{ color: MUTED }}>
-                  {items.length > 0 ? `Файлов: ${items.length}` : 'В папке нет доступных файлов'}
+                  {items.length > 0 ? `Файлов: ${items.length}` : 'Нет доступных файлов'}
                 </Typography>
               </Box>
-              {items.length > 0 ? (
+              {items.length > 0 && !payload.is_selection ? (
                 downloadingAll ? (
                   <CircularProgress size={20} />
                 ) : (

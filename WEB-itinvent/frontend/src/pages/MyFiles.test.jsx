@@ -36,6 +36,10 @@ const {
   mockCollectDataTransferFiles,
   mockListLibraries,
   mockCopyFile,
+  mockMoveFileToLibrary,
+  mockListSelectionShares,
+  mockCreateSelectionShare,
+  mockRevokeSelectionShare,
   mockOfficeStatus,
   mockCreateBlank,
   mockAuthUser,
@@ -72,6 +76,10 @@ const {
   mockCollectDataTransferFiles: vi.fn(),
   mockListLibraries: vi.fn(),
   mockCopyFile: vi.fn(),
+  mockMoveFileToLibrary: vi.fn(),
+  mockListSelectionShares: vi.fn(),
+  mockCreateSelectionShare: vi.fn(),
+  mockRevokeSelectionShare: vi.fn(),
   mockOfficeStatus: vi.fn(),
   mockCreateBlank: vi.fn(),
 }));
@@ -115,6 +123,11 @@ vi.mock('../api/myFiles', () => ({
     purgeFolder: mockPurgeFolder,
     emptyTrash: mockEmptyTrash,
     copyFile: mockCopyFile,
+    moveFileToLibrary: mockMoveFileToLibrary,
+    listSelectionShares: mockListSelectionShares,
+    createSelectionShare: mockCreateSelectionShare,
+    revokeSelectionShare: mockRevokeSelectionShare,
+    buildPublicFolderUrl: (token) => `https://hub.example/shared-folders/${token}`,
   },
 }));
 
@@ -334,6 +347,44 @@ describe('MyFiles page', () => {
 
     await waitFor(() => expect(mockUploadFile).toHaveBeenCalledWith(expect.objectContaining({ file })));
     expect(mockNotifyWarning).not.toHaveBeenCalledWith(expect.stringContaining('1 ГБ'), expect.anything());
+  });
+
+  it('keeps both batches selected and uploads them together', async () => {
+    renderPage();
+    await screen.findByRole('heading', { name: 'Мой диск' });
+    const input = screen.getByTestId('my-files-input');
+    const files = ['a.txt', 'b.txt', 'c.txt'].map((name) => new File([name], name, { type: 'text/plain' }));
+    fireEvent.change(input, { target: { files: files.slice(0, 2) } });
+    const dialog = await screen.findByRole('dialog');
+    const picker = vi.spyOn(input, 'click');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Добавить файлы' }));
+    expect(picker).toHaveBeenCalledOnce();
+    fireEvent.change(input, { target: { files: files.slice(2) } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Загрузить файлы (3)' }));
+    await waitFor(() => expect(mockUploadFile).toHaveBeenCalledTimes(3));
+    expect(mockUploadFile.mock.calls.map(([args]) => args.file)).toEqual(files);
+  });
+
+  it('creates one public selection link and revokes it from the link list', async () => {
+    mockListFiles.mockResolvedValue({ items: [
+      { ...readyFile, can_manage_access: true },
+      { ...readyFile, id: 'file-2', original_file_name: 'second.txt', can_manage_access: true },
+    ] });
+    mockListSelectionShares.mockResolvedValue([]);
+    mockCreateSelectionShare.mockResolvedValue({ token: 'selection-test', file_count: 2, expires_at: '2099-01-01T00:00:00Z' });
+    mockRevokeSelectionShare.mockResolvedValue(undefined);
+    renderPage();
+    await screen.findByText('report.txt');
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Создать ссылку' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Публичные ссылки на файлы' });
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Создать ссылку' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать ссылку' }));
+    expect(await within(dialog).findByDisplayValue(/selection-test/)).toBeInTheDocument();
+    expect(mockCreateSelectionShare).toHaveBeenCalledWith(['file-1', 'file-2']);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Отключить' }));
+    await within(dialog).findByText('Ссылка отключена.');
+    expect(within(dialog).queryByDisplayValue(/selection-test/)).not.toBeInTheDocument();
   });
 
   it('requests the libraries list only once when a library view is opened', async () => {
@@ -1363,6 +1414,34 @@ describe('MyFiles page', () => {
 
     expect(screen.getByText('budget.xlsx')).toBeInTheDocument();
     expect(screen.queryByText('old.xlsx')).not.toBeInTheDocument();
+  });
+
+  it('moves selected files into a writable shared folder without requesting a copy or deletion', async () => {
+    mockListLibraries.mockResolvedValue({ items: [bookkeeping], can_manage: false });
+    mockListFiles.mockResolvedValue({ items: [readyFile] });
+    mockListFolders.mockImplementation(async ({ libraryId } = {}) => ({
+      items: libraryId ? [{ id: 'folder-10', name: 'Проекты' }] : [],
+    }));
+    mockMoveFileToLibrary.mockImplementation(async () => {
+      mockListFiles.mockResolvedValue({ items: [] });
+    });
+    renderPage();
+    await screen.findByText('report.txt');
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    fireEvent.click(await screen.findByTestId('my-files-bulk-move'));
+    fireEvent.click(await screen.findByRole('button', { name: 'В общую папку…' }));
+    const dialog = await screen.findByRole('dialog', { name: /Переместить в общую папку/ });
+    fireEvent.mouseDown(within(dialog).getByRole('combobox', { name: 'Общая папка' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Бухгалтерия' }));
+    const folder = within(dialog).getByRole('combobox', { name: 'Куда внутри папки' });
+    await waitFor(() => expect(folder).not.toHaveAttribute('aria-disabled', 'true'));
+    fireEvent.mouseDown(folder);
+    fireEvent.click(await screen.findByRole('option', { name: 'Проекты' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Переместить' }));
+    await waitFor(() => expect(screen.queryByText('report.txt')).not.toBeInTheDocument());
+    expect(mockMoveFileToLibrary).toHaveBeenCalledWith('file-1', { libraryId: 'lib-1', folderId: 'folder-10' });
+    expect(mockCopyFile).not.toHaveBeenCalled();
+    expect(mockDeleteFile).not.toHaveBeenCalled();
   });
 
   it('copies a file into a library where the user may edit', async () => {

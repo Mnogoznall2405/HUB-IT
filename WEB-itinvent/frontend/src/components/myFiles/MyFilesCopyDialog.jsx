@@ -45,7 +45,7 @@ export const folderTreeOptions = (folders) => {
 
 /**
  * "Копировать в…": копия файла в любую свою папку или в общую папку, где у пользователя есть право правки.
- * Перенос между «Моим диском» и общими папками запрещён, копирование — разрешённый способ.
+ * Копирование не меняет оригинал и его права доступа.
  */
 export default function MyFilesCopyDialog({ open, file, libraries = [], onClose, onCopied }) {
   const [space, setSpace] = useState('');

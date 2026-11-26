@@ -334,6 +334,24 @@ export const myFilesAPI = {
     );
     return response.data;
   },
+  moveFileToLibrary: async (fileId, { libraryId, folderId = null }) => {
+    const response = await apiClient.post(`/my-files/${encodeURIComponent(fileId)}/move-to-library`, {
+      library_id: libraryId,
+      folder_id: folderId,
+    });
+    return response.data;
+  },
+  listSelectionShares: async ({ signal } = {}) => {
+    const response = await apiClient.get('/my-files/selection-shares', { signal });
+    return response.data;
+  },
+  createSelectionShare: async (fileIds) => {
+    const response = await apiClient.post('/my-files/selection-shares', { file_ids: fileIds });
+    return response.data;
+  },
+  revokeSelectionShare: async (token) => {
+    await apiClient.delete(`/my-files/selection-shares/${encodeURIComponent(token)}`);
+  },
   // A copy goes to a folder (of the disk or of a library), to a library's root, or to the disk root.
   copyFile: async (fileId, { folderId = null, libraryId = null } = {}) => {
     const response = await apiClient.post(`/my-files/${encodeURIComponent(fileId)}/copy`, {

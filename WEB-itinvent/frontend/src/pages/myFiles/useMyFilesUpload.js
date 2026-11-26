@@ -440,8 +440,16 @@ export function useMyFilesUpload({
   ]);
 
   const handleInputChange = useCallback((event) => {
-    openUploadDialog(event.target.files, { asFolder: false });
-  }, [openUploadDialog]);
+    const input = event.target;
+    const files = normalizeFiles(input.files);
+    input.value = '';
+    if (uploadDialogOpen && !pendingFolderFiles.length && !uploadingRef.current
+      && canWrite && accountSession.isCurrent()) {
+      setPendingUploadFiles((current) => [...current, ...files]);
+      return;
+    }
+    openUploadDialog(files, { asFolder: false });
+  }, [accountSession, canWrite, openUploadDialog, pendingFolderFiles.length, uploadDialogOpen]);
 
   const handleFolderInputChange = useCallback((event) => {
     openUploadDialog(event.target.files, { asFolder: true });

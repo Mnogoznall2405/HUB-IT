@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
@@ -64,6 +65,15 @@ class MyFileCopyRequest(BaseModel):
 
     folder_id: str | None = Field(default=None, max_length=64)
     library_id: str | None = Field(default=None, max_length=64)
+
+
+class MyFileSelectionShareRequest(BaseModel):
+    file_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(min_length=2, max_length=100)
+
+
+class MyFileLibraryMoveRequest(BaseModel):
+    library_id: str = Field(min_length=1, max_length=64)
+    folder_id: str | None = Field(default=None, max_length=64)
 
 
 class MyFileBlankDocumentRequest(BaseModel):
@@ -154,6 +164,10 @@ class MyFileShareResponse(BaseModel):
     expires_at: datetime | None = None
 
 
+class MyFileSelectionShareResponse(MyFileShareResponse):
+    file_count: int
+
+
 class PublicMyFolderFileResponse(BaseModel):
     id: str
     file_name: str
@@ -166,6 +180,7 @@ class PublicMyFolderFileResponse(BaseModel):
 
 
 class PublicMyFolderResponse(BaseModel):
+    is_selection: bool = False
     folder_name: str
     share_created_at: datetime | None = None
     items: list[PublicMyFolderFileResponse] = Field(default_factory=list)
