@@ -1,0 +1,178 @@
+name: PR Gate
+
+# Advisory pilot gate for pull requests. Recommendation-only at this stage:
+# it is NOT a required check and must not be wired into branch protection
+# without an owner decision (see documentation/technical/CI_PR_GATE.md).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CI: 'true'
+
+jobs:
+  prepare:
+    name: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.profile.outputs.docs_only }}
+      frontend: ${{ steps.profile.outputs.frontend }}
+      backend: ${{ steps.profile.outputs.backend }}
+      scan: ${{ steps.profile.outputs.scan }}
+      voice: ${{ steps.profile.outputs.voice }}
+      mobile: ${{ steps.profile.outputs.mobile }}
+      migrations: ${{ steps.profile.outputs.migrations }}
+      unknown: ${{ steps.profile.outputs.unknown }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record base/head/tested SHA
+        run: |
+          {
+            echo "### PR Gate SHAs"
+            echo "- base: \`${{ github.event.pull_request.base.sha }}\`"
+            echo "- head: \`${{ github.event.pull_request.head.sha }}\`"
+            echo "- tested merge result: \`$(git rev-parse HEAD)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Build diff and classify profile
+        id: profile
+        run: |
+          git diff --name-only "${{ github.event.pull_request.base.sha }}...HEAD" > /tmp/changed-files.txt
+          echo "changed files: $(wc -l < /tmp/changed-files.txt)"
+          python3 scripts/ci/pr_gate_profile.py /tmp/changed-files.txt | tee /tmp/profile.txt
+          cat /tmp/profile.txt >> "$GITHUB_OUTPUT"
+          {
+            echo "### Profile"
+            echo '```'
+            cat /tmp/profile.txt
+            echo '```'
+            echo "### Changed files"
+            echo '```'
+            cat /tmp/changed-files.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  hygiene:
+    name: hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Whitespace and conflict markers on diff
+        run: |
+          git diff "${{ github.event.pull_request.base.sha }}...HEAD" > /tmp/pr.diff
+          python3 scripts/ci/check_diff_hygiene.py /tmp/pr.diff
+      - name: Secret scan on added lines (redacted output)
+        run: |
+          git diff "${{ github.event.pull_request.base.sha }}...HEAD" > /tmp/pr.diff
+          python3 scripts/ci/check_secrets_diff.py /tmp/pr.diff
+
+  alembic:
+    name: alembic
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.12'
+      - name: Validate alembic graphs (app/chat, scan, voice) without a database
+        run: python scripts/ci/check_alembic_graphs.py .
+      - name: Self-test on synthetic valid/invalid graphs
+        run: python scripts/ci/check_alembic_graphs.py --self-test
+
+  frontend:
+    name: frontend
+    needs: prepare
+    if: needs.prepare.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: WEB-itinvent/frontend
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: WEB-itinvent/frontend/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Existing lint (chat scope, matches npm run lint)
+        run: npm run lint
+      - name: Narrow unit tests (verified node-project suite)
+        run: npm run test:unit
+      - name: Isolated vite build outside dist
+        run: npx vite build --outDir "$RUNNER_TEMP/pr-gate-build" --emptyOutDir
+
+  backend:
+    name: backend
+    needs: prepare
+    if: needs.prepare.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            WEB-itinvent/backend/requirements.txt
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -c constraints.txt
+          pip install -r WEB-itinvent/backend/requirements.txt
+      - name: Syntax check backend tree
+        run: python -m compileall -q WEB-itinvent/backend scan_server voice_server
+      - name: Narrow backend pytest profile (isolated sqlite, loopback only)
+        env:
+          APP_DATABASE_URL: sqlite:////${{ runner.temp }}/prgate_app.db
+          CHAT_DATABASE_URL: sqlite:////${{ runner.temp }}/prgate_chat.db
+        run: |
+          python -m pytest -q WEB-itinvent/backend/tests/test_chat_sticker_security_http.py \
+            -p no:cacheprovider --durations=10
+
+  gate:
+    name: PR Gate
+    needs: [prepare, hygiene, alembic, frontend, backend]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Aggregate verdict
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          PROFILE_FRONTEND: ${{ needs.prepare.outputs.frontend }}
+          PROFILE_BACKEND: ${{ needs.prepare.outputs.backend }}
+        run: |
+          python3 scripts/ci/gate_verdict.py | tee /tmp/gate-summary.md
+          rc=${PIPESTATUS[0]}
+          cat /tmp/gate-summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
