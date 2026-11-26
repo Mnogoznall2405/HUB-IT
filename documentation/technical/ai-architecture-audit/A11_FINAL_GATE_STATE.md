@@ -82,3 +82,22 @@ HEAD cce12481. Пункты по приоритету:
 7. A9/A10 итоговая конфигурация: compact specs OFF, result reuse OFF — подтвердить.
 8. Обновить отчёт + PR комментарий; НЕ расширять scopes токена.
 9. Финальный GO/NO-GO. Без merge/deploy, без новых архитектурных переработок.
+
+## Final Security & Release Gate — выполнено (session 4, HEAD 0ce6fad4+)
+### PG gate — РАЗБЛОКИРОВАН
+- Изолированный scratch PostgreSQL 17.6 (portable EDB-zip binaries из HUB-IT-a8-wt/.codex_tmp/pgx), initdb в HUB-IT-a10-rel/.codex_tmp/pgdata-a11, listen 127.0.0.1:55432, user a11test trust localhost, БД a11_test
+- НЕ production: production-процессы не тронуты; чужой агентский кластер на 55433 не тронут
+- Alembic upgrade head применён на scratch (включая новую миграцию 20261126_0183 emergency); downgrade+upgrade цикл чистый
+- Первый прогон: 40/42 (2 падения — не дефекты: отсутствие alembic-инициализации + устаревшая test-схема до добавления колонки)
+### Security — всё закрыто и верифицировано
+- Manager observability: ЯВНЫЙ ALLOWLIST (id/bot/status/stage/latency/counts/usage-numeric/timestamps), error_text/status_text/request/result НЕ пересекают границу; тест с секретами в error/status/traces PASS
+- Authoritative email: только топ-уровневые ключи известной схемы + типизированные списки; рекурсия убрана; негативные тесты (free text, nested) PASS 13/13
+### Emergency disable — реализован отдельным режимом
+- Колонка emergency_disabled_at (audit timestamp) + миграция 20261126_0183
+- Enforcement: enqueue guard (новые запросы), require_conversation_access (write+confirm entry), confirm-time revalidation уже вызывает require_conversation_access непосредственно перед мутацией (re-check свежим чтением), _execute_run fresh-check (старт), _raise_if_run_cancelled checkpoint на каждом stage (остановка новых этапов)
+- Обычное отключение НЕ изменено (AI8: owner keeps access) — верифицировано тестом
+- 17/17 access-тестов PASS включая 4 новых emergency
+- НЕ обещает отмены совершённых внешних действий; история/аудит сохраняются
+### Прочее
+- mergeable: gh CLI недоступен в контуре сессии; git-проверка: main 9e6227c2 не сдвинулся, 0 коммитов main-not-in-branch, потерь нет
+- Баланс RouterAI: всё ещё 402 (проверено 26.11 ~12:00) — измерения заблокированы
