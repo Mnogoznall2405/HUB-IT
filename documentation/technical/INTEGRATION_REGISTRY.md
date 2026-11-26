@@ -316,3 +316,16 @@ RC inventory + smoke-test triage fixes; `609572ac` release perf A/B;
 - Focused warm-dock perf spot check pre/post merge, production builds, n=20, 1440×900: typing `31.0/40.9 → 29.3/36.5 ms` p50/p95; send `86.5/100.3 → 61.3/88.0 ms` p50/p95; zero long tasks/timeouts/sticker requests. Регрессии нет, post-merge быстрее.
 
 **Post-sync verdict: GO для review/merge refreshed consolidation diff относительно `4d4dba1f`.** Это не deploy approval: staging/migration runbook и явное owner release decision остаются обязательными. Полная таблица и caveats — в `FINAL_RELEASE_GATE_REPORT.md`, section 11.
+
+---
+
+## Final merge addendum — 2026-11-26 (UTC+5)
+
+- **Final pre-merge integration tip:** `5eac17726a748fb8f36cc2b404694131fdad8b9c` (`5eac1772`), коммит `fix(my-files): separate processed/succeeded in bulk op counters`.
+- **Final pre-merge `origin/main`:** `4d4dba1ffa5a3f8e8d7345bbcb2929a7d12e7e9b` (`4d4dba1f`), static во время финальной pre-merge проверки.
+- **Owner authorization:** PR #73 (`integration/frontend-remediation` → `main`) разрешён к немедленному merge в `main` обычным merge commit — не squash, не rebase, не force-push.
+- **Статус:** MERGED into `main`.
+- **Final merge commit SHA:** `<PENDING_FINAL_MERGE_SHA>` — placeholder заполняется post-merge follow-up коммитом после проверки API response и ancestry.
+- **Explicit verification-scope decision:** comparative full-pytest backend run понижен владельцем до **post-merge verification**; это не зафиксировано как выполненный pre-merge gate.
+- **Final confirmation evidence:** focused `MyFiles.test.jsx` **49/49 PASS**; full flags-on vitest **722/722 files PASS**; My Files browser E2E **85/85 effective PASS**; production build **PASS**; Alembic static graph — один head `20261125_0182`.
+- **Scope guardrail:** финализация ограничена git merge и документацией/PR metadata. Deploy, production migrations, service restarts, IIS publish и production config changes не выполнялись и не авторизованы этой записью.

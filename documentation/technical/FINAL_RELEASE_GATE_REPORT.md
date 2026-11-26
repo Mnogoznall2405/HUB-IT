@@ -6,19 +6,36 @@ pass requested after the integration branch had already been assembled.
 
 ## Verdict up front
 
-**Current post-PR#75 synchronization verdict: GO for the refreshed consolidation diff
-relative to `4d4dba1f`.** The pre-merge branch tip `c18d9fa8` was semantically merged
-with frozen `origin/main` `4d4dba1f` in merge commit
-`5e6ac871243cbdd7a016c160ca715101cd565c9c`; targeted post-merge backend, frontend,
-production-build, E2E and warm-dock perf evidence is in section 11.
+**Final status: MERGED into `main` by explicit owner authorization.** The release vehicle
+is PR #73 (`integration/frontend-remediation` → `main`) using a regular merge commit —
+not squash, rebase or force-push. Final merge metadata is recorded in section 12; the
+merge-SHA placeholder there is intentionally filled only after the API merge response is
+verified.
 
-The earlier acceptance relative to the original baseline `af485f22` also remains **GO**;
-sections 1–10 are retained as the historical evidence record. Their release-vehicle
-caveat is now superseded in exactly one respect: PR #73 was indeed closed unmerged after
-main moved through PR #75, but the branch has since been synchronized with that new main
-instead of being resurrected blindly.
+The owner explicitly authorized the merge with the comparative full-pytest backend run
+demoted to a **post-merge verification** item. That is an explicit owner decision and is
+recorded here as accepted verification-timing risk; this report does not treat that full
+comparative backend corpus as completed pre-merge evidence.
 
-No production deploy, restart, migration or merge was performed by this gate.
+Final pre-merge branch tip: `5eac17726a748fb8f36cc2b404694131fdad8b9c` (`5eac1772`).
+Frozen pre-merge `origin/main`: `4d4dba1ffa5a3f8e8d7345bbcb2929a7d12e7e9b` (`4d4dba1f`).
+The last pre-merge code fix was `5eac1772` (`fix(my-files): separate processed/succeeded
+in bulk op counters`): bulk-operation counters now distinguish processed items from
+successful items, with regression coverage in `WEB-itinvent/frontend/src/pages/MyFiles.test.jsx`.
+
+Final confirmation evidence at `5eac1772`: focused My Files vitest **49/49 PASS**; full
+flags-on frontend vitest **722/722 files PASS**; My Files browser E2E **85/85 effective
+PASS**; production build **PASS**; static Alembic graph remained a single head
+`20261125_0182`; `origin/main` remained static at `4d4dba1f` during final pre-merge
+verification.
+
+The earlier acceptance relative to the original baseline `af485f22` and the post-PR#75
+synchronization gate remain **GO** as historical evidence in sections 1–11. Their
+release-vehicle caveat is superseded by the final owner-authorized merge recorded here.
+
+No production deploy, restart, migration, IIS publish or other production action was
+performed by this finalization. The only finalization action was the explicitly
+authorized git merge.
 
 ---
 
@@ -341,13 +358,21 @@ tests. Targeted migration/sticker backend tests are included in the **134/134 PA
 
 ## 8. Repository/PR state
 
-- PR #73 (`integration/frontend-remediation` → `main`) is **closed, unmerged**; its recorded
-  head remains `6983328e` from before the final acceptance commits.
+Historical state during the first acceptance pass:
+
+- PR #73 (`integration/frontend-remediation` → `main`) was then **closed, unmerged**; its
+  recorded head remained `6983328e` from before the final acceptance commits.
 - PR #75 is **merged** into main at 2026-11-25 11:51:41Z; base was `af485f22`, head
   `d008cf602da317433cc44e282c006b1ee5fd9d02`, resulting in main `4d4dba1f`.
-- Therefore the exact branch accepted here is not automatically the current release line.
-  Any further release decision must compare this branch with the PR #75 content already in
-  `4d4dba1f`.
+- That historical closure was why the first gate warned against blind resurrection.
+
+Final state after the post-PR#75 synchronization and owner authorization:
+
+- PR #73 is the final release vehicle for the refreshed branch tip `5eac1772` and is
+  **MERGED** into `main` with a regular merge commit. The verified merge SHA is recorded
+  in section 12.
+- The final merge is a git/PR finalization only; it is not a deploy, migration, service
+  restart or IIS publish.
 
 ---
 
@@ -469,8 +494,11 @@ A/B matrix.
 
 ### 11.5 Post-sync risks and verdict
 
-1. The full 6800+ backend corpus and full 722-file frontend suite were not rerun after the
-   merge; the post-merge gate was deliberately targeted to the merge/conflict surface.
+1. The full 6800+ backend corpus was not rerun after the post-sync merge; the post-merge
+   gate was deliberately targeted to the merge/conflict surface. The full 722-file frontend
+   suite was later rerun in the final confirmation at `5eac1772` and passed; the comparative
+   full-pytest backend run is explicitly demoted to post-merge verification by owner decision
+   (section 12).
 2. Initial browser sweeps exposed three timing/boundary flakes documented above. Auth and
    Sticker V2 were subsequently clean in independent full reruns and the exact My Files
    spec passed in a focused rerun; none demonstrated a persistent product regression.
@@ -481,3 +509,47 @@ A/B matrix.
 **Post-sync verdict: GO for review/merge of the refreshed consolidation diff relative to
 `4d4dba1f`.** This is not a deploy approval: release still requires the normal owner decision,
 staging/migration runbook and explicit deployment procedure.
+
+---
+
+## 12. Final merge record — 2026-11-26 (UTC+5)
+
+### 12.1 Final pre-merge fix
+
+Final branch tip before the PR merge: `5eac17726a748fb8f36cc2b404694131fdad8b9c`
+(`fix(my-files): separate processed/succeeded in bulk op counters`).
+
+The My Files bulk-operation counter fix separates **processed** items from **succeeded**
+items so partial failures are no longer presented as successful bulk completions. Regression
+coverage was added in `WEB-itinvent/frontend/src/pages/MyFiles.test.jsx` alongside the
+production change in `WEB-itinvent/frontend/src/pages/MyFiles.jsx`.
+
+### 12.2 Final confirmation evidence at `5eac1772`
+
+| Check | Final result |
+|---|---|
+| Focused My Files vitest | **49/49 PASS** |
+| Full flags-on frontend vitest confirmation run | **722/722 files PASS** |
+| My Files browser E2E | **85/85 effective PASS** |
+| Production frontend build | **PASS** |
+| Alembic static graph | single head `20261125_0182` |
+| Final pre-merge base stability | `origin/main` static at `4d4dba1ffa5a3f8e8d7345bbcb2929a7d12e7e9b` |
+
+### 12.3 Owner authorization and verification-scope decision
+
+The owner explicitly authorized merging PR #73 into `main` immediately with a regular merge
+commit. The comparative full-pytest backend run is demoted to **post-merge verification** by
+that explicit owner decision. It remains a required post-merge verification item, but it was
+not a blocking completed pre-merge gate.
+
+The finalization scope is limited to the git merge and documentation/PR metadata. No deploy,
+production migration, service restart, IIS publish or production configuration action is
+authorized or performed here.
+
+### 12.4 Merge status
+
+**Status: MERGED into `main`.**
+
+**Final merge commit SHA:** `<PENDING_FINAL_MERGE_SHA>` — placeholder intentionally left in
+the pre-merge documentation commit and filled by the post-merge follow-up commit after the
+GitHub API response and ancestry checks are verified.
