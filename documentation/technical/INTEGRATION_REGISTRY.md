@@ -325,7 +325,8 @@ RC inventory + smoke-test triage fixes; `609572ac` release perf A/B;
 - **Final pre-merge `origin/main`:** `4d4dba1ffa5a3f8e8d7345bbcb2929a7d12e7e9b` (`4d4dba1f`), static во время финальной pre-merge проверки.
 - **Owner authorization:** PR #73 (`integration/frontend-remediation` → `main`) разрешён к немедленному merge в `main` обычным merge commit — не squash, не rebase, не force-push.
 - **Статус:** MERGED into `main`.
-- **Final merge commit SHA:** `<PENDING_FINAL_MERGE_SHA>` — placeholder заполняется post-merge follow-up коммитом после проверки API response и ancestry.
+- **Final merge commit SHA:** `da1869d10d4146d35e1b60b55298620d5b656e0f` — заполнено post-merge follow-up коммитом после проверки API response, parents/tree equality и ancestry.
+- **Final post-merge `origin/main` tip:** `da1869d10d4146d35e1b60b55298620d5b656e0f` (тот же regular merge commit).
 - **Explicit verification-scope decision:** comparative full-pytest backend run понижен владельцем до **post-merge verification**; это не зафиксировано как выполненный pre-merge gate.
 - **Final confirmation evidence:** focused `MyFiles.test.jsx` **49/49 PASS**; full flags-on vitest **722/722 files PASS**; My Files browser E2E **85/85 effective PASS**; production build **PASS**; Alembic static graph — один head `20261125_0182`.
 - **Scope guardrail:** финализация ограничена git merge и документацией/PR metadata. Deploy, production migrations, service restarts, IIS publish и production config changes не выполнялись и не авторизованы этой записью.

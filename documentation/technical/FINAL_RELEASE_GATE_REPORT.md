@@ -9,8 +9,8 @@ pass requested after the integration branch had already been assembled.
 **Final status: MERGED into `main` by explicit owner authorization.** The release vehicle
 is PR #73 (`integration/frontend-remediation` → `main`) using a regular merge commit —
 not squash, rebase or force-push. Final merge metadata is recorded in section 12; the
-merge-SHA placeholder there is intentionally filled only after the API merge response is
-verified.
+merge SHA was filled only after the API merge response and post-merge ancestry checks
+were verified.
 
 The owner explicitly authorized the merge with the comparative full-pytest backend run
 demoted to a **post-merge verification** item. That is an explicit owner decision and is
@@ -550,6 +550,8 @@ authorized or performed here.
 
 **Status: MERGED into `main`.**
 
-**Final merge commit SHA:** `<PENDING_FINAL_MERGE_SHA>` — placeholder intentionally left in
-the pre-merge documentation commit and filled by the post-merge follow-up commit after the
-GitHub API response and ancestry checks are verified.
+**Final merge commit SHA:** `da1869d10d4146d35e1b60b55298620d5b656e0f`.
+
+**Final post-merge `origin/main` tip:** `da1869d10d4146d35e1b60b55298620d5b656e0f` (the
+same regular merge commit). Filled by this post-merge follow-up after the GitHub API
+response, merge parents/tree equality and ancestry checks were verified.
