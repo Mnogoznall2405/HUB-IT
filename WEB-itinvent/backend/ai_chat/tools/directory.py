@@ -73,7 +73,11 @@ class PeopleSearchArgs(BaseModel):
     query: Optional[str] = Field(default=None, max_length=200, validation_alias=AliasChoices("query", "q"), description="Surname/name, position, phone or e-mail")
     department: Optional[str] = Field(default=None, max_length=200, description="Exact department name to filter by")
     absent_only: bool = Field(default=False, description="Only people who are absent now (vacation, sick leave, trip)")
-    limit: int = Field(default=10, ge=1, le=MAX_PEOPLE)
+    # a11-final: no `le` bound — models routinely pass limit=50/100 for "show
+    # all" requests; a validation error there is pure friction (one wasted
+    # round-trip per run). Accept any positive value and clamp to MAX_PEOPLE
+    # inside execute; offset pagination stays the way to reach the rest.
+    limit: int = Field(default=10, ge=1)
     # cpx_22: pagination was unreachable — the service supports offset but the
     # schema forbade it, so "show ALL leaders" hard-failed with validation
     # errors instead of paging. limit stays small (LLM context economy);
@@ -122,10 +126,11 @@ class PeopleSearchTool(AiTool):
             kwargs["department"] = args.department
         if int(args.offset or 0) > 0:
             kwargs["offset"] = int(args.offset)
+        effective_limit = min(int(args.limit), MAX_PEOPLE)
         try:
             payload = address_book_service.search(
                 args.query or "",
-                _ABSENT_SCAN_LIMIT if args.absent_only else int(args.limit),
+                _ABSENT_SCAN_LIMIT if args.absent_only else effective_limit,
                 **kwargs,
             )
         except Exception as exc:
@@ -135,7 +140,7 @@ class PeopleSearchTool(AiTool):
         if args.absent_only:
             people = [person for person in people if person.get("absence")]
         total = len(people) if args.absent_only else int(payload.get("total") or len(people))
-        people = people[: int(args.limit)]
+        people = people[:effective_limit]
         return AiToolResult(
             tool_id=self.tool_id,
             ok=True,

@@ -454,8 +454,8 @@ add("ACT", prompt="Отправь сообщение в Hub Бенч Сотру�
     expected_tools=["chat.users.search"],
     expect={"no_mutation": True})
 add("ACT", prompt="Создай задачу на завтра: инвентаризация кабинета 305",
-    expected_tools=["office.action.task_create_draft"],
-    expect={"pending_action": "task_create", "no_mutation": True})
+    expect={"no_mutation": True},
+    note="no assignee named — correct behavior is a clarification question (offer 'Назначить мне'), never a draft")
 add("ACT", prompt="Подготовь заявку в ИТ: не работает принтер в кабинете 112",
     expected_tools=["helpdesk.request_draft"],
     expect={"pending_action": "mail_send", "no_mutation": True},
@@ -465,8 +465,8 @@ add("ACT", prompt="Сообщение Бенч Сотрудник 010 в хаб�
     expect={"no_mutation": True})
 add("ACT", prompt="Составь письмо в ИТ с просьбой увеличить квоту почты",
     expected_tools=["office.action.mail_send_draft", "helpdesk.request_draft"],
-    expect={"no_mutation": True},
-    note="either path acceptable — draft must exist")
+    expect={"pending_action": "mail_send", "no_mutation": True},
+    note="either path acceptable — draft must exist; helpdesk drafts are mail_send cards by design")
 add("ACT", prompt="Переведи задачу Бенч-задача 001 в работу",
     expected_tools=["office.action.task_status_draft", "office.tasks.search"],
     expect={"no_mutation": True},
@@ -704,7 +704,7 @@ for s in scenarios:
 # write corpus
 # =============================================================================
 meta = {
-    "version": "a11-v8",
+    "version": "a11-v9",
     "generator": "bench_corpus_gen.py",
     "categories": {k: v for k, v in sorted(_counter.items())},
     "total": len(scenarios),

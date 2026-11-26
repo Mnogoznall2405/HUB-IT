@@ -1,6 +1,6 @@
 {
  "meta": {
-  "version": "a11-v8",
+  "version": "a11-v9",
   "generator": "bench_corpus_gen.py",
   "categories": {
    "ACT": 20,
@@ -2341,17 +2341,15 @@
    "id": "act_10",
    "category": "ACT",
    "split": "dev",
-   "expected_tools": [
-    "office.action.task_create_draft"
-   ],
+   "expected_tools": [],
    "forbidden": [],
    "required_facts": [],
    "forbidden_facts": [],
    "expect": {
-    "pending_action": "task_create",
     "no_mutation": true
    },
-   "prompt": "Создай задачу на завтра: инвентаризация кабинета 305"
+   "prompt": "Создай задачу на завтра: инвентаризация кабинета 305",
+   "note": "no assignee named — correct behavior is a clarification question (offer 'Назначить мне'), never a draft"
   },
   {
    "id": "act_11",
@@ -2397,10 +2395,11 @@
    "required_facts": [],
    "forbidden_facts": [],
    "expect": {
+    "pending_action": "mail_send",
     "no_mutation": true
    },
    "prompt": "Составь письмо в ИТ с просьбой увеличить квоту почты",
-   "note": "either path acceptable — draft must exist"
+   "note": "either path acceptable — draft must exist; helpdesk drafts are mail_send cards by design"
   },
   {
    "id": "act_14",
