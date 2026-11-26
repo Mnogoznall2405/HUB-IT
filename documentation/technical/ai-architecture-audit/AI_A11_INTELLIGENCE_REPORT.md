@@ -111,3 +111,23 @@ JEV unit-контракты: 130/130 зелёные (`test_ai_jev_routing.py` + 
 - Не прогнан полный dev после всех правок и holdout — требуется продолжение (стоимость: часы реального LLM-времени, сотни вызовов).
 - Не реализован fail-closed для невалидного explicit `database_id` (рекомендация зафиксирована).
 - Не включён compact specs (по доказательству вреда); не изменён production threshold JEV.
+
+## 11. Final Acceptance — closure status (HEAD eeadc825)
+
+### Security closure (release-blocking, закрыто)
+- **Утечка чужого контента через manager endpoint**: GET /ai-bots/{id}/runs (settings.ai.manage) возвращал полные request/result payloads с tool_traces — тела писем, получатели, содержимое файлов всех пользователей. Закрыто редaктированием: менеджер получает counts/status/latency/error_text без контента. Верифицировано: SECRET не протекает, счётчики сохраняются; 13/13 access-тестов PASS.
+- **verified-address capture** сужен до авторитетных структурных полей (email/mail/address/work_emails), произвольный email внутри display_name/notes НЕ верифицирует получателя. Негативный тест добавлен — 12/12 PASS.
+
+### Emergency disable (пункт 6) — верифицировано поведение
+- Отключённый бот: sandbox-surface — полный read-only (confirm заблокирован); обычные агенты — владелец сохраняет доступ и МОЖЕТ подтвердить ранее созданные действия (by design AI8: завершение уже инициированных пользователем флоу; новая активность агента остановлена). Продуктовое решение о строгом варианте — за владельцем продукта.
+
+### A9/A10 флаги — фактические значения зафиксированы
+- Defaults в коде: все OFF; целевая конфигурация директивы передаётся env: PROMPT_OPT=1 COMPACT_SPECS=0 READ_FAST_PATH=1 DIRECT_READ=1 MEMORY_PLANNER_OPT=1 RUN_RESULT_REUSE=0. Старый benchmark с reuse ON в подтверждение не принят.
+
+### Измерение — заблокировано биллингом провайдеров
+- RouterAI 402 hard-zero; OpenRouter кредиты не покрывают одиночный запрос. Прогоны заморожены (код, corpus v13 sha 0fb9a1033758, seed), процедура продолжения в A11_FINAL_GATE_STATE.md. Подмены старых результатов не было.
+
+### Не завершено (честно)
+- dev/holdout прогоны + act_07/ms_26 финальная верификация — ждут баланс;
+- изолированный PostgreSQL gate (метод A8/A9) — не развёрнут в этой сессии, LLM-баланс не требуется, механическая задача;
+- boundary-тест manager endpoint — redaction верифицирована на unit-уровне сериализации.
