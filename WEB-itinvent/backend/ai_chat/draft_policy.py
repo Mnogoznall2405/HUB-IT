@@ -62,25 +62,32 @@ def _send_intent(text: str) -> bool:
     # «Напиши Ивану» — a capitalized token after the first word is a person name.
     words = _WORD.findall(text)
     return any(word[0].isupper() for word in words[1:])
-_EMAIL_FIELD_KEYS = {"email", "mail", "e-mail", "address", "emails", "work_email", "work_emails", "personal_email", "personal_emails"}
+_SCALAR_EMAIL_KEYS = {"email", "mail", "e-mail", "address", "work_email", "personal_email"}
+_LIST_EMAIL_KEYS = {"emails", "work_emails", "personal_emails"}
 
 
-def _authoritative_emails(node: Any) -> set[str]:
-    """Collect addresses only from structured email-typed fields of a contact payload."""
+def _authoritative_emails(contact: Any) -> set[str]:
+    """Only the known contact-schema shapes prove a recipient was really surfaced.
+
+    Trusted: scalar email-typed fields at the contact's top level and the typed
+    email lists (plain strings or {"value": ...} entries). Arbitrary nested
+    structures never become authoritative: a planted address inside notes,
+    metadata or any free-text/deep field must not verify a recipient.
+    """
     found: set[str] = set()
-    if isinstance(node, dict):
-        for key, value in node.items():
-            key_norm = str(key).strip().lower()
-            if key_norm in _EMAIL_FIELD_KEYS:
-                values = value if isinstance(value, list) else [value]
-                for item in values:
-                    candidate = item.get("value") if isinstance(item, dict) else item
-                    found.update(address.lower() for address in _EMAIL.findall(str(candidate or "")))
-            elif isinstance(value, (dict, list)):
-                found.update(_authoritative_emails(value))
-    elif isinstance(node, list):
-        for item in node:
-            found.update(_authoritative_emails(item))
+    if not isinstance(contact, dict):
+        return found
+    for key, value in contact.items():
+        key_norm = str(key).strip().lower()
+        if key_norm in _SCALAR_EMAIL_KEYS:
+            candidate = value.get("value") if isinstance(value, dict) else value
+            if isinstance(candidate, str):
+                found.update(address.lower() for address in _EMAIL.findall(candidate))
+        elif key_norm in _LIST_EMAIL_KEYS and isinstance(value, list):
+            for item in value:
+                candidate = item.get("value") if isinstance(item, dict) else item
+                if isinstance(candidate, str):
+                    found.update(address.lower() for address in _EMAIL.findall(candidate))
     return found
 
 

@@ -5056,14 +5056,31 @@ class AiChatService:
                     .limit(max(1, min(int(limit or 25), 100)))
                 ).scalars()
             )
-        # Manager observability must not leak other users' content: tool traces carry
-        # mail bodies, recipients and file contents. Counts/status/latency suffice.
+        # Manager observability must not leak other users' content. An explicit
+        # allowlist — not a blacklist — decides what crosses the boundary: free-text
+        # fields (error_text, status_text) can quote user content or recipients, and
+        # request/result payloads carry tool traces with mail bodies and file contents.
+        # Detailed errors stay available in server logs via the correlation id.
         items = []
         for item in rows:
             serialized = self._serialize_run(item)
-            serialized.pop("request", None)
-            serialized.pop("result", None)
-            items.append(serialized)
+            usage = serialized.get("usage") if isinstance(serialized.get("usage"), dict) else {}
+            safe_usage = {key: value for key, value in usage.items() if isinstance(value, (int, float))}
+            items.append({
+                "id": serialized.get("id"),
+                "bot_id": serialized.get("bot_id"),
+                "conversation_id": serialized.get("conversation_id"),
+                "user_id": serialized.get("user_id"),
+                "status": serialized.get("status"),
+                "stage": serialized.get("stage"),
+                "latency_ms": serialized.get("latency_ms"),
+                "tool_traces_count": serialized.get("tool_traces_count", 0),
+                "tool_trace_errors_count": serialized.get("tool_trace_errors_count", 0),
+                "usage": safe_usage,
+                "created_at": serialized.get("created_at"),
+                "started_at": serialized.get("started_at"),
+                "completed_at": serialized.get("completed_at"),
+            })
         return items
 
     def open_bot_conversation(self, *, bot_id: str, current_user_id: int) -> dict[str, Any]:

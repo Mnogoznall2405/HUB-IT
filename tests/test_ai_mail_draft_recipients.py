@@ -54,7 +54,26 @@ def test_authoritative_emails_capture_structured_fields():
     contact = {
         "display_name": "Бенч Сотрудник 001",
         "address": "bench001@bench.local",
-        "work_emails": [{"value": "w@bench.local", "kind": "work"}],
-        "extra": {"mail": "nested@bench.local"},
+        "mail": "alias@bench.local",
+        "work_emails": [{"value": "w@bench.local", "kind": "work"}, "plain@bench.local"],
     }
-    assert _authoritative_emails(contact) == {"bench001@bench.local", "w@bench.local", "nested@bench.local"}
+    assert _authoritative_emails(contact) == {
+        "bench001@bench.local",
+        "alias@bench.local",
+        "w@bench.local",
+        "plain@bench.local",
+    }
+
+
+def test_authoritative_emails_ignore_nested_structures():
+    from backend.ai_chat.draft_policy import _authoritative_emails
+
+    # Arbitrary nested containers are not part of the contact schema:
+    # even an email-typed key inside them must not verify a recipient.
+    contact = {
+        "display_name": "Бенч Сотрудник 001",
+        "extra": {"mail": "nested@evil.example"},
+        "metadata": {"work_emails": [{"value": "deep@evil.example"}]},
+        "notes": [{"email": "listed@evil.example"}],
+    }
+    assert _authoritative_emails(contact) == set()
