@@ -42,3 +42,15 @@
 3. merge main (чистый), pytest gates на интегрированном HEAD
 4. Финальный отчёт AI_A11_INTELLIGENCE_REPORT.md + PR #74 + GO/NO-GO
 5. A11_FIX_CATEGORIZATION.md уже написан — включить в отчёт
+
+
+## КРИТИЧЕСКИЙ БЛОКЕР — биллинг провайдеров (session 3, ~11:40)
+- RouterAI: 402 Insufficient balance — hard zero, прогоны abort'нулись (provider_outage fail-fast сработал корректно)
+- OpenRouter fallback (pre-approved в harness): работает, но кредиты минимальны — 402 при ПАРАЛЛЕЛЬНЫХ in-flight запросах
+- Решение: прогоны ТОЛЬКО последовательно, по одному. final_holdout запущен solo в 11:36 (~3мин/сценарий с учётом retries — медленно)
+- Прогресс чекпоинтится — resume банковает завершённые сценарии, даже если кредиты кончатся
+- Если кредиты иссякнут до конца: нужно пополнение RouterAI или OpenRouter, затем --resume 1 продолжить
+- HOLDOUT ПРИОРИТЕТ: holdout важнее для acceptance — он идёт первым; dev вторым (--resume 0 когда holdout завершится)
+- Команда продолжения dev: то же что _launch_seq.ps1 но --label final_dev --split dev
+- Corpus v13 зафиксирован: sha 0fb9a1033758, act_01/act_03 разметка-clarification исправлена по продуктовому решению (НЕ по результатам holdout — противоречие найдено через dev smoke act_01)
+- HEAD измерения: 5e115ad1
