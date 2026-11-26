@@ -130,15 +130,34 @@ def seed_org_structure(employees: list[dict]) -> list[str]:
 
     ids = []
     with app_session() as session:
-        existing = {row[0] for row in session.query(AppOrgStructureNode.id).all()}
+        existing = {row[0]: row for row in session.query(AppOrgStructureNode).all()}
+        # a11-final (act_07): department nodes must carry their head in the
+        # person_* fields — directory.department.get reads head_name from there.
+        # Without it role-based recipients ("руководителю отдела X") can never
+        # resolve and the correct behavior degrades to a clarification.
+        first_by_dept: dict[str, dict] = {}
+        for emp in employees:
+            first_by_dept.setdefault(emp["department"], emp)
         dept_ids = {}
         for di, dept in enumerate(DEPARTMENTS, 1):
             nid = f"bench-dept-{di:02d}"
             dept_ids[dept] = nid
+            head = first_by_dept.get(dept) or {}
+            head_name = head.get("full_name") or ""
+            head_code = head.get("employee_code") or None
             if nid not in existing:
                 session.add(AppOrgStructureNode(
                     id=nid, parent_id=None, node_type="department",
-                    title=dept, sort_order=di))
+                    title=dept, sort_order=di,
+                    person_name=head_name,
+                    person_position="руководитель отдела" if head_name else "",
+                    person_employee_code=head_code))
+            else:
+                row = existing[nid]
+                if head_name and not (row.person_name or ""):
+                    row.person_name = head_name
+                    row.person_position = "руководитель отдела"
+                    row.person_employee_code = head_code
             ids.append(nid)
         for i, emp in enumerate(employees, 1):
             nid = f"bench-person-{i:04d}"
