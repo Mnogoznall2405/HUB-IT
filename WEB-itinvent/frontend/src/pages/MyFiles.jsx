@@ -1937,7 +1937,8 @@ export default function MyFiles() {
       action: async () => {
         setBulkBusy(true);
         setBulkProgress({ done: 0, total: count });
-        let done = 0;
+        let processed = 0;
+        let succeeded = 0;
         const failed = [];
         const removedIds = new Set();
         const removedFileIds = new Set();
@@ -1946,22 +1947,24 @@ export default function MyFiles() {
             try {
               await myFilesAPI.deleteFolder(folder.id);
               collectFolderSubtreeIds(folder.id).forEach((id) => removedIds.add(id));
+              succeeded += 1;
             } catch {
               failed.push(`папка «${folder.name || folder.id}»`);
             }
-            done += 1;
-            setBulkProgress({ done, total: count });
+            processed += 1;
+            setBulkProgress({ done: processed, total: count });
           }
           for (const file of filesToDelete) {
             try {
               await myFilesAPI.deleteFile(file.id);
               removedIds.add(String(file.id));
               removedFileIds.add(String(file.id));
+              succeeded += 1;
             } catch {
               failed.push(`файл «${getMyFileName(file)}»`);
             }
-            done += 1;
-            setBulkProgress({ done, total: count });
+            processed += 1;
+            setBulkProgress({ done: processed, total: count });
           }
           if (removedIds.size > 0) {
             listingsCacheRef.current.clear();
@@ -1973,10 +1976,10 @@ export default function MyFiles() {
             void refreshQuota();
           }
           if (failed.length === 0) {
-            notifySuccess(`Удалено объектов: ${done}.`, { source: 'my-files-bulk-delete', dedupeMode: 'none' });
+            notifySuccess(`Удалено объектов: ${succeeded}.`, { source: 'my-files-bulk-delete', dedupeMode: 'none' });
           } else {
             notifyWarning(
-              `Удалено ${done} из ${count}. Не удалось: ${failed.slice(0, 5).join('; ')}${failed.length > 5 ? ` и ещё ${failed.length - 5}` : ''}.`,
+              `Удалено ${succeeded} из ${count}. Не удалось: ${failed.slice(0, 5).join('; ')}${failed.length > 5 ? ` и ещё ${failed.length - 5}` : ''}.`,
               { source: 'my-files-bulk-delete', dedupeMode: 'none', durationMs: 9000 },
             );
           }
@@ -2016,7 +2019,8 @@ export default function MyFiles() {
     const count = foldersToMove.length + filesToMove.length;
     setBulkBusy(true);
     setBulkProgress({ done: 0, total: count });
-    let done = 0;
+    let processed = 0;
+    let succeeded = 0;
     const failed = [];
     const movedFileIds = new Set();
     const movedFolderIds = new Set();
@@ -2025,21 +2029,23 @@ export default function MyFiles() {
         try {
           await myFilesAPI.updateFolder(folder.id, { parentId: targetFolderId });
           movedFolderIds.add(String(folder.id));
+          succeeded += 1;
         } catch {
           failed.push(`папка «${folder.name || folder.id}»`);
         }
-        done += 1;
-        setBulkProgress({ done, total: count });
+        processed += 1;
+        setBulkProgress({ done: processed, total: count });
       }
       for (const file of filesToMove) {
         try {
           await myFilesAPI.updateFile(file.id, { folderId: targetFolderId });
           movedFileIds.add(String(file.id));
+          succeeded += 1;
         } catch {
           failed.push(`файл «${getMyFileName(file)}»`);
         }
-        done += 1;
-        setBulkProgress({ done, total: count });
+        processed += 1;
+        setBulkProgress({ done: processed, total: count });
       }
       if (movedFileIds.size > 0 || movedFolderIds.size > 0) listingsCacheRef.current.clear();
       if (movedFolderIds.size > 0) {
@@ -2068,7 +2074,7 @@ export default function MyFiles() {
       } else {
         // Диалог и выбор остаются — можно повторить для неперенесённых.
         notifyWarning(
-          `Перемещено ${done} из ${count}. Не удалось: ${failed.slice(0, 5).join('; ')}${failed.length > 5 ? ` и ещё ${failed.length - 5}` : ''}.`,
+          `Перемещено ${succeeded} из ${count}. Не удалось: ${failed.slice(0, 5).join('; ')}${failed.length > 5 ? ` и ещё ${failed.length - 5}` : ''}.`,
           { source: 'my-files-bulk-move', dedupeMode: 'none', durationMs: 9000 },
         );
       }
