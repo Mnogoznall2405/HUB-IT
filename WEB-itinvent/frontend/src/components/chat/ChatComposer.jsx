@@ -480,7 +480,7 @@ const ChatComposer = memo(function ChatComposer({
     ? 'Слишком длинное сообщение'
     : mentionOpen
     ? '↑↓ — выбор · Enter — упомянуть · Esc — закрыть'
-    : editingMessage ? 'Enter — сохранить · Esc — отменить' : replyMessage ? 'Enter — отправить · Esc — отменить ответ' : '';
+    : editingMessage ? 'Enter — сохранить · Esc — отменить' : '';
 
   const closeMentions = useCallback(() => {
     mentionTriggerRef.current = null;
@@ -1130,7 +1130,7 @@ const ChatComposer = memo(function ChatComposer({
                     aria-expanded={mentionOpen}
                     aria-controls={mentionOpen ? mentionListId : undefined}
                     aria-activedescendant={mentionOpen && mentionOptions.length ? `${mentionListId}-${Math.min(activeMentionIndex, mentionOptions.length - 1)}` : undefined}
-                    aria-describedby={compactMobile ? undefined : composerHintId}
+                    aria-describedby={!compactMobile && !voiceRecording && composerHintText ? composerHintId : undefined}
                     enterKeyHint={compactMobile ? 'enter' : 'send'}
                     placeholder={editingMessage ? 'Измените сообщение…' : replyMessage ? 'Ваш ответ…' : isAiConversation ? 'Спросите ассистента…' : 'Напишите сообщение…'}
                     value={messageText}

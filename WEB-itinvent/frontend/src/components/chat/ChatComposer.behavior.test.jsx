@@ -75,9 +75,10 @@ describe('Telegram-style composer interactions', () => {
   });
   it('describes the adaptive keyboard hint to the input', () => {
     render(<Fixture />);
-    expect(input()).toHaveAttribute('aria-describedby');
+    expect(input()).not.toHaveAttribute('aria-describedby');
     fireEvent.change(input(), { target: { value: '@' } });
     expect(screen.getByText(/Enter — упомянуть/)).toBeInTheDocument();
+    expect(input()).toHaveAttribute('aria-describedby');
   });
   it('follows the compact desktop capsule height', () => {
     render(<Fixture ui={buildChatUiTokens(theme, { compactDesktop: true })} />);
@@ -165,5 +166,26 @@ describe('Telegram-style composer interactions', () => {
     render(<Fixture replyMessage={{ id: 'r' }} editingMessage={{ id: 'e' }} />);
     expect(screen.getByRole('button', { name: 'Отменить редактирование' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Отменить ответ' })).not.toBeInTheDocument();
+  });
+  it('shows no service hint row in reply mode while keeping the quote and cancel button', () => {
+    render(<Fixture replyMessage={{ id: 'r', sender: { full_name: 'Анна Иванова' }, body: 'исходное сообщение' }} />);
+    expect(screen.queryByText(/Esc — отменить ответ/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Enter — отправить · Esc — отменить ответ')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Отменить ответ' })).toBeInTheDocument();
+  });
+  it('drops aria-describedby when the hint is not rendered and keeps it with a real hint', () => {
+    const { unmount } = render(<Fixture replyMessage={{ id: 'r', sender: { full_name: 'Анна Иванова' }, body: 'исходное сообщение' }} />);
+    expect(input()).not.toHaveAttribute('aria-describedby');
+    unmount();
+    render(<Fixture editingMessage={{ id: 'e' }} />);
+    expect(input()).toHaveAttribute('aria-describedby');
+  });
+  it('keeps mention and editing contextual hints after the reply hint removal', () => {
+    const { unmount } = render(<Fixture editingMessage={{ id: 'e' }} />);
+    expect(screen.getByText('Enter — сохранить · Esc — отменить')).toBeInTheDocument();
+    unmount();
+    render(<Fixture />);
+    fireEvent.change(input(), { target: { value: '@' } });
+    expect(screen.getByText(/Enter — упомянуть/)).toBeInTheDocument();
   });
 });
