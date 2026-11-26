@@ -101,3 +101,19 @@ HEAD cce12481. Пункты по приоритету:
 ### Прочее
 - mergeable: gh CLI недоступен в контуре сессии; git-проверка: main 9e6227c2 не сдвинулся, 0 коммитов main-not-in-branch, потерь нет
 - Баланс RouterAI: всё ещё 402 (проверено 26.11 ~12:00) — измерения заблокированы
+
+
+## ИЗМЕРЕНИЕ ЗАВЕРШЕНО (session 5, 26.11 ~08:20 UTC) — measurement of record
+- Баланс RouterAI восстановлен ~07:20 UTC; прогоны выполнены последовательно: holdout, затем dev
+- HEAD измерения: 93f6a770, corpus v13 sha 0fb9a1033758, seed зафиксирован в метаданных обоих артефактов, --seed использован (ground truth включён — в отличие от аборченных попыток)
+- Артефакты: real_run_fin2_dev.json (140/140), real_run_fin2_holdout.json (65/65)
+- DEV: PASS 116 (82.9%), FAIL 22, PARTIAL 2 | HOLDOUT: PASS 46 (70.8%), FAIL 14, PARTIAL 3, NO_CHECK 2
+- fp-атрибуция DEV: fp-hit cohort 26p/20f (56.5%) vs no-fp 90p/4f (95.7%) — fast-path доминирующий разрушитель качества
+- SEC 12/12 оба сплита, CHAT 30/30, MEMORY 9/9+NC, ACT dev 14/15
+- tokens dev: 1248K in/60K out, 296 llm calls, wall p50 8.2s avg 8.9s | holdout: 495K/25K, 127 calls, p50 7.5s
+### Найденные в анализе дефекты (исправлены в b20fc12f)
+- seed: str(dict) stringification work_emails → garbled email у портальных пользователей контура (act_06/act_07 FAIL — contour artifact, не продукт); chain-test верифицирован после фикса
+- fp/fallback files renderer: ключ file_name не извлекался — имена файлов никогда не рендерились (дефект продукта в fallback-рендеринге)
+### Контрольный прогон fin2_control (fp OFF + fixed seed, 31 сценарий) — запущен
+- read_29/31/32/34 восстановились в PASS при fp OFF — причинность подтверждается
+- read_01: мисматч валидатора (status active vs open, результат корректен) — measurement artifact, не дефект

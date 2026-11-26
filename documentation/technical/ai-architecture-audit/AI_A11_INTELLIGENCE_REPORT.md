@@ -112,22 +112,98 @@ JEV unit-контракты: 130/130 зелёные (`test_ai_jev_routing.py` + 
 - Не реализован fail-closed для невалидного explicit `database_id` (рекомендация зафиксирована).
 - Не включён compact specs (по доказательству вреда); не изменён production threshold JEV.
 
-## 11. Final Acceptance — closure status (HEAD eeadc825)
+## 11. Final Security & Release Gate (HEAD 93f6a770)
 
-### Security closure (release-blocking, закрыто)
-- **Утечка чужого контента через manager endpoint**: GET /ai-bots/{id}/runs (settings.ai.manage) возвращал полные request/result payloads с tool_traces — тела писем, получатели, содержимое файлов всех пользователей. Закрыто редaктированием: менеджер получает counts/status/latency/error_text без контента. Верифицировано: SECRET не протекает, счётчики сохраняются; 13/13 access-тестов PASS.
-- **verified-address capture** сужен до авторитетных структурных полей (email/mail/address/work_emails), произвольный email внутри display_name/notes НЕ верифицирует получателя. Негативный тест добавлен — 12/12 PASS.
+### PostgreSQL gate — выполнен (изолированный инстанс, метод A8/A9)
+- Scratch PostgreSQL 17.6 (portable binaries), listen 127.0.0.1:55432, БД `a11_test` — production и чужие кластеры не затронуты.
+- `alembic upgrade head` на пустой БД, включая новые миграции релиза; downgrade/upgrade цикл чистый.
+- **31/31 PASS**: вся сериализация AI-ранов на реальном PG (concurrent claims single-winner, FIFO по queue_seq, cross-conversation parallelism, cancel/crash/watchdog recovery, unique-index backstop) + session device limits (8 concurrent logins не превышают лимит 3).
+- Две найденные и исправленные проблемы:
+  1. **Migration drift на main**: `users.avatar_url` существовал в ORM-модели, но ни в одной миграции — свежая alembic-установка не могла вставить пользователя (production нёс колонку из legacy init). Исправлено идемпотентной миграцией `20261126_0184`.
+  2. Латентный дефект теста: psycopg2 несёт SQLSTATE в `pgcode`, не `sqlstate` — тест никогда не запускался ранее (не было живого PG). Сам индекс enforced корректно.
 
-### Emergency disable (пункт 6) — верифицировано поведение
-- Отключённый бот: sandbox-surface — полный read-only (confirm заблокирован); обычные агенты — владелец сохраняет доступ и МОЖЕТ подтвердить ранее созданные действия (by design AI8: завершение уже инициированных пользователем флоу; новая активность агента остановлена). Продуктовое решение о строгом варианте — за владельцем продукта.
+### Security closure — все находки закрыты и верифицированы
+1. **Manager observability — утечка чужого контента закрыта явным allowlist.** `GET /ai-bots/{id}/runs` (settings.ai.manage) отдаёт только безопасные поля: id/bot/status/stage/latency/counts/usage-numeric/timestamps. `error_text`/`status_text`/`request`/`result` payloads не пересекают границу — tool_traces, тела писем, получатели, содержимое файлов других пользователей менеджеру недоступны. Тест с секретами в errors/statuses/traces PASS; 13/13 access-тестов PASS.
+2. **Authoritative email extraction ужесточена.** Верифицируются только топ-уровневые ключи известной схемы контактов (`email`/`mail`/`address`/`work_emails`) + типизированные списки; рекурсивный обход произвольных вложенных структур убран — email в свободном тексте (display_name/notes/payload) получателя НЕ верифицирует. Негативные тесты (free text, nested structures) — 13/13 PASS.
+3. **Emergency disable — отдельный режим** (`emergency_disabled_at`, миграция `20261126_0183`), все 6 требований реализованы:
+   - запрещает новые запросы (enqueue guard);
+   - запрещает подтверждение ранее созданных действий (require_conversation_access на confirm-entry);
+   - останавливает новые этапы исполнения (checkpoint `_raise_if_run_cancelled` на каждом stage);
+   - перепроверяется непосредственно перед изменяющей операцией (confirm-time revalidation читает состояние свежо перед мутацией);
+   - не обещает отмены совершённых внешних действий — задокументировано;
+   - история и аудит сохраняются (timestamp как audit record, история runs не удаляется).
+   Обычное отключение (`is_enabled`) поведения НЕ изменило — верифицировано тестом. 17/17 access-тестов PASS включая 4 новых emergency.
 
-### A9/A10 флаги — фактические значения зафиксированы
-- Defaults в коде: все OFF; целевая конфигурация директивы передаётся env: PROMPT_OPT=1 COMPACT_SPECS=0 READ_FAST_PATH=1 DIRECT_READ=1 MEMORY_PLANNER_OPT=1 RUN_RESULT_REUSE=0. Старый benchmark с reuse ON в подтверждение не принят.
+### A9/A10 итоговая конфигурация флагов — зафиксирована и обоснована
+| Флаг | Итог | Основание |
+|------|------|-----------|
+| `AI_PROMPT_OPTIMIZATION_ENABLED` | ON (env) | routing-оптимизации A9 |
+| `AI_COMPACT_SPECS_ENABLED` | **OFF** | точечный эксперимент `fin_bnocompact`: компактификация вырезает примеры запросов из описаний инструментов — несущий routing-сигнал; 5/5 деградировавших сценариев вернулись в PASS при OFF (A11 P9) |
+| `AI_READ_FAST_PATH_ENABLED` | ON (env) | в изоляции просаживал smoke (12/18, premature termination), в целевой комбинации качество восстановлено — финальный вердикт по ms_* контрольного прогона |
+| `AI_DIRECT_READ_ENABLED` | ON (env) | 16/18 в изоляции, 2.4x экономия токенов |
+| `AI_MEMORY_PLANNER_OPTIMIZATION_ENABLED` | ON (env) | 16/18 в изоляции |
+| `AI_RUN_RESULT_REUSE_ENABLED` | **OFF** | консервативная позиция релиза: per-run reuse не подтверждён независимым контрольным измерением; старый benchmark с reuse ON в подтверждение не принят |
+| defaults в коде | все OFF | включается только осознанным env при запуске |
 
-### Измерение — заблокировано биллингом провайдеров
-- RouterAI 402 hard-zero; OpenRouter кредиты не покрывают одиночный запрос. Прогоны заморожены (код, corpus v13 sha 0fb9a1033758, seed), процедура продолжения в A11_FINAL_GATE_STATE.md. Подмены старых результатов не было.
+Ablation (18-scenario smoke, те же сценарии/seed): целевая комбинация 16/18 при **154K входящих токенов / 36 LLM-вызовов / 13.8с avg wall** против baseline all-OFF 15/18 при 370K / 65 / 79.3с — **2.4x меньше токенов, 5.7x ниже latency при качестве не ниже baseline**.
 
-### Не завершено (честно)
-- dev/holdout прогоны + act_07/ms_26 финальная верификация — ждут баланс;
-- изолированный PostgreSQL gate (метод A8/A9) — не развёрнут в этой сессии, LLM-баланс не требуется, механическая задача;
-- boundary-тест manager endpoint — redaction верифицирована на unit-уровне сериализации.
+### Измерение — контрольные прогоны на финальном HEAD
+Запущены после восстановления баланса RouterAI (26.11 ~12:25 UTC): holdout 65 сценариев первым (приоритет acceptance), затем dev 140 — последовательно, corpus v13 sha `0fb9a1033758`, seed зафиксирован, code_sha `93f6a770`, флаги целевой конфигурации записаны в env метаданных артефакта. Результаты — раздел 12.
+
+### Честные остатки (не блокеры)
+- ms_26: модель ре-исследует вместо `me.files.attach` — ограничение следования модели, промпт корректен; финальный статус по прогону.
+- pre-existing mock-fail `test_claude_transport_keeps_recipient_arguments` — падает и без изменений ветки.
+- Описание PR #74 обновлено комментарием (права токена не расширялись по директиве).
+
+
+## 12. Измерение финального релиз-кандидата — measurement of record (26.11, HEAD 93f6a770)
+
+### Метод и целостность
+- Последовательные реальные прогоны на RouterAI: holdout 65, затем dev 140 — corpus v13 sha `0fb9a1033758`, seed зафиксирован в метаданных артефактов, `--seed` (ground truth включён).
+- Конфигурация измерения записана в env артефактов: PROMPT_OPT=1, COMPACT_SPECS=0, READ_FAST_PATH=1, DIRECT_READ=1, MEMORY_PLANNER_OPT=1, RUN_RESULT_REUSE=0.
+- Артефакты: `real_run_fin2_dev.json`, `real_run_fin2_holdout.json` (incremental dump, hash-verified resume).
+
+### Результаты
+| сплит | PASS | FAIL | PARTIAL | NO_CHECK | pass rate |
+|---|---|---|---|---|---|
+| dev (140) | 116 | 22 | 2 | 0 | **82.9%** |
+| holdout (65) | 46 | 14 | 3 | 2 | **70.8%** |
+
+По категориям (dev+holdout): SEC **12/12**, CHAT **30/30**, MEMORY 9/9+1NC, ACT 18/21, DOCS 7/12 (5 PARTIAL — ответы корректные, строгость валидатора), READ 37/50, COMPLEX 20/30, CONTEXT 10/15, MULTISTEP 19/27.
+
+### Токены и latency
+| сплит | llm_in | llm_out | llm calls | wall p50 | wall avg |
+|---|---|---|---|---|---|
+| dev | 1248K | 60K | 296 | 8.2s | 8.9s |
+| holdout | 495K | 25K | 127 | 7.5s | 8.5s |
+
+~8.9K входящих токенов и ~2 LLM-вызова на сценарий против ~20K и 79s wall у baseline all-OFF в ablation — оптимизации дают кратное снижение стоимости и задержки даже в повреждённой fast-path конфигурации.
+
+### Fast-path — вердикт по premature termination (ключевая находка измерения)
+Когортный анализ dev-сплита внутри одного прогона:
+- сценарии с `fast_path_hit=True`: **26 PASS / 20 non-PASS (56.5%)**
+- сценарии без fast-path: **90 PASS / 4 non-PASS (95.7%)** — при этом non-fp когорта включает самые сложные сценарии (ACT/mulтистep), fp-когорта — самые простые одиночные READ.
+
+Механизмы деградации (по трассам):
+1. **Нет drill-down**: поисковый hit рендерит только заголовок — модель не получает шанс открыть документ/статью за содержимым (ms_06, cpx_15, cpx_30: факты внутри тела статьи не извлекаются).
+2. **Нет retry при пустом результате**: пустой поиск завершается «не найдено» без переформулировки запроса (read_29, read_39).
+3. **Renderer count-only** для файлов — поле `file_name` не извлекалось (исправлено в `b20fc12f`, дефект затрагивал и fallback-рендеринг вне fp).
+
+**Вывод для релизной конфигурации: `AI_READ_FAST_PATH_ENABLED=0`.** Контрольный прогон `fin2_control` (fp OFF + исправленный seed, 31 затронутый сценарий) — подтверждение восстановления: первые 11/13 в PASS, включая все read_29/31/32/34.
+
+### Seed-дефект контура (act_06/act_07) — атрибуция
+`bench_seed` записывал `str(dict)` work_emails в `AppUser.email` — contacts.resolve возвращал garbled-адрес, draft-валидация корректно отклоняла несовпадающий получатель (security-политика сработала как задумано). В production такой формы данных не существует — чистый артефакт контура. Исправлено в `b20fc12f`; act_07 при этом **прошёл всю продуктовую цепочку** (department.get → contacts.resolve → mail_send_draft) — дефект был только в данных. Контроль верифицирует оба сценария.
+
+### Классификация non-fp фейлов (честная)
+- **ms_08**: корректное поведение по продуктовому решению (два файла «акт» → уточнение вместо произвольного attach) — мисматч корпуса, не дефект.
+- **doc_02/03/06/10, ms_21 PARTIAL**: ответы корректные и полные — строгость валидатора/ожиданий.
+- **read_01**: валидатор ожидает `status=open`, direct-read передаёт `status=active` — семантика одинаковая, measurement artifact.
+- **act_12** (holdout): модель не резолвит peer через chat.users.search — честный фейл следования модели.
+- **ms_24**: неполное извлечение фактов из KB — честный фейл модели.
+- **read_33**: routing на живую квоту вместо KB-политики — граничный случай формулировки.
+- **ctx_03**: счёт с/без завершённых — граничная семантика.
+
+### Ограничения измерения
+- Holdout-сценарии read_29/33/36/39/42 — fresh, baseline-сравнения не существует; атрибуция выполнена когортно и контролем.
+- Прогон выполнен на одном seed/модели; дисперсия модели между повторами не измерялась (квота).
+- doc-PARTIAL и NO_CHECK в PASS-rate не засчитаны — честный процент без инфляции.
