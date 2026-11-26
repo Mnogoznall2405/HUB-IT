@@ -947,12 +947,23 @@ AD_PASSWORD_INTENT_KEYWORDS = (
 )
 
 
+# a11-final (act_07): «отчёт/report» are topic nouns, not creation markers — a letter
+# ABOUT a report ("подготовь письмо руководителю о готовности отчёта") must not be
+# intercepted by the report-generation flow. They trigger only when a creation verb
+# governs them within a short window and the verb's object is not «письмо».
+_REPORT_TOPIC_NOUNS = ("отчет", "отчёт", "report")
+
+
 def _has_report_file_intent(text: object) -> bool:
     normalized = _normalize_text(text).casefold().replace("ё", "е")
     if not normalized:
         return False
-    # Strong keywords always trigger.
-    if any(keyword.replace("ё", "е") in normalized for keyword in FILE_REPORT_INTENT_KEYWORDS):
+    # Strong keywords always trigger — except topic nouns, which need a governing verb.
+    if any(
+        keyword.replace("ё", "е") in normalized
+        for keyword in FILE_REPORT_INTENT_KEYWORDS
+        if keyword not in _REPORT_TOPIC_NOUNS
+    ):
         return True
     # Soft verb + noun pairing must co-occur (e.g. "создай файл", "сделай таблицу").
     has_soft_verb = any(
@@ -961,8 +972,21 @@ def _has_report_file_intent(text: object) -> bool:
     )
     if not has_soft_verb:
         return False
-    has_soft_noun = any(noun.replace("ё", "е") in normalized for noun in FILE_REPORT_INTENT_SOFT_NOUNS)
-    return has_soft_noun
+    # Non-topic nouns (файл/таблица/документ...) are creation objects by nature.
+    if any(
+        noun.replace("ё", "е") in normalized
+        for noun in FILE_REPORT_INTENT_SOFT_NOUNS
+        if noun not in _REPORT_TOPIC_NOUNS
+    ):
+        return True
+    # Topic nouns: the creation verb must govern the report directly (short window),
+    # and «письмо» between verb and noun means the verb governs the letter instead.
+    for verb in FILE_REPORT_INTENT_SOFT_VERBS:
+        pattern = rf"(?<![\wа-я]){re.escape(verb)}((?:\s+[\wа-я-]+){{0,3}})\s+(?:отчет\w*|report\w*)"
+        for match in re.finditer(pattern, normalized):
+            if "письм" not in match.group(1):
+                return True
+    return False
 
 
 def _has_ad_password_intent(text: object) -> bool:

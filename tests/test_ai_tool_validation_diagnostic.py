@@ -253,6 +253,22 @@ def test_report_file_intent_soft_verbs_a11_doc_05_07():
     assert not _has_report_file_intent("подготовь пользователя к увольнению")
 
 
+def test_report_topic_noun_requires_governing_verb():
+    """A11 final (act_07): mentioning a report is not a report-creation request."""
+    from backend.ai_chat.service import _has_report_file_intent
+
+    # letter ABOUT a report — no report intent
+    assert not _has_report_file_intent("подготовь письмо руководителю отдела о готовности отчёта")
+    assert not _has_report_file_intent("напиши письмо об отчёте")
+    assert not _has_report_file_intent("подготовь письмо об отчёте")
+    # pure report creation — report intent
+    assert _has_report_file_intent("создай отчёт по технике")
+    assert _has_report_file_intent("сформируй отчёт")
+    assert _has_report_file_intent("выгрузи отчёт в excel")
+    # report creation AND letter — report intent preserved
+    assert _has_report_file_intent("создай отчёт и подготовь письмо с вложением")
+
+
 def test_detect_requested_report_format_json_txt_md():
     """A11 c3 (doc_08): the format-choice card itself offers txt/md/json, so
     explicitly naming them must count as a chosen format. Before the fix only
