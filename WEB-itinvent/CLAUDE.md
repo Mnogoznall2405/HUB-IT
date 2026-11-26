@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Read [AGENTS.md](../AGENTS.md) and the [coordination guide](../.project/README.md) before editing. Use [TESTING.md](../documentation/technical/TESTING.md) for isolated checks and [AUTH_SECURITY_STACK.md](../documentation/technical/AUTH_SECURITY_STACK.md) for the current auth contract.
+
 ## Project Overview
 
 IT-invent Web is a full-stack web application for IT equipment inventory management. The backend connects to a legacy SQL Server database (ITINVENT) using pyodbc, while the frontend uses React with Material UI.
@@ -9,7 +11,7 @@ IT-invent Web is a full-stack web application for IT equipment inventory managem
 **Tech Stack:**
 - Backend: Python + FastAPI + pyodbc (SQL Server)
 - Frontend: React 18 + Vite + Material UI v5 + React Router
-- Auth: JWT tokens with Bearer scheme
+- Auth: session and permission checks; token transport differs across web and native clients
 
 ## Commands
 
@@ -26,7 +28,7 @@ Backend API docs available at http://localhost:8000/docs
 cd frontend
 npm install           # Install dependencies
 npm run dev          # Development server (http://localhost:5173)
-npm run build        # Production build
+npx vite build --outDir <isolated-output-dir> # Trial build outside dist/
 npm run preview      # Preview production build
 ```
 
@@ -38,7 +40,7 @@ npm run preview      # Preview production build
 
 **Configuration:** [backend/config.py](backend/config.py) - Loads settings from the repository root `.env`; use the tracked [`.env.example`](../.env.example) as the template
 - `DatabaseConfig`: SQL Server connection (ODBC)
-- `JWTConfig`: Token settings (8-hour default expiry)
+- `JWTConfig`: Token settings; see the current auth contract linked above
 - `AppConfig`: CORS origins, debug mode
 
 **Database Layer:** [backend/database/connection.py](backend/database/connection.py)
@@ -68,14 +70,10 @@ npm run preview      # Preview production build
 - `/login` (public), `/database`, `/settings` (protected)
 
 **State Management:** [frontend/src/contexts/AuthContext.jsx](frontend/src/contexts/AuthContext.jsx)
-- `AuthProvider` manages user state in localStorage
+- `AuthProvider` manages client session state; follow the auth contract linked above
 - `useAuth()` hook for login/logout/auth check
 
-**API Client:** [frontend/src/api/client.js](frontend/src/api/client.js)
-- Axios instance with base URL from `VITE_API_URL` env var
-- Request interceptor adds Bearer token
-- Response interceptor handles 401 redirects
-- `authAPI` and `equipmentAPI` method collections
+**API Client:** shared HTTP transport in [frontend/src/api/http.js](frontend/src/api/http.js), legacy API collections in [client.js](frontend/src/api/client.js). Keep new domain APIs separate.
 
 **Pages:** [frontend/src/pages/](frontend/src/pages/)
 - `Login.jsx`, `Database.jsx`, `Settings.jsx`, ... (full list: `frontend/src/pages/`, routes: `App.jsx`). `Search.jsx`, `Transfer.jsx`, `Work.jsx` exist as legacy files but have **no route** (unreferenced; dead-code removal is an owner decision, audit Q6)
@@ -96,12 +94,9 @@ Users can switch databases (e.g., ITINVENT, MSK-ITINVENT) via settings. Database
 ### API Response Format
 All endpoints return JSON. Errors use FastAPI's `HTTPException` with `detail` field.
 
-## Default Users
+## Test Users
 
-| Username | Password | Role |
-|----------|----------|------|
-| admin    | admin    | Admin |
-| user     | user123  | User  |
+Use the isolated test fixtures described in TESTING.md. Development seed users are not production credentials.
 
 ---
 
