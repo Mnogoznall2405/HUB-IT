@@ -5056,7 +5056,15 @@ class AiChatService:
                     .limit(max(1, min(int(limit or 25), 100)))
                 ).scalars()
             )
-        return [self._serialize_run(item) for item in rows]
+        # Manager observability must not leak other users' content: tool traces carry
+        # mail bodies, recipients and file contents. Counts/status/latency suffice.
+        items = []
+        for item in rows:
+            serialized = self._serialize_run(item)
+            serialized.pop("request", None)
+            serialized.pop("result", None)
+            items.append(serialized)
+        return items
 
     def open_bot_conversation(self, *, bot_id: str, current_user_id: int) -> dict[str, Any]:
         with app_session() as session:
