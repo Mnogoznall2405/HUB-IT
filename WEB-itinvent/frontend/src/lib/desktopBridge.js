@@ -1198,7 +1198,7 @@ export function requestDesktopOpenDownloadedFile() {
   });
 }
 
-export function requestDesktopDownloadedFileAction(action) {
+export function requestDesktopDownloadedFileAction(action, fileName = '') {
   if (!DESKTOP_DOWNLOADED_FILE_ACTIONS.has(action)) {
     return Promise.resolve({ accepted: false, status: 'unsupported' });
   }
@@ -1211,6 +1211,13 @@ export function requestDesktopDownloadedFileAction(action) {
   if (pendingPreparedDownloadRequest) {
     return Promise.resolve({ accepted: false, status: 'busy' });
   }
+  // file-actions-v3: the shell binds the intent to the exact file name, so a
+  // parallel download cannot steal the open/print action. Older shells reject
+  // unknown properties outright, so the field is sent only when advertised.
+  const normalizedFileName = String(fileName || '').trim();
+  const bindFileName = Boolean(
+    normalizedFileName && isDesktopCapabilityAvailable('file-actions-v3'),
+  );
 
   return new Promise((resolve) => {
     try {
@@ -1230,6 +1237,7 @@ export function requestDesktopDownloadedFileAction(action) {
         type: PREPARE_DOWNLOADED_FILE_MESSAGE_TYPE,
         version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
         action,
+        ...(bindFileName ? { fileName: normalizedFileName } : {}),
       });
     } catch {
       const pending = pendingPreparedDownloadRequest;

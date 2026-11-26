@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Diagnostics;
 using Hub.Desktop.Downloads;
 using Xunit;
@@ -53,6 +53,66 @@ public sealed class DesktopFileLauncherTests
     [InlineData("report.docx.crdownload")]
     [InlineData("")]
     public void RejectsExecutableUnsupportedAndPartialFiles(string fileName)
+    {
+        var started = false;
+        var launcher = new DesktopFileLauncher(
+            _ => true,
+            _ =>
+            {
+                started = true;
+                return null;
+            });
+
+        Assert.Equal(DesktopFileActionResult.Unsupported, launcher.TryOpen(fileName));
+        Assert.False(started);
+    }
+
+    [Theory]
+    [InlineData("photo.jpg")]
+    [InlineData("photo.JPEG")]
+    [InlineData("scan.png")]
+    [InlineData("anim.gif")]
+    [InlineData("bitmap.bmp")]
+    [InlineData("modern.webp")]
+    public void OpensPhotosInTheWindowsViewer(string fileName)
+    {
+        string? launched = null;
+        var launcher = new DesktopFileLauncher(
+            _ => true,
+            startInfo =>
+            {
+                launched = startInfo.FileName;
+                return null;
+            });
+
+        Assert.Equal(DesktopFileActionResult.Succeeded, launcher.TryOpen(fileName));
+        Assert.NotNull(launched);
+    }
+
+    [Theory]
+    [InlineData("photo.jpg")]
+    [InlineData("scan.png")]
+    public void PhotosAreNotSentToThePrintHandler(string fileName)
+    {
+        var started = false;
+        var launcher = new DesktopFileLauncher(
+            _ => true,
+            _ =>
+            {
+                started = true;
+                return null;
+            });
+
+        Assert.Equal(DesktopFileActionResult.Unsupported, launcher.TryPrint(fileName));
+        Assert.False(started);
+    }
+
+    [Theory]
+    [InlineData("setup.exe")]
+    [InlineData("script.ps1")]
+    [InlineData("archive.zip")]
+    [InlineData("shortcut.lnk")]
+    public void ExecutablesScriptsAndArchivesStayRejected(string fileName)
     {
         var started = false;
         var launcher = new DesktopFileLauncher(

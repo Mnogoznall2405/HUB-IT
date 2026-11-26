@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Hub.Desktop.Downloads;
 using Hub.Desktop.Interop;
 using Hub.Desktop.Printing;
@@ -322,6 +322,7 @@ public sealed class DesktopBridgeProtocolTests
                 "desktop-actions",
                 "equipment-qr-print",
                 "file-actions-v2",
+                "file-actions-v3",
                 "mail-compose-window",
                 "microphone-diagnostics",
                 "print-document",

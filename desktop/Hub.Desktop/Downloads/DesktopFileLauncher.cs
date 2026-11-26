@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Collections.Specialized;
 using System.Diagnostics;
 using System.IO;
@@ -19,13 +19,23 @@ public enum DesktopFileActionResult
 public sealed class DesktopFileLauncher
 {
     private const int ErrorNoAssociation = 1155;
-    private static readonly HashSet<string> SupportedExtensions = new(
+    private static readonly HashSet<string> DocumentExtensions = new(
         [
             ".doc", ".docx", ".docm", ".dot", ".dotx", ".dotm",
             ".xls", ".xlsx", ".xlsm", ".xlt", ".xltx", ".xltm",
             ".ppt", ".pptx", ".pptm", ".pps", ".ppsx", ".ppsm",
             ".odt", ".ods", ".odp", ".rtf", ".csv", ".pdf",
         ],
+        StringComparer.OrdinalIgnoreCase);
+    // Photos are open-only: printing stays limited to documents, and the
+    // Mark of the Web is kept so Windows shows its standard security prompt.
+    private static readonly HashSet<string> PhotoExtensions = new(
+        [
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
+        ],
+        StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> SupportedOpenExtensions = new(
+        DocumentExtensions.Concat(PhotoExtensions),
         StringComparer.OrdinalIgnoreCase);
     private readonly Func<string, bool> _fileExists;
     private readonly Func<string, bool> _directoryExists;
@@ -49,7 +59,16 @@ public sealed class DesktopFileLauncher
         _copyFileToClipboard = copyFileToClipboard ?? CopyFileToClipboard;
     }
 
-    public static bool IsSupportedFileName(string? fileName)
+    public static bool IsSupportedFileName(string? fileName) =>
+        HasExtensionIn(fileName, SupportedOpenExtensions);
+
+    public static bool IsPrintSupportedFileName(string? fileName) =>
+        HasExtensionIn(fileName, DocumentExtensions);
+
+    private static bool IsDocumentFileName(string? fileName) =>
+        HasExtensionIn(fileName, DocumentExtensions);
+
+    private static bool HasExtensionIn(string? fileName, HashSet<string> extensions)
     {
         if (string.IsNullOrWhiteSpace(fileName))
         {
@@ -58,7 +77,7 @@ public sealed class DesktopFileLauncher
 
         try
         {
-            return SupportedExtensions.Contains(Path.GetExtension(fileName));
+            return extensions.Contains(Path.GetExtension(fileName));
         }
         catch
         {
@@ -68,15 +87,19 @@ public sealed class DesktopFileLauncher
 
     public DesktopFileActionResult TryOpen(string? path)
     {
-        if (!TryGetSafeExistingPath(path, requireSupportedExtension: true, out var normalizedPath))
+        if (!TryGetSafeExistingPath(path, requireSupportedExtension: true, requirePrintableExtension: false, out var normalizedPath))
         {
-            return ResolveRejectedPathResult(path, requireSupportedExtension: true);
+            return ResolveRejectedPathResult(path, requireSupportedExtension: true, requirePrintableExtension: false);
         }
 
         // Files come from the authenticated corporate portal. Keeping the
         // internet MOTW makes Excel/Word reject legacy .xls/.doc files as
-        // "corrupted" (Office File Validation + Protected View).
-        RemoveMarkOfTheWeb(normalizedPath);
+        // "corrupted" (Office File Validation + Protected View). Photos keep
+        // their MOTW so the Windows security prompt stays in place.
+        if (IsDocumentFileName(normalizedPath))
+        {
+            RemoveMarkOfTheWeb(normalizedPath);
+        }
         try
         {
             _ = _startProcess(new ProcessStartInfo(normalizedPath)
@@ -102,9 +125,9 @@ public sealed class DesktopFileLauncher
 
     public DesktopFileActionResult TryPrint(string? path)
     {
-        if (!TryGetSafeExistingPath(path, requireSupportedExtension: true, out var normalizedPath))
+        if (!TryGetSafeExistingPath(path, requireSupportedExtension: false, requirePrintableExtension: true, out var normalizedPath))
         {
-            return ResolveRejectedPathResult(path, requireSupportedExtension: true);
+            return ResolveRejectedPathResult(path, requireSupportedExtension: false, requirePrintableExtension: true);
         }
 
         RemoveMarkOfTheWeb(normalizedPath);
@@ -134,9 +157,9 @@ public sealed class DesktopFileLauncher
 
     public DesktopFileActionResult TryCopyToClipboard(string? path)
     {
-        if (!TryGetSafeExistingPath(path, requireSupportedExtension: false, out var normalizedPath))
+        if (!TryGetSafeExistingPath(path, requireSupportedExtension: false, requirePrintableExtension: false, out var normalizedPath))
         {
-            return ResolveRejectedPathResult(path, requireSupportedExtension: false);
+            return ResolveRejectedPathResult(path, requireSupportedExtension: false, requirePrintableExtension: false);
         }
 
         try
@@ -155,9 +178,9 @@ public sealed class DesktopFileLauncher
 
     public DesktopFileActionResult TryRevealInFolder(string? path)
     {
-        if (!TryGetSafeExistingPath(path, requireSupportedExtension: false, out var normalizedPath))
+        if (!TryGetSafeExistingPath(path, requireSupportedExtension: false, requirePrintableExtension: false, out var normalizedPath))
         {
-            return ResolveRejectedPathResult(path, requireSupportedExtension: false);
+            return ResolveRejectedPathResult(path, requireSupportedExtension: false, requirePrintableExtension: false);
         }
 
         try
@@ -216,6 +239,7 @@ public sealed class DesktopFileLauncher
     private bool TryGetSafeExistingPath(
         string? path,
         bool requireSupportedExtension,
+        bool requirePrintableExtension,
         out string normalizedPath)
     {
         normalizedPath = string.Empty;
@@ -227,6 +251,11 @@ public sealed class DesktopFileLauncher
         try
         {
             normalizedPath = Path.GetFullPath(path);
+            if (requirePrintableExtension && !IsPrintSupportedFileName(normalizedPath))
+            {
+                return false;
+            }
+
             if (requireSupportedExtension && !IsSupportedFileName(normalizedPath))
             {
                 return false;
@@ -243,9 +272,11 @@ public sealed class DesktopFileLauncher
 
     private DesktopFileActionResult ResolveRejectedPathResult(
         string? path,
-        bool requireSupportedExtension)
+        bool requireSupportedExtension,
+        bool requirePrintableExtension)
     {
-        if (requireSupportedExtension && !IsSupportedFileName(path))
+        if ((requirePrintableExtension && !IsPrintSupportedFileName(path))
+            || (requireSupportedExtension && !IsSupportedFileName(path)))
         {
             DesktopLog.Warning("Rejected unsupported downloaded document type");
             return DesktopFileActionResult.Unsupported;

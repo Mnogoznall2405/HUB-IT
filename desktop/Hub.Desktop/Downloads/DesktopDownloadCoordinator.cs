@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.IO;
 
 namespace Hub.Desktop.Downloads;
@@ -20,6 +20,7 @@ public sealed class DesktopDownloadCoordinator
     private readonly Dictionary<string, Action> _cancelActions = new(StringComparer.Ordinal);
     private DateTimeOffset? _pendingIntentExpiresAt;
     private DesktopDownloadedFileAction _pendingIntentAction;
+    private string? _pendingIntentFileName;
     private string? _activeActionDownloadId;
 
     public DesktopDownloadCoordinator()
@@ -44,7 +45,8 @@ public sealed class DesktopDownloadCoordinator
         RequestNextDownloadAction(DesktopDownloadedFileAction.Open);
 
     public DesktopOpenIntentRequestResult RequestNextDownloadAction(
-        DesktopDownloadedFileAction action)
+        DesktopDownloadedFileAction action,
+        string? expectedFileName = null)
     {
         if (action == DesktopDownloadedFileAction.None)
         {
@@ -60,6 +62,7 @@ public sealed class DesktopDownloadCoordinator
             }
 
             _pendingIntentAction = action;
+            _pendingIntentFileName = NormalizeExpectedFileName(expectedFileName);
             _pendingIntentExpiresAt = _utcNow().Add(IntentLifetime);
             return DesktopOpenIntentRequestResult.Accepted;
         }
@@ -80,11 +83,13 @@ public sealed class DesktopDownloadCoordinator
             var itemId = Guid.NewGuid().ToString("N");
             if (_pendingIntentExpiresAt is not null
                 && _activeActionDownloadId is null
-                && CanApplyAction(_pendingIntentAction, fileName))
+                && CanApplyAction(_pendingIntentAction, fileName)
+                && MatchesExpectedFileName(_pendingIntentFileName, fileName))
             {
                 completionAction = _pendingIntentAction;
                 _pendingIntentExpiresAt = null;
                 _pendingIntentAction = DesktopDownloadedFileAction.None;
+                _pendingIntentFileName = null;
                 _activeActionDownloadId = itemId;
             }
 
@@ -326,6 +331,7 @@ public sealed class DesktopDownloadCoordinator
         {
             _pendingIntentExpiresAt = null;
             _pendingIntentAction = DesktopDownloadedFileAction.None;
+            _pendingIntentFileName = null;
         }
     }
 
@@ -333,7 +339,92 @@ public sealed class DesktopDownloadCoordinator
         DesktopDownloadedFileAction action,
         string fileName) =>
         action is DesktopDownloadedFileAction.SaveAs or DesktopDownloadedFileAction.Copy
-        || DesktopFileLauncher.IsSupportedFileName(fileName);
+        || (action == DesktopDownloadedFileAction.Print
+            ? DesktopFileLauncher.IsPrintSupportedFileName(fileName)
+            : DesktopFileLauncher.IsSupportedFileName(fileName));
+
+    private static string? NormalizeExpectedFileName(string? expectedFileName)
+    {
+        var trimmed = string.IsNullOrWhiteSpace(expectedFileName) ? null : expectedFileName.Trim();
+        if (trimmed is null)
+        {
+            return null;
+        }
+
+        // Correlation uses the bare file name only: the value never becomes a
+        // path, and a bounded length keeps hostile input cheap to compare.
+        var fileName = trimmed;
+        try
+        {
+            fileName = System.IO.Path.GetFileName(trimmed);
+        }
+        catch
+        {
+            return null;
+        }
+
+        if (string.IsNullOrEmpty(fileName) || fileName.Length > 260)
+        {
+            return null;
+        }
+
+        return fileName;
+    }
+
+    private static bool MatchesExpectedFileName(string? expectedFileName, string downloadFileName)
+    {
+        // Legacy clients do not send a file name: the intent applies to the
+        // next download as before. New clients bind the intent to exactly the
+        // selected attachment, so a parallel download cannot steal it.
+        if (expectedFileName is null)
+        {
+            return true;
+        }
+
+        if (string.Equals(expectedFileName, downloadFileName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // Chromium deduplicates collisions as "name (1).ext": the download is
+        // still the selected file, only the local name gained a suffix.
+        var stripped = StripChromiumDedupeSuffix(downloadFileName);
+        return stripped is not null
+            && string.Equals(expectedFileName, stripped, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? StripChromiumDedupeSuffix(string fileName)
+    {
+        var dotIndex = fileName.LastIndexOf('.');
+        var stem = dotIndex > 0 ? fileName[..dotIndex] : fileName;
+        var extension = dotIndex > 0 ? fileName[dotIndex..] : string.Empty;
+        if (!stem.EndsWith(')'))
+        {
+            return null;
+        }
+
+        var openIndex = stem.LastIndexOf(" (", StringComparison.Ordinal);
+        if (openIndex < 0)
+        {
+            return null;
+        }
+
+        var digits = stem[(openIndex + 2)..^1];
+        if (digits.Length == 0 || digits.Length > 3)
+        {
+            return null;
+        }
+
+        foreach (var ch in digits)
+        {
+            if (!char.IsAsciiDigit(ch))
+            {
+                return null;
+            }
+        }
+
+        return stem[..openIndex] + extension;
+    }
 
     private void TrimCompletedItems()
     {

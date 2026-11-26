@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Hub.Desktop.Downloads;
 using Xunit;
 
@@ -246,6 +246,79 @@ public sealed class DesktopDownloadCoordinatorTests
         Assert.Equal(
             [active.Id, failed.Id, canceled.Id, completed.Id],
             coordinator.Items.Select(item => item.Id));
+    }
+
+    [Fact]
+    public void FileNameBoundIntentIsNotStolenByAParallelDownload()
+    {
+        var launches = new List<string>();
+        var coordinator = CreateCoordinator(launches: launches);
+
+        Assert.Equal(
+            DesktopOpenIntentRequestResult.Accepted,
+            coordinator.RequestNextDownloadAction(DesktopDownloadedFileAction.Open, "report.pdf"));
+
+        // A parallel download of a different document must not consume the intent.
+        var parallel = coordinator.BeginDownload("other-window.docx");
+        Assert.False(parallel.OpenWhenCompleted);
+        coordinator.CompleteDownload(parallel.Id, "C:\\Downloads\\other-window.docx");
+        Assert.Empty(launches);
+
+        // The selected attachment consumes it and is the file that actually opens.
+        var selected = coordinator.BeginDownload("report.pdf");
+        Assert.True(selected.OpenWhenCompleted);
+        coordinator.CompleteDownload(selected.Id, "C:\\Downloads\\report.pdf");
+        Assert.Equal([Path.GetFullPath("C:\\Downloads\\report.pdf")], launches);
+    }
+
+    [Fact]
+    public void FileNameBoundIntentMatchesChromiumDedupeSuffix()
+    {
+        var launches = new List<string>();
+        var coordinator = CreateCoordinator(launches: launches);
+        coordinator.RequestNextDownloadAction(DesktopDownloadedFileAction.Open, "report.pdf");
+
+        // Repeated open of the same file: Chromium renames the collision copy.
+        var selected = coordinator.BeginDownload("report (1).pdf");
+        Assert.True(selected.OpenWhenCompleted);
+    }
+
+    [Fact]
+    public void FileNameBoundIntentSurvivesMismatchesWithinItsLifetime()
+    {
+        var now = new DateTimeOffset(2026, 8, 11, 12, 0, 0, TimeSpan.Zero);
+        var coordinator = CreateCoordinator(() => now);
+        coordinator.RequestNextDownloadAction(DesktopDownloadedFileAction.Open, "scan.png");
+
+        for (var i = 0; i < 3; i++)
+        {
+            var mismatch = coordinator.BeginDownload($"other{i}.png");
+            Assert.False(mismatch.OpenWhenCompleted);
+        }
+
+        var selected = coordinator.BeginDownload("scan.png");
+        Assert.True(selected.OpenWhenCompleted);
+    }
+
+    [Fact]
+    public void LegacyIntentWithoutFileNameStillAppliesToTheNextSupportedDownload()
+    {
+        var coordinator = CreateCoordinator();
+        coordinator.RequestNextDownloadAction(DesktopDownloadedFileAction.Open);
+
+        var item = coordinator.BeginDownload("anything.pdf");
+        Assert.True(item.OpenWhenCompleted);
+    }
+
+    [Fact]
+    public void PrintIntentDoesNotApplyToPhotos()
+    {
+        var coordinator = CreateCoordinator();
+        coordinator.RequestNextDownloadAction(DesktopDownloadedFileAction.Print, "photo.jpg");
+
+        var photo = coordinator.BeginDownload("photo.jpg");
+        Assert.False(photo.OpenWhenCompleted);
+        Assert.Equal(DesktopDownloadedFileAction.None, photo.CompletionAction);
     }
 
     private static DesktopDownloadCoordinator CreateCoordinator(

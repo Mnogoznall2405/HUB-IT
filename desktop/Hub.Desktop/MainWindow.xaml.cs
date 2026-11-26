@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
@@ -1696,7 +1696,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         object? sender,
         DesktopPrepareDownloadedFileRequestedEventArgs e)
     {
-        e.Accepted = _downloads.RequestNextDownloadAction(e.Action)
+        e.Accepted = _downloads.RequestNextDownloadAction(e.Action, e.FileName)
             == DesktopOpenIntentRequestResult.Accepted;
     }
 

@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Windows;
@@ -567,7 +567,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         object? sender,
         DesktopPrepareDownloadedFileRequestedEventArgs e)
     {
-        e.Accepted = _downloads.RequestNextDownloadAction(e.Action)
+        e.Accepted = _downloads.RequestNextDownloadAction(e.Action, e.FileName)
             == DesktopOpenIntentRequestResult.Accepted;
     }
 

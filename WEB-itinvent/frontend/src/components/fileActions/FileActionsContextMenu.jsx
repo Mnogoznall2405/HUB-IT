@@ -36,10 +36,18 @@ const DESKTOP_APPLICATION_EXTENSIONS = new Set([
   'odt', 'ods', 'odp', 'rtf', 'csv', 'pdf',
 ]);
 
-export function canOpenInDesktopApplication(fileName) {
+// Photos open in the Windows viewer but never print through this channel and
+// keep their Mark of the Web in the shell. They require file-actions-v3.
+export const DESKTOP_PHOTO_EXTENSIONS = new Set([
+  'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp',
+]);
+
+export function canOpenInDesktopApplication(fileName, { allowPhotos = false } = {}) {
   const normalized = String(fileName || '').trim().toLowerCase();
   const extension = normalized.includes('.') ? normalized.split('.').pop() : '';
-  return Boolean(extension && DESKTOP_APPLICATION_EXTENSIONS.has(extension));
+  if (!extension) return false;
+  if (DESKTOP_APPLICATION_EXTENSIONS.has(extension)) return true;
+  return Boolean(allowPhotos && DESKTOP_PHOTO_EXTENSIONS.has(extension));
 }
 
 export function isFileActionsKeyboardShortcut(event) {
@@ -100,7 +108,9 @@ export default function FileActionsContextMenu({
   const canOpenInApplication = Boolean(
     canDownload
     && nativeShell
-    && canOpenInDesktopApplication(fileName),
+    && canOpenInDesktopApplication(fileName, {
+      allowPhotos: isDesktopCapabilityAvailable('file-actions-v3'),
+    }),
   );
   const canPrintInApplication = canOpenInApplication && nativeFileActions;
   const canCopyFile = Boolean(canDownload && nativeFileActions);
@@ -133,7 +143,7 @@ export default function FileActionsContextMenu({
     if (action) {
       setRequestingAction(action);
       setOpenIntentMessage('');
-      const result = await requestDesktopDownloadedFileAction(action);
+      const result = await requestDesktopDownloadedFileAction(action, fileName);
       setRequestingAction('');
       if (!result.accepted) {
         setOpenIntentMessage(

@@ -63,7 +63,7 @@ describe('FileActionsContextMenu', () => {
 
     await waitFor(() => expect(onDownload).toHaveBeenCalledTimes(1));
     expect(onClose).toHaveBeenCalledTimes(1);
-    expect(bridgeMocks.requestAction).toHaveBeenCalledWith('open');
+    expect(bridgeMocks.requestAction).toHaveBeenCalledWith('open', 'report.xlsx');
   });
 
   it('keeps the menu open and explains when another open request is busy', async () => {
@@ -137,7 +137,7 @@ describe('FileActionsContextMenu', () => {
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Быстрая печать' }));
     await waitFor(() => expect(onDownload).toHaveBeenCalledTimes(1));
-    expect(bridgeMocks.requestAction).toHaveBeenCalledWith('print');
+    expect(bridgeMocks.requestAction).toHaveBeenCalledWith('print', 'report.pdf');
   });
 
   it('closes the open flyout when the pointer settles on a plain menu row', async () => {

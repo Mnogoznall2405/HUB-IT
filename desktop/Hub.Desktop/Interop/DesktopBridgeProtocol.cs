@@ -1,4 +1,4 @@
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.Json;
 using Hub.Desktop.Downloads;
@@ -97,6 +97,7 @@ public sealed record DesktopInboundMessage(
     DesktopShellStatus? ShellStatus = null,
     IReadOnlyList<DesktopQuickRoute>? QuickRoutes = null,
     DesktopDownloadedFileAction DownloadedFileAction = DesktopDownloadedFileAction.None,
+    string? DownloadedFileName = null,
     DesktopMailComposeWindowCommand? MailComposeWindow = null,
     DesktopWorkspaceWindowCommand? WorkspaceWindow = null,
     DesktopEquipmentQrPrintCommand? EquipmentQrPrint = null,
@@ -312,6 +313,7 @@ public static class DesktopBridgeProtocol
             "desktop-actions",
             "equipment-qr-print",
             "file-actions-v2",
+            "file-actions-v3",
             "mail-compose-window",
             MicrophoneDiagnosticsCapability,
             DocumentPrintCapability,
@@ -960,10 +962,22 @@ public static class DesktopBridgeProtocol
         out DesktopInboundMessage message)
     {
         message = default!;
-        if (!HasExactProperties(root, "type", "version", "action")
+        if ((!HasExactProperties(root, "type", "version", "action")
+                && !HasExactProperties(root, "type", "version", "action", "fileName"))
             || !TryGetBoundedString(root, "action", 8, out var actionText))
         {
             return false;
+        }
+
+        string? fileName = null;
+        if (root.TryGetProperty("fileName", out var fileNameElement)
+            && fileNameElement.ValueKind == JsonValueKind.String)
+        {
+            var candidate = fileNameElement.GetString();
+            if (!string.IsNullOrWhiteSpace(candidate) && candidate.Trim().Length <= 260)
+            {
+                fileName = candidate.Trim();
+            }
         }
 
         var action = actionText switch
@@ -981,7 +995,8 @@ public static class DesktopBridgeProtocol
 
         message = new DesktopInboundMessage(
             DesktopInboundMessageType.PrepareDownloadedFile,
-            DownloadedFileAction: action);
+            DownloadedFileAction: action,
+            DownloadedFileName: fileName);
         return true;
     }
 

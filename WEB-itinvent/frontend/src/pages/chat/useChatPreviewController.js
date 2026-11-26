@@ -20,8 +20,6 @@ import {
   createEmptyAttachmentPreview,
   downloadBlobFile,
 } from '../../components/mail/mailMessageFileActions';
-import { canOpenInDesktopApplication } from '../../components/fileActions/FileActionsContextMenu';
-import { openOriginalWithDesktopApplication } from '../../components/documentPreview/desktopOfficeOpen';
 import { isSendingOptimisticThreadMessage } from './chatThreadMessages';
 
 export function revokeDocumentPreviewObjectUrl(current) {
@@ -95,14 +93,9 @@ export default function useChatPreviewController({
     if (!normalizedMessageId || !attachmentId) return;
 
     const mapped = mapChatAttachmentForPreview(attachment);
-    // Mail parity: inside HUB Desktop an office/pdf attachment opens in the
-    // associated application directly instead of the in-app preview.
-    if (canOpenInDesktopApplication(mapped.name)) {
-      const desktopOpen = await openOriginalWithDesktopApplication({
-        onDownload: () => downloadChatAttachment(normalizedMessageId, attachment),
-      });
-      if (desktopOpen.accepted) return;
-    }
+    // Ordinary click always opens the built-in preview, in the browser and in
+    // HUB Desktop alike. Opening the original in the Windows application is a
+    // separate explicit action (attachment context menu / preview toolbar).
 
     documentPreviewRequestRef.current?.abort();
     const requestController = new AbortController();
