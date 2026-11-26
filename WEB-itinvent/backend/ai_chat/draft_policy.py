@@ -1,7 +1,6 @@
 """Evidence and channel checks for model-requested communication drafts."""
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -63,6 +62,28 @@ def _send_intent(text: str) -> bool:
     # «Напиши Ивану» — a capitalized token after the first word is a person name.
     words = _WORD.findall(text)
     return any(word[0].isupper() for word in words[1:])
+_EMAIL_FIELD_KEYS = {"email", "mail", "e-mail", "address", "emails", "work_email", "work_emails", "personal_email", "personal_emails"}
+
+
+def _authoritative_emails(node: Any) -> set[str]:
+    """Collect addresses only from structured email-typed fields of a contact payload."""
+    found: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            key_norm = str(key).strip().lower()
+            if key_norm in _EMAIL_FIELD_KEYS:
+                values = value if isinstance(value, list) else [value]
+                for item in values:
+                    candidate = item.get("value") if isinstance(item, dict) else item
+                    found.update(address.lower() for address in _EMAIL.findall(str(candidate or "")))
+            elif isinstance(value, (dict, list)):
+                found.update(_authoritative_emails(value))
+    elif isinstance(node, list):
+        for item in node:
+            found.update(_authoritative_emails(item))
+    return found
+
+
 _MAIL_CHANNEL = re.compile(
     r"письм\w*|почт\w*|e-?mail|\bmail\b|ответ\w*|\breply\b|forward|перешл\w*|пересл\w*",
     re.IGNORECASE,
@@ -420,10 +441,9 @@ class AiDraftPolicy:
             contacts = [data.get("user") or {}]
         for contact in contacts:
             if isinstance(contact, dict):
-                # Any address surfaced by a real contacts/lookup tool result is verified:
-                # scan the whole payload, not only canonical keys.
-                payload_text = json.dumps(contact, ensure_ascii=False)
-                self.verified_addresses.update(address.lower() for address in _EMAIL.findall(payload_text))
+                # Trust only authoritative structured email fields, never free text:
+                # an address inside a display name/notes payload is not a verified recipient.
+                self.verified_addresses.update(_authoritative_emails(contact))
         if tool_id in COMMUNICATION_DRAFTS and isinstance(data.get("action_card"), dict):
             self.successful_drafts.append(data["action_card"])
 
