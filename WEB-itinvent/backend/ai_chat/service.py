@@ -5024,6 +5024,14 @@ class AiChatService:
                 bot.enabled_tools_json = _json_dumps(normalize_enabled_tools(payload.get("enabled_tools")))
             if "tool_settings" in payload and payload.get("tool_settings") is not None:
                 bot.tool_settings_json = _json_dumps(normalize_tool_settings(payload.get("tool_settings")))
+            if "emergency_disabled" in payload and payload.get("emergency_disabled") is not None:
+                # Emergency kill-switch is a separate mode from regular disable:
+                # engaging stamps the audit timestamp, disengaging clears it.
+                if bool(payload.get("emergency_disabled")):
+                    if getattr(bot, "emergency_disabled_at", None) is None:
+                        bot.emergency_disabled_at = _utc_now()
+                else:
+                    bot.emergency_disabled_at = None
             if "allow_file_input" in payload and payload.get("allow_file_input") is not None:
                 bot.allow_file_input = bool(payload.get("allow_file_input"))
             if "allow_generated_artifacts" in payload and payload.get("allow_generated_artifacts") is not None:
@@ -5088,6 +5096,8 @@ class AiChatService:
             bot = session.get(AppAiBot, _normalize_text(bot_id))
             if bot is None or not bool(bot.is_enabled):
                 raise LookupError("AI bot not found")
+            if getattr(bot, "emergency_disabled_at", None) is not None:
+                raise PermissionError("Агент остановлен аварийно. Новые запросы и подтверждения действий заблокированы.")
             self._require_bot_access(bot=bot, current_user_id=int(current_user_id), allow_hidden=False)
             mappings = list(session.execute(
                 select(AppAiBotConversation).where(
@@ -5563,6 +5573,13 @@ class AiChatService:
             if normalized_status in {"cancelled", "failed"}:
                 raise AiRunCancelled("AI run was stopped")
             if run is not None:
+                # Emergency kill-switch is re-checked at every cooperative checkpoint,
+                # i.e. right before stage transitions and real publications: a run of an
+                # emergency-disabled bot starts no new execution stage.
+                bot = session.get(AppAiBot, _normalize_text(run.bot_id))
+                if bot is not None and getattr(bot, "emergency_disabled_at", None) is not None:
+                    raise AiRunCancelled("AI run was stopped by emergency disable")
+            if run is not None:
                 if normalized_status in {"queued", "running"}:
                     # A1 heartbeat: every cooperative checkpoint refreshes
                     # updated_at so the watchdog tells live runs apart from
@@ -5631,6 +5648,11 @@ class AiChatService:
         normalized_conversation_id = _normalize_text(conversation_id)
         runtime = self._get_runtime_by_conversation(normalized_conversation_id)
         if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
+            return None
+        if getattr(runtime.bot, "emergency_disabled_at", None) is not None:
+            # Emergency kill-switch: new requests never reach the queue. Unlike regular
+            # disable there is no re-binding to a replacement assistant — emergency
+            # means stop, and the runtime object is a fresh read per enqueue.
             return None
         effective_bot = runtime.bot
         replacement_bot_id: Optional[str] = None
@@ -8746,6 +8768,10 @@ class AiChatService:
         report_stage=None,
     ) -> tuple[str, list[dict[str, Any]], dict[str, str] | None, dict[str, Any], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
         run_id = _normalize_text(run_payload.get("id")) or "-"
+        with app_session() as _emergency_session:
+            _fresh_bot = _emergency_session.get(AppAiBot, _normalize_text(getattr(bot, "id", "")))
+            if _fresh_bot is not None and getattr(_fresh_bot, "emergency_disabled_at", None) is not None:
+                raise AiRunCancelled("AI run was stopped by emergency disable")
         runtime = self._get_runtime_by_conversation(run_payload["conversation_id"])
         if runtime is None:
             raise RuntimeError("AI conversation runtime was not found")
@@ -10862,6 +10888,7 @@ class AiChatService:
                     "use_personal_memory": bool(getattr(bot, "use_personal_memory", True)),
                     "bot_user_id": int(getattr(bot, "bot_user_id", 0) or 0) or None,
                     "openrouter_configured": bool(payload["configured"]),
+                    "emergency_disabled_at": _iso(getattr(bot, "emergency_disabled_at", None)),
                     "updated_at": _iso(getattr(bot, "updated_at", None)),
                     "latest_run_status": _normalize_text(getattr(latest_run, "status", None)) or None,
                     "latest_run_error": _normalize_text(getattr(latest_run, "error_text", None)) or None,

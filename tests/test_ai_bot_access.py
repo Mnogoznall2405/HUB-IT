@@ -297,3 +297,55 @@ def test_open_agent_returns_forbidden_when_access_is_denied(database, monkeypatc
     app.dependency_overrides[get_current_active_user] = lambda: User(id=2, username='viewer')
     with TestClient(app) as client:
         assert client.post('/chat/ai/bots/code/open').status_code == 403
+
+
+# --- Emergency kill-switch: a separate mode from regular disable ---
+
+def _set_emergency(database, bot_id, when):
+    with database() as db:
+        bot = db.get(AppAiBot, bot_id)
+        bot.emergency_disabled_at = when
+        db.flush()
+
+
+def test_emergency_blocks_write_access_and_confirm_entry(database):
+    from datetime import datetime, timezone
+    # Baseline: owner has write access (prebuilt 'conversation' -> user 2, bot 'agent').
+    access.require_conversation_access('conversation', 2)
+    _set_emergency(database, 'agent', datetime.now(timezone.utc))
+    with pytest.raises(PermissionError, match='аварийно'):
+        access.require_conversation_access('conversation', 2)
+
+
+def test_emergency_is_distinct_from_regular_disable(database):
+    from datetime import datetime, timezone
+    with database() as db:
+        bot = db.get(AppAiBot, 'agent')
+        bot.is_enabled = False
+        bot.emergency_disabled_at = None
+        db.flush()
+    # Regular disable, unchanged behaviour: the owner keeps full access (AI8),
+    # including confirmation of previously created actions.
+    access.require_conversation_access('conversation', 2)
+    # Engaging emergency on the same disabled bot blocks even the owner.
+    _set_emergency(database, 'agent', datetime.now(timezone.utc))
+    with pytest.raises(PermissionError, match='аварийно'):
+        access.require_conversation_access('conversation', 2)
+
+
+def test_emergency_clear_restores_access(database):
+    from datetime import datetime, timezone
+    _set_emergency(database, 'agent', datetime.now(timezone.utc))
+    with pytest.raises(PermissionError):
+        access.require_conversation_access('conversation', 2)
+    _set_emergency(database, 'agent', None)
+    access.require_conversation_access('conversation', 2)
+
+
+def test_emergency_does_not_hide_history(database):
+    from datetime import datetime, timezone
+    _set_emergency(database, 'agent', datetime.now(timezone.utc))
+    # Read-only access path stays available: conversation_access is a read probe,
+    # and status/history reads never go through the write gate.
+    result = access.conversation_access('conversation', 2)
+    assert 'can_use' in result
