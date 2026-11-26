@@ -219,7 +219,7 @@ def seed_employee_users(user_service, employees: list[dict], *, count: int = BEN
     for i, emp in enumerate(employees[:count], 1):
         username = f"bench_emp{i:03d}"
         full_name = str(emp.get("full_name") or _fio(i))
-        emails = [str(x).strip() for x in list(emp.get("work_emails") or []) if str(x or "").strip()]
+        emails = [str(x.get("value") if isinstance(x, dict) else x).strip() for x in list(emp.get("work_emails") or []) if str(x or "").strip()]
         email = emails[0] if emails else f"bench{i:03d}@bench.local"
         department = str(emp.get("department") or "").strip() or None
         job_title = str(emp.get("position") or "").strip() or None

@@ -3649,7 +3649,7 @@ def _fp_render_files(data: dict, args: dict) -> str:
         return "Файлы не найдены."
     lines = [f"Найдено {_fp_plural(len(items), 'файл', 'файла', 'файлов')}: {len(items)}."]
     for item in items[:15]:
-        name = _fp_scalar(item, "original_file_name", "download_file_name", "name", "title")
+        name = _fp_scalar(item, "file_name", "original_file_name", "download_file_name", "name", "title")
         size = item.get("original_size_bytes") or item.get("size_bytes")
         tail = f"{round(int(size) / 1024)} КБ" if isinstance(size, (int, float)) and size else ""
         if name:
