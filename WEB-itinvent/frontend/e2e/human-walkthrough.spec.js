@@ -17,7 +17,7 @@ test.skip(!(USERNAME && PASSWORD), 'E2E_USERNAME/E2E_PASSWORD not set');
 const REPORT_DIR = fileURLToPath(new URL('../../../output/e2e-walkthrough/', import.meta.url));
 const DANGER = /удал|очист|отправ|выйти|выход|сброс|заверш|архив|останов|перезапуск|блокир|деактив|отключ|logout|delete|clear|reset|send|убрать|отозв|закрыть сессию|завершить/i;
 // Эндпоинты внешних систем, которых нет на стенде (SQL Server ITINVENT, LDAP, 1С, Exchange).
-const EXTERNAL_API = /\/(equipment|database|warehouse-1c|mail|ldap|zup|inventory\/(1c|reconcile)|it\/(requests|objects)|construction|ad-users|groups-access|scan)\b/i;
+const EXTERNAL_API = /\/(equipment|database|warehouse-1c|mail|ldap|zup|inventory\/(1c|reconcile)|it\/(requests|objects)|it-objects|construction|ad-users|groups-access|scan|mfu|address-book\/sync)\b/i;
 
 const ROUTES = [
   '/dashboard', '/feed', '/tasks', '/tickets', '/chat', '/database', '/networks', '/mfu', '/monitoring',

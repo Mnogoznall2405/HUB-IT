@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Autocomplete,
   Box,
@@ -57,12 +57,24 @@ const COL = {
 const TOTAL_W = Object.values(COL).reduce((sum, col) => sum + col.w, 0);
 const TABLE_VIRTUALIZE_THRESHOLD = 120;
 const TABLE_OVERSCAN_PX = 360;
+// Mobile cards are much heavier than table rows; render them in chunks with a
+// "Показать ещё" footer instead of mounting thousands of Card nodes at once.
+const MOBILE_CARD_RENDER_CHUNK = 100;
 const LINE_H = 24;
 const ROW_PAD = 20;
 const MIN_ROW_H = 48;
 const CELL_PAD_X = 24;
 const MONO_CHAR_W = 7.5;
 const TEXT_CHAR_W = 8;
+// Spreadsheet formula injection: a cell beginning with = + - @ (or tab/CR)
+// is evaluated by Excel/Calc. Neutralize with a leading apostrophe; quote
+// every field so embedded delimiters/newlines cannot shift columns.
+const csvCell = (value) => {
+  let text = String(value ?? '');
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+};
+
 const TABLE_CONTAINER_MAX_HEIGHT = {
   xs: 'min(60vh, 520px)',
   md: 'calc(100vh - 320px)',
@@ -191,7 +203,7 @@ export default function EquipmentTab({
       port.endpoint_mac_raw || '',
       port.fio || '',
     ]);
-    const csv = `data:text/csv;charset=utf-8,\uFEFF${[headers.join(';'), ...rows.map((row) => row.join(';'))].join('\n')}`;
+    const csv = `data:text/csv;charset=utf-8,\uFEFF${[headers, ...rows].map((row) => row.map(csvCell).join(';')).join('\n')}`;
     const link = document.createElement('a');
     link.setAttribute('href', encodeURI(csv));
     link.setAttribute('download', `Порты_${new Date().toISOString().slice(0, 10)}.csv`);
@@ -218,6 +230,12 @@ export default function EquipmentTab({
     () => (useVirtualization ? displayedPorts.slice(startIndex, endIndex) : displayedPorts),
     [displayedPorts, endIndex, startIndex, useVirtualization],
   );
+
+  const [mobilePortLimit, setMobilePortLimit] = useState(MOBILE_CARD_RENDER_CHUNK);
+  useEffect(() => { setMobilePortLimit(MOBILE_CARD_RENDER_CHUNK); }, [displayedPorts]);
+  const mobilePorts = displayedPorts.length > mobilePortLimit
+    ? displayedPorts.slice(0, mobilePortLimit)
+    : displayedPorts;
 
   const baseHeadCellSx = {
     py: 1,
@@ -246,7 +264,7 @@ export default function EquipmentTab({
               Устройства: {devices.length}
             </Typography>
             {canEdit && (
-              <IconButton size="small" onClick={openCreateDeviceDialog} color="primary">
+              <IconButton size="small" aria-label="Добавить устройство" onClick={openCreateDeviceDialog} color="primary">
                 <AddIcon fontSize="small" />
               </IconButton>
             )}
@@ -356,7 +374,7 @@ export default function EquipmentTab({
                 }}
               >
                 <Stack spacing={0.8}>
-                  {displayedPorts.map((port) => {
+                  {mobilePorts.map((port) => {
                     const isEditing = Number(editingPortId) === Number(port.id);
                     const ips = splitBySpace(port.endpoint_ip_raw);
                     const macs = splitBySpace(port.endpoint_mac_raw);
@@ -373,12 +391,13 @@ export default function EquipmentTab({
                           transition: 'border-color 0.15s',
                         }}
                       >
-                        <CardActionArea
-                          onClick={(event) => handlePortRowClick(port, event)}
-                          sx={{ p: 1.2 }}
-                        >
-                          <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1}>
-                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                        {/* Кнопка правки — sibling, не внутри <button> CardActionArea. */}
+                        <Stack direction="row" alignItems="stretch">
+                          <CardActionArea
+                            onClick={(event) => handlePortRowClick(port, event)}
+                            sx={{ p: 1.2, flex: 1, minWidth: 0 }}
+                          >
+                            <Box sx={{ minWidth: 0 }}>
                               <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.3 }}>
                                 <Typography variant="body2" sx={{ fontWeight: 700, color: 'primary.main', fontFamily: 'monospace', fontSize: '0.9rem' }}>
                                   {port.patch_panel_port || '—'}
@@ -413,25 +432,35 @@ export default function EquipmentTab({
                                 </Stack>
                               )}
                             </Box>
-                            {canEdit && (
-                              <IconButton
-                                size="small"
-                                color="primary"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  startEditPort(port, event);
-                                }}
-                                sx={{ mt: -0.5, flexShrink: 0, minWidth: 36, minHeight: 36 }}
-                              >
-                                <EditIcon sx={{ fontSize: 18 }} />
-                              </IconButton>
-                            )}
-                          </Stack>
-                        </CardActionArea>
+                          </CardActionArea>
+                          {canEdit && (
+                            <IconButton
+                              size="small"
+                              color="primary"
+                              aria-label={`Изменить порт ${port.port_name || port.patch_panel_port || port.id}`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                startEditPort(port, event);
+                              }}
+                              sx={{ alignSelf: 'center', mr: 0.5, flexShrink: 0, minWidth: 36, minHeight: 36 }}
+                            >
+                              <EditIcon sx={{ fontSize: 18 }} />
+                            </IconButton>
+                          )}
+                        </Stack>
                       </Card>
                     );
                   })}
                 </Stack>
+                {displayedPorts.length > mobilePorts.length ? (
+                  <Button
+                    size="small"
+                    onClick={() => setMobilePortLimit((limit) => limit + MOBILE_CARD_RENDER_CHUNK)}
+                    sx={{ mt: 1, alignSelf: 'center', textTransform: 'none' }}
+                  >
+                    {`Показать ещё ${Math.min(MOBILE_CARD_RENDER_CHUNK, displayedPorts.length - mobilePorts.length)} из ${displayedPorts.length - mobilePorts.length}`}
+                  </Button>
+                ) : null}
               </Box>
             ) : (
               <TableContainer

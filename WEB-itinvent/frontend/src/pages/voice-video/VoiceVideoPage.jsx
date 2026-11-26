@@ -89,7 +89,8 @@ function VoiceVideoPage() {
   // показывает предупреждение внутри самого диалога (shareCloseWarning),
   // а не баннером на странице под модалкой.
   const [shareNavWarning, setShareNavWarning] = useState(false);
-  const [actionBusyKey, setActionBusyKey] = useState(null);
+  const [actionBusyKey, setActionBusyKey] = useState(() => new Set());
+  const actionBusyRef = useRef(new Set());
   const [meetingLoadError, setMeetingLoadError] = useState('');
   const exportCountAbortRef = useRef(null);
   const mountedRef = useRef(true);
@@ -130,14 +131,25 @@ function VoiceVideoPage() {
 
   // Мутации с обработкой ошибок: показываем detail, возвращаем кнопку в активное состояние.
   const runAction = useCallback(async (busyKey, action) => {
-    setActionBusyKey(busyKey);
+    if (busyKey != null && actionBusyRef.current.has(busyKey)) return;
+    if (busyKey != null) {
+      actionBusyRef.current.add(busyKey);
+      setActionBusyKey((prev) => new Set(prev).add(busyKey));
+    }
     setActionError('');
     try {
       await action();
     } catch (err) {
       setActionError(extractDetail(err, 'Действие не удалось выполнить'));
     } finally {
-      setActionBusyKey(null);
+      if (busyKey != null) {
+        actionBusyRef.current.delete(busyKey);
+        setActionBusyKey((prev) => {
+          const next = new Set(prev);
+          next.delete(busyKey);
+          return next;
+        });
+      }
     }
   }, []);
 
@@ -467,7 +479,6 @@ function VoiceVideoPage() {
       await Promise.all([
         loadJobs(),
         loadMeetings(),
-        loadVoices(),
       ]);
     })();
     voiceJobsAPI.getOptions().then(setOptions).catch(() => {});
@@ -479,11 +490,20 @@ function VoiceVideoPage() {
       voicesAbortRef.current?.abort();
       exportCountAbortRef.current?.abort();
     };
-  }, [loadJobs, loadMeetings, loadVoices]);
+  }, [loadJobs, loadMeetings]);
 
   useEffect(() => {
     loadExportCount();
   }, [loadExportCount]);
+
+  // «Голоса» нужны только на своей вкладке — грузим при первом открытии,
+  // не конкурируя за канал с первичной загрузкой протоколов и задач (V-perf).
+  const voicesRequestedRef = useRef(false);
+  useEffect(() => {
+    if (tab !== 2 || voicesRequestedRef.current) return;
+    voicesRequestedRef.current = true;
+    loadVoices();
+  }, [tab, loadVoices]);
 
   // Meetings page/search/filter/order changes refetch the meetings page.
   const firstMeetingsParams = useRef(true);
@@ -697,6 +717,7 @@ function VoiceVideoPage() {
               onChange={(_e, value) => setTab(value)}
               variant="fullWidth"
               sx={{ minHeight: 44 }}
+              aria-label="Разделы страницы"
             >
               {pageTabs}
             </Tabs>
@@ -711,6 +732,7 @@ function VoiceVideoPage() {
                 variant="scrollable"
                 scrollButtons="auto"
                 sx={{ flex: '0 1 auto', minWidth: 0 }}
+                aria-label="Разделы страницы"
               >
                 {pageTabs}
               </Tabs>
@@ -787,7 +809,7 @@ function VoiceVideoPage() {
             unresolvedOnly={meetingsUnresolved}
             onUnresolvedChange={handleMeetingsUnresolvedChange}
             order={meetingsOrder}
-            onOrderChange={setMeetingsOrder}
+            onOrderChange={(v) => { setMeetingsOrder(v); setMeetingsPage(0); }}
             participant={meetingsParticipant}
             onParticipantChange={handleMeetingsParticipantChange}
             tag={meetingsTag}

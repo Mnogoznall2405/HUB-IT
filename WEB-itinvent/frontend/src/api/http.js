@@ -97,7 +97,24 @@ const markRefreshEpoch = () => writeRefreshMarker(REFRESH_EPOCH_STORAGE_KEY, Dat
 const siblingRefreshedRecently = () => (
   Date.now() - readRefreshMarker(REFRESH_EPOCH_STORAGE_KEY) < REFRESH_RECENT_WINDOW_MS
 );
-const markRefreshClaim = () => writeRefreshMarker(REFRESH_CLAIM_STORAGE_KEY, Date.now());
+// The claim carries a unique id: "<ts>:<nonce>". localStorage has no atomic
+// check-and-set, so a contender writes its id, waits one propagation beat and
+// re-reads — the last writer wins, the rest back off. Without that re-read two
+// simultaneous claimants both see "no claim" and both POST.
+const REFRESH_CLAIM_SETTLE_MS = 300;
+const makeRefreshClaim = () => `${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+const claimTimestamp = (raw) => Number(String(raw || '').split(':')[0] || 0);
+const claimId = (raw) => String(raw || '').split(':').slice(1).join(':');
+const readRefreshClaim = () => {
+  try {
+    return window.localStorage.getItem(REFRESH_CLAIM_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+};
+const siblingClaimedRecently = () => (
+  Date.now() - claimTimestamp(readRefreshClaim()) < REFRESH_RECENT_WINDOW_MS
+);
 const clearRefreshClaim = () => {
   try {
     window.localStorage.removeItem(REFRESH_CLAIM_STORAGE_KEY);
@@ -105,9 +122,6 @@ const clearRefreshClaim = () => {
     // Storage unavailable — nothing to clear.
   }
 };
-const siblingClaimedRecently = () => (
-  Date.now() - readRefreshMarker(REFRESH_CLAIM_STORAGE_KEY) < REFRESH_RECENT_WINDOW_MS
-);
 
 // Callers only await the refresh and retry their own request (or ignore the
 // payload entirely) — a defined-shape sentinel keeps `response.data` readers
@@ -179,27 +193,45 @@ const waitForSiblingClaim = async () => {
 };
 
 // Fallback when Web Locks is unavailable (e.g. plain-HTTP intranet deploys —
-// the API is secure-context only). The localStorage claim narrows the
-// check-then-POST race from a full request RTT to one synchronous write.
+// the API is secure-context only). localStorage gives no atomic primitive, so
+// the claim is a compare-and-set: each contender writes a unique id, waits one
+// propagation beat, and re-reads — last writer wins, the rest wait for the
+// winner's epoch. That is what actually dedupes a simultaneous wave; a bare
+// "claim absent → POST" check lets every tab write and post.
 // A tab seeing a fresh claim must WAIT for the holder — skipping immediately
 // would retry its request with the still-old cookie and log the session out.
 const refreshAuthSessionUnlocked = async () => {
-  if (siblingRefreshedRecently()) return skippedRefreshResponse();
-  if (siblingClaimedRecently()) {
-    await waitForSiblingClaim();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     if (siblingRefreshedRecently()) return skippedRefreshResponse();
+    if (siblingClaimedRecently()) {
+      await waitForSiblingClaim();
+      continue;
+    }
+    const myClaim = makeRefreshClaim();
+    try {
+      window.localStorage.setItem(REFRESH_CLAIM_STORAGE_KEY, myClaim);
+    } catch {
+      // Storage unavailable — claims can't propagate, CAS is meaningless.
+    }
+    await new Promise((resolve) => { setTimeout(resolve, REFRESH_CLAIM_SETTLE_MS); });
+    if (readRefreshClaim() !== myClaim) {
+      await waitForSiblingClaim();
+      continue;
+    }
+    try {
+      // Absorb a just-finished sibling rotation that has not propagated yet.
+      if (await waitForFreshSiblingEpoch()) return skippedRefreshResponse();
+      const response = await performRefreshRequest();
+      markRefreshEpoch();
+      return response;
+    } finally {
+      if (readRefreshClaim() === myClaim) clearRefreshClaim();
+    }
   }
-  markRefreshClaim();
-  try {
-    // The claim only narrows the check-then-POST race; a just-finished sibling
-    // rotation may not have propagated here yet, so absorb that lag too.
-    if (await waitForFreshSiblingEpoch()) return skippedRefreshResponse();
-    const response = await performRefreshRequest();
-    markRefreshEpoch();
-    return response;
-  } finally {
-    clearRefreshClaim();
-  }
+  // Repeatedly lost the claim — post directly rather than starve.
+  const response = await performRefreshRequest();
+  markRefreshEpoch();
+  return response;
 };
 
 const refreshAuthSessionAcrossTabs = () => {

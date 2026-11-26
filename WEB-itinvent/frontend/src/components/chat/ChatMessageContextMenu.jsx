@@ -249,6 +249,26 @@ export default function ChatMessageContextMenu({
     handleClose();
   };
 
+  // role="menu" promises arrow-key navigation between menuitems — implement
+  // roving focus over the action buttons (Escape is handled by Popover).
+  const menuRef = useRef(null);
+  const handleMenuKeyDown = (event) => {
+    const { key } = event;
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(key)) return;
+    const items = Array.from(
+      menuRef.current?.querySelectorAll?.('[role="menuitem"]:not(:disabled)') || [],
+    );
+    if (items.length === 0) return;
+    event.preventDefault();
+    const currentIndex = items.indexOf(document.activeElement);
+    let nextIndex = 0;
+    if (key === 'Home') nextIndex = 0;
+    else if (key === 'End') nextIndex = items.length - 1;
+    else if (key === 'ArrowDown') nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
+    else nextIndex = currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length;
+    items[nextIndex]?.focus?.();
+  };
+
   return (
     <Popover
       data-testid="chat-message-context-menu"
@@ -374,6 +394,8 @@ export default function ChatMessageContextMenu({
 
         <Box
           role="menu"
+          ref={menuRef}
+          onKeyDown={handleMenuKeyDown}
           sx={{
             width: menuWidth,
             alignSelf: reactionsExpanded ? 'center' : 'stretch',

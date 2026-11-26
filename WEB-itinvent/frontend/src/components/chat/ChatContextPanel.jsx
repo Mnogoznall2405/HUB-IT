@@ -1952,18 +1952,21 @@ export default function ChatContextPanel({
   const [addMembersLoading, setAddMembersLoading] = useState(false);
   const [selectedAddMembers, setSelectedAddMembers] = useState([]);
   const addMembersSearchRef = useRef(null);
+  const addMembersRequestSeqRef = useRef(0);
 
   // Загрузка пользователей для диалога добавления
   const loadAddMembersUsers = useCallback(async (query = '') => {
     if (!CHAT_FEATURE_ENABLED) return;
+    const requestSeq = ++addMembersRequestSeqRef.current;
     setAddMembersLoading(true);
     try {
       const data = await chatAPI.getUsers({ q: query, limit: 200 });
+      if (requestSeq !== addMembersRequestSeqRef.current) return;
       setAddMembersUsers(sortByName(Array.isArray(data?.items) ? data.items : []));
     } catch {
-      setAddMembersUsers([]);
+      if (requestSeq === addMembersRequestSeqRef.current) setAddMembersUsers([]);
     } finally {
-      setAddMembersLoading(false);
+      if (requestSeq === addMembersRequestSeqRef.current) setAddMembersLoading(false);
     }
   }, []);
 

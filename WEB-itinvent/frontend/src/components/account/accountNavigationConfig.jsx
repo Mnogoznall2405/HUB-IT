@@ -89,8 +89,7 @@ const ADMIN_SECTION_DEFINITIONS = [
     label: 'Пользователи AD',
     description: 'Импорт и синхронизация Active Directory',
     icon: <AdminPanelSettingsOutlinedIcon />,
-    permissions: ['ad_users.read', 'ad_users.manage'],
-    adminOnlyFallback: true,
+    adminOnly: true,
   },
   {
     key: 'references',

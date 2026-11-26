@@ -14,7 +14,11 @@ export const formatTime = (value) => {
   if (!value || Number.isNaN(new Date(value).getTime())) return 'Ещё не было';
   return dateTimeFormat.format(new Date(value));
 };
-export const isStale = (value, seconds = 120) => !value || Date.now() - new Date(value).getTime() > seconds * 1000;
+// NaN-дата считается устаревшей: повреждённую метку нельзя показывать как «свежую».
+export const isStale = (value, seconds = 120) => {
+  const timestamp = value ? new Date(value).getTime() : Number.NaN;
+  return !Number.isFinite(timestamp) || Date.now() - timestamp > seconds * 1000;
+};
 const DEVICE_NAMES = {
   Gribordoeva_3: 'Грибоедова, 3', Kuznetcova13: 'Кузнецова, 13', Gercena_64: 'Герцена, 64', Gercena_55: 'Герцена, 55',
   MSK: 'Москва', SPB: 'Санкт-Петербург', Komsomolsk: 'Комсомольск', Kotelny_Island: 'Котельный', Magadan: 'Магадан',

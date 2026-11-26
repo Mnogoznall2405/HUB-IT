@@ -39,10 +39,21 @@ vi.mock('emoji-picker-react', () => ({ default: () => null }));
 vi.mock('../../api/chatConfig', () => ({ getChatConfigCached: () => Promise.resolve({ scheduled_messages_enabled: false }) }));
 
 vi.mock('../../api/chatStickers', () => ({
-  chatStickersAPI: { listPacks: vi.fn(async () => ({ items: [] })) },
+  chatStickersAPI: {
+    listPacks: vi.fn(async () => ({ items: [] })),
+    listFavorites: vi.fn(async () => ({ items: [] })),
+    listRecentStickers: vi.fn(async () => ({ items: [] })),
+    pushRecentStickers: vi.fn(async () => ({ items: [] })),
+  },
+  scheduleRecentStickersSync: vi.fn(),
+  cancelRecentStickersSync: vi.fn(),
+  getStickerPacksEpoch: vi.fn(() => 0),
   peekStickerPacksCache: vi.fn(() => null),
   primeStickerPacksCache: vi.fn((scope, payload) => payload),
   invalidateStickerPacksCache: vi.fn(),
+  resolveStickerScope: vi.fn((options) => (
+    `${String(options?.userId || 'anon')}::${String(window.localStorage.getItem('selected_database') || 'default')}`
+  )),
 }));
 
 vi.mock('./useAiAgentAccess', () => ({
@@ -575,9 +586,11 @@ describe('ChatBubble', () => {
 
   it('renders office mail action details and edit action', () => {
     const onEditAction = vi.fn();
+    const onOpenMessageMenu = vi.fn();
     renderWithTheme(
       <ChatBubble
         conversationKind="ai"
+        compactMobile
         message={{
           id: 'msg-action-mail',
           kind: 'text',
@@ -610,6 +623,7 @@ describe('ChatBubble', () => {
         onOpenReads={vi.fn()}
         onOpenAttachmentPreview={vi.fn()}
         onReplyMessage={vi.fn()}
+        onOpenMessageMenu={onOpenMessageMenu}
         onConfirmAction={vi.fn()}
         onCancelAction={vi.fn()}
         onEditAction={onEditAction}
@@ -623,6 +637,7 @@ describe('ChatBubble', () => {
     expect(screen.queryByTestId('chat-ai-action-menu-button')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Изменить' }));
     expect(onEditAction).toHaveBeenCalledTimes(1);
+    expect(onOpenMessageMenu).not.toHaveBeenCalled();
   });
 
   it('offers all supported document formats in a report format choice card', () => {

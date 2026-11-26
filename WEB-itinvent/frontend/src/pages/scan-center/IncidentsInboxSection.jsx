@@ -100,6 +100,7 @@ export default function IncidentsInboxSection({
     severityColor,
   } = formatters;
   const [pathCopied, setPathCopied] = useState(false);
+  const pathCopyTimerRef = useRef(null);
   const statusBeforeNewRef = useRef('all');
   const selectedSource = selectedIncident ? getSourceKind(selectedIncident) : '';
   const selectedPage = Number(selectedIncident?.page_number || selectedIncident?.page || selectedIncident?.metadata?.page_number || 0);
@@ -111,6 +112,7 @@ export default function IncidentsInboxSection({
 
   useEffect(() => {
     setPathCopied(false);
+    return () => { window.clearTimeout(pathCopyTimerRef.current); };
   }, [selectedIncident?.id]);
 
   const handleCopyPath = async () => {
@@ -119,7 +121,8 @@ export default function IncidentsInboxSection({
       const ok = await copyTextToClipboard(selectedUncPath);
       if (!ok) return;
       setPathCopied(true);
-      window.setTimeout(() => setPathCopied(false), 1500);
+      window.clearTimeout(pathCopyTimerRef.current);
+      pathCopyTimerRef.current = window.setTimeout(() => setPathCopied(false), 1500);
     } catch {
       setPathCopied(false);
     }

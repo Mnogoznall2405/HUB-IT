@@ -94,6 +94,16 @@ export default function useMailListItemActions({
   const handleSwipeDelete = useCallback(async (item, options = {}) => {
     if (!item?.id || viewMode !== 'messages') return;
     const itemFolder = item.folder || folder;
+    if (String(itemFolder || '').toLowerCase() === 'drafts') {
+      try {
+        await mailAPI.deleteDraft(item.id, { mailboxId: resolveItemMailboxId(item) });
+        clearIfSelected(item.id);
+        await afterListMutation();
+      } catch (requestError) {
+        await handleActionError(requestError, 'Не удалось удалить черновик.');
+      }
+      return;
+    }
     const permanent = item.folder
       ? itemFolder === 'trash'
       : (options.permanent ?? (folder === 'trash'));
@@ -121,6 +131,7 @@ export default function useMailListItemActions({
     handleActionError,
     mailAPI,
     onRecoverableDelete,
+    resolveItemMailboxId,
     viewMode,
     withActiveMailboxPayload,
   ]);
@@ -141,6 +152,7 @@ export default function useMailListItemActions({
 
   const handleListArchiveMessage = useCallback(async (item) => {
     if (!item?.id || viewMode !== 'messages') return;
+    if (String(item?.folder || folder || '').toLowerCase() === 'drafts') return;
     try {
       await mailAPI.moveMessage(item.id, withActiveMailboxPayload({ target_folder: 'archive' }));
       clearIfSelected(item.id);
@@ -148,12 +160,13 @@ export default function useMailListItemActions({
     } catch (requestError) {
       await handleActionError(requestError, 'Не удалось отправить письмо в архив.');
     }
-  }, [afterListMutation, clearIfSelected, handleActionError, mailAPI, viewMode, withActiveMailboxPayload]);
+  }, [afterListMutation, clearIfSelected, folder, handleActionError, mailAPI, viewMode, withActiveMailboxPayload]);
 
   const handleListMoveMessage = useCallback(async (item, targetFolderId) => {
     const messageId = String(item?.id || '').trim();
     const targetFolder = String(targetFolderId || '').trim();
     if (!messageId || !targetFolder || viewMode !== 'messages') return;
+    if (String(item?.folder || folder || '').toLowerCase() === 'drafts') return;
     try {
       const result = await mailAPI.moveMessage(messageId, withActiveMailboxPayload({ target_folder: targetFolder }));
       clearIfSelected(messageId);

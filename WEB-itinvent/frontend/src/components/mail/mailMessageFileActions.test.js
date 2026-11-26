@@ -308,7 +308,7 @@ describe('downloadBlobFile iOS open fallback', () => {
     restoreDescriptors(window.navigator, navigatorDescriptors);
   });
 
-  it('never navigates a same-origin popup for executable or unknown blob types', () => {
+  it('never navigates a same-origin popup for executable or unknown blob types', async () => {
     const unsafeTypes = [
       'text/html',
       'image/svg+xml',
@@ -317,6 +317,8 @@ describe('downloadBlobFile iOS open fallback', () => {
       '',
     ];
 
+    // revoke is deferred (setTimeout) so iOS Safari finishes link.click first (FE-0115)
+    vi.useFakeTimers();
     unsafeTypes.forEach((type, index) => {
       downloadBlobFile(new Blob(['<script>alert(1)</script>'], { type }), `file-${index}.bin`, { preferOpenFallback: true });
     });
@@ -325,6 +327,8 @@ describe('downloadBlobFile iOS open fallback', () => {
     expect(popup.location.replace).not.toHaveBeenCalled();
     expect(clickSpy).toHaveBeenCalledTimes(unsafeTypes.length);
     expect(window.URL.createObjectURL).toHaveBeenCalledTimes(unsafeTypes.length);
+    vi.advanceTimersByTime(31_000);
+    vi.useRealTimers();
     expect(window.URL.revokeObjectURL).toHaveBeenCalledWith(POPUP_URL);
   });
 

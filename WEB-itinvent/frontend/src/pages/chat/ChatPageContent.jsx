@@ -888,7 +888,7 @@ export function ChatPageContent({
     composerRef,
     composerSelectionRef,
     isMobile,
-    messageText,
+    latestMessageTextRef,
     setMessageText,
   });
 

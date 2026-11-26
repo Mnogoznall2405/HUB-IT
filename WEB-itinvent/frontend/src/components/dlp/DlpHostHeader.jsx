@@ -3,7 +3,7 @@ import { Box, Button, Stack, TextField, Typography } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { formatAgo } from './utils';
 
-export default function DlpHostHeader({ host, stats, day, onDayChange, onBack, onOpenReport }) {
+export default function DlpHostHeader({ host, stats, day, onDayChange, onBack, onOpenReport, reportBusy = false }) {
   const meta = [
     stats?.user_login,
     stats?.branch_name,
@@ -43,7 +43,7 @@ export default function DlpHostHeader({ host, stats, day, onDayChange, onBack, o
           inputProps={{ 'aria-label': 'День по местному времени филиала' }}
           sx={{ width: 150 }}
         />
-        <Button size="small" variant="outlined" onClick={onOpenReport}>
+        <Button size="small" variant="outlined" onClick={onOpenReport} disabled={reportBusy}>
           Актуальный отчёт
         </Button>
       </Stack>

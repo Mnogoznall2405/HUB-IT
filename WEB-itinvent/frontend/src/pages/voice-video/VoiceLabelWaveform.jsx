@@ -113,6 +113,11 @@ function VoiceLabelWaveform({
     }
   };
 
+  const onPointerCancel = () => {
+    pressRef.current = null;
+    if (drag) setDrag(null);
+  };
+
   const ticks = [];
   const tickStep = windowSec <= 10 ? 1 : windowSec <= 30 ? 5 : 15;
   for (let t = Math.ceil(viewStart / tickStep) * tickStep; t <= viewStart + windowSec; t += tickStep) {
@@ -146,6 +151,7 @@ function VoiceLabelWaveform({
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
         sx={{
           position: 'relative',
           height: HEIGHT,

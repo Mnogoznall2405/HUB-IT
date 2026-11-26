@@ -24,6 +24,7 @@ export default function MapDialog({
     mapSiteCode,
     setMapSiteCode,
     saveMap,
+    saving = false,
     sites = [],
 }) {
     return (
@@ -74,7 +75,7 @@ export default function MapDialog({
             </DialogContent>
             <DialogActions>
                 <Button onClick={onClose}>Отмена</Button>
-                <Button variant="contained" onClick={() => void saveMap()}>
+                <Button variant="contained" onClick={() => void saveMap()} disabled={saving}>
                     Сохранить
                 </Button>
             </DialogActions>

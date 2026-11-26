@@ -15,6 +15,7 @@ import {
   isOfficeViewableAttachment,
 } from './mailMessageFileActions';
 import { buildOfficeAttachmentPreviewState } from './officeAttachmentPreview';
+import { isCanceledMailRequestError } from './mailErrorModel';
 import { openOriginalWithDesktopApplication } from '../documentPreview/desktopOfficeOpen';
 import { formatMailPersonWithEmail } from './mailPeople';
 import { getMessageBodyHtmlSource } from './useMailMessageRenderState';
@@ -36,6 +37,7 @@ export default function useMailMessageFileActions({
   getMailErrorDetailAsync,
   setError,
   formatFullDate,
+  uiTheme = '',
   downloadBlobFileImpl = downloadBlobFile,
   requestMobilePrint = requestMobileAppPrint,
   openWindow = (...args) => window.open(...args),
@@ -46,7 +48,9 @@ export default function useMailMessageFileActions({
   const [messageHeaders, setMessageHeaders] = useState({ items: [] });
   const [attachmentPreview, setAttachmentPreview] = useState(createEmptyAttachmentPreview);
   const attachmentDownloadInFlightRef = useRef(new Set());
+  const attachmentPreviewInFlightRef = useRef(new Set());
   const previewGenerationRef = useRef(0);
+  const previewAbortRef = useRef(null);
   const previewMountedRef = useRef(true);
 
   useEffect(() => {
@@ -54,6 +58,8 @@ export default function useMailMessageFileActions({
     return () => {
       previewMountedRef.current = false;
       previewGenerationRef.current += 1;
+      previewAbortRef.current?.abort();
+      previewAbortRef.current = null;
     };
   }, []);
 
@@ -253,7 +259,15 @@ export default function useMailMessageFileActions({
 
   const openAttachmentPreview = useCallback(async (messageOrId, attachment, fallbackMessage = null) => {
     const generation = ++previewGenerationRef.current;
-    const isCurrentPreview = () => previewMountedRef.current && previewGenerationRef.current === generation;
+    previewAbortRef.current?.abort();
+    const controller = new AbortController();
+    previewAbortRef.current = controller;
+    const previewSignal = controller.signal;
+    const isCurrentPreview = () => (
+      previewMountedRef.current
+      && previewGenerationRef.current === generation
+      && !previewSignal.aborted
+    );
     const { messageId, attachmentRef, mailboxId } = resolveAttachmentRequestContext(
       messageOrId,
       attachment,
@@ -296,6 +310,8 @@ export default function useMailMessageFileActions({
           attachment,
           filename,
           contentType,
+          uiTheme,
+          signal: previewSignal,
         });
         if (!isCurrentPreview()) {
           if (previewState?.objectUrl?.startsWith?.('blob:')) {
@@ -349,6 +365,7 @@ export default function useMailMessageFileActions({
           downloadContext,
         });
       } catch (requestError) {
+        if (isCanceledMailRequestError(requestError)) return;
         const errorDetail = await getMailErrorDetailAsync?.(
           requestError,
           '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u0434\u0433\u043e\u0442\u043e\u0432\u0438\u0442\u044c \u043f\u0440\u0435\u0434\u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440 Office-\u0444\u0430\u0439\u043b\u0430.',
@@ -370,8 +387,27 @@ export default function useMailMessageFileActions({
       return;
     }
 
+    if (!messageId || !attachmentRef) {
+      const contextError = buildAttachmentContextError({ attachment, messageId, mailboxId });
+      reportError(contextError.message);
+      return;
+    }
+    const previewKey = buildAttachmentDownloadKey({ messageId, attachmentRef, mailboxId });
+    if (attachmentPreviewInFlightRef.current.has(previewKey)) return;
+    attachmentPreviewInFlightRef.current.add(previewKey);
+    setAttachmentPreview({
+      ...createEmptyAttachmentPreview(),
+      open: true,
+      loading: true,
+      filename,
+      contentType,
+      downloadContext,
+    });
     try {
-      const response = await fetchAttachmentBlob(messageOrId, attachment, fallbackMessage);
+      const response = await mailAPI.downloadAttachment(messageId, attachmentRef, {
+        mailboxId,
+        signal: previewSignal,
+      });
       const previewState = await buildAttachmentPreviewState({
         response,
         attachment,
@@ -387,10 +423,14 @@ export default function useMailMessageFileActions({
       }
       setAttachmentPreview({ ...previewState, downloadContext });
     } catch (requestError) {
+      if (isCanceledMailRequestError(requestError)) return;
       const errorDetail = await getMailErrorDetailAsync?.(requestError, '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043a\u0440\u044b\u0442\u044c \u0432\u043b\u043e\u0436\u0435\u043d\u0438\u0435.');
       if (!(await maybeHandleCredentials(requestError, errorDetail)) && isCurrentPreview()) {
+        setAttachmentPreview(createEmptyAttachmentPreview());
         reportError(errorDetail);
       }
+    } finally {
+      attachmentPreviewInFlightRef.current.delete(previewKey);
     }
   }, [
     downloadAttachmentFile,
@@ -405,6 +445,8 @@ export default function useMailMessageFileActions({
 
   const closeAttachmentPreview = useCallback(() => {
     previewGenerationRef.current += 1;
+    previewAbortRef.current?.abort();
+    previewAbortRef.current = null;
     setAttachmentPreview(createEmptyAttachmentPreview());
   }, []);
 

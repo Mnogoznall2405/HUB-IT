@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -23,8 +23,12 @@ export function TransferActReminderSettingsCard({ appSettings, loading, saving, 
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [draftUsername, setDraftUsername] = useState('');
 
+  const syncedUsernameRef = useRef(null);
   useEffect(() => {
-    setDraftUsername(String(appSettings?.transfer_act_reminder_controller_username || '').trim().toLowerCase());
+    const synced = String(appSettings?.transfer_act_reminder_controller_username || '').trim().toLowerCase();
+    if (syncedUsernameRef.current === synced) return;
+    setDraftUsername((prev) => (prev === syncedUsernameRef.current || prev === '' ? synced : prev));
+    syncedUsernameRef.current = synced;
   }, [appSettings?.transfer_act_reminder_controller_username]);
 
   const controllers = useMemo(

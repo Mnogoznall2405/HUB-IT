@@ -142,6 +142,7 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
               setPage(1);
             }}
             renderValue={(selected) => `${selected.length} выбрано`}
+            inputProps={{ 'aria-label': 'Объекты' }}
           >
             {objects.map((item) => (
               <MenuItem key={item.id} value={String(item.id)}>{item.name}</MenuItem>
@@ -159,6 +160,7 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
               setPage(1);
             }}
             renderValue={(selected) => `${selected.length} выбрано`}
+            inputProps={{ 'aria-label': 'Статусы' }}
           >
             {TICKET_STATUS_OPTIONS.map((item) => (
               <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>

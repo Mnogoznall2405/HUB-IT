@@ -1,7 +1,20 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Box, Button, InputBase, TextField } from '@mui/material';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import { getMailQuickReplyInputSx } from './mailUiTokens';
+
+const QUICK_REPLY_DRAFT_LIMIT = 100;
+// Session-scoped draft store: survives switching between messages so a
+// half-written quick reply is not lost on navigation.
+const quickReplyDraftStore = new Map();
+const rememberQuickReplyDraft = (key, value) => {
+  if (!key) return;
+  quickReplyDraftStore.delete(key);
+  quickReplyDraftStore.set(key, value);
+  while (quickReplyDraftStore.size > QUICK_REPLY_DRAFT_LIMIT) {
+    quickReplyDraftStore.delete(quickReplyDraftStore.keys().next().value);
+  }
+};
 
 /**
  * Leaf quick-reply draft: local text state only.
@@ -23,15 +36,29 @@ export default function MailQuickReplyDraftField({
   placeholder = 'Ответить на письмо…',
 }) {
   const isControlled = typeof value === 'string';
-  const [uncontrolledDraft, setUncontrolledDraft] = useState('');
+  const storeKey = String(draftKey || '');
+  const [uncontrolledDraft, setUncontrolledDraft] = useState(() => (
+    quickReplyDraftStore.get(storeKey) || ''
+  ));
+  const prevEpochRef = useRef(draftEpoch);
 
   useEffect(() => {
-    if (!isControlled) setUncontrolledDraft('');
-  }, [draftKey, draftEpoch, isControlled]);
+    if (!isControlled) setUncontrolledDraft(quickReplyDraftStore.get(storeKey) || '');
+  }, [storeKey, isControlled]);
+
+  useEffect(() => {
+    if (isControlled || prevEpochRef.current === draftEpoch) return;
+    prevEpochRef.current = draftEpoch;
+    quickReplyDraftStore.delete(storeKey);
+    setUncontrolledDraft('');
+  }, [draftEpoch, storeKey, isControlled]);
 
   const draft = isControlled ? value : uncontrolledDraft;
   const setDraft = (next) => {
-    if (!isControlled) setUncontrolledDraft(next);
+    if (!isControlled) {
+      setUncontrolledDraft(next);
+      rememberQuickReplyDraft(storeKey, next);
+    }
     onChange?.(next);
   };
 

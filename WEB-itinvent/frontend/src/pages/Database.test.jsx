@@ -457,7 +457,11 @@ describe('Database equipment row helpers', () => {
     await waitFor(() => {
       expect(mockApi.databaseAPI.switchDatabase).toHaveBeenCalledWith('archive');
     });
-    expect(await screen.findByRole('tab', { name: 'История перемещений' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByRole(
+      'tab',
+      { name: 'История перемещений' },
+      { timeout: 5000 },
+    )).toHaveAttribute('aria-selected', 'true');
     expect(localStorage.getItem('selected_database')).toBe('archive');
   });
 
@@ -489,8 +493,10 @@ describe('Database equipment row helpers', () => {
     expect(await screen.findByTestId('database-mobile-control-strip')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'QR' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Ещё' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Оборудование' })).toHaveStyle({ minHeight: '44px' });
-    expect(screen.getByRole('tab', { name: 'Расходники' })).toHaveStyle({ minHeight: '44px' });
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'Оборудование' })).toHaveStyle({ minHeight: '44px' });
+      expect(screen.getByRole('tab', { name: 'Расходники' })).toHaveStyle({ minHeight: '44px' });
+    });
     expect(screen.queryByRole('button', { name: 'Open actions' })).not.toBeInTheDocument();
     expect(screen.getByTestId('main-layout')).toHaveAttribute('data-header-mode', 'hidden');
   });

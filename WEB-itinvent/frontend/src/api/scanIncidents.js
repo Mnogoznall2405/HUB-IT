@@ -17,15 +17,16 @@ export const scanIncidentsAPI = {
     return response.data;
   },
 
-  getHostScanRuns: async (hostname, params = {}) => {
+  getHostScanRuns: async (hostname, params = {}, options = {}) => {
     const response = await apiClient.get(`/scan/hosts/${encodeURIComponent(hostname)}/scan-runs`, {
       params: { view: 'summary', ...params },
+      signal: options?.signal,
     });
     return response.data;
   },
 
-  getTaskObservations: async (taskId, params = {}) => {
-    const response = await apiClient.get(`/scan/tasks/${encodeURIComponent(taskId)}/observations`, { params });
+  getTaskObservations: async (taskId, params = {}, options = {}) => {
+    const response = await apiClient.get(`/scan/tasks/${encodeURIComponent(taskId)}/observations`, { params, signal: options?.signal });
     return response.data;
   },
 

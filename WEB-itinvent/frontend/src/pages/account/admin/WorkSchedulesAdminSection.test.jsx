@@ -25,6 +25,7 @@ const SCHEDULE = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
   dlpWorkSchedulesAPI.getSchedules.mockResolvedValue({
     items: [SCHEDULE],
     branches: ['Тюмень', 'Москва'],

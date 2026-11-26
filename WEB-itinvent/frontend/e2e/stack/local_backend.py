@@ -7,8 +7,11 @@ database — app/chat runtime state lives in ``e2e/stack/.state/`` and is wiped
 on every run.
 
 Seed users (test-only credentials, never real accounts):
-    e2e_admin / e2e-local-admin-pass   (role=admin)
-    e2e_user  / e2e-local-user-pass    (role=operator)
+    e2e_admin  / e2e-local-admin-pass   (role=admin)
+    e2e_user   / e2e-local-user-pass    (role=operator)
+    e2e_joiner / e2e-local-joiner-pass  (role=operator, onboarded third account)
+    e2e_viewer / e2e-local-viewer-pass  (role=viewer, no admin-area permissions)
+    e2e_fresh  / e2e-local-fresh-pass   (role=operator, about-onboarding NOT done)
 """
 from __future__ import annotations
 
@@ -116,6 +119,10 @@ os.environ.update(
         # key; it decrypts only ciphertexts written inside this throwaway
         # stack, never production values.
         "MAIL_CREDENTIALS_KEY": "e2e-local-mail-key-not-for-production",
+        # Public my-files share links encrypt the token with
+        # MY_FILES_SHARE_TOKEN_KEY; test-only passphrase — it decrypts only
+        # ciphertexts written inside this throwaway stack, never production.
+        "MY_FILES_SHARE_TOKEN_KEY": "e2e-local-share-key-not-for-production",
         "AUTH_COOKIE_SECURE": "false",
         # Background loops that would otherwise reach for LDAP / SQL Server /
         # external services — none of that exists in the test stack.
@@ -180,6 +187,13 @@ os.environ.update(
         # любому пользователю при первом list_packs.
         "CHAT_DEFAULT_STICKER_PACKS": "e2e_test_pack,e2e_big_pack",
         "TELEGRAM_BOT_TOKEN": "",
+        # Send-later specs assert config.scheduled_messages_enabled and the
+        # scheduler loop; the chat schema is fully created on SQLite either way.
+        "CHAT_SCHEDULED_MESSAGES_ENABLED": "1",
+        # Spec suites seed a fresh group per test; the production burst guard
+        # (5/min) is meant for abuse, not for a serial suite that creates ~20
+        # groups in minutes. 60/min is the service-side maximum — still bounded.
+        "CHAT_GROUP_CREATE_PER_MINUTE": "60",
     }
 )
 
@@ -227,6 +241,13 @@ def _seed() -> None:
     for username, password, role, full_name in (
         ("e2e_admin", "e2e-local-admin-pass", "admin", "E2E Админ"),
         ("e2e_user", "e2e-local-user-pass", "operator", "E2E Пользователь"),
+        # Onboarded third account for flows that need a user past the /about
+        # gate (group invite joins, multi-party scenarios).
+        ("e2e_joiner", "e2e-local-joiner-pass", "operator", "E2E Вступающий"),
+        # Viewer holds no admin-area permission (operators have scan.tasks, which
+        # legitimately opens /admin/hub-desktop) — the account the admin-area
+        # route guard must bounce back to the landing page.
+        ("e2e_viewer", "e2e-local-viewer-pass", "viewer", "E2E Наблюдатель"),
         # Fresh account: no about_onboarding_completed_at — drives the
         # /about onboarding gate and its return-path flow in auth-guards.
         ("e2e_fresh", "e2e-local-fresh-pass", "operator", "E2E Новый"),
@@ -285,14 +306,20 @@ def _seed() -> None:
 
 
 def _seed_sticker_pack() -> None:
-    """Локальный набор из 3 статичных WebP-стикеров.
+    """Локальные наборы статичных WebP-стикеров.
 
     Файлы лежат там же, где их кладёт реальный импорт
     (``HUB_DATA_DIR/chat_sticker_packs/<pack_id>/``), а маркер превью-кэша
     включает авто-установку набора пользователям. Доставка и рендер идут
     через настоящие эндпоинты — тестируется полный контур без Telegram.
+
+    Картинки генерируются различимыми (плашка с hue по индексу + фигура),
+    чтобы визуальные прогоны видели заполненную сетку, а не одинаковые
+    пустые квадраты. Pillow необязателен — без него пишется 1x1
+    прозрачный WebP, функциональные спеки от этого не зависят.
     """
     import base64
+    import io
     from uuid import uuid4
 
     from backend.chat.db import chat_write_session
@@ -304,16 +331,60 @@ def _seed_sticker_pack() -> None:
 
     # 1x1 прозрачный WebP — минимальный валидный файл, /file и /preview
     # отдают его как настоящий стикер.
-    webp = base64.b64decode("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA")
+    fallback_webp = base64.b64decode("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA")
 
-    def _write_pack(short_name: str, title: str, count: int) -> None:
+    try:
+        import colorsys
+
+        from PIL import Image, ImageDraw
+    except ImportError:  # Pillow не ставится вместе с backend-зависимостями
+        Image = None
+        ImageDraw = None
+
+    def _sticker_webp(index: int) -> bytes:
+        if Image is None:
+            return fallback_webp
+        size = 256
+        hue = (index * 47) % 360
+        red, green, blue = colorsys.hls_to_rgb(hue / 360.0, 0.55, 0.95)
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle(
+            [8, 8, size - 8, size - 8],
+            radius=56,
+            fill=(int(red * 255), int(green * 255), int(blue * 255), 255),
+        )
+        light = (255, 255, 255, 235)
+        kind = index % 4
+        if kind == 0:
+            draw.ellipse([64, 64, size - 64, size - 64], fill=light)
+        elif kind == 1:
+            draw.polygon(
+                [(size // 2, 44), (size - 44, size // 2), (size // 2, size - 44), (44, size // 2)],
+                fill=light,
+            )
+        elif kind == 2:
+            for offset, y in enumerate(range(64, size - 76, 34)):
+                shrink = 56 + (offset % 3) * 24
+                draw.rounded_rectangle([shrink, y, size - shrink, y + 14], radius=7, fill=light)
+        else:
+            dot = 26
+            for cx in (size // 2 - 52, size // 2 + 52):
+                for cy in (size // 2 - 52, size // 2 + 52):
+                    draw.ellipse([cx - dot, cy - dot, cx + dot, cy + dot], fill=light)
+        buffer = io.BytesIO()
+        image.save(buffer, format="WEBP", quality=85)
+        return buffer.getvalue()
+
+    def _write_pack(short_name: str, title: str, count: int, emojis: list[str]) -> None:
         pack_id = str(uuid4())
         sticker_ids = [str(uuid4()) for _ in range(count)]
         pack_dir = telegram_sticker_service._storage_root / pack_id
         pack_dir.mkdir(parents=True, exist_ok=True)
-        for sticker_id in sticker_ids:
-            (pack_dir / f"{sticker_id}.webp").write_bytes(webp)
-            (pack_dir / f"{sticker_id}.preview").write_bytes(webp)
+        bodies = [_sticker_webp(index) for index in range(count)]
+        for sticker_id, body in zip(sticker_ids, bodies):
+            (pack_dir / f"{sticker_id}.webp").write_bytes(body)
+            (pack_dir / f"{sticker_id}.preview").write_bytes(body)
         (pack_dir / _PREVIEW_CACHE_MARKER).write_text("e2e", encoding="utf-8")
 
         with chat_write_session() as session:
@@ -332,21 +403,28 @@ def _seed_sticker_pack() -> None:
                         pack_id=pack_id,
                         telegram_file_id=f"e2e-file-{index}",
                         telegram_file_unique_id=f"e2e-unique-{index}",
-                        emoji="\U0001f9ea",
+                        emoji=emojis[index % len(emojis)],
                         format="static",
                         mime_type="image/webp",
                         storage_name=f"{sticker_id}.webp",
-                        file_size=len(webp),
-                        width=512,
-                        height=512,
+                        file_size=len(bodies[index]),
+                        width=256,
+                        height=256,
                         sort_order=index,
                     )
                 )
 
-    _write_pack("e2e_test_pack", "E2E Test Pack", 3)
+    # Все три — 🧪: функциональные спеки матчат по этому эмодзи.
+    _write_pack("e2e_test_pack", "E2E Test Pack", 3, ["\U0001f9ea"])
     # Большой набор — замеры монтирования/прокрутки длинного списка
-    # (реалистичный пользовательский пак, ~90 стикеров).
-    _write_pack("e2e_big_pack", "E2E Big Pack", 90)
+    # (реалистичный пользовательский пак, ~90 стикеров). Эмодзи ротируются
+    # по словарю keywords stickerSearchIndex — поиск по слову («сердце»,
+    # «смех») покрывает подмножества, а не весь набор.
+    _write_pack("e2e_big_pack", "E2E Big Pack", 90, [
+        "\U0001f9ea", "\U0001f600", "\U0001f602", "\U0001f60e", "\U0001f914",
+        "\U0001f44d", "❤️", "\U0001f525", "\U0001f389", "\U0001f680",
+        "⭐", "\U0001f431",
+    ])
 
 
 def main() -> None:

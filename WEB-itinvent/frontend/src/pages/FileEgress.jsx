@@ -43,9 +43,12 @@ export default function FileEgress() {
   const [attentionLoading, setAttentionLoading] = useState(false);
   const [tgChats, setTgChats] = useState([]);
   const [maxChats, setMaxChats] = useState([]);
+  const [chatListsTruncated, setChatListsTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [reportHtml, setReportHtml] = useState(null);
+  const [reportBusy, setReportBusy] = useState(false);
+  const loadInFlight = useRef(false);
   const [channel, setChannel] = useState('all');
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -161,6 +164,8 @@ export default function FileEgress() {
   }, []);
 
   const load = useCallback(async () => {
+    if (loadInFlight.current) return;
+    loadInFlight.current = true;
     setLoading(true);
     setError('');
     try {
@@ -173,6 +178,7 @@ export default function FileEgress() {
     } catch (err) {
       setError(err?.response?.data?.detail || err.message || 'Ошибка загрузки');
     } finally {
+      loadInFlight.current = false;
       setLoading(false);
     }
   }, []);
@@ -216,6 +222,7 @@ export default function FileEgress() {
     const host = selectedHost;
     setTgChats([]);
     setMaxChats([]);
+    setChatListsTruncated(false);
     if (!host) return undefined;
     Promise.all([
       fsEgressAPI.listTelegramChats({ computerName: host, limit: 200 }),
@@ -223,8 +230,11 @@ export default function FileEgress() {
     ])
       .then(([tgRes, maxRes]) => {
         if (cancelled) return;
-        setTgChats(Array.isArray(tgRes.data?.chats) ? tgRes.data.chats : []);
-        setMaxChats(Array.isArray(maxRes.data?.chats) ? maxRes.data.chats : []);
+        const tgList = Array.isArray(tgRes.data?.chats) ? tgRes.data.chats : [];
+        const maxList = Array.isArray(maxRes.data?.chats) ? maxRes.data.chats : [];
+        setTgChats(tgList);
+        setMaxChats(maxList);
+        setChatListsTruncated(tgList.length >= 200 || maxList.length >= 200);
       })
       .catch(() => {
         // Chat panels show their own empty state; host stats stay valid.
@@ -251,13 +261,16 @@ export default function FileEgress() {
   const hostBrowserTotal = Number(selectedStats?.visits) || 0;
 
   const openReport = async () => {
-    if (!selectedHost) return;
+    if (!selectedHost || reportBusy) return;
+    setReportBusy(true);
     try {
       const res = await fsEgressAPI.getTelegramReport(selectedHost);
       const html = typeof res.data === 'string' ? res.data : String(res.data || '');
       setReportHtml(html);
     } catch (err) {
       setError(err?.response?.data?.detail || err.message || 'Не удалось открыть отчёт');
+    } finally {
+      setReportBusy(false);
     }
   };
 
@@ -305,7 +318,7 @@ export default function FileEgress() {
               </Tabs>
             ) : null}
             actions={(
-              <Button size="small" startIcon={<RefreshIcon />} onClick={load} variant="outlined" sx={{ flexShrink: 0 }}>
+              <Button size="small" startIcon={<RefreshIcon />} onClick={load} disabled={loading} variant="outlined" sx={{ flexShrink: 0 }}>
                 Обновить
               </Button>
             )}
@@ -349,6 +362,7 @@ export default function FileEgress() {
                 onDayChange={setDay}
                 onBack={closeHost}
                 onOpenReport={openReport}
+                reportBusy={reportBusy}
               />
               <DlpActivityBlock
                 computerName={selectedHost}
@@ -356,6 +370,11 @@ export default function FileEgress() {
                 onDayResolved={setHostResolvedDay}
                 onOpenBrowser={() => setHostTab('browser')}
               />
+              {chatListsTruncated ? (
+                <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
+                  Показаны первые 200 чатов — список может быть неполным.
+                </Typography>
+              ) : null}
 
               <Box sx={{ flex: 1, minHeight: 0, overflow: hostTab === 'files' || hostTab === 'browser' ? 'auto' : 'hidden' }}>
                 {hostTab === 'files' ? (

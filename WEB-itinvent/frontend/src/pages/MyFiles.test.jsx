@@ -762,6 +762,96 @@ describe('MyFiles page', () => {
     await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith('file-1', { folderId: 'folder-7' }));
   });
 
+  it('reports the real object count when bulk delete fully succeeds', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [readyFile],
+      folders: [{ id: 'folder-1', name: 'Документы', parent_id: null }],
+      breadcrumbs: [],
+      folder: null,
+    });
+    renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    fireEvent.click(screen.getByTestId('my-files-bulk-delete'));
+    fireEvent.click(await screen.findByTestId('my-files-confirm-action'));
+
+    await waitFor(() => {
+      expect(mockNotifySuccess).toHaveBeenCalledWith(
+        'Удалено объектов: 2.',
+        expect.objectContaining({ source: 'my-files-bulk-delete' }),
+      );
+    });
+    expect(mockNotifyWarning).not.toHaveBeenCalledWith(
+      expect.stringContaining('Не удалось'),
+      expect.anything(),
+    );
+  });
+
+  it('reports only successful deletions when part of the bulk delete fails', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [readyFile],
+      folders: [{ id: 'folder-1', name: 'Документы', parent_id: null }],
+      breadcrumbs: [],
+      folder: null,
+    });
+    mockDeleteFile.mockRejectedValue(new Error('boom'));
+    renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    fireEvent.click(screen.getByTestId('my-files-bulk-delete'));
+    fireEvent.click(await screen.findByTestId('my-files-confirm-action'));
+
+    await waitFor(() => {
+      expect(mockNotifyWarning).toHaveBeenCalledWith(
+        'Удалено 1 из 2. Не удалось: файл «report.txt».',
+        expect.objectContaining({ source: 'my-files-bulk-delete' }),
+      );
+    });
+    expect(mockNotifySuccess).not.toHaveBeenCalledWith(
+      expect.stringContaining('Удалено объектов'),
+      expect.anything(),
+    );
+  });
+
+  it('reports only successful moves when part of the bulk move fails', async () => {
+    const secondFile = { ...readyFile, id: 'file-2', original_file_name: 'second.txt', download_file_name: 'second.txt' };
+    mockListFiles.mockResolvedValue({
+      items: [readyFile, secondFile],
+      folders: [],
+      breadcrumbs: [],
+      folder: null,
+    });
+    mockListFolders.mockResolvedValue({ items: [{ id: 'folder-7', name: 'Архив', parent_id: null }] });
+    mockUpdateFile.mockImplementation((id) => (
+      String(id) === 'file-2'
+        ? Promise.reject(new Error('boom'))
+        : Promise.resolve({ ...readyFile, id, folder_id: 'folder-7' })
+    ));
+    renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.click(screen.getByTestId('my-files-select-all'));
+    fireEvent.click(await screen.findByTestId('my-files-bulk-move'));
+
+    const select = await screen.findByRole('combobox');
+    fireEvent.mouseDown(select);
+    fireEvent.click(await screen.findByRole('option', { name: 'Архив' }));
+    fireEvent.click(screen.getByTestId('my-files-move-confirm'));
+
+    await waitFor(() => {
+      expect(mockNotifyWarning).toHaveBeenCalledWith(
+        'Перемещено 1 из 2. Не удалось: файл «second.txt».',
+        expect.objectContaining({ source: 'my-files-bulk-move' }),
+      );
+    });
+    expect(mockNotifySuccess).not.toHaveBeenCalledWith(
+      'Выбранные объекты перемещены.',
+      expect.anything(),
+    );
+  });
+
   it('appends the next keyset page without duplicating the boundary row', async () => {
     mockListFiles
       .mockResolvedValueOnce({

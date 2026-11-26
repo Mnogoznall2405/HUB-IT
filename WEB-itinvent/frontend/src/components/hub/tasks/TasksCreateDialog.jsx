@@ -252,6 +252,7 @@ export default function TasksCreateDialog({
         <Dialog
           open={open}
           onClose={onClose}
+          aria-label={isEditing ? 'Редактирование задачи' : 'Создание задачи'}
           fullScreen={isMobile}
           fullWidth
           maxWidth="sm"

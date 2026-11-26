@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Box, Button, CircularProgress, Stack, TextField, Typography } from '@mui/material';
 import { aiBalanceAPI } from '../../../api/aiBalance';
 
@@ -39,9 +39,12 @@ export default function AiBalanceCard() {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
 
+  const thresholdFromServer = useRef('');
   const apply = useCallback((next) => {
     setState(next);
-    setThreshold(String(next?.threshold ?? 0));
+    const serverValue = String(next?.threshold ?? 0);
+    setThreshold((prev) => (prev === thresholdFromServer.current || prev === '' ? serverValue : prev));
+    thresholdFromServer.current = serverValue;
   }, []);
 
   useEffect(() => {

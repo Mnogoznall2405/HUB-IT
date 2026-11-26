@@ -39,28 +39,32 @@ async function prepare(page) {
   } }));
 }
 
-test('card keeps ZUP and Docflow dates separate and ignores a late previous employee response', async ({ page }) => {
+test('card reads the shared global payload — never a per-employee request — and keeps ZUP and Docflow dates separate', async ({ page }) => {
   await page.setViewportSize({ width: 1500, height: 1000 });
   await prepare(page);
-  let releaseFirst;
-  const firstHeld = new Promise((resolve) => { releaseFirst = resolve; });
-  await page.route('**/api/v1/docflow/absences**', async (route) => {
+  // The detail panel derives the employee view from the one global absences
+  // read (see useDocflowAbsenceMarks/DocflowAbsencesPanel `shared`): the second
+  // slow 1C round trip per employee is intentionally gone, so no request may
+  // carry employee_code.
+  const perEmployeeCalls = [];
+  let globalCalls = 0;
+  await page.route('**/api/v1/docflow/absences**', (route) => {
     const code = new URL(route.request().url()).searchParams.get('employee_code');
-    if (code === 'E-1') {
-      await firstHeld;
-      await route.fulfill({ json: payload([absence({ comment: 'Запоздалый ответ первого сотрудника' })]) }).catch(() => {});
-    } else {
-      await route.fulfill({ json: payload([absence({ id: 'docflow:test-2', employee_code: 'E-2', comment: 'Комментарий второго сотрудника' })]) });
-    }
+    if (code) perEmployeeCalls.push(code);
+    else globalCalls += 1;
+    return route.fulfill({ json: payload([
+      absence({ comment: 'Комментарий первого сотрудника' }),
+      absence({ id: 'docflow:test-2', employee_code: 'E-2', display_name: employees[1].full_name, comment: 'Комментарий второго сотрудника' }),
+    ]) });
   });
-  const firstRequest = page.waitForRequest((request) => request.url().includes('/docflow/absences?employee_code=E-1'));
   await page.goto('/address-book');
-  await firstRequest;
-  await page.locator('[data-testid^="address-book-entry-row"]').nth(1).click();
   const detail = page.getByTestId('address-book-entry-detail');
+  await expect(detail.getByText('Комментарий первого сотрудника')).toBeVisible();
+  await page.locator('[data-testid^="address-book-entry-row"]').nth(1).click();
   await expect(detail.getByText('Комментарий второго сотрудника')).toBeVisible();
-  releaseFirst();
-  await expect(detail.getByText('Запоздалый ответ первого сотрудника')).toHaveCount(0);
+  await expect(detail.getByText('Комментарий первого сотрудника')).toHaveCount(0);
+  expect(globalCalls).toBeGreaterThanOrEqual(1);
+  expect(perEmployeeCalls).toEqual([]);
   await expect(detail.getByTestId('address-book-absence-chip')).toBeVisible();
   await expect(detail.getByText(/26.10.2026 — 04.11.2026 включительно/)).toBeVisible();
   await expect(detail.getByText('Данные отличаются от ЗУП')).toBeVisible();

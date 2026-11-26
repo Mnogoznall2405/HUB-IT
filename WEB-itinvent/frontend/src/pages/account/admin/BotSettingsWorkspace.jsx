@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Box, Button, Chip, CircularProgress, Grid, Paper, Stack, Tab, Tabs, TextField, Typography } from '@mui/material';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
@@ -28,7 +28,7 @@ function OpenCodeCapabilities() {
   </Stack>;
 }
 
-export default function BotSettingsWorkspace({ bots = [], loading, savingBotId, runsByBotId = {}, onRefresh, onCreate, onSave,
+export default function BotSettingsWorkspace({ bots = [], loading, savingBotId, runsByBotId = {}, onLoadRuns, onRefresh, onCreate, onSave,
   openrouterConfigured, draftsById, newDraft, setNewDraft, updateDraft, renderFields }) {
   const [selected, setSelected] = useState(null);
   const [tab, setTab] = useState('tools');
@@ -46,6 +46,9 @@ export default function BotSettingsWorkspace({ bots = [], loading, savingBotId, 
   const unifiedAssistant = !creating && bot?.slug === AI_ASSISTANT_BOT_SLUG;
   const activeTab = (creating || general) && tab === 'access' ? 'tools' : tab;
   const busy = savingBotId === (creating ? 'new' : bot?.id);
+  useEffect(() => {
+    if (activeTab === 'diagnostics' && bot?.id != null && !creating && !sandbox) onLoadRuns?.(bot.id);
+  }, [activeTab, bot?.id, creating, onLoadRuns, sandbox]);
   const change = (key, value) => creating ? setNewDraft((old) => ({ ...old, [key]: value })) : updateDraft(bot.id, key, value);
   const save = () => creating ? onCreate(pack(draft)) : onSave(bot.id, sandbox
     ? { title: draft.title, description: draft.description } : pack(draft));

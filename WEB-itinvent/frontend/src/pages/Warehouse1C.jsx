@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import useRequestGuard from '../lib/useRequestGuard';
 import useDebounce from '../hooks/useDebounce';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
@@ -376,7 +376,31 @@ function NomenclatureCell({ code, name }) {
   );
 }
 
-function BalanceMobileRow({ row, onShowMovement, onOpenHubMatch }) {
+const WAREHOUSE_ROW_RENDER_STEP = 200;
+const EMPTY_ROW_LIST = [];
+
+// Списки доходят до ~1000 строк: рендерим порциями, чтобы первый кадр
+// не монтировал тысячу DOM-узлов (FE-0033). Сброс — по смене массива.
+function useVisibleRows(rows, step = WAREHOUSE_ROW_RENDER_STEP) {
+  const list = Array.isArray(rows) ? rows : EMPTY_ROW_LIST;
+  const [visibleCount, setVisibleCount] = useState(step);
+  useEffect(() => { setVisibleCount(step); }, [list, step]);
+  const visible = list.length <= visibleCount ? list : list.slice(0, visibleCount);
+  return [visible, list.length - visible.length, () => setVisibleCount((current) => current + step)];
+}
+
+function ShowMoreRowsButton({ hidden, onClick }) {
+  if (hidden <= 0) return null;
+  return (
+    <Box sx={{ display: 'flex', justifyContent: 'center', py: 1 }}>
+      <Button size="small" variant="outlined" onClick={onClick}>
+        Показать ещё (осталось {hidden})
+      </Button>
+    </Box>
+  );
+}
+
+const BalanceMobileRow = memo(function BalanceMobileRow({ row, onShowMovement, onOpenHubMatch }) {
   const [expanded, setExpanded] = useState(false);
   const seriesLabel = row.series_name || row.series_number || '';
   const characteristic = String(row.characteristic_name || '').trim();
@@ -475,9 +499,92 @@ function BalanceMobileRow({ row, onShowMovement, onOpenHubMatch }) {
       ) : null}
     </Box>
   );
+});
+
+export function MovementTableRow({ row, onOpenDetail }) {
+  const canOpen = canOpenMovementDetail(row);
+  return (
+    <TableRow
+      hover
+      role={canOpen ? 'button' : undefined}
+      tabIndex={canOpen ? 0 : undefined}
+      onClick={canOpen ? () => onOpenDetail?.(row) : undefined}
+      onKeyDown={canOpen ? (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpenDetail?.(row);
+        }
+      } : undefined}
+      sx={canOpen ? { cursor: 'pointer' } : undefined}
+    >
+      <TableCell>
+        {canOpen ? (
+          <Tooltip title="Открыть карточку документа">
+            <Typography variant="body2" component="span" color="primary.main">
+              {row.registrar_name || '-'}
+            </Typography>
+          </Tooltip>
+        ) : (
+          row.registrar_name || '-'
+        )}
+      </TableCell>
+      <TableCell>
+        {row.transfer_from_warehouse_name || row.transfer_to_warehouse_name ? (
+          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ whiteSpace: 'nowrap' }}>
+            <Typography variant="body2">{row.transfer_from_warehouse_name || '-'}</Typography>
+            <TrendingFlatIcon fontSize="small" color="action" />
+            <Typography variant="body2">{row.transfer_to_warehouse_name || '-'}</Typography>
+          </Stack>
+        ) : (
+          '-'
+        )}
+      </TableCell>
+      <TableCell>{formatDate(row.period)}</TableCell>
+      <TableCell align="right">{formatNumber(row.qty_start, 3)}</TableCell>
+      <TableCell align="right">{formatNumber(row.qty_in, 3)}</TableCell>
+      <TableCell align="right">{formatNumber(row.qty_out, 3)}</TableCell>
+      <TableCell align="right">{formatNumber(row.qty_end, 3)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_start)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_in)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_out)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_end)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_accounting_start)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_accounting_in)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_accounting_out)}</TableCell>
+      <TableCell align="right">{formatNumber(row.cost_accounting_end)}</TableCell>
+      <TableCell align="right">{formatNumber(row.avg_price_start)}</TableCell>
+      <TableCell align="right">{formatNumber(row.avg_price_end)}</TableCell>
+      <TableCell>{formatDocRequisite(row.torg12_number, row.torg12_date)}</TableCell>
+      <TableCell>{formatDocRequisite(row.invoice_number, row.invoice_date)}</TableCell>
+    </TableRow>
+  );
 }
 
-function MovementMobileRow({ row, onOpenDetail }) {
+export function BalanceNomenclatureCell({ row, onOpenHubMatch }) {
+  return (
+    <TableCell
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpenHubMatch?.(row)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpenHubMatch?.(row);
+        }
+      }}
+      sx={{
+        cursor: 'pointer',
+        '&:hover .wh-nomenclature-name': { textDecoration: 'underline' },
+      }}
+    >
+      <Box className="wh-nomenclature-name">
+        <NomenclatureCell code={row.nomenclature_code} name={row.nomenclature_name} />
+      </Box>
+    </TableCell>
+  );
+}
+
+const MovementMobileRow = memo(function MovementMobileRow({ row, onOpenDetail }) {
   const [expanded, setExpanded] = useState(false);
   const canOpen = canOpenMovementDetail(row);
   const hasRoute = Boolean(row.transfer_from_warehouse_name || row.transfer_to_warehouse_name);
@@ -559,7 +666,7 @@ function MovementMobileRow({ row, onOpenDetail }) {
       ) : null}
     </Box>
   );
-}
+});
 
 function DismissedWarehouseBalances({ rows, mobile = false, label }) {
   const balances = Array.isArray(rows) ? rows : [];
@@ -606,7 +713,7 @@ function DismissedWarehouseBalances({ rows, mobile = false, label }) {
   );
 }
 
-function DismissedWarehouseMobileRow({ row }) {
+const DismissedWarehouseMobileRow = memo(function DismissedWarehouseMobileRow({ row }) {
   const [expanded, setExpanded] = useState(false);
   const warehouseName = row.warehouse?.name || '-';
   const detailsId = `dismissed-mobile-${row.warehouse?.ref || 'warehouse'}`;
@@ -644,9 +751,9 @@ function DismissedWarehouseMobileRow({ row }) {
       </Collapse>
     </Paper>
   );
-}
+});
 
-function DismissedWarehouseDesktopRow({ row }) {
+const DismissedWarehouseDesktopRow = memo(function DismissedWarehouseDesktopRow({ row }) {
   const [expanded, setExpanded] = useState(false);
   const warehouseName = row.warehouse?.name || '-';
   const detailsId = `dismissed-desktop-${row.warehouse?.ref || 'warehouse'}`;
@@ -690,7 +797,7 @@ function DismissedWarehouseDesktopRow({ row }) {
       </TableRow>
     </>
   );
-}
+});
 
 const DISMISSED_SORT_FIELDS = [
   { value: 'employee', label: 'Уволенный сотрудник' },
@@ -792,6 +899,8 @@ export function DismissedWarehousesPanel({
       return compareDismissedValues(aValue, bValue, sortBy, sortDirection);
     });
   }, [warehouses, cityFilter, sortBy, sortDirection]);
+
+  const [visibleWarehouses, hiddenWarehouses, showMoreWarehouses] = useVisibleRows(filteredWarehouses);
 
   const hasActiveFilter = Boolean(cityFilter) || sortBy !== 'employee' || sortDirection !== 'asc';
 
@@ -900,11 +1009,13 @@ export function DismissedWarehousesPanel({
             </Paper>
           ) : isMobile ? (
             <Stack spacing={1}>
-              {filteredWarehouses.map((row, index) => (
+              {visibleWarehouses.map((row, index) => (
                 <DismissedWarehouseMobileRow key={row.warehouse?.ref || row.warehouse?.name || index} row={row} />
               ))}
+              <ShowMoreRowsButton hidden={hiddenWarehouses} onClick={showMoreWarehouses} />
             </Stack>
           ) : (
+            <>
             <TableContainer component={Paper}>
               <Table size="small" stickyHeader>
                 <TableHead>
@@ -920,12 +1031,14 @@ export function DismissedWarehousesPanel({
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {filteredWarehouses.map((row, index) => (
+                  {visibleWarehouses.map((row, index) => (
                     <DismissedWarehouseDesktopRow key={row.warehouse?.ref || row.warehouse?.name || index} row={row} />
                   ))}
                 </TableBody>
               </Table>
             </TableContainer>
+            <ShowMoreRowsButton hidden={hiddenWarehouses} onClick={showMoreWarehouses} />
+            </>
           )}
         </>
       ) : null}
@@ -1052,6 +1165,9 @@ function Warehouse1C() {
   const [movementsLoading, setMovementsLoading] = useState(false);
   const [movementsError, setMovementsError] = useState('');
   const [movementsSearched, setMovementsSearched] = useState(false);
+
+  const [visibleBalances, hiddenBalancesCount, showMoreBalances] = useVisibleRows(balances);
+  const [visibleMovements, hiddenMovementsCount, showMoreMovements] = useVisibleRows(movements);
 
   const [movementDetailOpen, setMovementDetailOpen] = useState(false);
   const [movementDetailRow, setMovementDetailRow] = useState(null);
@@ -1919,7 +2035,7 @@ function Warehouse1C() {
               ) : balances.length === 0 ? null : isMobile ? (
                 <Stack spacing={1}>
                   <Paper variant="outlined" sx={{ overflow: 'hidden' }}>
-                    {balances.map((row, index) => (
+                    {visibleBalances.map((row, index) => (
                       <BalanceMobileRow
                         key={`${row.nomenclature_ref}|${row.series_ref}|${row.warehouse_ref}|${index}`}
                         row={row}
@@ -1967,22 +2083,12 @@ function Warehouse1C() {
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {balances.map((row, index) => (
+                    {visibleBalances.map((row, index) => (
                       <TableRow
                         key={`${row.nomenclature_ref}|${row.series_ref}|${row.warehouse_ref}|${index}`}
                         hover
                       >
-                        <TableCell
-                          onClick={() => handleOpenHubMatch(row)}
-                          sx={{
-                            cursor: 'pointer',
-                            '&:hover .wh-nomenclature-name': { textDecoration: 'underline' },
-                          }}
-                        >
-                          <Box className="wh-nomenclature-name">
-                            <NomenclatureCell code={row.nomenclature_code} name={row.nomenclature_name} />
-                          </Box>
-                        </TableCell>
+                        <BalanceNomenclatureCell row={row} onOpenHubMatch={handleOpenHubMatch} />
                         <TableCell>{row.characteristic_name || '-'}</TableCell>
                         <TableCell>{row.series_name || row.series_number || '-'}</TableCell>
                         <TableCell>{row.warehouse_name || '-'}</TableCell>
@@ -2034,6 +2140,7 @@ function Warehouse1C() {
               </TableContainer>
               )
             ) : null}
+            <ShowMoreRowsButton hidden={hiddenBalancesCount} onClick={showMoreBalances} />
           </>
         ) : tab === 'movements' ? (
           <>
@@ -2118,7 +2225,7 @@ function Warehouse1C() {
                 </Paper>
               ) : movements.length === 0 ? null : isMobile ? (
                 <Paper variant="outlined" sx={{ overflow: 'hidden' }}>
-                  {movements.map((row, index) => (
+                  {visibleMovements.map((row, index) => (
                     <MovementMobileRow
                       key={`${row.registrar_ref || row.registrar_name}|${row.period}|${index}`}
                       row={row}
@@ -2159,59 +2266,19 @@ function Warehouse1C() {
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {movements.map((row, index) => (
-                      <TableRow
+                    {visibleMovements.map((row, index) => (
+                      <MovementTableRow
                         key={`${row.registrar_ref || row.registrar_name}|${row.period}|${index}`}
-                        hover
-                        onClick={canOpenMovementDetail(row) ? () => handleOpenMovementDetail(row) : undefined}
-                        sx={canOpenMovementDetail(row) ? { cursor: 'pointer' } : undefined}
-                      >
-                        <TableCell>
-                          {canOpenMovementDetail(row) ? (
-                            <Tooltip title="Открыть карточку документа">
-                              <Typography variant="body2" component="span" color="primary.main">
-                                {row.registrar_name || '-'}
-                              </Typography>
-                            </Tooltip>
-                          ) : (
-                            row.registrar_name || '-'
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {row.transfer_from_warehouse_name || row.transfer_to_warehouse_name ? (
-                            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ whiteSpace: 'nowrap' }}>
-                              <Typography variant="body2">{row.transfer_from_warehouse_name || '-'}</Typography>
-                              <TrendingFlatIcon fontSize="small" color="action" />
-                              <Typography variant="body2">{row.transfer_to_warehouse_name || '-'}</Typography>
-                            </Stack>
-                          ) : (
-                            '-'
-                          )}
-                        </TableCell>
-                        <TableCell>{formatDate(row.period)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.qty_start, 3)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.qty_in, 3)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.qty_out, 3)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.qty_end, 3)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_start)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_in)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_out)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_end)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_accounting_start)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_accounting_in)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_accounting_out)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.cost_accounting_end)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.avg_price_start)}</TableCell>
-                        <TableCell align="right">{formatNumber(row.avg_price_end)}</TableCell>
-                        <TableCell>{formatDocRequisite(row.torg12_number, row.torg12_date)}</TableCell>
-                        <TableCell>{formatDocRequisite(row.invoice_number, row.invoice_date)}</TableCell>
-                      </TableRow>
+                        row={row}
+                        onOpenDetail={handleOpenMovementDetail}
+                      />
                     ))}
                   </TableBody>
                 </Table>
               </TableContainer>
               )
             ) : null}
+            <ShowMoreRowsButton hidden={hiddenMovementsCount} onClick={showMoreMovements} />
           </>
         ) : null}
 

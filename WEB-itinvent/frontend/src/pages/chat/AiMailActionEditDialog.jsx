@@ -124,7 +124,9 @@ export default function AiMailActionEditDialog({
       bcc: splitMailRecipients(draft.bcc),
       subject: String(draft.subject || ''),
       body: String(draft.body || ''),
-      is_html: true,
+      // Поле — plain textarea: is_html=true для обычного текста теряло бы
+      // переносы строк при интерпретации как HTML (FE-0076).
+      is_html: /<[a-z][\s\S]*>/i.test(String(draft.body || '')),
       attachment_refs: normalizeMailAttachmentRefs(draft.attachment_refs),
     };
     if (mail.reply_to_message_id) payload.reply_to_message_id = String(mail.reply_to_message_id || '');

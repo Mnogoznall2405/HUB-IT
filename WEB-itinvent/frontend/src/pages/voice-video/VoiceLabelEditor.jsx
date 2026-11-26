@@ -487,6 +487,11 @@ function VoiceLabelEditor({ projectId, onClose }) {
   useEffect(() => {
     const onKey = (e) => {
       if (isTypingTarget(e.target)) return;
+      // Focused controls (buttons, menu/dialog items) handle Space/Enter/Delete/Escape
+      // themselves — global shortcuts must not swallow their activation.
+      if (e.target?.closest?.(
+        'button, [role="button"], [role="menuitem"], [role="option"], [role="tab"], a[href], select, [role="menu"], [role="listbox"], [role="dialog"], .MuiPopover-root, .MuiDialog-root'
+      )) return;
       const media = mediaRef.current;
       const key = e.key;
       if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') {

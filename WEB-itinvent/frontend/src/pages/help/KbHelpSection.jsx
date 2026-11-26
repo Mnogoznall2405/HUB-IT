@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -212,6 +212,10 @@ export default function KbHelpSection({ query = '', ui }) {
   const [detailId, setDetailId] = useState('');
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+  const [articlesTotal, setArticlesTotal] = useState(0);
+  // Поздний ответ getArticle не должен перезаписывать уже выбранную статью.
+  const detailSeq = useRef(0);
   const [downloadBusyKey, setDownloadBusyKey] = useState('');
   const [expandedGroups, setExpandedGroups] = useState(() => new Set());
 
@@ -226,7 +230,10 @@ export default function KbHelpSection({ query = '', ui }) {
       .then(([categoriesPayload, articlesPayload]) => {
         if (cancelled) return;
         setCategories(Array.isArray(categoriesPayload) ? categoriesPayload : []);
-        setArticles(Array.isArray(articlesPayload?.items) ? articlesPayload.items : []);
+        const items = Array.isArray(articlesPayload?.items) ? articlesPayload.items : [];
+        setArticles(items);
+        const total = Number(articlesPayload?.total);
+        setArticlesTotal(Number.isFinite(total) && total > items.length ? total : 0);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -265,17 +272,28 @@ export default function KbHelpSection({ query = '', ui }) {
   const openArticle = async (articleId) => {
     const id = normalizeText(articleId);
     if (!id) return;
+    detailSeq.current += 1;
+    const sequence = detailSeq.current;
     setDetailId(id);
     setDetail(null);
+    setDetailError('');
     setDetailLoading(true);
     try {
       const payload = await kbAPI.getArticle(id);
+      if (detailSeq.current !== sequence) return;
       setDetail(payload && typeof payload === 'object' ? payload : null);
     } catch {
-      setDetail(null);
+      if (detailSeq.current !== sequence) return;
+      setDetailError('Не удалось загрузить статью.');
     } finally {
-      setDetailLoading(false);
+      if (detailSeq.current === sequence) setDetailLoading(false);
     }
+  };
+
+  const closeArticle = () => {
+    detailSeq.current += 1;
+    setDetailId('');
+    setDetailError('');
   };
 
   const downloadAttachment = async (articleId, attachment) => {
@@ -349,6 +367,11 @@ export default function KbHelpSection({ query = '', ui }) {
         </Stack>
 
         {error ? <Alert severity="warning" sx={{ borderRadius: '10px' }}>{error}</Alert> : null}
+        {articlesTotal > articles.length ? (
+          <Alert severity="info" sx={{ borderRadius: '10px' }}>
+            Показаны первые {articles.length} из {articlesTotal} статей — уточните запрос или откройте полную базу в разделе «Управление».
+          </Alert>
+        ) : null}
 
         {loading ? (
           <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 2 }}>
@@ -557,7 +580,7 @@ export default function KbHelpSection({ query = '', ui }) {
 
       <Dialog
         open={Boolean(detailId)}
-        onClose={() => setDetailId('')}
+        onClose={closeArticle}
         fullWidth
         maxWidth="sm"
         fullScreen={isMobile}
@@ -570,7 +593,7 @@ export default function KbHelpSection({ query = '', ui }) {
           <Typography component="span" variant="h6" fontWeight={800} id="kb-article-title" sx={{ minWidth: 0 }}>
             {detail?.title || 'Статья'}
           </Typography>
-          <IconButton onClick={() => setDetailId('')} aria-label="Закрыть" sx={{ position: 'absolute', right: 8, top: 8 }}>
+          <IconButton onClick={closeArticle} aria-label="Закрыть" sx={{ position: 'absolute', right: 8, top: 8 }}>
             <CloseRoundedIcon />
           </IconButton>
         </DialogTitle>
@@ -580,6 +603,8 @@ export default function KbHelpSection({ query = '', ui }) {
               <CircularProgress size={18} />
               <Typography variant="body2" color="text.secondary">Открываю статью…</Typography>
             </Stack>
+          ) : detailError ? (
+            <Alert severity="error">{detailError}</Alert>
           ) : !detail ? (
             <Typography variant="body2" color="text.secondary">Не удалось открыть статью.</Typography>
           ) : (

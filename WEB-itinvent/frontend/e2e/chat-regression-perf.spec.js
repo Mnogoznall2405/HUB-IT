@@ -21,7 +21,9 @@ const COLD_RUNS = Number(process.env.E2E_GATE_COLD || 5);
 // действием — убирает GC как скрытый конфаундер между ревизиями.
 const GATE_GC = process.env.E2E_GATE_GC === '1';
 const TOTAL_LONG = 1000;
-const CHAT_DB_PATH = fileURLToPath(new URL('./stack/.state/chat.sqlite3', import.meta.url));
+// The stack honours E2E_STATE_NAME for parallel worktrees; the 1000-message
+// seed must land in the same sqlite the backend opened.
+const CHAT_DB_PATH = fileURLToPath(new URL(`./stack/${process.env.E2E_STATE_NAME || '.state'}/chat.sqlite3`, import.meta.url));
 const SHOTS = 'e2e-artifacts/emoji-picker';
 
 test.skip(process.env.E2E_LOCAL !== '1', 'production gate needs the local stack: run with E2E_LOCAL=1 E2E_BUILD=1');
@@ -32,7 +34,10 @@ test.use({ actionTimeout: 20_000 });
 
 // ── Инструментация: коммиты (PerformedWork), longtask, t0 по capture ──
 const installHook = () => {
-  window.__perf = { t0: null, commits: [], longTasks: [] };
+  // profiles: обязателен — ChatPerfProbe (react <Profiler> в profiling-
+  // сборке) пишет в window.__perf.profiles[id] на каждый коммит; без поля
+  // onRender падает TypeError'ом и роут уходит в RouteErrorBoundary.
+  window.__perf = { t0: null, commits: [], longTasks: [], profiles: {} };
   window.__longTasks = window.__perf.longTasks;
   const hook = {
     renderers: new Map(),

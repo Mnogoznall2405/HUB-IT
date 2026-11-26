@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import hubTasksAPI from '../../../api/hubTasks';
 import hubTaskFilesAPI from '../../../api/hubTaskFiles';
 import { getFileIdentity } from '../taskApiHelpers';
@@ -85,10 +85,8 @@ export default function useTaskEditForm({
   const editDescriptionRef = useRef('');
   const editLoadSeqRef = useRef(0);
 
-  // Выбранные файлы живут только в открытом диалоге: после закрытия (любым способом) очищаем.
-  useEffect(() => {
-    if (!editOpen) setEditFiles([]);
-  }, [editOpen]);
+  // Файлы не очищаем по закрытию: openEditTask сбрасывает их при новой сессии,
+  // а случайное закрытие не должно уничтожать драфт вложений.
 
   const editProjectObjects = useMemo(() => (
     activeTaskObjects.filter((item) => item?.is_active !== false && String(item?.project_id || '') === String(editData.project_id || ''))

@@ -365,7 +365,7 @@ function VoiceJobsSection({
                       base={base}
                       canRetry={ownerOrManage && ['failed', 'cancelled'].includes(job.status) && job.kind === 'process'}
                       canDelete={canManage && !active}
-                      busy={busyJobId === job.id}
+                      busy={busyJobId?.has?.(job.id) ?? busyJobId === job.id}
                       onCancel={onCancel}
                       onRetry={onRetry}
                       onDelete={onDelete}
@@ -448,7 +448,7 @@ function VoiceJobsSection({
                       base={base}
                       canRetry={ownerOrManage && ['failed', 'cancelled'].includes(job.status) && job.kind === 'process'}
                       canDelete={canManage && !active}
-                      busy={busyJobId === job.id}
+                      busy={busyJobId?.has?.(job.id) ?? busyJobId === job.id}
                       onCancel={onCancel}
                       onRetry={onRetry}
                       onDelete={onDelete}

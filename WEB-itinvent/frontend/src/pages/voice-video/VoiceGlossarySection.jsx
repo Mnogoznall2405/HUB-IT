@@ -144,6 +144,8 @@ function VoiceGlossarySection() {
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(null); // term | {} для нового
   const requestRef = useRef(0);
+  const [acting, setActing] = useState(false);
+  const actingRef = useRef(false);
 
   const load = useCallback(async () => {
     const requestId = requestRef.current + 1;
@@ -152,7 +154,10 @@ function VoiceGlossarySection() {
     try {
       const result = await voiceGlossaryAPI.list({ status: filter, q: query.trim() || undefined });
       if (requestRef.current !== requestId) return; // ответ устаревшего запроса не перетирает свежий
-      setData(result);
+      setData({
+        items: Array.isArray(result?.items) ? result.items : [],
+        counts: result?.counts || {},
+      });
       setError('');
     } catch (err) {
       if (requestRef.current === requestId) setError(extractDetail(err, 'Не удалось загрузить словарь'));
@@ -167,12 +172,18 @@ function VoiceGlossarySection() {
   }, [load, query]);
 
   const act = async (fn, fallback) => {
+    if (actingRef.current) return;
+    actingRef.current = true;
+    setActing(true);
     try {
       await fn();
       setError('');
       await load();
     } catch (err) {
       setError(extractDetail(err, fallback));
+    } finally {
+      actingRef.current = false;
+      setActing(false);
     }
   };
 
@@ -265,25 +276,25 @@ function VoiceGlossarySection() {
               <Stack direction="row" spacing={0.25} sx={{ flexShrink: 0 }}>
                 {term.status !== 'confirmed' && (
                   <Tooltip title="Подтвердить">
-                    <IconButton size="small" color="success" aria-label={`Подтвердить ${term.term}`} onClick={() => setStatus(term, 'confirmed')}>
+                    <IconButton size="small" color="success" aria-label={`Подтвердить ${term.term}`} disabled={acting} onClick={() => setStatus(term, 'confirmed')}>
                       <CheckOutlinedIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
                 )}
                 {term.status !== 'rejected' && (
                   <Tooltip title="Отклонить">
-                    <IconButton size="small" aria-label={`Отклонить ${term.term}`} onClick={() => setStatus(term, 'rejected')}>
+                    <IconButton size="small" aria-label={`Отклонить ${term.term}`} disabled={acting} onClick={() => setStatus(term, 'rejected')}>
                       <CloseOutlinedIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
                 )}
                 <Tooltip title="Изменить">
-                  <IconButton size="small" aria-label={`Изменить ${term.term}`} onClick={() => setEditing(term)}>
+                  <IconButton size="small" aria-label={`Изменить ${term.term}`} disabled={acting} onClick={() => setEditing(term)}>
                     <EditOutlinedIcon fontSize="small" />
                   </IconButton>
                 </Tooltip>
                 <Tooltip title="Удалить">
-                  <IconButton size="small" aria-label={`Удалить ${term.term}`} onClick={() => remove(term)}>
+                  <IconButton size="small" aria-label={`Удалить ${term.term}`} disabled={acting} onClick={() => remove(term)}>
                     <DeleteOutlineOutlinedIcon fontSize="small" />
                   </IconButton>
                 </Tooltip>

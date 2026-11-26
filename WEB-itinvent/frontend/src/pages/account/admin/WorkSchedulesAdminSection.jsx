@@ -156,6 +156,8 @@ export default function WorkSchedulesAdminSection() {
   };
 
   const reset = async (branch) => {
+    const confirmed = window.confirm(`Сбросить график работы для «${branch}»? Простой снова будет считаться одинаково круглые сутки.`);
+    if (!confirmed) return;
     setSavingBranch(branch);
     try {
       await dlpWorkSchedulesAPI.deleteSchedule(branch);

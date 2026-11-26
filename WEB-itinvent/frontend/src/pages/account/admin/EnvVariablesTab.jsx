@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Accordion,
   AccordionDetails,
@@ -36,13 +36,26 @@ export default function EnvVariablesTab({ envState, loading, saving, onRefresh, 
   const [activatedFields, setActivatedFields] = useState({});
   const [helpOpen, setHelpOpen] = useState(false);
 
+  const activatedRef = useRef({});
   useEffect(() => {
-    const next = {};
-    (envState?.items || []).forEach((item) => {
-      next[item.key] = item.value ?? '';
+    const items = Array.isArray(envState?.items) ? envState.items : [];
+    const incoming = {};
+    items.forEach((item) => { incoming[item.key] = item.value ?? ''; });
+    setDraftValues((prev) => {
+      const next = {};
+      items.forEach((item) => {
+        next[item.key] = activatedRef.current[item.key] && Object.prototype.hasOwnProperty.call(prev, item.key)
+          ? prev[item.key]
+          : incoming[item.key];
+      });
+      return next;
     });
-    setDraftValues(next);
-    setActivatedFields({});
+    setActivatedFields((prev) => {
+      const next = {};
+      items.forEach((item) => { if (prev[item.key]) next[item.key] = true; });
+      activatedRef.current = next;
+      return next;
+    });
   }, [envState?.items]);
 
   const filteredItems = useMemo(() => {
@@ -81,7 +94,11 @@ export default function EnvVariablesTab({ envState, loading, saving, onRefresh, 
         type={inputType}
         label="Значение"
         value={draftValues[item.key] ?? ''}
-        onFocus={() => setActivatedFields((prev) => ({ ...prev, [item.key]: true }))}
+        onFocus={() => setActivatedFields((prev) => {
+          const next = { ...prev, [item.key]: true };
+          activatedRef.current = next;
+          return next;
+        })}
         onChange={(event) => setDraftValues((prev) => ({ ...prev, [item.key]: event.target.value }))}
         autoComplete="new-password"
         name={fieldName}
@@ -229,7 +246,7 @@ export default function EnvVariablesTab({ envState, loading, saving, onRefresh, 
             >
               Помощь и применение
             </Button>
-            <Button variant="outlined" startIcon={<RefreshOutlinedIcon />} onClick={onRefresh} disabled={loading || saving}>Обновить</Button>
+            <Button variant="outlined" startIcon={<RefreshOutlinedIcon />} onClick={() => { if (dirtyCount === 0 || window.confirm(`Есть несохранённые правки (${dirtyCount}). Обновить список и потерять их?`)) onRefresh(); }} disabled={loading || saving}>Обновить</Button>
             <Button
               variant="contained"
               startIcon={saving ? <CircularProgress size={18} color="inherit" /> : <SaveOutlinedIcon />}

@@ -78,6 +78,22 @@ export default function useChatPageAnchorScrollBridge({
     });
   }, [suppressThreadScrollCancelRef]);
 
+  // Позднее связывание через anchorGuardBridgeRef сохраняется (мост
+  // заполняется после useChatAnchorController ниже), но коллбэки обязаны
+  // быть стабильными: инлайн-стрелки пересоздавались на каждый рендер и
+  // через deps setThreadScrollTop → scrollThreadBottomIntoView →
+  // ensureLatestThreadWindow → handleSendSticker ломали memo-цепочку
+  // keep-alive дока эмодзи — скрытая панель перерендеривалась на каждый
+  // keystroke/echo отправки (warm-dock perf regression).
+  const isInitialViewportGuardActiveBridge = useCallback(
+    (...args) => anchorGuardBridgeRef.current.isInitialViewportGuardActive(...args),
+    [anchorGuardBridgeRef],
+  );
+  const traceProgrammaticThreadScrollBridge = useCallback(
+    (...args) => anchorGuardBridgeRef.current.traceProgrammaticThreadScroll(...args),
+    [anchorGuardBridgeRef],
+  );
+
   const {
     scheduleThreadViewportStateSync,
     syncThreadViewportState,
@@ -92,7 +108,7 @@ export default function useChatPageAnchorScrollBridge({
     activeConversationIdRef,
     bottomInstantSettleFrameRef,
     bottomRef,
-    isInitialViewportGuardActive: (...args) => anchorGuardBridgeRef.current.isInitialViewportGuardActive(...args),
+    isInitialViewportGuardActive: isInitialViewportGuardActiveBridge,
     messagesHasNewerRef,
     mobileKeyboardSettleTimeoutsRef,
     onThreadApproachBottom: loadNewerMessages,
@@ -103,7 +119,7 @@ export default function useChatPageAnchorScrollBridge({
     threadNearBottomRef,
     threadScrollRef,
     threadViewportSyncFrameRef,
-    traceProgrammaticThreadScroll: (...args) => anchorGuardBridgeRef.current.traceProgrammaticThreadScroll(...args),
+    traceProgrammaticThreadScroll: traceProgrammaticThreadScrollBridge,
   });
 
   const {

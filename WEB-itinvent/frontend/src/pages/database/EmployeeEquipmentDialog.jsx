@@ -413,7 +413,7 @@ export default function EmployeeEquipmentDialog({
     setHistoryState((prev) => ({ ...prev, open: false }));
   }, []);
 
-  const { copiedDiscrepancies, discrepanciesTaskText, handleCopyDiscrepancies } = useDiscrepanciesCopy({
+  const { copiedDiscrepancies, copyError, discrepanciesTaskText, handleCopyDiscrepancies } = useDiscrepanciesCopy({
     employeeName,
     comparisonComplete,
     hubItems,
@@ -686,10 +686,10 @@ export default function EmployeeEquipmentDialog({
               startIcon={copiedDiscrepancies ? undefined : <ContentCopyIcon />}
               onClick={handleCopyDiscrepancies}
               disabled={!comparisonComplete || copiedDiscrepancies}
-              aria-label={copiedDiscrepancies ? 'Скопировано' : 'Скопировать расхождения'}
+              aria-label={copyError ? 'Не удалось скопировать' : copiedDiscrepancies ? 'Скопировано' : 'Скопировать расхождения'}
               title="Скопировать расхождения"
             >
-              {copiedDiscrepancies ? 'Скопировано' : isMobile ? null : 'Скопировать расхождения'}
+              {copyError ? 'Не удалось скопировать' : copiedDiscrepancies ? 'Скопировано' : isMobile ? null : 'Скопировать расхождения'}
             </Button>
           ) : null}
           {canViewWarehouse1C ? (

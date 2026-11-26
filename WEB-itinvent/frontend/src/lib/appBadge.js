@@ -8,6 +8,12 @@ function normalizeBadgeValue(value) {
 
 async function postBadgeToServiceWorker(value) {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  // chrome-headless-shell (Playwright/Selenium) exposes navigator.setAppBadge
+  // in the SW scope WITHOUT a BadgeService mojo binder — the call is a fatal
+  // IPC that kills the whole renderer process, not a catchable JS error.
+  // navigator.webdriver marks exactly those automation environments; the
+  // page-scope badge call above stays safe and is kept.
+  if (navigator.webdriver) return;
   try {
     const registration = await navigator.serviceWorker.ready;
     const target = registration?.active || registration?.waiting || navigator.serviceWorker.controller;

@@ -8,16 +8,17 @@ const formatDate = (value) => {
   return parts.length === 3 ? `${parts[2]}.${parts[1]}.${parts[0]}` : 'дата не указана';
 };
 
-export default function DocflowAbsencesPanel({ employeeCode = '', employee = false }) {
+export default function DocflowAbsencesPanel({ employeeCode = '', employee = false, shared = null }) {
   const { user, hasPermission } = useAuth();
   const allowed = Boolean(user?.id && hasPermission?.('docflow.read') && hasPermission?.('address_book.read'));
   const enabled = allowed && (!employee || Boolean(employeeCode));
   const scope = `${user?.id || ''}:${employee ? employeeCode : '*'}`;
+  const sharedActive = Boolean(employee && shared);
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState(null);
 
   useEffect(() => {
-    if (!enabled) return undefined;
+    if (!enabled || sharedActive) return undefined;
     let active = true;
     const controller = new AbortController();
     setState({ scope, loading: true });
@@ -34,10 +35,32 @@ export default function DocflowAbsencesPanel({ employeeCode = '', employee = fal
       active = false;
       controller.abort();
     };
-  }, [enabled, scope, employee, employeeCode, attempt]);
+  }, [enabled, scope, employee, employeeCode, attempt, sharedActive]);
 
   if (!enabled) return null;
-  const current = state?.scope === scope ? state : null;
+  let current = state?.scope === scope ? state : null;
+  const onRefresh = sharedActive && shared?.refresh
+    ? shared.refresh
+    : () => setAttempt((value) => value + 1);
+  if (sharedActive) {
+    // Derive the employee view from the shared global payload — same items the
+    // backend would return for employee_code, minus a second slow 1C round trip.
+    const code = String(employeeCode || '').trim();
+    const sharedData = shared.data;
+    if (shared.status === 'available' && sharedData) {
+      const items = (Array.isArray(sharedData.items) ? sharedData.items : [])
+        .filter((item) => String(item?.employee_code || '').trim() === code);
+      current = { scope, data: { ...sharedData, items, count: items.length } };
+    } else if (shared.status === 'disabled') {
+      current = { scope, data: { status: 'disabled' } };
+    } else if (shared.status === 'credentials') {
+      current = { scope, error: 'credentials' };
+    } else if (shared.status === 'error') {
+      current = { scope, error: 'unavailable' };
+    } else {
+      current = { scope, loading: true };
+    }
+  }
   if (current?.data?.status === 'disabled') return null;
   const items = Array.isArray(current?.data?.items) ? current.data.items : [];
   return (
@@ -53,7 +76,7 @@ export default function DocflowAbsencesPanel({ employeeCode = '', employee = fal
           {current.error === 'credentials' ? (
             <>Подключите свою учётную запись 1С в разделе <a href="/docflow">«Документооборот»</a>.</>
           ) : (
-            <>Отсутствия Документооборота недоступны. <Button size="small" onClick={() => setAttempt((value) => value + 1)}>Повторить</Button></>
+            <>Отсутствия Документооборота недоступны. <Button size="small" onClick={onRefresh}>Повторить</Button></>
           )}
         </Alert>
       ) : current.data?.status !== 'available' ? (
@@ -75,7 +98,7 @@ export default function DocflowAbsencesPanel({ employeeCode = '', employee = fal
           {employee && current.data.unresolved_count > 0 ? <Typography variant="caption" color="text.secondary">Часть записей Документооборота не сопоставлена с адресной книгой.</Typography> : null}
           <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
             <Typography variant="caption" color="text.secondary">Источник: 1С:Документооборот · {current.data.count} записей{current.data.as_of ? ` · получено ${new Date(current.data.as_of).toLocaleTimeString('ru-RU')}` : ''}</Typography>
-            <Button size="small" onClick={() => setAttempt((value) => value + 1)}>Обновить отсутствия</Button>
+            <Button size="small" onClick={onRefresh}>Обновить отсутствия</Button>
           </Stack>
         </Stack>
       )}

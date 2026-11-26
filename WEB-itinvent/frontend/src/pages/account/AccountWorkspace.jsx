@@ -147,6 +147,7 @@ function AccountWorkspace({ area = 'settings' }) {
           loading={data.aiBotsLoading}
           savingBotId={data.savingAiBotId}
           runsByBotId={data.aiBotRunsById}
+          onLoadRuns={data.loadAiBotRuns}
           onRefresh={data.loadAiBotsAdmin}
           onCreate={data.handleCreateAiBot}
           onSave={data.handleUpdateAiBot}

@@ -68,10 +68,12 @@ const SEARCH_LIMIT = 50;
 
 const visuallyHiddenSx = {
   position: 'absolute',
-  width: 1,
-  height: 1,
+  // MUI sx treats numeric width/height <= 1 as a percentage, not pixels —
+  // '1px' keeps this live region at 1x1 so it cannot extend the scroll region.
+  width: '1px',
+  height: '1px',
   p: 0,
-  m: -1,
+  m: '-1px',
   overflow: 'hidden',
   clip: 'rect(0 0 0 0)',
   clipPath: 'inset(50%)',
@@ -175,7 +177,7 @@ const AddressBook = () => {
   const [listMode, setListMode] = useState('all');
   const [modeCodes, setModeCodes] = useState([]);
   const [rawItems, setItems] = useState([]);
-  const { decorate: decorateAbsences, refresh: refreshAbsenceMarks, status: absenceMarksStatus } = useDocflowAbsenceMarks({
+  const { decorate: decorateAbsences, refresh: refreshAbsenceMarks, status: absenceMarksStatus, shared: absencesShared } = useDocflowAbsenceMarks({
     userKey,
     enabled: Boolean(user?.id && !dismissed && hasPermission('docflow.read') && hasPermission('address_book.read')),
   });
@@ -965,6 +967,7 @@ const AddressBook = () => {
                     chatBusy={Boolean(chatBusyEntryKey)}
                     isFavorite={selectedIsFavorite}
                     showStaffIdentifiers={canSeeStaffIdentifiers}
+                    absencesShared={absencesShared}
                     onToggleFavorite={dismissed ? undefined : handleToggleFavorite}
                   />
                 ) : (

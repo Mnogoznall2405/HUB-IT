@@ -217,7 +217,7 @@ const ChatStickerMedia = memo(function ChatStickerMedia({
           poster={posterSrc || undefined}
           aria-label={decorative ? undefined : accessibleLabel}
           aria-hidden={decorative || undefined}
-          preload="auto"
+          preload={playing ? 'auto' : 'metadata'}
           muted
           loop
           playsInline

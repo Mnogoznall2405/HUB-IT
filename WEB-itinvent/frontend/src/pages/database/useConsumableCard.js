@@ -257,6 +257,7 @@ export function useConsumableCard({
 
     consumableDeepLinkHandledRef.current = signature;
 
+    let cancelled = false;
     const openLinkedConsumable = async () => {
       try {
         if (targetDatabaseId && targetDatabaseId !== currentDatabaseId) {
@@ -266,12 +267,15 @@ export function useConsumableCard({
             detail: { databaseId: targetDatabaseId },
           }));
         }
+        if (cancelled) return;
 
         setConsumableCardModal({ open: true, item: null, loading: true });
         const item = await equipmentAPI.getConsumableById(deepLink.itemId);
+        if (cancelled) return;
         if (!item) throw new Error('not_found');
         setConsumableCardModal({ open: true, item, loading: false });
       } catch (error) {
+        if (cancelled) return;
         setConsumableCardModal(createClosedModal());
         notifyDatabaseError?.(
           buildApiErrorMessage(error, 'Не удалось открыть карточку расходника по QR-ссылке.')
@@ -280,6 +284,7 @@ export function useConsumableCard({
     };
 
     void openLinkedConsumable();
+    return () => { cancelled = true; };
   }, [
     currentDb?.id,
     dbName,

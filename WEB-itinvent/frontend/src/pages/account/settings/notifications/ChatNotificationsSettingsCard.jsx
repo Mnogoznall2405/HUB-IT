@@ -27,8 +27,8 @@ import { formatDateTime } from '../../accountUserModel';
 import SectionCard from '../../shared/SectionCard';
 
 export function ChatNotificationsSettingsCard({ embedded = false }) {
-  if (isNativeShellRuntime()) return null;
-
+  // isNativeShellRuntime() зависит от асинхронной инициализации desktop-bridge:
+  // ранний return до хуков менял бы их число между рендерами (FE-0230).
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const { user } = useAuth();
@@ -96,6 +96,8 @@ export function ChatNotificationsSettingsCard({ embedded = false }) {
           : permission === 'denied'
             ? 'Заблокировано браузером'
             : 'Не подключено';
+
+  if (isNativeShellRuntime()) return null;
 
   return (
     <SectionCard

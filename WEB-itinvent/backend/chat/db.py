@@ -16,6 +16,9 @@ from backend.chat.models import (
     ChatPushOutbox,
     ChatSticker,
     ChatStickerPack,
+    ChatUserFavoriteSticker,
+    ChatUserRecentSticker,
+    ChatUserRecentStickerState,
     ChatUserStickerPack,
 )
 from backend.config import config
@@ -510,6 +513,9 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
                     ChatStickerPack.__table__,
                     ChatSticker.__table__,
                     ChatUserStickerPack.__table__,
+                    ChatUserFavoriteSticker.__table__,
+                    ChatUserRecentSticker.__table__,
+                    ChatUserRecentStickerState.__table__,
                 ],
             )
             _ensure_chat_message_columns(engine)

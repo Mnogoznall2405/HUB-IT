@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import hubTasksAPI from '../../../api/hubTasks';
+import { useConfirmDialog } from '../../../components/feedback/ConfirmDialogProvider';
 import { statusMeta } from '../taskFormatters';
 
 function extractApiDetail(err) {
@@ -160,8 +161,19 @@ export default function useTaskWorkflowActions({
     selectedTaskRef.current = { id: selectedTaskId };
   }
 
+  const { confirm: confirmDialog } = useConfirmDialog();
+  const deletingTaskIdsRef = useRef(new Set());
+
   const handleDeleteTask = async (task) => {
-    if (!task?.id || !window.confirm(`Удалить "${task?.title || 'задачу'}"?`)) return;
+    const taskId = String(task?.id || '');
+    if (!taskId || deletingTaskIdsRef.current.has(taskId)) return;
+    const confirmed = await confirmDialog({
+      title: `Удалить "${task?.title || 'задачу'}"?`,
+      confirmLabel: 'Удалить',
+      destructive: true,
+    });
+    if (!confirmed) return;
+    deletingTaskIdsRef.current.add(taskId);
     const selection = selectedTaskRef.current;
     try {
       await hubTasksAPI.deleteTask(task.id);
@@ -172,6 +184,8 @@ export default function useTaskWorkflowActions({
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка удаления задачи');
+    } finally {
+      deletingTaskIdsRef.current.delete(taskId);
     }
   };
 

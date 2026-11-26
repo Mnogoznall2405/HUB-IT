@@ -186,6 +186,9 @@ export default function useChatBubbleGestures({
     }
   };
 
+  // Deliberate resilience (ChatThread tests lock it in): native touchcancel
+  // fires spuriously on mobile while the finger is still held, so a scheduled
+  // long-press must survive it.
   const handleTouchCancel = () => {
     if (!mobileMessageInteractionsEnabled) {
       resetLongPressGesture();

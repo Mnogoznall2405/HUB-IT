@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { equipmentAPI } from '../../api/client';
 
@@ -15,6 +15,11 @@ export function useDatabaseWorkspaceIdentity({
   selectionDelayMs = 300,
 } = {}) {
   const [identifyPCLoading, setIdentifyPCLoading] = useState(false);
+  const selectionTimerRef = useRef(null);
+
+  useEffect(() => () => {
+    if (selectionTimerRef.current != null) window.clearTimeout(selectionTimerRef.current);
+  }, []);
 
   const handleIdentifyWorkspace = useCallback(async () => {
     try {
@@ -27,7 +32,9 @@ export function useDatabaseWorkspaceIdentity({
         runSearchNow?.(ownerName);
 
         if (Array.isArray(response.linked_inv_nos) && response.linked_inv_nos.length > 0) {
-          setTimeout(() => {
+          if (selectionTimerRef.current != null) window.clearTimeout(selectionTimerRef.current);
+          selectionTimerRef.current = window.setTimeout(() => {
+            selectionTimerRef.current = null;
             setSelectedItems?.(response.linked_inv_nos.map(String));
           }, selectionDelayMs);
         }

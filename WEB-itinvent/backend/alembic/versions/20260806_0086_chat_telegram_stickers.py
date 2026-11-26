@@ -20,25 +20,39 @@ def _scope() -> str:
     return str(op.get_context().config.attributes.get("itinvent_scope", "all") or "all").strip().lower()
 
 
-def _schema() -> str | None:
-    return "chat" if op.get_bind().dialect.name == "postgresql" else None
-
-
 def _has_table(schema: str | None, table_name: str) -> bool:
     return sa.inspect(op.get_bind()).has_table(table_name, schema=schema)
 
 
+def _chat_tables_schema() -> str | None:
+    """Schema where the chat tables live: logical ``chat`` or legacy ``public``.
+
+    The legacy PostgreSQL runtime may route the logical ``chat`` schema to
+    ``public`` via ``schema_translate_map``; sticker tables must be created
+    next to ``chat_conversations`` or the ORM never finds them and later
+    migrations fail on foreign keys.
+    """
+    if op.get_bind().dialect.name != "postgresql":
+        return None
+    if _has_table("chat", "chat_conversations"):
+        return "chat"
+    return None
+
+
 def _chat_tables_present() -> bool:
-    """Skip only when the database has no chat tables at all, never by ``itinvent_scope``."""
+    """Skip only when the database has no chat tables at all (logical ``chat``
+    schema or legacy ``public``), never by ``itinvent_scope``."""
     bind = op.get_bind()
-    schema = "chat" if bind.dialect.name == "postgresql" else None
-    return bool(sa.inspect(bind).has_table("chat_conversations", schema=schema))
+    inspector = sa.inspect(bind)
+    if bind.dialect.name == "postgresql" and inspector.has_table("chat_conversations", schema="chat"):
+        return True
+    return bool(inspector.has_table("chat_conversations"))
 
 
 def upgrade() -> None:
     if not _chat_tables_present():
         return
-    schema = _schema()
+    schema = _chat_tables_schema()
 
     if not _has_table(schema, "chat_sticker_packs"):
         op.create_table(
@@ -113,7 +127,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     if not _chat_tables_present():
         return
-    schema = _schema()
+    schema = _chat_tables_schema()
     for table_name in ("chat_user_sticker_packs", "chat_stickers", "chat_sticker_packs"):
         if _has_table(schema, table_name):
             op.drop_table(table_name, schema=schema)

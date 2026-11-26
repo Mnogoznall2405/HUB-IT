@@ -72,7 +72,14 @@ test('failed unpin keeps the real server pin visible', async ({ page: loginPage 
   const { conversation, messages } = await seedThread(page);
   const pinned = await page.request.put(`/api/v1/chat/conversations/${conversation.id}/pinned-message`, { data: { message_id: messages[0].id } });
   expect(pinned.ok()).toBeTruthy();
-  await page.route('**/api/v1/chat/conversations/*/pinned-message', route => route.fulfill({ status: 503, json: { detail: 'Temporary pin failure' } }));
+  // The pinned bar's close button goes through the multi-pin endpoint
+  // (DELETE .../pinned-messages/{messageId}), not the legacy singular PUT.
+  await page.route('**/api/v1/chat/conversations/*/pinned-messages/*', route => {
+    if (route.request().method() === 'DELETE') {
+      return route.fulfill({ status: 503, json: { detail: 'Temporary pin failure' } });
+    }
+    return route.continue();
+  });
   await page.goto(`/chat?conversation=${encodeURIComponent(conversation.id)}`);
   const pin = page.getByTestId('chat-pinned-message-open');
   await expect(pin).toBeVisible();

@@ -73,6 +73,7 @@ export default function useReadReceipts({
   const flushPendingReadsRef = useRef(async () => {});
   const markReadRef = useRef(markRead);
   const onReadSyncErrorRef = useRef(onReadSyncError);
+  const trackedConversationIdRef = useRef('');
   const effectiveLastReadMessageIdRef = useRef('');
   const markMessageSeenOptimisticallyRef = useRef(() => {});
   const shouldTrackMessageRef = useRef(() => false);
@@ -138,6 +139,22 @@ export default function useReadReceipts({
 
   useLayoutEffect(() => {
     mountedRef.current = true;
+    // Conversation switch: deliver the pending read position for the previous
+    // conversation before resetTracking drops those ids — otherwise messages
+    // the observer already reported stay unread until the next visit.
+    const previousConversationId = trackedConversationIdRef.current;
+    trackedConversationIdRef.current = normalizedConversationId;
+    if (
+      previousConversationId
+      && previousConversationId !== normalizedConversationId
+      && pendingReadIdsRef.current.size > 0
+      && typeof markReadRef.current === 'function'
+    ) {
+      const lastPendingId = Array.from(pendingReadIdsRef.current).pop();
+      if (lastPendingId) {
+        void markReadRef.current(previousConversationId, lastPendingId).catch(() => {});
+      }
+    }
     resetTracking();
     const generation = generationRef.current;
     const resumeAfterOnline = () => {

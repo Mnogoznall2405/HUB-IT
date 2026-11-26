@@ -139,6 +139,7 @@ const ChatEmojiDock = memo(function ChatEmojiDock({
             onInsertEmoji={onInsertEmoji}
             onSendSticker={onSendSticker}
             onClose={onClose}
+            visible={!hidden}
           />
         </Suspense>
       </Box>

@@ -72,6 +72,7 @@ export function AiBotsAdminSection({
   loading,
   savingBotId,
   runsByBotId,
+  onLoadRuns,
   onRefresh,
   onCreate,
   onSave,
@@ -512,7 +513,7 @@ export function AiBotsAdminSection({
   return <>
     <AiBalanceCard />
     <BotSettingsWorkspace
-      bots={bots} loading={loading} savingBotId={savingBotId} runsByBotId={runsByBotId}
+      bots={bots} loading={loading} savingBotId={savingBotId} runsByBotId={runsByBotId} onLoadRuns={onLoadRuns}
       onRefresh={onRefresh} onCreate={onCreate} onSave={onSave} openrouterConfigured={openrouterConfigured}
       draftsById={draftsById} newDraft={newDraft} setNewDraft={setNewDraft}
       updateDraft={updateDraft} renderFields={renderBotFields} ui={ui}

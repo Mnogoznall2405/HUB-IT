@@ -1,4 +1,5 @@
 import { createTheme, responsiveFontSizes } from '@mui/material/styles';
+import { ruRU } from '@mui/material/locale';
 
 /**
  * Design System for IT-invent Web
@@ -348,6 +349,6 @@ const theme = createTheme({
       },
     },
   },
-});
+}, ruRU);
 
 export default theme;

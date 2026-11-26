@@ -131,7 +131,7 @@ describe('useMailMessageFileActions', () => {
       );
     });
 
-    expect(props.mailAPI.downloadAttachment).toHaveBeenCalledWith('msg-1', 'att-1', { mailboxId: 'mb-1' });
+    expect(props.mailAPI.downloadAttachment).toHaveBeenCalledWith('msg-1', 'att-1', expect.objectContaining({ mailboxId: 'mb-1' }));
     expect(result.current.attachmentPreview).toMatchObject({
       open: true,
       filename: 'notes.txt',
@@ -193,7 +193,7 @@ describe('useMailMessageFileActions', () => {
     expect(props.mailAPI.downloadAttachmentPreviewPdf).toHaveBeenCalledWith(
       'msg-1',
       'att-docx',
-      { mailboxId: 'mb-1' },
+      expect.objectContaining({ mailboxId: 'mb-1' }),
     );
     expect(result.current.attachmentPreview).toMatchObject({
       open: true,
@@ -277,7 +277,7 @@ describe('useMailMessageFileActions', () => {
     expect(props.mailAPI.downloadAttachmentPreviewPdf).toHaveBeenCalledWith(
       'msg-1',
       'att-docx',
-      { mailboxId: 'mb-1' },
+      expect.objectContaining({ mailboxId: 'mb-1' }),
     );
     expect(result.current.attachmentPreview).toMatchObject({
       open: true,
@@ -576,7 +576,7 @@ describe('attachment preview object URL lifecycle', () => {
     expect(props.mailAPI.downloadAttachmentPreviewPdf).toHaveBeenCalledWith(
       'msg-1',
       'att-docx',
-      { mailboxId: 'mb-1' },
+      expect.objectContaining({ mailboxId: 'mb-1' }),
     );
     expect(result.current.attachmentPreview).toMatchObject({ open: true, loading: true });
 

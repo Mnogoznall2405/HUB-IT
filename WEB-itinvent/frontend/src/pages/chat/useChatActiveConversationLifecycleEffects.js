@@ -133,7 +133,7 @@ export default function useChatActiveConversationLifecycleEffects({
       const nextSearch = buildMessageSearchParamAfterReveal(locationSearch, requestedMessageId);
       if (nextSearch === null) return;
       navigate({ pathname: '/chat', search: nextSearch }, { replace: true });
-    });
+    }).catch(() => {});
 
     return () => {
       cancelled = true;

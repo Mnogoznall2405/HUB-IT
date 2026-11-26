@@ -103,7 +103,9 @@ function DrawioEditorDialog({ open, fileName, xml, version, onSaved, onExported,
 
   const saveThenClose = useCallback(async () => {
     const pending = pendingXmlRef.current;
-    if (pending) await save(pending);
+    // Не закрываем при ошибке сохранения — иначе правки теряются, а saveError
+    // виден уже закрытому диалогу.
+    if (pending && !(await save(pending))) return;
     onCloseRef.current();
   }, [save]);
 

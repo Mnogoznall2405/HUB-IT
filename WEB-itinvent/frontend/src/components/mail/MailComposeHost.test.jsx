@@ -538,7 +538,7 @@ describe('MailComposeHost', () => {
     }
   });
 
-  it('revokes the pasted inline blob URL once it is uploaded into the draft', async () => {
+  it('keeps the pasted inline blob URL alive after draft upload (FE-0215)', async () => {
     vi.useFakeTimers();
     const originalCreateObjectUrl = URL.createObjectURL;
     const originalRevokeObjectUrl = URL.revokeObjectURL;
@@ -562,7 +562,9 @@ describe('MailComposeHost', () => {
       });
 
       expect(mockSaveDraftMultipart).toHaveBeenCalled();
-      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:pasted-image');
+      // Blob URL must survive the upload: the Quill DOM and the cid → preview
+      // mapping still reference it; revoking would drop the image (FE-0215).
+      expect(revokeObjectUrl).not.toHaveBeenCalledWith('blob:pasted-image');
     } finally {
       if (originalCreateObjectUrl) URL.createObjectURL = originalCreateObjectUrl;
       else delete URL.createObjectURL;

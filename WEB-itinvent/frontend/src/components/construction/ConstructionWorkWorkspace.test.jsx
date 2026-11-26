@@ -110,6 +110,18 @@ it('copies last week into a draft without saving or copying daily fact', async (
   expect(api.saveSummary).not.toHaveBeenCalled();
 });
 
+it('warns on beforeunload while a draft is dirty and stays silent when clean', async () => {
+  render(<ConstructionWorkWorkspace objectId="object" groupRef="group" />);
+  const idleUnload = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(idleUnload);
+  expect(idleUnload.defaultPrevented).toBe(false);
+
+  fireEvent.change(await openDay(), { target: { value: '5' } });
+  const dirtyUnload = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(dirtyUnload);
+  expect(dirtyUnload.defaultPrevented).toBe(true);
+});
+
 it('hides future unstarted works until all works is selected', async () => {
   const data = response(); data.plan.targets = []; data.items[0].plan.planned_start = '2100-12-31';
   api.planning.mockResolvedValue(data);

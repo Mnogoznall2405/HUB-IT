@@ -22,6 +22,14 @@ import DatabaseSearchBar from './DatabaseSearchBar';
 
 const normalizeDbId = (value) => String(value ?? '').trim();
 
+const MOBILE_TAB_SX = {
+  minHeight: 44,
+  py: 0.35,
+  fontSize: '0.78rem',
+  textTransform: 'none',
+  fontWeight: 500,
+};
+
 // Header chrome of the Database page: equipment/consumables tabs, the search
 // bar and the cross-session stale-data alert. On desktop the portal header is
 // replaced by this single compact row (menu, title, tabs, search, base, bell).
@@ -105,18 +113,11 @@ export default function DatabasePageHeader({
             variant="fullWidth"
             sx={{
               minHeight: 44,
-              '& .MuiTab-root': {
-                minHeight: 44,
-                py: 0.35,
-                fontSize: '0.78rem',
-                textTransform: 'none',
-                fontWeight: 500,
-              },
               '& .MuiTabs-indicator': { height: 2, borderRadius: 1 },
             }}
           >
-            <Tab value={DATA_MODE_EQUIPMENT} label="Оборудование" />
-            <Tab value={DATA_MODE_CONSUMABLES} label="Расходники" />
+            <Tab value={DATA_MODE_EQUIPMENT} label="Оборудование" sx={MOBILE_TAB_SX} />
+            <Tab value={DATA_MODE_CONSUMABLES} label="Расходники" sx={MOBILE_TAB_SX} />
           </Tabs>
         </Paper>
         {searchBar}

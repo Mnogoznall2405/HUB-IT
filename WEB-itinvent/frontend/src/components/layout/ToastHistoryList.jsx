@@ -83,6 +83,10 @@ function ToastHistoryList({ items }) {
               borderRadius: '14px',
               cursor: resolvedAction ? 'pointer' : 'default',
               outline: 'none',
+              '&:focus-visible': {
+                outline: `2px solid ${theme.palette.primary.main}`,
+                outlineOffset: 2,
+              },
             }}
           >
             <ToastViewport

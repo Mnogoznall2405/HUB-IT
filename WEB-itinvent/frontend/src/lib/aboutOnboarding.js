@@ -1,3 +1,9 @@
+import {
+  safeSessionGetItem,
+  safeSessionRemoveItem,
+  safeSessionSetItem,
+} from './safeStorage';
+
 export const ABOUT_RETURN_TO_STORAGE_KEY = 'hubit.auth.return-to';
 
 const BLOCKED_RETURN_PATHS = new Set(['/login', '/about']);
@@ -32,27 +38,24 @@ export function normalizeInternalReturnPath(value) {
 
 export function rememberPostAuthReturnPath(value) {
   const safePath = normalizeInternalReturnPath(value);
-  if (!safePath || typeof window === 'undefined') return '';
-  window.sessionStorage.setItem(ABOUT_RETURN_TO_STORAGE_KEY, safePath);
+  if (!safePath) return '';
+  safeSessionSetItem(ABOUT_RETURN_TO_STORAGE_KEY, safePath);
   return safePath;
 }
 
 export function peekPostAuthReturnPath() {
-  if (typeof window === 'undefined') return '';
   const safePath = normalizeInternalReturnPath(
-    window.sessionStorage.getItem(ABOUT_RETURN_TO_STORAGE_KEY),
+    safeSessionGetItem(ABOUT_RETURN_TO_STORAGE_KEY),
   );
   if (!safePath) {
-    window.sessionStorage.removeItem(ABOUT_RETURN_TO_STORAGE_KEY);
+    safeSessionRemoveItem(ABOUT_RETURN_TO_STORAGE_KEY);
   }
   return safePath;
 }
 
 export function consumePostAuthReturnPath() {
   const safePath = peekPostAuthReturnPath();
-  if (typeof window !== 'undefined') {
-    window.sessionStorage.removeItem(ABOUT_RETURN_TO_STORAGE_KEY);
-  }
+  safeSessionRemoveItem(ABOUT_RETURN_TO_STORAGE_KEY);
   return safePath;
 }
 

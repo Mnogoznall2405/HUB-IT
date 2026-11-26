@@ -100,7 +100,7 @@ describe('SharedFolder page', () => {
 
     fireEvent.click(screen.getByTestId('shared-folder-download-all'));
 
-    expect(await screen.findByText(/Папка недоступна/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Файл недоступен/i)).toBeInTheDocument();
     expect(screen.getByTestId('shared-folder-file-f1')).toBeInTheDocument();
   });
 });

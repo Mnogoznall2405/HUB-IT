@@ -47,60 +47,54 @@ export default function BranchList({
               overflow: 'hidden',
             }}
           >
-            <CardActionArea
-              onClick={() => onBranchClick(branch)}
-              sx={{ p: 0, height: '100%' }}
-            >
-              <Box sx={{ p: 2 }}>
-                <Stack direction="row" justifyContent="space-between" alignItems="flex-start">
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="h6" noWrap>{branch.name}</Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                      {branch.branch_code}
-                    </Typography>
-                  </Box>
-                  {canEdit && (
-                    <Stack direction="row" spacing={0.5} onClick={(e) => e.stopPropagation()}>
-                      <IconButton
-                        aria-label={`Редактировать филиал ${branch.name}`}
-                        size="small"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (onEditClick) onEditClick(branch);
-                        }}
-                        sx={{ bgcolor: ui.actionBg, '&:hover': { bgcolor: ui.actionHover }, minWidth: 36, minHeight: 36 }}
-                      >
-                        <EditIcon fontSize="small" />
-                      </IconButton>
-                      <IconButton
-                        aria-label={`Удалить филиал ${branch.name}`}
-                        size="small"
-                        color="error"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (onDeleteClick) onDeleteClick(branch);
-                        }}
-                        sx={{ bgcolor: ui.actionBg, '&:hover': { bgcolor: ui.actionHover }, minWidth: 36, minHeight: 36 }}
-                      >
-                        <DeleteIcon fontSize="small" />
-                      </IconButton>
-                    </Stack>
-                  )}
-                </Stack>
-                <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap">
-                  <Chip size="small" label={`Уст: ${branch.devices_count || 0}`} />
-                  <Chip size="small" label={`Порты: ${branch.ports_count || 0}`} />
-                  <Chip size="small" label={`Роз: ${branch.sockets_count || 0}`} />
-                  <Chip size="small" label={`Карты: ${branch.maps_count || 0}`} />
-                  <Chip size="small" label={`Точ: ${branch.map_points_count || 0}`} />
-                </Stack>
-                {branch.default_site_code && (
-                  <Typography variant="body2" color="primary" sx={{ mt: 1 }}>
-                    Код сайта: {branch.default_site_code}
+            {/* Кликабельная область и кнопки действий — siblings: вложенные
+                <button> внутри <button> CardActionArea — невалидный DOM. */}
+            <Stack direction="row" alignItems="stretch" sx={{ height: '100%' }}>
+              <CardActionArea
+                onClick={() => onBranchClick(branch)}
+                sx={{ p: 0, flex: 1, minWidth: 0 }}
+              >
+                <Box sx={{ p: 2 }}>
+                  <Typography variant="h6" noWrap>{branch.name}</Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                    {branch.branch_code}
                   </Typography>
-                )}
-              </Box>
-            </CardActionArea>
+                  <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap">
+                    <Chip size="small" label={`Уст: ${branch.devices_count || 0}`} />
+                    <Chip size="small" label={`Порты: ${branch.ports_count || 0}`} />
+                    <Chip size="small" label={`Роз: ${branch.sockets_count || 0}`} />
+                    <Chip size="small" label={`Карты: ${branch.maps_count || 0}`} />
+                    <Chip size="small" label={`Точ: ${branch.map_points_count || 0}`} />
+                  </Stack>
+                  {branch.default_site_code && (
+                    <Typography variant="body2" color="primary" sx={{ mt: 1 }}>
+                      Код сайта: {branch.default_site_code}
+                    </Typography>
+                  )}
+                </Box>
+              </CardActionArea>
+              {canEdit && (
+                <Stack direction="column" spacing={0.5} sx={{ p: 1, flexShrink: 0, justifyContent: 'flex-start' }}>
+                  <IconButton
+                    aria-label={`Редактировать филиал ${branch.name}`}
+                    size="small"
+                    onClick={() => onEditClick?.(branch)}
+                    sx={{ bgcolor: ui.actionBg, '&:hover': { bgcolor: ui.actionHover }, minWidth: 36, minHeight: 36 }}
+                  >
+                    <EditIcon fontSize="small" />
+                  </IconButton>
+                  <IconButton
+                    aria-label={`Удалить филиал ${branch.name}`}
+                    size="small"
+                    color="error"
+                    onClick={() => onDeleteClick?.(branch)}
+                    sx={{ bgcolor: ui.actionBg, '&:hover': { bgcolor: ui.actionHover }, minWidth: 36, minHeight: 36 }}
+                  >
+                    <DeleteIcon fontSize="small" />
+                  </IconButton>
+                </Stack>
+              )}
+            </Stack>
           </Card>
         </Grid>
       ))}

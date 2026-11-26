@@ -574,8 +574,16 @@ export default function SharedFile() {
   const location = useLocation();
 
   useEffect(() => {
-    const timerId = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(timerId);
+    const tick = () => setNowMs(Date.now());
+    const onVisibility = () => { if (document.visibilityState === 'visible') tick(); };
+    const timerId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') tick();
+    }, 1000);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.clearInterval(timerId);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, []);
 
   useEffect(() => {

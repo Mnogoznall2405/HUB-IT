@@ -35,6 +35,7 @@ function InteractiveMapCanvas({
   const dragRef = useRef({ startX: 0, startY: 0, offsetX: 0, offsetY: 0, moved: false });
   const pointDragRef = useRef({ active: false, pointId: null, pointerId: null, moved: false });
   const activePointersRef = useRef(new Map());
+  const viewRef = useRef(null);
   const pinchRef = useRef({
     active: false,
     startDistance: 0,
@@ -134,6 +135,22 @@ function InteractiveMapCanvas({
     pinchRef.current.active = false;
   }, [imageUrl]);
 
+  viewRef.current = { offset, scale, baseSize };
+
+  // Pan clamp: keep at least PAN_MARGIN px of the map inside the viewport
+  // on each axis so the map cannot be dragged fully off-screen (FE-0151).
+  const PAN_MARGIN = 80;
+  const clampOffset = useCallback((x, y, s = scale) => {
+    const container = containerRef.current;
+    if (!container || !baseSize.width || !baseSize.height) return { x, y };
+    const contentW = baseSize.width * s;
+    const contentH = baseSize.height * s;
+    return {
+      x: clamp(x, PAN_MARGIN - contentW, container.clientWidth - PAN_MARGIN),
+      y: clamp(y, PAN_MARGIN - contentH, container.clientHeight - PAN_MARGIN),
+    };
+  }, [baseSize.height, baseSize.width, scale]);
+
   const centerOnPoint = useCallback(
     (pointId) => {
       if (!pointId) return;
@@ -144,9 +161,9 @@ function InteractiveMapCanvas({
       const targetY = Number(point.y_ratio || 0) * baseSize.height;
       const cx = container.clientWidth / 2;
       const cy = container.clientHeight / 2;
-      setOffset({ x: cx - targetX * scale, y: cy - targetY * scale });
+      setOffset(clampOffset(cx - targetX * scale, cy - targetY * scale));
     },
-    [baseSize.height, baseSize.width, points, scale]
+    [baseSize.height, baseSize.width, clampOffset, points, scale]
   );
 
   useEffect(() => {
@@ -172,13 +189,10 @@ function InteractiveMapCanvas({
     setOffset((prev) => {
       const worldX = (ox - prev.x) / scale;
       const worldY = (oy - prev.y) / scale;
-      return {
-        x: ox - worldX * nextScale,
-        y: oy - worldY * nextScale,
-      };
+      return clampOffset(ox - worldX * nextScale, oy - worldY * nextScale, nextScale);
     });
     setScale(nextScale);
-  }, [scale]);
+  }, [clampOffset, scale]);
 
   const handleWheel = useCallback((event) => {
     event.preventDefault();
@@ -202,6 +216,12 @@ function InteractiveMapCanvas({
 
   const handlePointerDown = (event) => {
     if (disabled) return;
+    // The marker flag can go stale: marker pointerup/cancel may never reach
+    // us (disabled press sets it without activating pointDragRef, or the
+    // browser drops capture). Only trust it while a point drag is live.
+    if (isPointPointerDownRef.current && !pointDragRef.current.active) {
+      isPointPointerDownRef.current = false;
+    }
     if (event.target?.closest?.('[data-map-point="1"]') || isPointPointerDownRef.current) {
       return;
     }
@@ -255,10 +275,11 @@ function InteractiveMapCanvas({
         const rect = containerRef.current?.getBoundingClientRect();
         const ox = mid.x - (rect?.left || 0);
         const oy = mid.y - (rect?.top || 0);
-        setOffset({
-          x: ox - pinchRef.current.worldX * nextScale,
-          y: oy - pinchRef.current.worldY * nextScale,
-        });
+        setOffset(clampOffset(
+          ox - pinchRef.current.worldX * nextScale,
+          oy - pinchRef.current.worldY * nextScale,
+          nextScale,
+        ));
         setScale(nextScale);
         dragRef.current.moved = true;
       }
@@ -271,10 +292,10 @@ function InteractiveMapCanvas({
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
       dragRef.current.moved = true;
     }
-    setOffset({
-      x: dragRef.current.offsetX + dx,
-      y: dragRef.current.offsetY + dy,
-    });
+    setOffset(clampOffset(
+      dragRef.current.offsetX + dx,
+      dragRef.current.offsetY + dy,
+    ));
   };
 
   const handlePointerUp = (event) => {
@@ -386,6 +407,309 @@ function InteractiveMapCanvas({
     </svg>
   ), []);
 
+  // Memoized marker layer: pan/zoom writes offset/scale state on every
+  // pointermove — keep the marker subtree stable across renders (FE-0031).
+  const markersLayer = useMemo(
+    () => clusteredPoints.map((cluster) => {
+              if (cluster.points.length === 1) {
+                const point = cluster.points[0];
+                const pointId = Number(point.id || 0);
+                const isSelected = pointId === Number(selectedPointId);
+                const isFocused = pointId === Number(focusPointId);
+                const isBeingDragged = point.isBeingDragged;
+                const displayXRatio = point.displayXRatio;
+                const displayYRatio = point.displayYRatio;
+
+                // 1. Уменьшаем размеры маркеров
+                const pinSize = mobile ? (isSelected ? 4 : 3) : (isSelected ? 24 : 16);
+
+                // 2. Логика цвета
+                const isSocket = !!point.patch_panel_port;
+                const isConnected = !!(point.port_name || point.device_code);
+                const isEmptySocket = isSocket && !isConnected;
+
+                let baseColor = '#1976d2';
+                if (isEmptySocket) baseColor = '#757575';
+
+                const pinColor = point.color || (isSelected ? '#ed6c02' : baseColor);
+                const label = getPointLabel(point);
+                return (
+                  <Box key={cluster.id}>
+                    <Tooltip
+                      title={
+                        <Typography variant="caption" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', m: 0, lineHeight: 1.5, fontSize: '0.78rem' }}>
+                          {buildPointTooltip(point)}
+                        </Typography>
+                      }
+                      arrow
+                      placement="top"
+                      enterDelay={200}
+                      leaveDelay={100}
+                    >
+                      <Box
+                        data-map-point="1"
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Точка ${point.patch_panel_port || point.device_code || point.port_name || pointId}`}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            onPointSelect?.(point);
+                          }
+                        }}
+                        onPointerDown={(event) => {
+                          isPointPointerDownRef.current = true;
+                          if (disabled) return;
+                          event.stopPropagation();
+                          pointDragRef.current = {
+                            active: true,
+                            pointId: pointId,
+                            pointerId: event.pointerId,
+                            moved: false,
+                          };
+                          event.currentTarget.setPointerCapture(event.pointerId);
+                        }}
+                        onPointerMove={(event) => {
+                          if (!pointDragRef.current.active || pointDragRef.current.pointerId !== event.pointerId) return;
+                          if (!onPointDrop) return;
+                          pointDragRef.current.moved = true;
+                          const container = containerRef.current;
+                          const view = viewRef.current;
+                          if (!container || !view?.baseSize.width || !view?.baseSize.height) return;
+                          const rect = container.getBoundingClientRect();
+                          const x = (event.clientX - rect.left - view.offset.x) / view.scale;
+                          const y = (event.clientY - rect.top - view.offset.y) / view.scale;
+                          setDraggedPoint({
+                            id: pointId,
+                            xRatio: clamp(x / view.baseSize.width, 0, 1),
+                            yRatio: clamp(y / view.baseSize.height, 0, 1)
+                          });
+                        }}
+                        onPointerUp={(event) => {
+                          if (!pointDragRef.current.active || pointDragRef.current.pointerId !== event.pointerId) return;
+                          event.stopPropagation();
+                          isPointPointerDownRef.current = false;
+                          pointDragRef.current.active = false;
+                          if (event.currentTarget.releasePointerCapture) {
+                            try { event.currentTarget.releasePointerCapture(event.pointerId); } catch (e) { }
+                          }
+
+                          if (pointDragRef.current.moved && draggedPoint && onPointDrop) {
+                            onPointDrop(pointId, draggedPoint.xRatio, draggedPoint.yRatio);
+                          }
+                          setDraggedPoint(null);
+                          pointDragRef.current.active = false;
+                        }}
+                        onPointerCancel={() => {
+                          isPointPointerDownRef.current = false;
+                          pointDragRef.current.active = false;
+                          setDraggedPoint(null);
+                        }}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (!pointDragRef.current.moved) {
+                            onPointSelect?.(point);
+                          }
+                          pointDragRef.current.moved = false;
+                        }}
+                        sx={{
+                          position: 'absolute',
+                          left: `${displayXRatio * 100}%`,
+                          top: `${displayYRatio * 100}%`,
+                          transform: 'translate(-50%, -100%)',
+                          zIndex: isSelected ? 5 : isFocused ? 4 : 3,
+                          cursor: isBeingDragged ? 'grabbing' : 'pointer',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          transition: isBeingDragged ? 'none' : 'transform 0.15s ease',
+                          '&:hover': { transform: isBeingDragged ? 'translate(-50%, -100%)' : 'translate(-50%, -100%) scale(1.15)', zIndex: 6 },
+                        }}
+                      >
+                        <PinMarker color={pinColor} size={pinSize} selected={isSelected} focused={isFocused} />
+                        {label && !mobile && (
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              mt: '-2px',
+                              px: 0.5,
+                              py: 0,
+                              fontSize: isSelected ? '0.65rem' : '0.58rem',
+                              fontWeight: 700,
+                              bgcolor: ui.isDark ? 'rgba(23,26,31,0.88)' : 'rgba(255,255,255,0.94)',
+                              color: theme.palette.text.primary,
+                              border: '1px solid',
+                              borderColor: ui.borderSoft,
+                              borderRadius: 0.5,
+                              lineHeight: 1.3,
+                              whiteSpace: 'nowrap',
+                              pointerEvents: 'none',
+                            }}
+                          >
+                            {label}
+                          </Typography>
+                        )}
+                      </Box>
+                    </Tooltip>
+                  </Box>
+                );
+              } else {
+                // Если это кластер из нескольких точек
+                const isSelected = cluster.points.some(p => Number(p.id) === Number(selectedPointId));
+                const isFocused = cluster.points.some(p => Number(p.id) === Number(focusPointId));
+                const clusterBeingDragged = draggedPoint && draggedPoint.clusterId === cluster.id;
+
+                // Текст кластера: разбиваем на массив строк для вывода в столбик
+                const clusterTextLines = cluster.points
+                  .map(p => p.patch_panel_port ? p.patch_panel_port : (p.device_code || String(p.id)));
+
+                // Удаляем логику фона-градиента, фон будет белой плашкой с рамкой
+                const getPointColor = (p) => {
+                  const pointId = Number(p.id || 0);
+                  if (pointId === Number(selectedPointId)) return '#ed6c02'; // orange (selected)
+
+                  const isSocket = !!p.patch_panel_port;
+                  const isConnected = !!(p.port_name || p.device_code);
+                  return (isSocket && !isConnected) ? '#757575' : '#1976d2'; // grey for empty, blue for connected
+                };
+
+                // Генерируем Tooltip для всех точек в кластере
+                const clusterTooltip = cluster.points.map(p => buildPointTooltip(p)).join('\n\n---\n\n');
+                const lastPoint = cluster.points[cluster.points.length - 1]; // Для клика берем одну из точек
+
+                return (
+                  <Box key={cluster.id}>
+                    <Tooltip
+                      title={
+                        <Typography variant="caption" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', m: 0, lineHeight: 1.5, fontSize: '0.78rem' }}>
+                          {clusterTooltip}
+                        </Typography>
+                      }
+                      arrow
+                      placement="top"
+                      enterDelay={200}
+                      leaveDelay={100}
+                    >
+                      <Box
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Кластер: ${cluster.points.length} точек`}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            onPointSelect?.(lastPoint);
+                          }
+                        }}
+                        onPointerDown={(event) => {
+                          isPointPointerDownRef.current = true;
+                          if (disabled) return;
+                          event.stopPropagation();
+                          pointDragRef.current = {
+                            active: true,
+                            pointId: null, // не одна точка
+                            clusterId: cluster.id,
+                            ids: cluster.points.map(p => p.id), // сохраняем все ID кластера
+                            pointerId: event.pointerId,
+                            moved: false,
+                          };
+                          event.currentTarget.setPointerCapture(event.pointerId);
+                        }}
+                        onPointerMove={(event) => {
+                          if (!pointDragRef.current.active || pointDragRef.current.pointerId !== event.pointerId) return;
+                          if (!onPointDrop) return;
+                          pointDragRef.current.moved = true;
+                          const container = containerRef.current;
+                          const view = viewRef.current;
+                          if (!container || !view?.baseSize.width || !view?.baseSize.height) return;
+                          const rect = container.getBoundingClientRect();
+                          const x = (event.clientX - rect.left - view.offset.x) / view.scale;
+                          const y = (event.clientY - rect.top - view.offset.y) / view.scale;
+                          setDraggedPoint({
+                            clusterId: cluster.id,
+                            ids: cluster.points.map(p => p.id),
+                            xRatio: clamp(x / view.baseSize.width, 0, 1),
+                            yRatio: clamp(y / view.baseSize.height, 0, 1)
+                          });
+                        }}
+                        onPointerUp={(event) => {
+                          if (!pointDragRef.current.active || pointDragRef.current.pointerId !== event.pointerId) return;
+                          event.stopPropagation();
+                          isPointPointerDownRef.current = false;
+                          pointDragRef.current.active = false;
+                          if (event.currentTarget.releasePointerCapture) {
+                            try { event.currentTarget.releasePointerCapture(event.pointerId); } catch (e) { }
+                          }
+
+                          if (pointDragRef.current.moved && draggedPoint && draggedPoint.clusterId === cluster.id && onPointDrop) {
+                            onPointDrop(draggedPoint.ids, draggedPoint.xRatio, draggedPoint.yRatio);
+                          }
+                          setDraggedPoint(null);
+                          pointDragRef.current.active = false;
+                        }}
+                        onPointerCancel={() => {
+                          isPointPointerDownRef.current = false;
+                          pointDragRef.current.active = false;
+                          setDraggedPoint(null);
+                        }}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (!pointDragRef.current.moved) {
+                            onPointSelect?.(lastPoint);
+                          }
+                          pointDragRef.current.moved = false;
+                        }}
+                        sx={{
+                          position: 'absolute',
+                          left: `${cluster.centerX * 100}%`,
+                          top: `${cluster.centerY * 100}%`,
+                          transform: 'translate(-50%, -50%)', // Центруем кружок
+                          zIndex: isSelected ? 5 : isFocused ? 4 : 3,
+                          cursor: clusterBeingDragged ? 'grabbing' : 'pointer',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          minWidth: mobile ? 8 : 28,
+                          height: 'auto',
+                          padding: mobile ? '0px 1px' : '3px 6px',
+                          borderRadius: mobile ? '2px' : '8px',
+                          bgcolor: '#fff',
+                          color: '#1f2328',
+                          fontWeight: 'bold',
+                          fontSize: mobile ? '0.28rem' : '0.68rem',
+                          lineHeight: 1.15,
+                          boxShadow: ui.shellShadow,
+                          border: '1px solid',
+                          borderColor: (isSelected || isFocused)
+                            ? alpha(theme.palette.warning.main, ui.isDark ? 0.56 : 0.34)
+                            : alpha('#1f2328', ui.isDark ? 0.18 : 0.14),
+                          transition: 'transform 0.15s ease',
+                          '&:hover': { transform: 'translate(-50%, -50%) scale(1.15)', zIndex: 6 },
+                          ...((isSelected || isFocused) && {
+                            animation: 'pulse 1.5s infinite',
+                            '@keyframes pulse': {
+                              '0%': { boxShadow: `0 0 0 0 ${alpha(theme.palette.warning.main, 0.52)}` },
+                              '70%': { boxShadow: `0 0 0 10px ${alpha(theme.palette.warning.main, 0)}` },
+                              '100%': { boxShadow: `0 0 0 0 ${alpha(theme.palette.warning.main, 0)}` },
+                            }
+                          })
+                        }}
+                      >
+                        {cluster.points.map((p, idx) => {
+                          const text = p.patch_panel_port ? p.patch_panel_port : (p.device_code || String(p.id));
+                          return (
+                            <div key={idx} style={{ whiteSpace: 'nowrap', color: getPointColor(p) }}>{text}</div>
+                          );
+                        })}
+                      </Box>
+                    </Tooltip>
+                  </Box>
+                );
+              }
+            }),
+    [clusteredPoints, selectedPointId, focusPointId, draggedPoint, mobile, disabled, onPointDrop, onPointSelect, buildPointTooltip, getPointLabel, PinMarker, ui, theme],
+  );
+
   return (
     <Box sx={{ position: 'relative' }}>
       {/* ─── Zoom controls ─── */}
@@ -476,272 +800,7 @@ function InteractiveMapCanvas({
               style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', pointerEvents: 'none' }}
             />
 
-            {clusteredPoints.map((cluster) => {
-              // Если в кластере только одна точка
-              if (cluster.points.length === 1) {
-                const point = cluster.points[0];
-                const pointId = Number(point.id || 0);
-                const isSelected = pointId === Number(selectedPointId);
-                const isFocused = pointId === Number(focusPointId);
-                const isBeingDragged = point.isBeingDragged;
-                const displayXRatio = point.displayXRatio;
-                const displayYRatio = point.displayYRatio;
-
-                // 1. Уменьшаем размеры маркеров
-                const pinSize = mobile ? (isSelected ? 4 : 3) : (isSelected ? 24 : 16);
-
-                // 2. Логика цвета
-                const isSocket = !!point.patch_panel_port;
-                const isConnected = !!(point.port_name || point.device_code);
-                const isEmptySocket = isSocket && !isConnected;
-
-                let baseColor = '#1976d2';
-                if (isEmptySocket) baseColor = '#757575';
-
-                const pinColor = point.color || (isSelected ? '#ed6c02' : baseColor);
-                const label = getPointLabel(point);
-                return (
-                  <Box key={cluster.id}>
-                    <Tooltip
-                      title={
-                        <Typography variant="caption" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', m: 0, lineHeight: 1.5, fontSize: '0.78rem' }}>
-                          {buildPointTooltip(point)}
-                        </Typography>
-                      }
-                      arrow
-                      placement="top"
-                      enterDelay={200}
-                      leaveDelay={100}
-                    >
-                      <Box
-                        data-map-point="1"
-                        onPointerDown={(event) => {
-                          isPointPointerDownRef.current = true;
-                          if (disabled) return;
-                          event.stopPropagation();
-                          pointDragRef.current = {
-                            active: true,
-                            pointId: pointId,
-                            pointerId: event.pointerId,
-                            moved: false,
-                          };
-                          event.currentTarget.setPointerCapture(event.pointerId);
-                        }}
-                        onPointerMove={(event) => {
-                          if (!pointDragRef.current.active || pointDragRef.current.pointerId !== event.pointerId) return;
-                          if (!onPointDrop) return;
-                          pointDragRef.current.moved = true;
-                          const container = containerRef.current;
-                          if (!container || !baseSize.width || !baseSize.height) return;
-                          const rect = container.getBoundingClientRect();
-                          const x = (event.clientX - rect.left - offset.x) / scale;
-                          const y = (event.clientY - rect.top - offset.y) / scale;
-                          setDraggedPoint({
-                            id: pointId,
-                            xRatio: clamp(x / baseSize.width, 0, 1),
-                            yRatio: clamp(y / baseSize.height, 0, 1)
-                          });
-                        }}
-                        onPointerUp={(event) => {
-                          if (!pointDragRef.current.active || pointDragRef.current.pointerId !== event.pointerId) return;
-                          event.stopPropagation();
-                          pointDragRef.current.active = false;
-                          if (event.currentTarget.releasePointerCapture) {
-                            try { event.currentTarget.releasePointerCapture(event.pointerId); } catch (e) { }
-                          }
-
-                          if (pointDragRef.current.moved && draggedPoint && onPointDrop) {
-                            onPointDrop(pointId, draggedPoint.xRatio, draggedPoint.yRatio);
-                          }
-                          setDraggedPoint(null);
-                          pointDragRef.current.active = false;
-                        }}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (!pointDragRef.current.moved) {
-                            onPointSelect?.(point);
-                          }
-                          pointDragRef.current.moved = false;
-                        }}
-                        sx={{
-                          position: 'absolute',
-                          left: `${displayXRatio * 100}%`,
-                          top: `${displayYRatio * 100}%`,
-                          transform: 'translate(-50%, -100%)',
-                          zIndex: isSelected ? 5 : isFocused ? 4 : 3,
-                          cursor: isBeingDragged ? 'grabbing' : 'pointer',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'center',
-                          transition: isBeingDragged ? 'none' : 'transform 0.15s ease',
-                          '&:hover': { transform: isBeingDragged ? 'translate(-50%, -100%)' : 'translate(-50%, -100%) scale(1.15)', zIndex: 6 },
-                        }}
-                      >
-                        <PinMarker color={pinColor} size={pinSize} selected={isSelected} focused={isFocused} />
-                        {label && !mobile && (
-                          <Typography
-                            variant="caption"
-                            sx={{
-                              mt: '-2px',
-                              px: 0.5,
-                              py: 0,
-                              fontSize: isSelected ? '0.65rem' : '0.58rem',
-                              fontWeight: 700,
-                              bgcolor: ui.isDark ? 'rgba(23,26,31,0.88)' : 'rgba(255,255,255,0.94)',
-                              color: theme.palette.text.primary,
-                              border: '1px solid',
-                              borderColor: ui.borderSoft,
-                              borderRadius: 0.5,
-                              lineHeight: 1.3,
-                              whiteSpace: 'nowrap',
-                              pointerEvents: 'none',
-                            }}
-                          >
-                            {label}
-                          </Typography>
-                        )}
-                      </Box>
-                    </Tooltip>
-                  </Box>
-                );
-              } else {
-                // Если это кластер из нескольких точек
-                const isSelected = cluster.points.some(p => Number(p.id) === Number(selectedPointId));
-                const isFocused = cluster.points.some(p => Number(p.id) === Number(focusPointId));
-                const clusterBeingDragged = draggedPoint && draggedPoint.clusterId === cluster.id;
-
-                // Текст кластера: разбиваем на массив строк для вывода в столбик
-                const clusterTextLines = cluster.points
-                  .map(p => p.patch_panel_port ? p.patch_panel_port : (p.device_code || String(p.id)));
-
-                // Удаляем логику фона-градиента, фон будет белой плашкой с рамкой
-                const getPointColor = (p) => {
-                  const pointId = Number(p.id || 0);
-                  if (pointId === Number(selectedPointId)) return '#ed6c02'; // orange (selected)
-
-                  const isSocket = !!p.patch_panel_port;
-                  const isConnected = !!(p.port_name || p.device_code);
-                  return (isSocket && !isConnected) ? '#757575' : '#1976d2'; // grey for empty, blue for connected
-                };
-
-                // Генерируем Tooltip для всех точек в кластере
-                const clusterTooltip = cluster.points.map(p => buildPointTooltip(p)).join('\n\n---\n\n');
-                const lastPoint = cluster.points[cluster.points.length - 1]; // Для клика берем одну из точек
-
-                return (
-                  <Box key={cluster.id}>
-                    <Tooltip
-                      title={
-                        <Typography variant="caption" component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', m: 0, lineHeight: 1.5, fontSize: '0.78rem' }}>
-                          {clusterTooltip}
-                        </Typography>
-                      }
-                      arrow
-                      placement="top"
-                      enterDelay={200}
-                      leaveDelay={100}
-                    >
-                      <Box
-                        onPointerDown={(event) => {
-                          isPointPointerDownRef.current = true;
-                          if (disabled) return;
-                          event.stopPropagation();
-                          pointDragRef.current = {
-                            active: true,
-                            pointId: null, // не одна точка
-                            clusterId: cluster.id,
-                            ids: cluster.points.map(p => p.id), // сохраняем все ID кластера
-                            pointerId: event.pointerId,
-                            moved: false,
-                          };
-                          event.currentTarget.setPointerCapture(event.pointerId);
-                        }}
-                        onPointerMove={(event) => {
-                          if (!pointDragRef.current.active || pointDragRef.current.pointerId !== event.pointerId) return;
-                          if (!onPointDrop) return;
-                          pointDragRef.current.moved = true;
-                          const container = containerRef.current;
-                          if (!container || !baseSize.width || !baseSize.height) return;
-                          const rect = container.getBoundingClientRect();
-                          const x = (event.clientX - rect.left - offset.x) / scale;
-                          const y = (event.clientY - rect.top - offset.y) / scale;
-                          setDraggedPoint({
-                            clusterId: cluster.id,
-                            ids: cluster.points.map(p => p.id),
-                            xRatio: clamp(x / baseSize.width, 0, 1),
-                            yRatio: clamp(y / baseSize.height, 0, 1)
-                          });
-                        }}
-                        onPointerUp={(event) => {
-                          if (!pointDragRef.current.active || pointDragRef.current.pointerId !== event.pointerId) return;
-                          event.stopPropagation();
-                          pointDragRef.current.active = false;
-                          if (event.currentTarget.releasePointerCapture) {
-                            try { event.currentTarget.releasePointerCapture(event.pointerId); } catch (e) { }
-                          }
-
-                          if (pointDragRef.current.moved && draggedPoint && draggedPoint.clusterId === cluster.id && onPointDrop) {
-                            onPointDrop(draggedPoint.ids, draggedPoint.xRatio, draggedPoint.yRatio);
-                          }
-                          setDraggedPoint(null);
-                          pointDragRef.current.active = false;
-                        }}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (!pointDragRef.current.moved) {
-                            onPointSelect?.(lastPoint);
-                          }
-                          pointDragRef.current.moved = false;
-                        }}
-                        sx={{
-                          position: 'absolute',
-                          left: `${cluster.centerX * 100}%`,
-                          top: `${cluster.centerY * 100}%`,
-                          transform: 'translate(-50%, -50%)', // Центруем кружок
-                          zIndex: isSelected ? 5 : isFocused ? 4 : 3,
-                          cursor: clusterBeingDragged ? 'grabbing' : 'pointer',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          minWidth: mobile ? 8 : 28,
-                          height: 'auto',
-                          padding: mobile ? '0px 1px' : '3px 6px',
-                          borderRadius: mobile ? '2px' : '8px',
-                          bgcolor: '#fff',
-                          color: '#1f2328',
-                          fontWeight: 'bold',
-                          fontSize: mobile ? '0.28rem' : '0.68rem',
-                          lineHeight: 1.15,
-                          boxShadow: ui.shellShadow,
-                          border: '1px solid',
-                          borderColor: (isSelected || isFocused)
-                            ? alpha(theme.palette.warning.main, ui.isDark ? 0.56 : 0.34)
-                            : alpha('#1f2328', ui.isDark ? 0.18 : 0.14),
-                          transition: 'transform 0.15s ease',
-                          '&:hover': { transform: 'translate(-50%, -50%) scale(1.15)', zIndex: 6 },
-                          ...((isSelected || isFocused) && {
-                            animation: 'pulse 1.5s infinite',
-                            '@keyframes pulse': {
-                              '0%': { boxShadow: `0 0 0 0 ${alpha(theme.palette.warning.main, 0.52)}` },
-                              '70%': { boxShadow: `0 0 0 10px ${alpha(theme.palette.warning.main, 0)}` },
-                              '100%': { boxShadow: `0 0 0 0 ${alpha(theme.palette.warning.main, 0)}` },
-                            }
-                          })
-                        }}
-                      >
-                        {cluster.points.map((p, idx) => {
-                          const text = p.patch_panel_port ? p.patch_panel_port : (p.device_code || String(p.id));
-                          return (
-                            <div key={idx} style={{ whiteSpace: 'nowrap', color: getPointColor(p) }}>{text}</div>
-                          );
-                        })}
-                      </Box>
-                    </Tooltip>
-                  </Box>
-                );
-              }
-            })}
+            {markersLayer}
           </Box>
         ) : (
           <Box sx={{ p: 2 }}>

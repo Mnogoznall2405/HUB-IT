@@ -52,14 +52,17 @@ describe('DesktopProtocolHandoff', () => {
     vi.clearAllMocks();
   });
 
-  it('auto-launches the desktop protocol once and can stay in the browser', () => {
+  it('launches the desktop protocol only from the button and can stay in the browser', () => {
     renderHandoff();
 
     expect(screen.getByTestId('desktop-protocol-handoff')).toBeInTheDocument();
+    expect(handoffMocks.launch).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Подробнее' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Открыть приложение' }));
     expect(handoffMocks.launch).toHaveBeenCalledTimes(1);
     expect(handoffMocks.launch).toHaveBeenCalledWith('hubit://open/tasks?task=7');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Подробнее' }));
     fireEvent.click(screen.getByRole('button', { name: 'Остаться в браузере' }));
     expect(handoffMocks.skip).toHaveBeenCalledTimes(1);
     expect(handoffMocks.setPreference).not.toHaveBeenCalled();
@@ -90,6 +93,6 @@ describe('DesktopProtocolHandoff', () => {
     expect(screen.getByTestId('desktop-handoff-slot')).toContainElement(screen.getByTestId('desktop-protocol-handoff'));
     rerender(tree('second'));
     expect(screen.getByTestId('desktop-handoff-slot')).toContainElement(screen.getByTestId('desktop-protocol-handoff'));
-    expect(handoffMocks.launch).toHaveBeenCalledTimes(1);
+    expect(handoffMocks.launch).not.toHaveBeenCalled();
   });
 });

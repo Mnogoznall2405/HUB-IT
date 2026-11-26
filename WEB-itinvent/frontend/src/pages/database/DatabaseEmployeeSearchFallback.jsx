@@ -18,10 +18,12 @@ import PersonSearchOutlinedIcon from '@mui/icons-material/PersonSearchOutlined';
 
 const visuallyHiddenSx = {
   position: 'absolute',
-  width: 1,
-  height: 1,
+  // MUI sx treats numeric width/height <= 1 as a percentage, not pixels —
+  // '1px' keeps this live region at 1x1 so it cannot extend the scroll region.
+  width: '1px',
+  height: '1px',
   p: 0,
-  m: -1,
+  m: '-1px',
   overflow: 'hidden',
   clip: 'rect(0 0 0 0)',
   clipPath: 'inset(50%)',

@@ -96,7 +96,7 @@ describe('AdUsers', () => {
     vi.clearAllMocks();
     installMatchMedia();
     window.open = vi.fn();
-    hoisted.authUser = { role: 'operator' };
+    hoisted.authUser = { role: 'admin' };
     hoisted.hasPermission.mockImplementation((permission) => permission === 'ad_users.manage');
     hoisted.adUsersAPI.getImportCandidates.mockResolvedValue(candidates);
     hoisted.adUsersAPI.getSyncStatus.mockResolvedValue({ status: 'never', last_sync_at: null, result: null });

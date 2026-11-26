@@ -611,6 +611,12 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
   return (
     <Box
       data-testid="chat-ai-action-card"
+      // The card is an interactive surface inside the bubble: on mobile the
+      // bubble itself opens the message menu on click/long-press. Actions in
+      // the card must not fall through to that handler and cover the editor.
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+      onTouchStart={(event) => event.stopPropagation()}
       sx={{
         mt: 0.85,
         mb: 1.75,
@@ -1851,8 +1857,12 @@ export function ChatBubble({
               : selected ? `0 0 0 2px ${alpha(ui.accentText || theme.palette.primary.main, 0.16)}` : ui.shadowSoft,
             cursor: 'pointer',
             outline: 'none',
-            '&:focus, &:focus-visible': {
+            '&:focus': {
               outline: 'none',
+            },
+            '&:focus-visible': {
+              outline: `2px solid ${ui.accentText || theme.palette.primary.main}`,
+              outlineOffset: 2,
             },
           }}
         >

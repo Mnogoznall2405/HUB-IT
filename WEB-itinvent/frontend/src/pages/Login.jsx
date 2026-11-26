@@ -1,6 +1,5 @@
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import QRCode from 'qrcode';
 
 import { authAPI } from '../api/auth';
 import { windowsSsoAPI } from '../api/windowsSso';
@@ -84,7 +83,9 @@ function isCompleteBackupInput(value) {
   if (/^[A-Fa-f0-9]{4}-?[A-Fa-f0-9]{4}$/.test(trimmed)) {
     return true;
   }
-  return trimmed.length >= 6;
+  // Backup codes are 8-9 chars (optionally dashed); submitting at 6+ fired the
+  // request while the user was still typing the tail of the code.
+  return trimmed.replace(/-/g, '').length >= 8;
 }
 
 const PASSWORD_SUBMIT_LOCKOUT_COOLDOWN_MS = 2000;
@@ -93,6 +94,25 @@ function waitMs(ms) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
   });
+}
+
+const BACKEND_AUTH_ERROR_MESSAGES = {
+  'incorrect username or password': 'Неверное имя пользователя или пароль.',
+  'user is inactive': 'Учётная запись отключена. Обратитесь к администратору.',
+  'too many failed login attempts, try again later': 'Слишком много попыток входа. Подождите немного и попробуйте снова.',
+  'too many requests, try again later': 'Слишком много запросов. Подождите немного и попробуйте снова.',
+  'access denied from this network': 'Доступ запрещён из этой сети.',
+  'biometric login is disabled for internal network': 'Вход по биометрии отключён во внутренней сети.',
+  'windows sso is only available in the internal network': 'Вход через Windows доступен только во внутренней сети.',
+  'mobile device identifier is required': 'Не указан идентификатор устройства.',
+  'invalid assigned_database': 'Недопустимая база данных.',
+};
+
+// Backend `detail` strings are English; the login UI is Russian — localize the
+// known auth-server phrases and pass everything else through untouched.
+function localizeAuthErrorMessage(message) {
+  const text = String(message || '').trim();
+  return BACKEND_AUTH_ERROR_MESSAGES[text.toLowerCase()] || text;
 }
 
 function resolvePasswordLoginError(result) {
@@ -281,7 +301,9 @@ function InfoBanner({ tone = 'info', children, variant = 'inline' }) {
 
   return (
     <div
-      role="status"
+      // The toast shell already announces via its own role=status live region;
+      // a nested one here made screen readers read the notice twice.
+      role={variant === 'toast' ? undefined : 'status'}
       className={cn(
         'rounded-[18px] border px-4 py-3 text-sm leading-6',
         variant === 'toast'
@@ -506,6 +528,10 @@ function Login() {
     verifyPasskeyLogin,
     refreshTrustedDeviceAuth,
     verifyTrustedDeviceAuth,
+    setPostAuthUiHold,
+    isAuthenticated,
+    user,
+    refreshSession,
   } = useAuth();
 
   const [username, setUsername] = useState(readInitialLoginUsername);
@@ -548,6 +574,10 @@ function Login() {
   const [isCompactViewport, setIsCompactViewport] = useState(readCompactViewport);
 
   const usernameInputRef = useRef(null);
+  const loginContentRef = useRef(null);
+  const loginChromeRef = useRef(null);
+  const rememberDeviceContinueRef = useRef(null);
+  const dismissRememberDevicePromptRef = useRef(null);
   const passwordSubmitLockRef = useRef(false);
   const passkeyAttemptedRef = useRef(false);
   const windowsSsoAttemptedRef = useRef(false);
@@ -612,7 +642,7 @@ function Login() {
   }, [dismissLoginNotice]);
 
   const reportLoginError = useCallback((message) => {
-    showLoginNotice('error', message, 5200);
+    showLoginNotice('error', localizeAuthErrorMessage(message), 5200);
   }, [showLoginNotice]);
 
   const dismissVpnHint = useCallback(() => {
@@ -715,11 +745,11 @@ function Login() {
     const loginAccountName = username.trim() || String(setupData?.account_name || '').trim();
     let qrUri = alignOtpAuthAccountName(otpauthUri, loginAccountName);
 
-    QRCode.toDataURL(qrUri, {
+    import('qrcode').then((mod) => (mod.default || mod).toDataURL(qrUri, {
       errorCorrectionLevel: 'M',
       margin: 1,
       width: 220,
-    })
+    }))
       .then((dataUrl) => {
         if (!cancelled) {
           setTotpQrDataUrl(String(dataUrl || ''));
@@ -965,13 +995,27 @@ function Login() {
     usernameInputRef.current.focus();
   }, [loginModeLoading, step, passwordFormForced]);
 
+  // FE-0198: after a mid-enrollment reload the session is authenticated but
+  // still owes a trusted-device registration (external zone, zero devices).
+  // Auto-passkey and presentation cleanups must not tear down the required
+  // enrollment sheet while this holds.
+  const sessionRequiresDeviceEnrollment = Boolean(isAuthenticated?.())
+    && String(user?.network_zone || '').trim().toLowerCase() === 'external'
+    && Number(user?.discoverable_trusted_devices_count || 0) <= 0;
+
   const clearPasskeyPresentationLock = useCallback(() => {
-    setRememberDeviceOpen(false);
+    if (!rememberDeviceRequired || rememberDeviceUnsupported) {
+      setRememberDeviceOpen(false);
+    }
     resetLoginPagePresentation({
       logContext: 'clearPasskeyPresentationLock',
       hypothesisId: 'H4',
     });
-  }, []);
+  }, [rememberDeviceRequired, rememberDeviceUnsupported]);
+
+  // If this page unmounts while a post-auth UI step is pending (user left
+  // /login via SPA navigation), the hold must not outlive its owner.
+  useEffect(() => () => setPostAuthUiHold(false), [setPostAuthUiHold]);
 
   useEffect(() => {
     if (typeof document === 'undefined') {
@@ -980,8 +1024,33 @@ function Login() {
     if (rememberDeviceOpen) {
       const previousOverflow = document.body.style.overflow;
       document.body.style.overflow = 'hidden';
+      const contentEl = loginContentRef.current;
+      if (contentEl) {
+        contentEl.setAttribute('inert', '');
+      }
+      const chromeEl = loginChromeRef.current;
+      if (chromeEl) {
+        chromeEl.setAttribute('inert', '');
+      }
+      const focusTarget = document.getElementById('trusted-device-label')
+        || rememberDeviceContinueRef.current;
+      focusTarget?.focus?.();
+      const onKeyDown = (event) => {
+        if (event.key === 'Escape') {
+          event.stopPropagation();
+          dismissRememberDevicePromptRef.current?.();
+        }
+      };
+      document.addEventListener('keydown', onKeyDown);
       return () => {
         document.body.style.overflow = previousOverflow;
+        if (contentEl) {
+          contentEl.removeAttribute('inert');
+        }
+        if (chromeEl) {
+          chromeEl.removeAttribute('inert');
+        }
+        document.removeEventListener('keydown', onKeyDown);
       };
     }
 
@@ -999,13 +1068,14 @@ function Login() {
       || networkZone !== 'external'
       || !biometricLoginEnabled
       || !webAuthnReady
+      || sessionRequiresDeviceEnrollment
       || passkeyAttemptedRef.current
     ) {
       return;
     }
     passkeyAttemptedRef.current = true;
     void attemptPasskeyLogin({ auto: true });
-  }, [loginModeLoading, step, networkZone, biometricLoginEnabled, webAuthnReady]);
+  }, [loginModeLoading, step, networkZone, biometricLoginEnabled, webAuthnReady, sessionRequiresDeviceEnrollment]);
 
   let portalChatReturn = false;
   try {
@@ -1100,18 +1170,22 @@ function Login() {
   }, [showLoginNotice]);
 
   const redirectAfterAuthentication = (userPayload = authenticatedUserRef.current) => {
-    // LoginRoute re-renders and navigates the moment AuthContext.user is set —
-    // it may consume the stored return path first. If the SPA already left
-    // /login, a second window.location.assign() would stomp that navigation.
+    // The post-auth UI hold is lifted exactly here, when this page commits the
+    // navigation itself. If the SPA already left /login (a hold was not taken),
+    // a second window.location.assign() would stomp that navigation.
+    setPostAuthUiHold(false);
     if (!window.location.pathname.startsWith('/login')) {
       return;
     }
-    const destination = resolvePostAuthenticationPath(userPayload);
     if (shouldForceCanonicalHost()) {
-      window.location.assign(buildCanonicalUrl(destination));
+      window.location.assign(buildCanonicalUrl(resolvePostAuthenticationPath(userPayload)));
       return;
     }
-    window.location.assign(destination);
+    // In-app navigation is owned by LoginRoute/PostAuthNavigate: every auth
+    // flow sets AuthContext.user before reaching this point, and the route
+    // guard peeks + consumes the stored return path on commit. A forced
+    // location.assign here used to reload the whole app (and raced the SPA
+    // navigation) after every passkey sign-in.
   };
 
   const closeRememberDevicePrompt = ({ redirect = true } = {}) => {
@@ -1133,6 +1207,7 @@ function Login() {
     }
     closeRememberDevicePrompt();
   };
+  dismissRememberDevicePromptRef.current = dismissRememberDevicePrompt;
 
   const applyRememberDeviceRegistrationMode = async ({ required = false } = {}) => {
     const registrationMode = await resolveTrustedDeviceRegistrationMode();
@@ -1179,6 +1254,24 @@ function Login() {
       redirectAfterAuthentication();
     }
   };
+
+  // FE-0198: reloading /login mid-enrollment must reopen the mandatory
+  // trusted-device sheet — the authenticated session alone must not drop the
+  // user into the hub. Step is still 'password' after a full reload, so the
+  // effect only fires outside the interactive post-auth flow.
+  const enrollmentGateOpenedRef = useRef(false);
+  useEffect(() => {
+    if (
+      step !== 'password'
+      || !sessionRequiresDeviceEnrollment
+      || rememberDeviceOpen
+      || enrollmentGateOpenedRef.current
+    ) {
+      return;
+    }
+    enrollmentGateOpenedRef.current = true;
+    void openRememberDevicePrompt({ enabled: true, required: true });
+  }, [step, sessionRequiresDeviceEnrollment, rememberDeviceOpen]);
 
   const revealPasswordFallback = (message = '') => {
     const text = String(message || '').trim();
@@ -1337,11 +1430,13 @@ function Login() {
       }
 
       const credential = await getPasskeyAssertion(optionsResult.public_key);
+      setPostAuthUiHold(true);
       const verifyResult = await verifyPasskeyLogin(
         optionsResult.challenge_id,
         encodeCredential(credential),
       );
       if (!verifyResult.success) {
+        setPostAuthUiHold(false);
         revealPasswordFallback(
           auto
             ? 'Passkey на этом устройстве не подтвердил вход. Продолжите вход по логину и паролю.'
@@ -1353,6 +1448,7 @@ function Login() {
       redirectAfterAuthentication(verifyResult.user || null);
       return true;
     } catch (passkeyError) {
+      setPostAuthUiHold(false);
       clearPasskeyPresentationLock();
       const friendlyMessage = extractWebAuthnErrorMessage(passkeyError, 'Не удалось подтвердить вход по биометрии');
       const overlayAudit = isAgentDebugLoggingEnabled() ? auditLoginPageOverlays() : { overlays: [] };
@@ -1403,13 +1499,19 @@ function Login() {
 
   const completeAuthenticatedRedirect = async (userPayload) => {
     authenticatedUserRef.current = userPayload || null;
-    if (shouldRequireTrustedDeviceEnrollment(userPayload)) {
-      await openRememberDevicePrompt({ enabled: true, required: true });
-      return;
-    }
-    if (shouldOfferOptionalTrustedDeviceEnrollment(userPayload)) {
-      await maybeOpenRememberDevicePrompt(true);
-      return;
+    try {
+      if (shouldRequireTrustedDeviceEnrollment(userPayload)) {
+        await openRememberDevicePrompt({ enabled: true, required: true });
+        return;
+      }
+      if (shouldOfferOptionalTrustedDeviceEnrollment(userPayload)) {
+        await maybeOpenRememberDevicePrompt(true);
+        return;
+      }
+    } catch (promptError) {
+      // Enrollment-mode detection must not strand an authenticated session on
+      // the login screen: fall back to the plain post-auth redirect.
+      console.error('Trusted-device prompt failed:', promptError);
     }
     redirectAfterAuthentication(userPayload);
   };
@@ -1427,10 +1529,12 @@ function Login() {
     setPassword(submittedPassword);
     dismissLoginNotice();
     setLoading(true);
+    setPostAuthUiHold(true);
     let result;
     try {
       result = await login(submittedUsername, submittedPassword);
     } catch {
+      setPostAuthUiHold(false);
       reportLoginError('Ошибка входа');
       passwordSubmitLockRef.current = false;
       setLoading(false);
@@ -1438,6 +1542,7 @@ function Login() {
     }
 
     if (!result.success) {
+      setPostAuthUiHold(false);
       reportLoginError(resolvePasswordLoginError(result));
       if (Number(result.statusCode) === 429) {
         await waitMs(PASSWORD_SUBMIT_LOCKOUT_COOLDOWN_MS);
@@ -1457,6 +1562,8 @@ function Login() {
       return;
     }
 
+    // 2FA challenge steps are pre-auth UI: the user is not committed yet.
+    setPostAuthUiHold(false);
     setLoginChallengeId(result.login_challenge_id || '');
     setTrustedDeviceAvailable(Boolean(result.trusted_devices_available));
     setTotpCode('');
@@ -1505,9 +1612,11 @@ function Login() {
   const submitTwoFactorSetup = async ({ autoContinue = false } = {}) => {
     dismissLoginNotice();
     setLoading(true);
+    setPostAuthUiHold(true);
     const result = await verifyTwoFactorSetup(loginChallengeId, totpCode.trim());
     setLoading(false);
     if (!result.success) {
+      setPostAuthUiHold(false);
       reportLoginError(result.error);
       return;
     }
@@ -1528,6 +1637,7 @@ function Login() {
   const submitTwoFactorLogin = async () => {
     dismissLoginNotice();
     setLoading(true);
+    setPostAuthUiHold(true);
     const result = await verifyTwoFactorLogin(
       loginChallengeId,
       useBackupCode
@@ -1536,6 +1646,7 @@ function Login() {
     );
     setLoading(false);
     if (!result.success) {
+      setPostAuthUiHold(false);
       reportLoginError(result.error);
       return;
     }
@@ -1628,6 +1739,7 @@ function Login() {
 
     try {
       const credential = await getPasskeyAssertion(optionsResult.public_key);
+      setPostAuthUiHold(true);
       const verifyResult = await verifyTrustedDeviceAuth(
         loginChallengeId,
         optionsResult.challenge_id,
@@ -1635,12 +1747,14 @@ function Login() {
       );
       setTrustedDeviceBusy(false);
       if (!verifyResult.success) {
+        setPostAuthUiHold(false);
         reportLoginError(verifyResult.error);
         return;
       }
       authenticatedUserRef.current = verifyResult.user || null;
       redirectAfterAuthentication(verifyResult.user || null);
     } catch (authError) {
+      setPostAuthUiHold(false);
       setTrustedDeviceBusy(false);
       reportLoginError(extractWebAuthnErrorMessage(authError, 'Не удалось подтвердить доверенное устройство'));
     }
@@ -1656,6 +1770,13 @@ function Login() {
         label: deviceLabel,
         platformOnly: rememberDeviceMode === 'platform',
       });
+      // Refresh the profile so discoverable_trusted_devices_count reflects the
+      // new credential — otherwise the FE-0198 route gate re-blocks navigation.
+      try {
+        await refreshSession?.();
+      } catch (refreshError) {
+        console.error('Post-enrollment profile refresh failed:', refreshError);
+      }
       closeRememberDevicePrompt();
     } catch (registerError) {
       console.error('Trusted device registration failed:', registerError);
@@ -1927,8 +2048,8 @@ function Login() {
                   <button
                     type="button"
                     onClick={() => setShowPassword((prev) => !prev)}
-                    aria-label="toggle password visibility"
-                    className="login-field-eye rounded-full p-1 text-white/72 transition hover:text-white"
+                    aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                    className="login-field-eye grid h-9 w-9 place-items-center rounded-full p-0 text-white/72 transition hover:text-white"
                   >
                     <EyeGlyph open={showPassword} className="h-5 w-5" />
                   </button>
@@ -2236,6 +2357,7 @@ function Login() {
 
   return (
     <div
+      role="main"
       data-testid={isCompactViewport ? 'login-mobile-layout' : 'login-desktop-layout'}
       className={cn(
         'relative min-h-[100dvh] w-full max-w-full overflow-x-hidden bg-[#07090c] text-white',
@@ -2268,17 +2390,20 @@ function Login() {
         />
       ) : null}
 
-      <LoginVpnHintBanner
-        visible={vpnHintVisible}
-        onDismiss={dismissVpnHint}
-        reducedMotion={prefersReducedMotion}
-      />
-      <LoginTopNotice
-        notice={topNotice}
-        reducedMotion={prefersReducedMotion}
-      />
+      <div ref={loginChromeRef}>
+        <LoginVpnHintBanner
+          visible={vpnHintVisible}
+          onDismiss={dismissVpnHint}
+          reducedMotion={prefersReducedMotion}
+        />
+        <LoginTopNotice
+          notice={topNotice}
+          reducedMotion={prefersReducedMotion}
+        />
+      </div>
 
       <div
+        ref={loginContentRef}
         className={cn(
           'relative z-10 mx-auto grid w-full max-w-[78rem] gap-6 md:grid-cols-[minmax(0,1fr)_minmax(27rem,31rem)]',
           isCompactViewport ? 'items-start py-2' : 'min-h-[calc(100dvh-42px)] items-center',
@@ -2344,6 +2469,7 @@ function Login() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="remember-device-title"
+            aria-describedby="remember-device-hint"
             data-testid="login-remember-device-dialog"
             className={cn(
               'fixed bottom-0 z-30 w-[calc(100vw-24px)] max-w-[31rem] overflow-hidden rounded-t-[28px] border border-white/10 bg-[#080b10] px-5 pb-5 pt-4 text-white shadow-[0_-20px_60px_rgba(2,6,23,0.58)] md:bottom-6 md:rounded-[28px]',
@@ -2360,7 +2486,7 @@ function Login() {
                   <div id="remember-device-title" className="text-xl font-semibold tracking-[-0.035em] text-white">
                     {rememberDialogTitle}
                   </div>
-                  <p className="text-sm leading-6 text-white/58">
+                  <p id="remember-device-hint" className="text-sm leading-6 text-white/58">
                     {rememberDeviceHint || 'Следующий внешний вход можно будет подтвердить системным passkey без ручного ввода кода.'}
                   </p>
                 </div>
@@ -2376,6 +2502,7 @@ function Login() {
                 <div className="flex flex-col gap-3 sm:flex-row">
                   <button
                     type="button"
+                    ref={rememberDeviceContinueRef}
                     onClick={dismissRememberDevicePrompt}
                     hidden={rememberDeviceRequired && !rememberDeviceUnsupported}
                     className={secondaryButtonClassName}
