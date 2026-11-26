@@ -22,7 +22,8 @@ snapshot_module = importlib.import_module("backend.services.mail_runtime_snapsho
 
 def _row(mailbox_id: str, label: str, email: str, *, primary: bool = False) -> dict:
     return {
-        "id": mailbox_id, "label": label, "mailbox_email": email, "mailbox_login": "",
+        "id": mailbox_id, "label": label, "mailbox_email": email, "mailbox_login": email,
+        "mailbox_password_enc": "stored-test-credential" if primary else "",
         "auth_mode": "stored_credentials" if primary else "primary_credentials",
         "is_primary": primary, "is_active": True, "sort_order": 0 if primary else 1,
     }
@@ -50,6 +51,7 @@ def test_stale_snapshot_without_the_new_mailbox_is_served_with_the_live_mailbox_
         lambda **kw: {
             "state": "stale", "source": "app_snapshot", "as_of": "2026-10-20T05:11:00+00:00", "last_error": "",
             "payload": {
+                "selected_mailbox": {"id": "a", "label": "Old label"},
                 "mailboxes": [{"id": "a", "mailbox_email": "main@example.test", "unread_count": 7,
                                "unread_count_state": "fresh", "is_selected": True}],
                 "messages": {"items": [{"id": "old-msg"}]},
@@ -67,6 +69,7 @@ def test_stale_snapshot_without_the_new_mailbox_is_served_with_the_live_mailbox_
     assert list(by_id) == ["a", "b"]  # HUB-IT is there although the snapshot predates it
     assert by_id["b"]["label"] == "HUB-IT"
     assert by_id["a"]["unread_count"] == 7 and by_id["a"]["is_selected"] is True  # counters survive
+    assert payload["selected_mailbox"]["label"] == "Main"
     assert payload["messages"]["items"] == [{"id": "old-msg"}]  # the rest of the snapshot is untouched
 
 

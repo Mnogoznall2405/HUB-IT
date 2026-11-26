@@ -1060,7 +1060,10 @@ function MailWorkspace() {
   });
 
   useEffect(() => {
-    refreshBootstrap({ force: false });
+    const checkMailAccess = () => void refreshBootstrapRef.current?.({ force: true });
+    checkMailAccess();
+    window.addEventListener('online', checkMailAccess);
+    return () => window.removeEventListener('online', checkMailAccess);
   }, [mailCacheScope]);
 
   useMailCredentialsGateFolderClear({

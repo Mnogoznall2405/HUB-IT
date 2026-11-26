@@ -1014,30 +1014,43 @@ async def get_mail_bootstrap(
             snapshot_state = str(snapshot.get("state") or "")
             # Serve fresh OR stale snapshot immediately; Exchange under chat load is 10s+.
             if snapshot_state in {"ok", "stale"} and isinstance(snapshot.get("payload"), dict):
-                bootstrap_source = "snapshot"
-                record_mail_source("snapshot")
-                if snapshot_state == "stale":
-                    _schedule_mail_bootstrap_refresh(
-                        user_id=int(current_user.id),
-                        mailbox_id=normalized_mailbox_id,
-                        limit=int(limit),
-                        snapshot_context=snapshot_context,
-                    )
-                # The snapshot may predate a connected/changed mailbox: take the list from the live rows.
-                live_mailboxes = await _run_in_mail_executor(
-                    mail_service.reconcile_mailbox_entries,
+                cached_payload = snapshot["payload"]
+                live_config, live_mailboxes = await _run_in_mail_executor(
+                    mail_service.reconcile_bootstrap_mailboxes,
                     user_id=int(current_user.id),
-                    entries=snapshot["payload"].get("mailboxes"),
+                    mailbox_id=normalized_mailbox_id,
+                    entries=cached_payload.get("mailboxes"),
                 )
-                # Always expose state=ok to UI so client SWR does not force a live Exchange roundtrip.
-                return {
-                    **snapshot["payload"],
-                    "mailboxes": live_mailboxes,
-                    "state": "ok",
-                    "source": snapshot["source"],
-                    "as_of": snapshot.get("as_of"),
-                    "last_error": snapshot.get("last_error") or "",
-                }
+                cached_config = cached_payload.get("selected_mailbox") or cached_payload.get("mailboxInfo") or {}
+                cached_id = _normalize_text(cached_config.get("id") or cached_config.get("mailbox_id"))
+                # The list can be cached, but access is current and the list must belong to this mailbox.
+                if (
+                    live_config
+                    and live_config.get("is_active")
+                    and live_config.get("mail_is_configured")
+                    and not live_config.get("mail_requires_password")
+                    and not live_config.get("mail_requires_relogin")
+                    and cached_id == _normalize_text(live_config.get("id"))
+                ):
+                    bootstrap_source = "snapshot"
+                    record_mail_source("snapshot")
+                    if snapshot_state == "stale":
+                        _schedule_mail_bootstrap_refresh(
+                            user_id=int(current_user.id),
+                            mailbox_id=normalized_mailbox_id,
+                            limit=int(limit),
+                            snapshot_context=snapshot_context,
+                        )
+                    return {
+                        **cached_payload,
+                        "selected_mailbox": live_config,
+                        "mailboxInfo": live_config,
+                        "mailboxes": live_mailboxes,
+                        "state": "ok",
+                        "source": snapshot["source"],
+                        "as_of": snapshot.get("as_of"),
+                        "last_error": snapshot.get("last_error") or "",
+                    }
         result, metrics = await _run_mail_call_with_metrics(
             mail_service.get_bootstrap,
             user_id=int(current_user.id),

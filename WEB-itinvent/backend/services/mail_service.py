@@ -753,23 +753,26 @@ class MailService:
         except Exception:
             logger.warning("mail bootstrap snapshot invalidation failed user_id=%s", user_id, exc_info=True)
 
-    def reconcile_mailbox_entries(self, *, user_id: int, entries: Any) -> Any:
-        """Rebuild the mailbox list of a cached bootstrap payload from the live mailbox rows.
-
-        Membership, label, activity and primary flag come from the database; unread counters and the
-        selected flag are carried over from the cached entries (no Exchange call). On any failure the
-        cached list is returned unchanged.
-        """
+    def reconcile_bootstrap_mailboxes(
+        self, *, user_id: int, mailbox_id: str | None, entries: Any,
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        """Read current access and mailbox metadata without contacting Exchange."""
         try:
             user = user_service.get_by_id(int(user_id))
             if not user:
-                return entries
+                return None, []
+            rows = self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=True)
+            if not rows:
+                return self._build_legacy_mail_config_payload(user=user), []
+            selected_row = select_mailbox_row(
+                rows, mailbox_id=mailbox_id, allow_inactive=True, fallback_to_primary_on_missing=True,
+            )
+            selected_id = _normalize_text(selected_row.get("id"))
             cached = {
                 _normalize_text(item.get("id") or item.get("mailbox_id")): item
                 for item in (entries if isinstance(entries, list) else [])
                 if isinstance(item, dict)
             }
-            rows = self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=True)
             result: list[dict[str, Any]] = []
             for row in rows:
                 previous = cached.get(_normalize_text(row.get("id"))) or {}
@@ -779,13 +782,14 @@ class MailService:
                         mailbox_row=row,
                         unread_count=int(previous.get("unread_count") or 0),
                         unread_count_state=_normalize_text(previous.get("unread_count_state"), "deferred"),
-                        selected=bool(previous.get("is_selected")),
+                        selected=_normalize_text(row.get("id")) == selected_id,
                     )
                 )
-            return result
+            selected = next(entry for entry in result if entry["is_selected"])
+            return {**selected, "mailbox_id": selected_id, "user_id": int(user_id), "username": user.get("username")}, result
         except Exception:
             logger.warning("mail bootstrap mailbox reconcile failed user_id=%s", user_id, exc_info=True)
-            return entries
+            return None, []
 
     def invalidate_user_cache(self, *, user_id: int, prefixes: list[str] | tuple[str, ...] | None = None) -> None:
         self._runtime_cache.invalidate_user(user_id=int(user_id), prefixes=prefixes)

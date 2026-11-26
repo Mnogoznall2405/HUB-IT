@@ -51,6 +51,14 @@ def _build_client():
     return TestClient(app)
 
 
+def _mock_current_bootstrap_mailbox(monkeypatch, **overrides):
+    mailbox = {"id": "mbox-1", "is_active": True, "mail_is_configured": True, **overrides}
+    monkeypatch.setattr(
+        mail_api_module.mail_service, "reconcile_bootstrap_mailboxes",
+        lambda **kw: (mailbox, [mailbox]),
+    )
+
+
 @pytest.mark.parametrize("multipart", [False, True])
 def test_it_request_retry_does_not_send_twice(monkeypatch, tmp_path, multipart):
     from conftest import copy_app_schema_for_url
@@ -153,13 +161,14 @@ def test_bootstrap_route_offloads_mail_call_and_logs_metrics(monkeypatch):
 def test_bootstrap_auto_uses_only_fresh_shared_snapshot(monkeypatch):
     client = _build_client()
     monkeypatch.setenv("MAIL_SHARED_SNAPSHOT_READ_ENABLED", "1")
+    _mock_current_bootstrap_mailbox(monkeypatch)
     monkeypatch.setattr(
         mail_api_module.mail_runtime_snapshot_service,
         "read",
         lambda **kwargs: {
             "state": "ok",
             "source": "app_snapshot",
-            "payload": {"mailboxes": [], "messages": {"items": [{"id": "snapshot-msg"}]}},
+            "payload": {"selected_mailbox": {"id": "mbox-1"}, "messages": {"items": [{"id": "snapshot-msg"}]}},
             "as_of": "2026-07-14T16:00:00+00:00",
             "last_error": "",
         },
@@ -186,30 +195,20 @@ def test_bootstrap_serves_stale_shared_snapshot_immediately(monkeypatch):
     """
     client = _build_client()
     monkeypatch.setenv("MAIL_SHARED_SNAPSHOT_READ_ENABLED", "1")
+    _mock_current_bootstrap_mailbox(monkeypatch)
     monkeypatch.setattr(
         mail_api_module.mail_runtime_snapshot_service,
         "read",
         lambda **kwargs: {
             "state": "stale",
             "source": "app_snapshot",
-            "payload": {"mailboxes": [], "messages": {"items": [{"id": "old-msg"}]}},
+            "payload": {"selected_mailbox": {"id": "mbox-1"}, "messages": {"items": [{"id": "old-msg"}]}},
             "as_of": "2026-07-14T08:00:00+00:00",
             "last_error": "",
         },
     )
 
-    monkeypatch.setenv("MAIL_SHARED_SNAPSHOT_READ_ENABLED", "1")
-    monkeypatch.setattr(
-        mail_api_module.mail_runtime_snapshot_service,
-        "read",
-        lambda **kwargs: {
-            "state": "stale",
-            "source": "app_snapshot",
-            "payload": {"mailboxes": [], "messages": {"items": [{"id": "old-msg"}]}},
-            "as_of": "2026-07-14T08:00:00+00:00",
-            "last_error": "",
-        },
-    )
+    monkeypatch.setattr(mail_api_module, "_schedule_mail_bootstrap_refresh", lambda **kw: None)
 
     async def _fake_run_mail_call_with_metrics(func, /, *args, **kwargs):
         return {
@@ -226,6 +225,34 @@ def test_bootstrap_serves_stale_shared_snapshot_immediately(monkeypatch):
     assert payload["state"] == "ok"
     assert payload["source"] == "app_snapshot"
     assert payload["messages"]["items"] == [{"id": "old-msg"}]
+
+
+@pytest.mark.parametrize("overrides", [
+    {"mail_requires_relogin": True},
+    {"is_active": False},
+    {"id": "different"},
+])
+def test_bootstrap_does_not_return_cached_messages_without_matching_current_access(monkeypatch, overrides):
+    client = _build_client()
+    monkeypatch.setenv("MAIL_SHARED_SNAPSHOT_READ_ENABLED", "1")
+    _mock_current_bootstrap_mailbox(monkeypatch, **overrides)
+    monkeypatch.setattr(
+        mail_api_module.mail_runtime_snapshot_service,
+        "read",
+        lambda **kw: {
+            "state": "ok",
+            "source": "app_snapshot",
+            "payload": {"selected_mailbox": {"id": "mbox-1"}, "messages": {"items": [{"id": "old-msg"}]}},
+        },
+    )
+
+    async def live_bootstrap(*args, **kw):
+        return {"messages": {"items": []}}, {}
+
+    monkeypatch.setattr(mail_api_module, "_run_mail_call_with_metrics", live_bootstrap)
+    response = client.get("/mail/bootstrap", params={"mailbox_id": "mbox-1"})
+    assert response.status_code == 200
+    assert response.json()["messages"]["items"] == []
 
 
 @pytest.mark.skip(reason="MAIL-AUDIT-029 D1 Variant A: wait for live Exchange before responding")

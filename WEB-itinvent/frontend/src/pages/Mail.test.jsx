@@ -1,10 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { clearSWRCache } from '../lib/swrCache';
+import { clearSWRCache, setSWRCache } from '../lib/swrCache';
 import { writeMailRecentMessageDetail, writeMailRecentBootstrap, writeMailRecentList } from '../lib/mailRecentCache';
 import { MAIL_SELECTED_MAILBOX_STORAGE_KEY } from '../components/mail/mailMailboxModel';
-import { buildMailListRequestContext } from '../components/mail/mailListModel';
+import { buildMailBootstrapCacheKey, buildMailListRequestContext } from '../components/mail/mailListModel';
 
 const {
   mockGetBootstrap,
@@ -1855,7 +1855,9 @@ describe('Mail read-state behavior', () => {
     });
   });
 
-  it('prompts for saved corporate credentials before loading mailbox', async () => {
+  it('prompts for corporate credentials on mobile even with a fresh cached inbox', async () => {
+    installMatchMedia({ mobile: true });
+    setSWRCache(buildMailBootstrapCacheKey({ scope: '100', limit: 20 }), buildBootstrapPayload());
     mockGetBootstrap.mockReset();
     mockGetBootstrap
       .mockResolvedValueOnce(buildBootstrapPayload({
@@ -1897,6 +1899,7 @@ describe('Mail read-state behavior', () => {
     });
 
     expect(mockGetBootstrap).toHaveBeenCalledTimes(1);
+    expect(mockGetMessage).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByLabelText('Логин Exchange'), { target: { value: 'user@zsgp.corp' } });
     fireEvent.change(screen.getByLabelText('Пароль от корпоративного компьютера'), { target: { value: 'Secret123!' } });

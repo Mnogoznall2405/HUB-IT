@@ -165,7 +165,7 @@ export default function useMailListDataController({
     flushPendingSnapshotHeadRefresh();
   }, [flushPendingSnapshotHeadRefresh, mailAccessReady]);
 
-  const applyBootstrapPayload = useCallback((payload, { applyList = true } = {}) => {
+  const applyBootstrapPayload = useCallback((payload, { applyList = true, applyMailboxConfig = true } = {}) => {
     const rawConfigPayload = payload?.selected_mailbox || payload?.mailboxInfo || null;
     const mergedMailboxEntries = mergeMailboxEntries(payload?.mailboxes, rawConfigPayload, mailboxesRef?.current);
     const bootstrapMailboxId = getMailboxEntryId(rawConfigPayload);
@@ -217,10 +217,12 @@ export default function useMailListDataController({
     const messagesPayload = payload?.messages || {};
     const bootstrapState = String(payload?.state || '').trim().toLowerCase();
     const bootstrapListIsFresh = !bootstrapState || bootstrapState === 'ok';
-    setMailboxInfo(configPayload);
-    setMailboxes(nextMailboxEntries);
-    if (resolvedMailboxId && (!activeMailboxId || resolvedMailboxId === activeMailboxId)) {
-      setSelectedMailboxId(resolvedMailboxId);
+    if (applyMailboxConfig) {
+      setMailboxInfo(configPayload);
+      setMailboxes(nextMailboxEntries);
+      if (resolvedMailboxId && (!activeMailboxId || resolvedMailboxId === activeMailboxId)) {
+        setSelectedMailboxId(resolvedMailboxId);
+      }
     }
     const nextPreferences = { ...defaultMailPreferences, ...(preferencesPayload || {}) };
     setMailPreferences(nextPreferences);
@@ -337,9 +339,14 @@ export default function useMailListDataController({
     const hasRecentHydration = recentHydratedScope === requestScope;
     if (cachedBootstrap?.data) {
       if (isCurrentBootstrap()) {
-        applyBootstrapPayload(cachedBootstrap.data || {}, { applyList: resolveShouldApplyBootstrapList() });
-        scheduleSilentHeadRefreshAfterSnapshot(cachedBootstrap.data || {});
-        setMailConfigLoading(false);
+        applyBootstrapPayload(cachedBootstrap.data || {}, {
+          applyList: resolveShouldApplyBootstrapList(),
+          applyMailboxConfig: !force,
+        });
+        if (!force) {
+          scheduleSilentHeadRefreshAfterSnapshot(cachedBootstrap.data || {});
+        }
+        setMailConfigLoading(force);
       }
     } else if (isCurrentBootstrap()) {
       setMailConfigLoading(true);

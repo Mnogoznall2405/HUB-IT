@@ -162,6 +162,9 @@ QTY_EPSILON = 1e-9
 _MATCH_WS_RE = re.compile(r"\s+")
 _TOKEN_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё]+", re.UNICODE)
 _PART_NO_TOKEN_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё]+(?:-[0-9A-Za-zА-Яа-яЁё]+)+", re.UNICODE)
+_UUID_1C_REF_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 _WAREHOUSE_PREFIX_TOKENS = frozenset({
     "склад",
     "скл",
@@ -1169,23 +1172,35 @@ class Warehouse1CService:
         text = normalize_1c_ref(uuid_str)
         if not text:
             return None
+        if not _UUID_1C_REF_RE.fullmatch(text):
+            raise Warehouse1CValidationError(f"Некорректный идентификатор ссылки: {uuid_str}")
         try:
             uid_com = connection.NewObject("УникальныйИдентификатор", text)
             catalog_manager = getattr(connection.Справочники, catalog_name)
             return catalog_manager.ПолучитьСсылку(uid_com)
         except Exception as exc:
-            raise Warehouse1CValidationError(f"Некорректный идентификатор ссылки: {uuid_str}") from exc
+            # A valid-format UUID can still fail on a dead COM session — that is
+            # a query failure (drop + retry in _run_job), not a bad identifier.
+            raise Warehouse1CQueryError(
+                f"Не удалось восстановить ссылку {catalog_name} по идентификатору {uuid_str}: "
+                f"{format_com_error(exc)}"
+            ) from exc
 
     def _rebuild_document_ref(self, connection: Any, document_name: str, uuid_str: str) -> Any:
         text = normalize_text(uuid_str)
         if not text:
             return None
+        if not _UUID_1C_REF_RE.fullmatch(text):
+            raise Warehouse1CValidationError(f"Некорректный идентификатор документа: {uuid_str}")
         try:
             uid_com = connection.NewObject("УникальныйИдентификатор", text)
             document_manager = getattr(connection.Документы, document_name)
             return document_manager.ПолучитьСсылку(uid_com)
         except Exception as exc:
-            raise Warehouse1CValidationError(f"Некорректный идентификатор документа: {uuid_str}") from exc
+            raise Warehouse1CQueryError(
+                f"Не удалось восстановить ссылку документа {document_name} по идентификатору {uuid_str}: "
+                f"{format_com_error(exc)}"
+            ) from exc
 
     async def _run_pooled(self, sync_func, *args: Any, timeout: float = QUERY_TIMEOUT_SEC, **kwargs: Any) -> Any:
         try:

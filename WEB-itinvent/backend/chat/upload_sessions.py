@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -136,7 +137,20 @@ class ChatUploadSessionStore:
             json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),
             encoding="utf-8",
         )
-        temp_path.replace(manifest_path)
+        # Windows: os.replace падает PermissionError, пока свежий manifest.json
+        # кратковременно держит AV-сканер/индексатор — transient, поэтому
+        # несколько быстрых повторов до честной ошибки.
+        last_error: Optional[PermissionError] = None
+        for attempt in range(5):
+            try:
+                temp_path.replace(manifest_path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                if attempt < 4:
+                    time.sleep(0.05 * (attempt + 1))
+        temp_path.unlink(missing_ok=True)
+        raise last_error  # type: ignore[misc]
 
     def delete_session_dir(self, session_id: str) -> None:
         session_dir = self.session_dir(session_id)
