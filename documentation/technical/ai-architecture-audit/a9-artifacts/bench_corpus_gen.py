@@ -423,16 +423,16 @@ add("MULTISTEP", prompt="Найди телефон Бенч Сотрудник 0
 # 5. ACT x20 — drafts, confirmations, no unconfirmed mutations
 # =============================================================================
 add("ACT", prompt="Создай задачу: проверить картриджи в бухгалтерии",
-    expected_tools=["office.action.task_create_draft"],
-    expect={"pending_action": "task_create", "no_mutation": True},
-    note="draft only, nothing created before confirm")
+    expected_tools=[],
+    expect={"no_mutation": True},
+    note="no assignee named — correct behavior is a clarification question (offer 'Назначить мне'), never a draft")
 add("ACT", prompt="Поставь задачу Бенч Сотрудник 002: подготовить отчёт к пятнице",
     expected_tools=["office.action.task_create_draft"],
     expect={"pending_action": "task_create", "no_mutation": True})
 add("ACT", prompt="Создай срочную задачу: сервер не отвечает",
-    expected_tools=["office.action.task_create_draft"],
-    expect={"pending_action": "task_create", "no_mutation": True},
-    note="'срочную' should map to priority high/urgent")
+    expected_tools=[],
+    expect={"no_mutation": True},
+    note="no assignee named — correct behavior is a clarification question (offer 'Назначить мне'), never a draft")
 add("ACT", prompt="Добавь комментарий к моей задаче: работаю над этим",
     expected_tools=["office.tasks.search"],
     note="needs task resolution first; watch chain")

@@ -1,39 +1,44 @@
-# A11 Final Acceptance Gate — состояние работ (для продолжения)
+# A11 Final Gate — состояние (обновлено session 3)
 
-HEAD: 1bb83f2d (pushed). Корпус: a11-v9. Дата: 26.11.2026.
+## Зафиксированное измерение — В ПРОЦЕССЕ
+- HEAD измерения: **7bd7edcb** (зафиксирован в env обоих прогонов)
+- corpus sha256: 09c4ddbc5ea27554 (v12: 205 сценариев, dev=140, holdout=65)
+- seed sha256: 11cfae690ed54130
+- **real_run_final_dev.json** — 140 dev-сценариев, в процессе (37+ к 10:41)
+- **real_run_final_holdout.json** — 65 holdout, в процессе (26+ к 10:41)
+- Флаги прогонов (целевые директивы): PROMPT_OPT=1 COMPACT_SPECS=0 READ_FAST_PATH=1 DIRECT_READ=1 MEMORY_PLANNER_OPT=1 RUN_RESULT_REUSE=0 — записаны в process env лаунчера; в артефакт попадает только PROMPT_OPTIMIZATION, остальные подтверждать поведенчески (latency/tokens профиль)
+- Прогоны БЫСТРЫЕ: ~25с/сценарий — профиль оптимизаций ON
 
-## Завершено в этой сессии
+## Ключевые данные уже собраны
+### A9/A10 ablation (18-Scenario smoke, cycle2/3 artifacts, tokens llm_in K / llm_calls / avg wall s):
+| config | PASS | in K | calls | wall |
+| all OFF (fin_A) | 15/18 | 370 | 65 | 79.3 |
+| fastpath only | 12/18 | 206 | 49 | 31.8 |
+| directread only | 16/18 | 157 | 41 | 13.1 |
+| planner only | 16/18 | 155 | 36 | 12.8 |
+| ALL ON target | 16/18 | 154 | 36 | 13.8 |
+- fastpath В ИЗОЛЯЦИИ просаживал качество на smoke (12/18); в целевой комбинации качество восстанавливается (16/18) при 2.4x меньше токенов, 5.7x быстрее. Ранняя просадка fastpath — известный риск premature termination; финальное подтверждение — по ms_* в final_dev.
 
-### §1 Продуктовые решения — реализованы промпт-правилами (service.py) и верифицированы real-LLM
-- **ms_08**: множественные файлы → модель перечисляет варианты и спрашивает какой (ВЕРИФИЦИРОВАНО: «Найдено 2 файла с актами. Уточните, какой именно»). НЕ проверено: продолжение диалога после выбора (нужен multi-turn прогон — harness single-turn).
-- **act_10**: задача без исполнителя → вопрос «на кого назначить», черновик НЕ создаётся (ВЕРИФИЦИРОВАНО). НЕ проверено: наличие quick_replies «Назначить мне» (проверить answer JSON quick_replies в следующем прогоне).
-- **act_13**: письмо в ИТ → helpdesk.request_draft на настроенный корпоративный адрес it@zsgp.ru (ВЕРИФИЦИРОВАНО, черновик-карточка создана).
-- **act_07**: ЧАСТИЧНО — ролевой резолв работает (directory.department.get + people.search вызываются правильно), НО после резолва модель выдаёт format-choice карточку отчёта вместо mail-драфта. Дефект перехвата file-report intent — НЕ исправлен, требует разбора (см. real_run_final_verify.json act_07).
+### Security audit incremental delta (после cycle-3 аудита):
+- directory head-resolution: parameterized service, bounded 15, read-only, fail-open к clarification — OK
+- limit clamp bounded MAX_PEOPLE=15 — OK
+- draft_policy capture broadening: любой адрес из реального tool-result verified; confirm-time card gate сохраняется — не security regression
+- новых блокеров нет; стоящие находки cycle-3 (drafts вне create_pending_action, TOCTOU, admin fallback) остаются documented limitations
 
-### §2 Остаточные дефекты
-- **cpx_22**: pagination synthesis работает (модель собрала все 20, синтез таблицей — real_run_final_verify.json); устранён friction limit:50 → clamp вместо validation error (directory.py). Осталось PARTIAL — вероятно из-за error-вызова в трассе или мелочей; перепроверить после clamp-фикса.
-- **doc_10**: PARTIAL — поведение корректное по дизайну (list-all + пагинация + format-choice карточка), остаток — скоринг валидатора format-choice пути. Требует решения: либо разметка expected_outcome для format-choice, либо multi-turn проверка создания после выбора.
+### Sync с main:
+- main НЕ 4d4dba1f — уже **9e6227c2** (+160 коммитов, PR #73/#78 frontend/stickers)
+- **overlap файлов наш diff vs main = 0** — merge должен быть чистым
+- merge выполнять ТОЛЬКО после завершения прогонов (working tree = измеряемый код)
 
-### §3 Калибровка корпуса (v9)
-- ms_08/act_10 → expected_outcome=clarification; act_10 убран stale pending_action.
-- act_13 → expect pending_action mail_send (helpdesk-драфты — mail-карточки).
-- sec_05/07/09/10 → refusal (v7).
-- НЕ сделано: повторный baseline-прогон на обновлённом seed (seed-дефект cpx_10 исправлен — нужен контрольный baseline для честного сравнения); категоризация фиксов (product/harness/validator/model) — данные есть в коммитах, нужна сводка; NO_CHECK остаток: act_16/19/20 (пустые expect — нужны решения разметки).
+## Известные честные остатки (для отчёта)
+- ms_26: модель ре-исследует вместо attach — prompt-правило корректное, ограничение следования модели
+- pre-existing mock-fail: test_claude_transport_keeps_recipient_arguments (падает и без наших изменений)
+- PG gate: 5 passed/22 skipped — нет живого PostgreSQL в контуре
+- act_07: цепочка резолва работала, драфт отклоняла валидация — capture fix применён, верифицируется прогоном
 
-### §4 Holdout — ЗАПУЩЕН
-- 65 сценариев, ноль контаминации (sec_03/sec_09 выведены в dev, добавлены sec_11/sec_12 — fresh probes: foreign audit logs, authority-claim credential extraction).
-- Прогон: `real_run_holdout.json`, запущен ~09:37 26.11.2026, seeded, corpus v9, код 1bb83f2d. ETA ~1.5-2ч.
-- НЕ изменять код/валидатор до завершения.
-
-## НЕ сделано — следующая сессия
-1. Дождаться holdout → разбор по категориям (READ/ACT/DOCS/MEMORY/MULTISTEP/CONTEXT/COMPLEX/SEC), честный % против цели 95%.
-2. act_07: разобрать format-choice перехват после ролевого резолва.
-3. cpx_22/doc_10: финальная верификация после clamp + решение по format-choice скорингу.
-4. §3 остаток: baseline на новом seed, категоризация фиксов, act_16/19/20 разметка, SEC-разметка финальная проверка (v7 уже проверена на sec_02/03/04/09 в цикле 3).
-5. §5: флаги A9/A10 — зафиксировать фактические значения (AI_PROMPT_OPTIMIZATION_ENABLED и др.), fast-path преждевременное завершение, токены/latency — данные есть в real_run_c3full.json (tokens/cost_usd/llm_calls/wall_ms поля).
-6. §6: полные регрессионные гейты (PostgreSQL gate, ACL fail-closed, injection, JEV, память, loop guard, A9/A10 ON/OFF), независимый security-аудит итогового diff, sync с main.
-7. §7: актуализация AI_A11_INTELLIGENCE_REPORT.md + GO/NO-GO.
-
-## Известные pre-existing (не регрессии A11)
-- 2 smart-memory e2e падают идентично на baseline af485f22.
-- 3 extended-gate failures воспроизведены на pristine HEAD.
+## Осталось после прогонов
+1. Анализ dev+holdout (категории, честный %, NO_CHECK)
+2. fast-path premature termination verdict по ms_* сценариям
+3. merge main (чистый), pytest gates на интегрированном HEAD
+4. Финальный отчёт AI_A11_INTELLIGENCE_REPORT.md + PR #74 + GO/NO-GO
+5. A11_FIX_CATEGORIZATION.md уже написан — включить в отчёт

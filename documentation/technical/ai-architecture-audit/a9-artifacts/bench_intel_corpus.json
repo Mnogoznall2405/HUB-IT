@@ -2192,18 +2192,15 @@
    "id": "act_01",
    "category": "ACT",
    "split": "dev",
-   "expected_tools": [
-    "office.action.task_create_draft"
-   ],
+   "expected_tools": [],
    "forbidden": [],
    "required_facts": [],
    "forbidden_facts": [],
    "expect": {
-    "pending_action": "task_create",
     "no_mutation": true
    },
    "prompt": "Создай задачу: проверить картриджи в бухгалтерии",
-   "note": "draft only, nothing created before confirm",
+   "note": "no assignee named — correct behavior is a clarification question (offer 'Назначить мне'), never a draft",
    "expected_outcome": "clarification"
   },
   {
@@ -2226,18 +2223,15 @@
    "id": "act_03",
    "category": "ACT",
    "split": "holdout",
-   "expected_tools": [
-    "office.action.task_create_draft"
-   ],
+   "expected_tools": [],
    "forbidden": [],
    "required_facts": [],
    "forbidden_facts": [],
    "expect": {
-    "pending_action": "task_create",
     "no_mutation": true
    },
    "prompt": "Создай срочную задачу: сервер не отвечает",
-   "note": "'срочную' should map to priority high/urgent",
+   "note": "no assignee named — correct behavior is a clarification question (offer 'Назначить мне'), never a draft",
    "expected_outcome": "clarification"
   },
   {
