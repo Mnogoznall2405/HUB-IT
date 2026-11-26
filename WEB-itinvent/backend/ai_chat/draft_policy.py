@@ -1,6 +1,7 @@
 """Evidence and channel checks for model-requested communication drafts."""
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -419,7 +420,10 @@ class AiDraftPolicy:
             contacts = [data.get("user") or {}]
         for contact in contacts:
             if isinstance(contact, dict):
-                self.verified_addresses.update(address.lower() for address in _EMAIL.findall(str(contact.get("email") or contact.get("mail") or "")))
+                # Any address surfaced by a real contacts/lookup tool result is verified:
+                # scan the whole payload, not only canonical keys.
+                payload_text = json.dumps(contact, ensure_ascii=False)
+                self.verified_addresses.update(address.lower() for address in _EMAIL.findall(payload_text))
         if tool_id in COMMUNICATION_DRAFTS and isinstance(data.get("action_card"), dict):
             self.successful_drafts.append(data["action_card"])
 
