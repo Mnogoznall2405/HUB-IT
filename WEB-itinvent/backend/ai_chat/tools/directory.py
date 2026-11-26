@@ -156,6 +156,41 @@ class PeopleSearchTool(AiTool):
         )
 
 
+# a11-final (act_07): org nodes never carry department heads — the write path strips
+# person fields for non-leader node types by design. The authoritative source for
+# "who heads department X" is the employee directory (1C ZUP positions).
+_HEAD_POSITION_MARKERS = ("руководител", "начальник", "директор", "заведующ")
+
+
+def _resolve_department_head_from_directory(dept_title: str) -> tuple[str | None, str | None]:
+    try:
+        from backend.services.address_book_service import address_book_service
+
+        payload = address_book_service.search("", MAX_PEOPLE, department=dept_title)
+    except Exception:
+        return None, None
+    members = [item for item in list(payload.get("items") or []) if isinstance(item, dict)]
+    leaders = [
+        item
+        for item in members
+        if any(marker in _normalize_text(item.get("position")).casefold() for marker in _HEAD_POSITION_MARKERS)
+    ]
+    if not leaders:
+        return None, None
+
+    def rank(item: dict) -> int:
+        position = _normalize_text(item.get("position")).casefold()
+        # department-level leadership outranks group/team leadership
+        return 0 if "отдел" in position else 1
+
+    leaders.sort(key=rank)
+    head = leaders[0]
+    return (
+        _normalize_text(head.get("full_name") or head.get("display_name")) or None,
+        _normalize_text(head.get("position")) or None,
+    )
+
+
 class DepartmentGetTool(AiTool):
     tool_id = DIRECTORY_TOOL_DEPARTMENT_GET
     description = (
@@ -179,11 +214,16 @@ class DepartmentGetTool(AiTool):
             if not isinstance(item, dict) or item.get("kind") != "node":
                 continue
             node = company_structure_service.get_node(_normalize_text(item.get("node_id"))) or {}
+            head_name = _normalize_text(node.get("person_name")) or None
+            head_position = _normalize_text(node.get("person_position")) or None
+            dept_title = _normalize_text(item.get("title")) or None
+            if not head_name and dept_title:
+                head_name, head_position = _resolve_department_head_from_directory(dept_title)
             departments.append(
                 {
-                    "title": _normalize_text(item.get("title")) or None,
-                    "head_name": _normalize_text(node.get("person_name")) or None,
-                    "head_position": _normalize_text(node.get("person_position")) or None,
+                    "title": dept_title,
+                    "head_name": head_name,
+                    "head_position": head_position,
                     "path": [
                         _normalize_text(part.get("title"))
                         for part in list(item.get("path") or [])

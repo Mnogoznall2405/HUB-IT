@@ -98,7 +98,10 @@ def seed_address_book() -> list[dict]:
             "employee_code": f"BENCH-{i:04d}",
             "full_name": _fio(i),
             "display_name": _fio(i),
-            "position": POSITIONS[i % len(POSITIONS)],
+            # a11-final (act_07): the first member of each department heads it —
+            # role recipients resolve via directory positions (the authoritative
+            # source per the product data model; org nodes never carry dept heads).
+            "position": "руководитель отдела" if i <= len(DEPARTMENTS) else POSITIONS[i % len(POSITIONS)],
             "department": dept,
             "department_code": f"D{(i - 1) % len(DEPARTMENTS) + 1:02d}",
             # production shape: contacts are dicts — the search index drops
