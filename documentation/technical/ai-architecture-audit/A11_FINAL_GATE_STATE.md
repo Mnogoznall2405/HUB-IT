@@ -54,3 +54,19 @@
 - Команда продолжения dev: то же что _launch_seq.ps1 но --label final_dev --split dev
 - Corpus v13 зафиксирован: sha 0fb9a1033758, act_01/act_03 разметка-clarification исправлена по продуктовому решению (НЕ по результатам holdout — противоречие найдено через dev smoke act_01)
 - HEAD измерения: 5e115ad1
+
+
+## SYNC С MAIN ВЫПОЛНЕН (12:10) — HEAD 4fc15cf9
+- merge origin/main (9e6227c2, +160 коммитов) — чистый, overlap=0, конфликтов не было
+- интеграционная проверка: test_e2e_smoke 10/10 + jev suite — PASS после добавления MAIL_CREDENTIALS_KEY в локальный .env ворк-дерева (ключ скопирован из HUB-IT-main/.env — требование нового auth-flow из main, НЕ регрессия слияния)
+- изменения других агентов сохранены (stickers, chat infra, frontend remediation)
+- AI-сюит 314/315 на pre-merge HEAD (ai_chat файлы merge не затронуты — overlap=0)
+
+## ПРОДОЛЖЕНИЕ ПОСЛЕ ПОПОЛНЕНИЯ БАЛАНСА (механическая процедура)
+1. Пополнить RouterAI (предпочтительно — вся историческая сравнимость) или OpenRouter
+2. cd C:\Project\HUB-IT-a10-rel; powershell -ExecutionPolicy Bypass -File _launch_seq.ps1 (holdout solo, resume 0)
+3. После holdout: dev-прогон (та же команда с --label final_dev --split dev)
+4. Если прогон умирает по кредитам mid-way: --resume 1 продолжает с чекпоинта
+5. НЕ запускать прогоны параллельно — in-flight 402
+6. После прогонов: анализ по категориям, вердикт fast-path premature termination по ms_*, финальный отчёт, PR update, GO/NO-GO
+- вся подготовительная работа завершена — осталось только измерение + отчёт
