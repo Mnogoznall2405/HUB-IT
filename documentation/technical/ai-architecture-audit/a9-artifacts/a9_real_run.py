@@ -395,7 +395,11 @@ def _assistant_message(conversation_id: str, result_message_id: str | None, bot_
 
 
 def _match_any(pattern: str, values: list[str]) -> bool:
-    return any(fnmatch.fnmatchcase(v, pattern) for v in values)
+    # a11-final: pipe-separated alternatives are any-of — "a.files.report|a.files.create"
+    # passes when at least one acceptable path was executed (mirrors the any-of
+    # facts syntax). Without it either-path scenarios hard-fail on the path not taken.
+    alternatives = [alt.strip() for alt in pattern.split("|") if alt.strip()]
+    return any(fnmatch.fnmatchcase(v, alt) for alt in alternatives for v in values)
 
 
 def _summarize_trace(trace: dict) -> dict:

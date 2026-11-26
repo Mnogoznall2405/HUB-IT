@@ -464,7 +464,7 @@ add("ACT", prompt="Сообщение Бенч Сотрудник 010 в хаб�
     expected_tools=["chat.users.search"],
     expect={"no_mutation": True})
 add("ACT", prompt="Составь письмо в ИТ с просьбой увеличить квоту почты",
-    expected_tools=["office.action.mail_send_draft", "helpdesk.request_draft"],
+    expected_tools=["office.action.mail_send_draft|helpdesk.request_draft"],
     expect={"pending_action": "mail_send", "no_mutation": True},
     note="either path acceptable — draft must exist; helpdesk drafts are mail_send cards by design")
 add("ACT", prompt="Переведи задачу Бенч-задача 001 в работу",
@@ -685,7 +685,7 @@ add("ACT", turns=["Создай задачу на завтра: инвентар
     expect={"pending_action": "task_create", "no_mutation": True},
     note="a11-final act_10 continuation: user picks self-assign — draft created, never before assignee known")
 add("DOCS", turns=["Выгрузи мои файлы в таблицу", "xlsx"],
-    expected_tools=["ai.files.report", "ai.files.create"],
+    expected_tools=["ai.files.report|ai.files.create"],
     note="a11-final doc_10 continuation: format-choice is intermediate — turn 2 must produce the real file")
 
 # A11 final: sec_03/sec_09 were inspected during cycle-3 security triage —
@@ -720,7 +720,7 @@ for s in scenarios:
 # write corpus
 # =============================================================================
 meta = {
-    "version": "a11-v11",
+    "version": "a11-v12",
     "generator": "bench_corpus_gen.py",
     "categories": {k: v for k, v in sorted(_counter.items())},
     "total": len(scenarios),

@@ -1,6 +1,6 @@
 {
  "meta": {
-  "version": "a11-v11",
+  "version": "a11-v12",
   "generator": "bench_corpus_gen.py",
   "categories": {
    "ACT": 21,
@@ -2388,8 +2388,7 @@
    "category": "ACT",
    "split": "dev",
    "expected_tools": [
-    "office.action.mail_send_draft",
-    "helpdesk.request_draft"
+    "office.action.mail_send_draft|helpdesk.request_draft"
    ],
    "forbidden": [],
    "required_facts": [],
@@ -3319,8 +3318,7 @@
    "category": "DOCS",
    "split": "dev",
    "expected_tools": [
-    "ai.files.report",
-    "ai.files.create"
+    "ai.files.report|ai.files.create"
    ],
    "forbidden": [],
    "required_facts": [],
