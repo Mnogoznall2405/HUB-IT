@@ -884,14 +884,14 @@ def test_favorite_delete_still_scoped_to_owner(sticker_env):
 
 
 # ---------------------------------------------------------------------------
-# Alembic 0177 -> 0178 upgrade/downgrade on SQLite
+# Alembic 0177 -> 0180 upgrade/downgrade on SQLite
 # ---------------------------------------------------------------------------
 
 
-def test_0178_upgrade_preserves_recents_and_downgrade_works(tmp_path):
+def test_0180_upgrade_preserves_recents_and_downgrade_works(tmp_path):
     """A database already at 0177 with seeded favorites/recents keeps its rows
-    when 0178 adds chat_user_recent_sticker_state; downgrade removes only the
-    new table, and 0177's own downgrade still drops favorites/recents."""
+    when 0181 adds chat_user_recent_sticker_state; downgrade removes only the
+    new table, and 0180's own downgrade still drops favorites/recents."""
     from alembic import command
     import sqlalchemy as sa
 
@@ -901,7 +901,7 @@ def test_0178_upgrade_preserves_recents_and_downgrade_works(tmp_path):
     engine = create_engine(url, future=True).execution_options(
         schema_translate_map={"chat": None, "app": None, "system": None}
     )
-    # Schema as of 0176: everything except the tables 0178/0179 create.
+    # Schema as of 0176: everything except the tables 0180/0181 create.
     post_0176_tables = {
         "chat_user_favorite_stickers",
         "chat_user_recent_stickers",
@@ -913,7 +913,7 @@ def test_0178_upgrade_preserves_recents_and_downgrade_works(tmp_path):
     )
     cfg = build_alembic_config(url, scope="chat")
     command.stamp(cfg, "20261118_0176")
-    command.upgrade(cfg, "20261124_0178")
+    command.upgrade(cfg, "20261124_0180")
 
     pack_id = _new_id()
     sticker_id = _new_id()
@@ -965,7 +965,7 @@ def test_0178_upgrade_preserves_recents_and_downgrade_works(tmp_path):
 
     inspector = sa.inspect(engine)
     assert inspector.has_table("chat_user_recent_sticker_state")
-    # 0180: the op-batch dedup column is created with the state table.
+    # 0182: the op-batch dedup column is created with the state table.
     state_columns = {
         col["name"]
         for col in inspector.get_columns("chat_user_recent_sticker_state")
@@ -983,8 +983,8 @@ def test_0178_upgrade_preserves_recents_and_downgrade_works(tmp_path):
     assert recents == [sticker_id]
     assert favorites == [sticker_id]
 
-    # 0180 downgrade: only the dedup column goes away, the table stays.
-    command.downgrade(cfg, "20261124_0179")
+    # 0182 downgrade: only the dedup column goes away, the table stays.
+    command.downgrade(cfg, "20261124_0181")
     inspector = sa.inspect(engine)
     assert inspector.has_table("chat_user_recent_sticker_state")
     state_columns = {
@@ -993,8 +993,8 @@ def test_0178_upgrade_preserves_recents_and_downgrade_works(tmp_path):
     }
     assert "applied_op_batch_ids" not in state_columns
 
-    # 0179 downgrade: only the state table goes away.
-    command.downgrade(cfg, "20261124_0178")
+    # 0181 downgrade: only the state table goes away.
+    command.downgrade(cfg, "20261124_0180")
     inspector = sa.inspect(engine)
     assert not inspector.has_table("chat_user_recent_sticker_state")
     assert inspector.has_table("chat_user_recent_stickers")

@@ -10,7 +10,7 @@ import FormatListBulletedIcon from '@mui/icons-material/FormatListBulleted';
 import FormatListNumberedIcon from '@mui/icons-material/FormatListNumbered';
 import AlternateEmailIcon from '@mui/icons-material/AlternateEmail';
 import { hideMobileScrollbarSx } from '../../../pages/tasks/taskFormatters';
-import { editorHtmlToMarkdown, focusRichEditor, markdownToEditorHtml } from '../../../pages/tasks/taskRichText';
+import { editorHtmlToMarkdown, focusRichEditor, markdownToEditorHtml, sanitizeEditorPasteHtml } from '../../../pages/tasks/taskRichText';
 
 const MobileCreateDescriptionEditor = memo(function MobileCreateDescriptionEditor({
   initialValue = '',
@@ -36,6 +36,20 @@ const MobileCreateDescriptionEditor = memo(function MobileCreateDescriptionEdito
     const editor = editorRef.current;
     onDraftChange?.(editorHtmlToMarkdown(editor?.innerHTML || ''));
   }, [onDraftChange]);
+
+  const handlePaste = useCallback((event) => {
+    const pastedHtml = String(event.clipboardData?.getData?.('text/html') || '');
+    if (!pastedHtml) return; // обычный текст — стандартная вставка браузера
+    event.preventDefault();
+    const safeHtml = sanitizeEditorPasteHtml(pastedHtml);
+    const plainText = String(event.clipboardData?.getData?.('text/plain') || '');
+    if (safeHtml) {
+      document.execCommand('insertHTML', false, safeHtml);
+    } else if (plainText) {
+      document.execCommand('insertText', false, plainText);
+    }
+    syncDraft();
+  }, [syncDraft]);
 
   const handleFormat = useCallback((type) => {
     const commandByType = {
@@ -89,6 +103,7 @@ const MobileCreateDescriptionEditor = memo(function MobileCreateDescriptionEdito
         tabIndex={0}
         data-placeholder="Опишите задачу, детали и ожидаемый результат"
         onInput={syncDraft}
+        onPaste={handlePaste}
         sx={{
           flex: 1,
           minHeight: 0,

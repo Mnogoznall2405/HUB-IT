@@ -5,7 +5,7 @@
 Объект: `TelegramStickersTab` / `ChatStickerSuggestions` /
 `ChatStickerManageDialog` / `ChatStickerPackDialog` /
 `stickerSearchIndex` / `chatStickersAPI` / `telegram_sticker_service` /
-миграции `20261124_0178`/`20261124_0179`.
+миграции `20261124_0180`/`20261124_0181`/`20261125_0182`.
 
 Содержание: parity-матрица с Telegram Desktop, находки аудита,
 изменения API/БД, архитектурные решения, найденные и исправленные
@@ -86,8 +86,8 @@
 
 ## Изменения БД
 
-Миграция `20261124_0178_chat_sticker_favorites` (down_revision
-`20261124_0177` — A8 LLM-checkpoint, merge-синхронизация с main `926dd9f5`):
+Миграция `20261124_0180_chat_sticker_favorites` (down_revision
+`20261124_0179` — My Files member `updated_at`; цепь синхронизирована после merge main `af485f22`):
 
 - `chat_user_favorite_stickers` — `id`, `user_id`, `sticker_id`
   (FK → `chat_stickers`, CASCADE), `added_at`;
@@ -100,8 +100,8 @@
   пользовательский порядок наборов в пикере; равенство позиций
   разрешается по `added_at`.
 
-Миграция `20261124_0179_chat_recent_sticker_sync_state` (down_revision
-`20261124_0178`):
+Миграция `20261124_0181_chat_recent_sticker_sync_state` (down_revision
+`20261124_0180`):
 
 - `chat_user_recent_sticker_state` — `user_id` (PK),
   `version Integer NOT NULL DEFAULT 0`, `updated_at`. Счётчик
@@ -443,18 +443,20 @@ scope; его делят вкладка и подсказки (раньше пе
 `stickerSearchIndex.perf.test.js`: сборка индекса на 5000 стикеров
 < 500 мс, 200 повторных lookup < 1000 мс.
 
-### i) Цепочка миграций 0178/0179
+### i) Цепочка миграций 0180/0181/0182
 
 После мержа A8-работа заняла `20261124_0177`
-(`ai_summary_llm_checkpoint`). Стикерные миграции перенумерованы:
-`20261124_0178_chat_sticker_favorites` (down 0177),
-`20261124_0179_chat_recent_sticker_sync_state` (down 0178) —
-цепочка 0176 → 0177(A8) → 0178 → 0179, один head, merge-revision не
-нужен. Проверки: 30/30 стикерных миграционных тестов на sqlite;
-`test_chat_migrations_scope_independent` обновлён
-(`CHAT_REVISIONS == 23`); на реальном PostgreSQL 17.6 — 16/16
-проверок стикерной цепочки (свежая схема, апгрейд с уже применённым
-0177, scope all/app/chat, rollback-compat) — см. `db20042c`.
+(`ai_summary_llm_checkpoint`), а My Files PR #68 занял `20261124_0178` и
+`20261124_0179`. Поэтому после merge `origin/main` (`af485f22`) стикерные
+миграции перенумерованы вторично:
+`20261124_0180_chat_sticker_favorites` (down 0179-myfiles),
+`20261124_0181_chat_recent_sticker_sync_state` (down 0180) и
+`20261125_0182_chat_recent_sticker_op_batch` (down 0181) —
+цепочка 0176 → 0177(A8) → 0178(myfiles) → 0179(myfiles) →
+0180 → 0181 → 0182, один head, merge-revision не нужен.
+Проверки прежней нумерации: 30/30 стикерных миграционных тестов на sqlite;
+на реальном PostgreSQL 17.6 — 16/16 проверок стикерной цепочки (см.
+`db20042c`). После финальной перенумерации гейт повторяется на scratch PG17.
 
 ### j) Финальный гейт против контроля `c6d110e3`
 
@@ -589,9 +591,9 @@ warm), зафиксирована в «Отклонённых альтернат
 
 | Проверка | Результат |
 |---|---|
-| `pytest tests/test_chat_sticker_favorites.py WEB-itinvent/backend/tests/test_chat_sticker_favorites.py tests/test_chat_telegram_stickers.py` | **65/65 PASS** (37 с, sqlite, вкл. upgrade/downgrade миграций 0178/0179 + single-head-descendant) |
+| `pytest tests/test_chat_sticker_favorites.py WEB-itinvent/backend/tests/test_chat_sticker_favorites.py tests/test_chat_telegram_stickers.py` | **65/65 PASS** (37 с, sqlite, вкл. upgrade/downgrade миграций 0180/0181/0182 + single-head-descendant) |
 | `pytest tests/test_chat_migrations_scope_independent.py` | **53/53 PASS** (`CHAT_REVISIONS == 23`) |
-| Цепочка alembic 0176→0177→0178→0179 | один head `20261124_0179` (`alembic heads`), down_revision-цепь целая, дублей нет, всего 182 ревизии |
+| Цепочка alembic 0176→0177→0178(myfiles)→0179(myfiles)→0180→0181→0182 | один head `20261125_0182` (`alembic heads`), down_revision-цепь целая, дублей нет |
 | Реальный PG-гейт (16/16 ранее на PG 17.6) | НЕ перезапущен: на этом хосте доступен только живой `hubit_chat` (PG 16.15, без scratch-схем) — DDL на нём без designate запрещён; временная 17.6 предыдущего прохода недоступна. Покрытие: статическая цепь + sqlite upgrade/downgrade + scope-тесты |
 | `npm run test:run` по затронутым сьютам (TelegramStickersTab, chatStickerStore, chatStickers api, ChatStickerSuggestions, stickerSearchIndex.perf, ChatThread, ChatEmojiDock, ChatEmoji, ChatComposer.behavior) | **212/212 PASS** (9 файлов) |
 | `E2E_LOCAL=1 E2E_BUILD=1` chat-stickers-v2 + chat-emoji-picker + chat-stickers-v2-visual | **26/26 PASS** (6+15+5) |
@@ -613,21 +615,26 @@ warm), зафиксирована в «Отклонённых альтернат
 одного журнала, ротируется при изменении состава). Сервер под той же
 `FOR UPDATE`-блокировкой state-строки проверяет id по **bounded-истории**
 `chat_user_recent_sticker_state.applied_op_batch_ids` (JSON, cap 100 —
-миграция `20261125_0180`): уже записанный id → ответ текущим
+миграция `20261125_0182`): уже записанный id → ответ текущим
 `{items, version}` без повторного применения и без bump'а версии.
 История, а не один last-id — повторяемый пакет не обязан быть последней
 записью (между apply и retry может лечь пакет другого устройства).
 
 Совместимость: старый клиент без поля → применяется как раньше; новый
-клиент на сервере без 0180 → pydantic игнорирует лишнее поле (graceful
-degrade). Порядок релиза: миграция 0180 до/вместе с кодом сервера —
+клиент на сервере без 0182 → pydantic игнорирует лишнее поле (graceful
+degrade). Порядок релиза: миграция 0182 до/вместе с кодом сервера —
 стандартный alembic-first.
 
 **PG-гейт выполнен** (гэп из n-матрицы): portable PostgreSQL 17,
 изолированный кластер `127.0.0.1:55433` (`pg-v31-data`), scratch-БД
 `stgt_*` — `tests/test_pg_sticker_gate.py`: chat-scope upgrade→head,
 колонки/таблицы, replay no-op под FOR UPDATE, два потока сериализуются
-(version 2 и 3), downgrade→0177 и повторный upgrade. 2/2 PASS.
+(version 2 и 3), downgrade→0177 и повторный upgrade. Первичный прогон до
+post-main перенумерации — 2/2 PASS. После merge `af485f22` и перенумерации
+0180–0182 гейт расширен и повторён: **4/4 PASS** — fresh upgrade→head,
+upgrade с `0177`, upgrade с My Files-side `0179` с сохранением pre-existing
+install row, op-batch dedup/concurrency, sticker-only downgrade `0182→0179`
+и re-upgrade.
 
 **E2E `MAIL_CREDENTIALS_KEY`:** `e2e/stack/local_backend.py` сидит
 test-only passphrase (вне production — SHA-256→Fernet); стек самодостаточен
@@ -637,8 +644,8 @@ test-only passphrase (вне production — SHA-256→Fernet); стек само
 | Проверка | Результат |
 |---|---|
 | backend `test_chat_sticker_favorites.py` | **29/29** (+5: replay-после-clear, replay-clear-после-bump, параллельные flush'и, version-не-bump, legacy-совместимость) |
-| `tests/test_pg_sticker_gate.py` (PG 17 scratch) | **2/2** |
-| `tests/test_chat_sticker_favorites.py` + telegram + preview + scope | 15+26+2+55 **PASS**; один head `20261125_0180` |
+| `tests/test_pg_sticker_gate.py` (PG 17 scratch) | первично **2/2**; после post-main перенумерации расширенный гейт **4/4** |
+| `tests/test_chat_sticker_favorites.py` + telegram + preview + scope | 15+26+2+55 **PASS**; один head `20261125_0182` |
 | frontend `chatStickerStore` + `chatStickers` | **24+17 = 41/41** (+3 batchId-теста: стабильность на retry, ротация при новых ops, один id у параллельных flush'ей) |
 
 Известное окружение: Playwright в worktree `.codex_tmp/integ-fr` падает

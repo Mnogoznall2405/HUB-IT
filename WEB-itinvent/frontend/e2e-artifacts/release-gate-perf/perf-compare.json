@@ -1,0 +1,737 @@
+[
+ {
+  "scenario": "cold_nav_login_ms",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 296,
+  "cand_p50": 336,
+  "base_p95": 322,
+  "cand_p95": 1417,
+  "d50_pct": 13.5,
+  "d95_pct": 340.1,
+  "verdict": "REGRESSED",
+  "extra_b": {
+   "timeouts": 0
+  },
+  "extra_c": {
+   "timeouts": 0
+  }
+ },
+ {
+  "scenario": "cold_login_dashboard_ms",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 1305,
+  "cand_p50": 1298,
+  "base_p95": 1475,
+  "cand_p95": 1610,
+  "d50_pct": -0.5,
+  "d95_pct": 9.2,
+  "verdict": "ok",
+  "extra_b": {
+   "timeouts": 0
+  },
+  "extra_c": {
+   "timeouts": 0
+  }
+ },
+ {
+  "scenario": "cold_total_ms",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 1664,
+  "cand_p50": 1728,
+  "base_p95": 1850,
+  "cand_p95": 2808,
+  "d50_pct": 3.8,
+  "d95_pct": 51.8,
+  "verdict": "REGRESSED",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "route_dashboard",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 260.9,
+  "cand_p50": 282.9,
+  "base_p95": 331,
+  "cand_p95": 383.5,
+  "d50_pct": 8.4,
+  "d95_pct": 15.9,
+  "verdict": "REGRESSED",
+  "extra_b": {
+   "apiRequests": 5,
+   "commits": 15,
+   "rendered": 21173,
+   "longTasks": 0
+  },
+  "extra_c": {
+   "apiRequests": 5,
+   "commits": 15,
+   "rendered": 20620,
+   "longTasks": 0
+  }
+ },
+ {
+  "scenario": "route_chat",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 264,
+  "cand_p50": 275.1,
+  "base_p95": 303.1,
+  "cand_p95": 402,
+  "d50_pct": 4.2,
+  "d95_pct": 32.6,
+  "verdict": "REGRESSED",
+  "extra_b": {
+   "apiRequests": 4,
+   "commits": 21,
+   "rendered": 24679,
+   "longTasks": 1
+  },
+  "extra_c": {
+   "apiRequests": 4,
+   "commits": 20,
+   "rendered": 23946,
+   "longTasks": 2
+  }
+ },
+ {
+  "scenario": "route_mail",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 1844.3,
+  "cand_p50": 1871,
+  "base_p95": 1898.6,
+  "cand_p95": 2005.2,
+  "d50_pct": 1.4,
+  "d95_pct": 5.6,
+  "verdict": "ok",
+  "extra_b": {
+   "apiRequests": 1,
+   "commits": 21,
+   "rendered": 21995,
+   "longTasks": 21
+  },
+  "extra_c": {
+   "apiRequests": 0,
+   "commits": 21,
+   "rendered": 21995,
+   "longTasks": 22
+  }
+ },
+ {
+  "scenario": "route_my-files",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 212.8,
+  "cand_p50": 219.2,
+  "base_p95": 392.7,
+  "cand_p95": 463.1,
+  "d50_pct": 3.0,
+  "d95_pct": 17.9,
+  "verdict": "REGRESSED",
+  "extra_b": {
+   "apiRequests": 6,
+   "commits": 16,
+   "rendered": 38988,
+   "longTasks": 16
+  },
+  "extra_c": {
+   "apiRequests": 5,
+   "commits": 16,
+   "rendered": 39179,
+   "longTasks": 20
+  }
+ },
+ {
+  "scenario": "route_tasks",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 287.1,
+  "cand_p50": 284.9,
+  "base_p95": 323.1,
+  "cand_p95": 426.5,
+  "d50_pct": -0.8,
+  "d95_pct": 32.0,
+  "verdict": "REGRESSED",
+  "extra_b": {
+   "apiRequests": 1,
+   "commits": 12,
+   "rendered": 24300,
+   "longTasks": 1
+  },
+  "extra_c": {
+   "apiRequests": 0,
+   "commits": 11,
+   "rendered": 20556,
+   "longTasks": 1
+  }
+ },
+ {
+  "scenario": "file_list_load",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 512.1,
+  "cand_p50": 509.6,
+  "base_p95": 589.2,
+  "cand_p95": 541.5,
+  "d50_pct": -0.5,
+  "d95_pct": -8.1,
+  "verdict": "ok",
+  "extra_b": {
+   "apiRequests": 5,
+   "commits": 31,
+   "rendered": 63230,
+   "longTasks": 30
+  },
+  "extra_c": {
+   "apiRequests": 5,
+   "commits": 32,
+   "rendered": 64523,
+   "longTasks": 30
+  }
+ },
+ {
+  "scenario": "search_echo_ms",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 23,
+  "cand_p50": 21.3,
+  "base_p95": 36.2,
+  "cand_p95": 36.6,
+  "d50_pct": -7.4,
+  "d95_pct": 1.1,
+  "verdict": "ok",
+  "extra_b": {
+   "timeouts": 0
+  },
+  "extra_c": {
+   "timeouts": 0
+  }
+ },
+ {
+  "scenario": "cold_resources.apiRequests",
+  "metric": "apiRequests",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 13,
+  "cand_p50": 17,
+  "base_p95": 13,
+  "cand_p95": 17,
+  "d50_pct": 30.8,
+  "d95_pct": 30.8,
+  "verdict": "REGRESSED",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "cold_resources.netBytes",
+  "metric": "netBytes",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 1321567,
+  "cand_p50": 881659,
+  "base_p95": 1326367,
+  "cand_p95": 905019,
+  "d50_pct": -33.3,
+  "d95_pct": -31.8,
+  "verdict": "faster",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "cold_resources.netResources",
+  "metric": "netResources",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 57,
+  "cand_p50": 71,
+  "base_p95": 66,
+  "cand_p95": 78,
+  "d50_pct": 24.6,
+  "d95_pct": 18.2,
+  "verdict": "REGRESSED",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "cold_resources.longTasks",
+  "metric": "longTasks",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 1,
+  "cand_p50": 1,
+  "base_p95": 1,
+  "cand_p95": 3,
+  "d50_pct": 0.0,
+  "d95_pct": 200.0,
+  "verdict": "REGRESSED",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "cold_resources.heapMB",
+  "metric": "heapMB",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 20,
+  "cand_p50": 20,
+  "base_p95": 23,
+  "cand_p95": 22,
+  "d50_pct": 0.0,
+  "d95_pct": -4.3,
+  "verdict": "ok",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "cold_resources.fcp",
+  "metric": "fcp",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 276,
+  "cand_p50": 164,
+  "base_p95": 568,
+  "cand_p95": 196,
+  "d50_pct": -40.6,
+  "d95_pct": -65.5,
+  "verdict": "faster",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "cold_resources.lcp",
+  "metric": "lcp",
+  "n_b": 27,
+  "n_c": 30,
+  "base_p50": 276,
+  "cand_p50": 164,
+  "base_p95": 656,
+  "cand_p95": 244,
+  "d50_pct": -40.6,
+  "d95_pct": -62.8,
+  "verdict": "faster",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "1440x900 conv_switch",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 728.1,
+  "cand_p50": 750.1,
+  "base_p95": 966.8,
+  "cand_p95": 1027.1,
+  "d50_pct": 3.0,
+  "d95_pct": 6.2,
+  "verdict": "ok",
+  "extra_b": {
+   "commits": 15,
+   "longTasks": 1,
+   "timeouts": 0
+  },
+  "extra_c": {
+   "commits": 15,
+   "longTasks": 1,
+   "timeouts": 0
+  }
+ },
+ {
+  "scenario": "1440x900 history_load",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 724.6,
+  "cand_p50": 717.6,
+  "base_p95": 956.4,
+  "cand_p95": 971.7,
+  "d50_pct": -1.0,
+  "d95_pct": 1.6,
+  "verdict": "ok",
+  "extra_b": {
+   "commits": 15,
+   "longTasks": 0,
+   "timeouts": 0
+  },
+  "extra_c": {
+   "commits": 15,
+   "longTasks": 0,
+   "timeouts": 0
+  }
+ },
+ {
+  "scenario": "1440x900 history_1000.firstBubbleMs",
+  "metric": "ms",
+  "n_b": 8,
+  "n_c": 8,
+  "base_p50": 760.4,
+  "cand_p50": 757.2,
+  "base_p95": 1050.1,
+  "cand_p95": 984.3,
+  "d50_pct": -0.4,
+  "d95_pct": -6.3,
+  "verdict": "ok",
+  "extra_b": {
+   "commits": 17,
+   "longTasks": 7
+  },
+  "extra_c": {
+   "commits": 17,
+   "longTasks": 3
+  }
+ },
+ {
+  "scenario": "1440x900 history_1000.settledMs",
+  "metric": "ms",
+  "n_b": 8,
+  "n_c": 8,
+  "base_p50": 787.6,
+  "cand_p50": 787.7,
+  "base_p95": 1074.7,
+  "cand_p95": 1017.9,
+  "d50_pct": 0.0,
+  "d95_pct": -5.3,
+  "verdict": "ok",
+  "extra_b": {
+   "commits": 17,
+   "longTasks": 7
+  },
+  "extra_c": {
+   "commits": 17,
+   "longTasks": 3
+  }
+ },
+ {
+  "scenario": "1440x900 typing_echo_ms",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 28.4,
+  "cand_p50": 25.6,
+  "base_p95": 34,
+  "cand_p95": 28.6,
+  "d50_pct": -9.9,
+  "d95_pct": -15.9,
+  "verdict": "faster",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "1440x900 emoji_pinned",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 271.9,
+  "cand_p50": 184.9,
+  "base_p95": 318.7,
+  "cand_p95": 298.4,
+  "d50_pct": -32.0,
+  "d95_pct": -6.4,
+  "verdict": "ok",
+  "extra_b": {
+   "commits": 10,
+   "longTasks": 0,
+   "timeouts": 0
+  },
+  "extra_c": {
+   "commits": 6,
+   "longTasks": 0,
+   "timeouts": 0
+  }
+ },
+ {
+  "scenario": "1440x900 emoji_hover_ms",
+  "metric": "ms",
+  "n_b": 29,
+  "n_c": 29,
+  "base_p50": 228.8,
+  "cand_p50": 209.5,
+  "base_p95": 237.3,
+  "cand_p95": 221.2,
+  "d50_pct": -8.4,
+  "d95_pct": -6.8,
+  "verdict": "ok",
+  "extra_b": {
+   "timeouts": 0,
+   "missedEnter": 1
+  },
+  "extra_c": {
+   "timeouts": 0,
+   "missedEnter": 1
+  }
+ },
+ {
+  "scenario": "1440x900 tab_to_stickers_ms",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 141.2,
+  "cand_p50": 151,
+  "base_p95": 196,
+  "cand_p95": 209,
+  "d50_pct": 6.9,
+  "d95_pct": 6.6,
+  "verdict": "ok",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "1440x900 tab_to_emoji_ms",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 175.7,
+  "cand_p50": 191.6,
+  "base_p95": 226.4,
+  "cand_p95": 232.7,
+  "d50_pct": 9.0,
+  "d95_pct": 2.8,
+  "verdict": "ok",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "1440x900 send_echo_ms",
+  "metric": "ms",
+  "n_b": 30,
+  "n_c": 30,
+  "base_p50": 183.4,
+  "cand_p50": 178.7,
+  "base_p95": 224.5,
+  "cand_p95": 296,
+  "d50_pct": -2.6,
+  "d95_pct": 31.8,
+  "verdict": "REGRESSED",
+  "extra_b": {
+   "timeouts": 0
+  },
+  "extra_c": {
+   "timeouts": 0
+  }
+ },
+ {
+  "scenario": "1440x900 receive_ms",
+  "metric": "ms",
+  "n_b": 10,
+  "n_c": 10,
+  "base_p50": 104.4,
+  "cand_p50": 91.6,
+  "base_p95": 176.9,
+  "cand_p95": 131.1,
+  "d50_pct": -12.3,
+  "d95_pct": -25.9,
+  "verdict": "faster",
+  "extra_b": {
+   "timeouts": 0
+  },
+  "extra_c": {
+   "timeouts": 0
+  }
+ },
+ {
+  "scenario": "1440x900 chat_open_cold_ms",
+  "metric": "ms",
+  "n_b": 5,
+  "n_c": 5,
+  "base_p50": 1135,
+  "cand_p50": 1037,
+  "base_p95": 1277,
+  "cand_p95": 1304,
+  "d50_pct": -8.6,
+  "d95_pct": 2.1,
+  "verdict": "ok",
+  "extra_b": {
+   "timeouts": 0
+  },
+  "extra_c": {
+   "timeouts": 0
+  }
+ },
+ {
+  "scenario": "sf off typing_echo_ms",
+  "metric": "ms",
+  "n_b": 25,
+  "n_c": 25,
+  "base_p50": 26,
+  "cand_p50": 26.6,
+  "base_p95": 30.4,
+  "cand_p95": 40.5,
+  "d50_pct": 2.3,
+  "d95_pct": 33.2,
+  "verdict": "REGRESSED",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "sf off send_echo_ms",
+  "metric": "ms",
+  "n_b": 40,
+  "n_c": 40,
+  "base_p50": 87.8,
+  "cand_p50": 75.2,
+  "base_p95": 127.2,
+  "cand_p95": 102.9,
+  "d50_pct": -14.4,
+  "d95_pct": -19.1,
+  "verdict": "faster",
+  "extra_b": {
+   "commits": 7,
+   "rendered": 17144,
+   "threadRendered": {
+    "n": 40,
+    "p50": 0,
+    "p95": 0,
+    "min": 0,
+    "max": 0
+   },
+   "longTasks": 0,
+   "timeouts": 0,
+   "requestsTotal": 8,
+   "stickerRequests": 0
+  },
+  "extra_c": {
+   "commits": 6,
+   "rendered": 16025,
+   "threadRendered": {
+    "n": 40,
+    "p50": 0,
+    "p95": 0,
+    "min": 0,
+    "max": 0
+   },
+   "longTasks": 0,
+   "timeouts": 0,
+   "requestsTotal": 1,
+   "stickerRequests": 0
+  }
+ },
+ {
+  "scenario": "sf warm typing_echo_ms",
+  "metric": "ms",
+  "n_b": 25,
+  "n_c": 25,
+  "base_p50": 37.5,
+  "cand_p50": 47.1,
+  "base_p95": 46.6,
+  "cand_p95": 61.9,
+  "d50_pct": 25.6,
+  "d95_pct": 32.8,
+  "verdict": "REGRESSED",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "sf warm send_echo_ms",
+  "metric": "ms",
+  "n_b": 40,
+  "n_c": 40,
+  "base_p50": 140.2,
+  "cand_p50": 176,
+  "base_p95": 170.6,
+  "cand_p95": 192.7,
+  "d50_pct": 25.5,
+  "d95_pct": 13.0,
+  "verdict": "REGRESSED",
+  "extra_b": {
+   "commits": 12,
+   "rendered": 40404,
+   "threadRendered": {
+    "n": 40,
+    "p50": 0,
+    "p95": 0,
+    "min": 0,
+    "max": 0
+   },
+   "longTasks": 0,
+   "timeouts": 0,
+   "requestsTotal": 1,
+   "stickerRequests": 0
+  },
+  "extra_c": {
+   "commits": 13,
+   "rendered": 47574,
+   "threadRendered": {
+    "n": 40,
+    "p50": 0,
+    "p95": 0,
+    "min": 0,
+    "max": 0
+   },
+   "longTasks": 0,
+   "timeouts": 0,
+   "requestsTotal": 1,
+   "stickerRequests": 0
+  }
+ },
+ {
+  "scenario": "sf open typing_echo_ms",
+  "metric": "ms",
+  "n_b": 25,
+  "n_c": 25,
+  "base_p50": 49.8,
+  "cand_p50": 52.9,
+  "base_p95": 84.5,
+  "cand_p95": 78.6,
+  "d50_pct": 6.2,
+  "d95_pct": -7.0,
+  "verdict": "ok",
+  "extra_b": {},
+  "extra_c": {}
+ },
+ {
+  "scenario": "sf open send_echo_ms",
+  "metric": "ms",
+  "n_b": 40,
+  "n_c": 40,
+  "base_p50": 171.7,
+  "cand_p50": 179,
+  "base_p95": 196.9,
+  "cand_p95": 199.9,
+  "d50_pct": 4.3,
+  "d95_pct": 1.5,
+  "verdict": "ok",
+  "extra_b": {
+   "commits": 12,
+   "rendered": 52385,
+   "threadRendered": {
+    "n": 40,
+    "p50": 0,
+    "p95": 0,
+    "min": 0,
+    "max": 0
+   },
+   "longTasks": 0,
+   "timeouts": 0,
+   "requestsTotal": 4,
+   "stickerRequests": 0
+  },
+  "extra_c": {
+   "commits": 11,
+   "rendered": 52316,
+   "threadRendered": {
+    "n": 40,
+    "p50": 0,
+    "p95": 0,
+    "min": 0,
+    "max": 0
+   },
+   "longTasks": 0,
+   "timeouts": 0,
+   "requestsTotal": 5,
+   "stickerRequests": 0
+  }
+ }
+]

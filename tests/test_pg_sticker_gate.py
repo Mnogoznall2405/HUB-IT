@@ -6,17 +6,20 @@ All work happens on a scratch database ``stgt_*`` created on the fly;
 nothing touches the database named in the URL itself beyond admin
 CREATE/DROP DATABASE, and production ``hubit_chat`` is never a target.
 
-Coverage (release gate for the sticker recents sync):
-  * chat-scope upgrade to head on a fresh database: creates
+Coverage (release gate for the post-main consolidated chain):
+  * fresh install upgrade to head on a scratch database: creates
     ``chat_user_favorite_stickers``, ``chat_user_recent_stickers``,
     ``chat_user_recent_sticker_state`` (+ ``applied_op_batch_ids``) and the
-    ``chat_user_sticker_packs.position`` column;
+    ``chat_user_sticker_packs.position`` column, with exactly one Alembic head;
+  * production-plausible upgrade paths from ``20261124_0177`` and from the
+    My Files-side ``20261124_0179`` to head, preserving a pre-existing
+    ``chat_user_sticker_packs`` install row while adding ``position``;
   * op-batch dedup on real PostgreSQL: a replayed ``op_batch_id`` under
     ``FOR UPDATE`` is a no-op (same version, unchanged rail);
   * concurrent-ops smoke: two threads racing ``PUT``-equivalent service
-    calls serialize on the state row — both deltas land, version is 2;
-  * downgrade back to ``20261124_0177`` drops the dedup column and all
-    three sticker tables.
+    calls serialize on the state row — both deltas land, version is 3;
+  * sticker-only downgrade to ``20261124_0179`` drops the dedup column and
+    all three sticker tables, then re-upgrade restores them.
 """
 from __future__ import annotations
 
@@ -203,6 +206,7 @@ def test_sticker_migration_and_ops_gate(tmp_path):
             head = c.execute(sa.text(
                 "select version_num from system.alembic_version")).scalar_one()
         rev.dispose()
+        assert len(expected_heads) == 1, f"alembic graph must have one head, got {expected_heads}"
         assert head in expected_heads, f"db head {head} not in code heads {expected_heads}"
 
         service, engine, monkeypatches, sticker_module, sticker_ids = (
@@ -263,15 +267,92 @@ def test_sticker_migration_and_ops_gate(tmp_path):
         _drop_db(db_name)
 
 
-def test_sticker_downgrade_to_0177(tmp_path):
-    """head -> 0177 removes the dedup column and all sticker tables."""
+def _seed_preexisting_sticker_install(db_url: str, label: str) -> str:
+    """Insert one pre-V2 pack install using only columns present at 0177/0179."""
+    pack_id = f"pg-path-{label}-{uuid.uuid4().hex[:8]}"
+    engine = sa.create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "insert into chat.chat_sticker_packs "
+                    "(id, short_name, title, sticker_type, created_at, updated_at) "
+                    "values (:id, :short_name, :title, 'regular', now(), now())"
+                ),
+                {"id": pack_id, "short_name": pack_id, "title": pack_id},
+            )
+            conn.execute(
+                sa.text(
+                    "insert into chat.chat_user_sticker_packs "
+                    "(user_id, pack_id, added_at) values (:user_id, :pack_id, now())"
+                ),
+                {"user_id": USER_ID, "pack_id": pack_id},
+            )
+    finally:
+        engine.dispose()
+    return pack_id
+
+
+def _assert_sticker_install_preserved(db_url: str, pack_id: str) -> None:
+    engine = sa.create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    "select user_id, position from chat.chat_user_sticker_packs "
+                    "where pack_id=:pack_id"
+                ),
+                {"pack_id": pack_id},
+            ).one()
+    finally:
+        engine.dispose()
+    assert row.user_id == USER_ID
+    assert row.position == 0
+
+
+@pytest.mark.parametrize("start_revision", ["20261124_0177", "20261124_0179"])
+def test_sticker_upgrade_paths_preserve_preexisting_install(tmp_path, start_revision):
+    """Upgrade from both production-plausible parents of the consolidated chain.
+
+    ``0177`` is the pre-My-Files state; ``0179`` is the My Files-side state.
+    In chat scope the interleaved app revisions are no-ops, but the alembic
+    version walk still exercises the exact consolidated graph ordering.
+    """
+    db_name = f"stgt_{uuid.uuid4().hex[:8]}"
+    _create_db(db_name)
+    db_url = _db_url(db_name)
+    try:
+        upgrade_internal_database(db_url, start_revision, scope="chat")
+        assert "position" not in _cols(db_url, "chat_user_sticker_packs", "chat")
+        pack_id = _seed_preexisting_sticker_install(db_url, start_revision[-4:])
+
+        upgrade_internal_database(db_url, "head", scope="chat")
+        _assert_sticker_install_preserved(db_url, pack_id)
+        assert "applied_op_batch_ids" in _cols(
+            db_url, "chat_user_recent_sticker_state", "chat",
+        )
+
+        engine = sa.create_engine(db_url)
+        try:
+            with engine.connect() as conn:
+                assert conn.execute(
+                    sa.text("select version_num from system.alembic_version")
+                ).scalar_one() == "20261125_0182"
+        finally:
+            engine.dispose()
+    finally:
+        _drop_db(db_name)
+
+
+def test_sticker_downgrade_to_0179(tmp_path):
+    """head -> 0179 removes only the sticker-V2 additive objects; re-upgrade works."""
     db_name = f"stgt_{uuid.uuid4().hex[:8]}"
     _create_db(db_name)
     db_url = _db_url(db_name)
     try:
         upgrade_internal_database(db_url, "head", scope="chat")
         cfg = build_alembic_config(db_url, scope="chat")
-        command.downgrade(cfg, "20261124_0177")
+        command.downgrade(cfg, "20261124_0179")
         chat_tables = _tables(db_url, "chat")
         for table_name in (
             "chat_user_favorite_stickers",
@@ -281,7 +362,7 @@ def test_sticker_downgrade_to_0177(tmp_path):
             assert table_name not in chat_tables, table_name
         assert "position" not in _cols(db_url, "chat_user_sticker_packs", "chat")
 
-        # Re-upgrade restores the whole chain including the dedup column.
+        # Re-upgrade restores the whole sticker chain including the dedup column.
         upgrade_internal_database(db_url, "head", scope="chat")
         assert "applied_op_batch_ids" in _cols(
             db_url, "chat_user_recent_sticker_state", "chat",

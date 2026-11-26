@@ -9,6 +9,7 @@ migration itself is checked separately through alembic upgrade/downgrade.
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -249,6 +250,92 @@ def test_favorite_requires_installed_pack_or_received_sticker(sticker_env):
     denied = client.put("/chat/stickers/favorites/st-9")
     assert denied.status_code == 404, denied.text
     assert client.put("/chat/stickers/favorites/st-missing").status_code == 404
+
+
+def test_user_uploaded_stickerlike_filename_does_not_grant_entitlement(sticker_env):
+    """A user-controlled attachment name must not count as a received sticker copy."""
+    client, set_user = sticker_env.client, sticker_env.set_user
+    sticker_id = "01234567-89ab-cdef-8123-456789abcdef"
+    _seed_pack(
+        storage_root=sticker_env.storage_root,
+        pack_id="pack-forge",
+        short_name="testpack_forge",
+        title="Forge pack",
+        sticker_ids=[sticker_id],
+        install_for=[1],
+    )
+
+    conversation = client.post("/chat/conversations/direct", json={"peer_user_id": 2})
+    assert conversation.status_code == 200, conversation.text
+    conversation_id = conversation.json()["id"]
+
+    set_user(2)  # Bob never installed the pack and never received the real sticker.
+    forged_name = f"sticker-{sticker_id}--x.webp"
+    uploaded = client.post(
+        f"/chat/conversations/{conversation_id}/messages/files",
+        files=[("files", (forged_name, b"not-a-real-sticker", "image/webp"))],
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    attachment = uploaded.json()["attachments"][0]
+    assert attachment["file_name"] == forged_name
+    assert attachment["media_kind"] is None
+
+    denied = client.put(f"/chat/stickers/favorites/{sticker_id}")
+    assert denied.status_code == 404, denied.text
+
+
+def test_user_upload_cannot_set_sticker_media_kind(sticker_env):
+    """The server-side ``media_kind='sticker'`` marker is not user-assignable."""
+    client = sticker_env.client
+    conversation = client.post("/chat/conversations/direct", json={"peer_user_id": 2})
+    assert conversation.status_code == 200, conversation.text
+    conversation_id = conversation.json()["id"]
+
+    rejected = client.post(
+        f"/chat/conversations/{conversation_id}/messages/files",
+        data={"files_meta_json": json.dumps([{"media_kind": "sticker"}])},
+        files=[("files", ("sticker-st-forged--x.webp", b"not-a-real-sticker", "image/webp"))],
+    )
+    assert rejected.status_code == 400, rejected.text
+
+
+def test_cached_pack_preview_import_and_send_are_already_self_service(sticker_env):
+    """The pack cache is shared: no private-pack confidentiality or send privilege exists."""
+    client, set_user = sticker_env.client, sticker_env.set_user
+    pack_id = "pack-self-service"
+    sticker_id = "st-self-service"
+    _seed_pack(
+        storage_root=sticker_env.storage_root,
+        pack_id=pack_id,
+        short_name="testpack_self_service",
+        title="Self-service pack",
+        sticker_ids=[sticker_id],
+        install_for=[],
+    )
+    (sticker_env.storage_root / pack_id / ".previews-v2").write_text("ready", encoding="ascii")
+
+    set_user(3)  # Mallory has neither installed the pack nor received its sticker.
+    preview = client.get("/chat/sticker-packs/preview/testpack_self_service")
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["is_added"] is False
+    assert [item["id"] for item in preview.json()["stickers"]] == [sticker_id]
+
+    raw = client.get(f"/chat/sticker-packs/preview/testpack_self_service/stickers/{sticker_id}/file")
+    assert raw.status_code == 200, raw.text
+    assert raw.content == f"webp-{sticker_id}".encode("ascii")
+
+    imported = client.post("/chat/sticker-packs/import", json={"source": "testpack_self_service"})
+    assert imported.status_code == 200, imported.text
+    assert [item["id"] for item in imported.json()["items"]] == [pack_id]
+
+    conversation = client.post("/chat/conversations/direct", json={"peer_user_id": 1})
+    assert conversation.status_code == 200, conversation.text
+    sent = client.post(
+        f"/chat/conversations/{conversation.json()['id']}/messages/sticker",
+        json={"sticker_id": sticker_id, "client_message_id": "self-service-sticker"},
+    )
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["attachments"][0]["media_kind"] == "sticker"
 
 
 def test_favorites_are_isolated_per_user(sticker_env):
@@ -561,7 +648,7 @@ def _alembic_config(url: str, scope: str = "chat"):
 def test_sticker_favorites_migration_upgrade_and_downgrade(tmp_path):
     """20261124_0180 creates both tables and the position column, then rolls back."""
     revision = "20261124_0180"
-    parent = "20261124_0177"
+    parent = "20261124_0179"
     engine = sa.create_engine(f"sqlite:///{(tmp_path / 'mig177.db').as_posix()}")
     cfg = _alembic_config(str(engine.url))
     with engine.begin() as connection:

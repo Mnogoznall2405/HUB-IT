@@ -1,0 +1,451 @@
+{
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "measuredAt": "2026-11-25T07:52:10.222Z",
+  "dock": "warm",
+  "emojiText": false,
+  "scenarios": {
+    "typing_echo_ms": {
+      "n": 25,
+      "p50": 9.1,
+      "p95": 22.6,
+      "min": 6.5,
+      "max": 24
+    },
+    "send_echo_ms": {
+      "n": 40,
+      "p50": 56.5,
+      "p95": 97.1,
+      "min": 38.3,
+      "max": 139.4,
+      "commits": {
+        "n": 40,
+        "p50": 5,
+        "p95": 8,
+        "min": 3,
+        "max": 11
+      },
+      "rendered": {
+        "n": 40,
+        "p50": 20093,
+        "p95": 26205,
+        "min": 6702,
+        "max": 37427
+      },
+      "threadRendered": {
+        "n": 40,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "timeouts": 0,
+      "requestsTotal": 16,
+      "stickerRequests": 0
+    },
+    "send_echo_samples": [
+      {
+        "ms": 87,
+        "commits": 5,
+        "rendered": 8185,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/settings/me",
+            "dur": 24.1
+          },
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/thread-bootstrap?limit=24&lightweight=1",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 139.4,
+        "commits": 11,
+        "rendered": 23501,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 76.9,
+        "commits": 7,
+        "rendered": 15271,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 38.3,
+        "commits": 3,
+        "rendered": 6702,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 66.6,
+        "commits": 8,
+        "rendered": 18671,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 47.4,
+        "commits": 7,
+        "rendered": 16762,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 46.2,
+        "commits": 7,
+        "rendered": 17259,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 46,
+        "commits": 3,
+        "rendered": 7554,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 69.7,
+        "commits": 8,
+        "rendered": 20925,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=7e596e67-a16a-462e-a52b-4b7a785f0768",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 54.1,
+        "commits": 5,
+        "rendered": 13348,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=f682c897-b8c7-4456-950a-9af2f15b84de",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 45.5,
+        "commits": 7,
+        "rendered": 19247,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 50.1,
+        "commits": 5,
+        "rendered": 14058,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 47.3,
+        "commits": 5,
+        "rendered": 14413,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 52.1,
+        "commits": 7,
+        "rendered": 20738,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 47.1,
+        "commits": 5,
+        "rendered": 15123,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=af2584b8-4044-4903-ae52-5d71e229a1c5",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 97.1,
+        "commits": 11,
+        "rendered": 34423,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 51,
+        "commits": 7,
+        "rendered": 22229,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 44.7,
+        "commits": 3,
+        "rendered": 9684,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 50.3,
+        "commits": 5,
+        "rendered": 16543,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 54.8,
+        "commits": 5,
+        "rendered": 16898,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=d450b18b-09c4-47fc-945f-08adcd6efacc",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 54.9,
+        "commits": 7,
+        "rendered": 24217,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=979e27db-000e-4173-865b-01da27db921a",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 54.1,
+        "commits": 5,
+        "rendered": 17608,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 60.4,
+        "commits": 7,
+        "rendered": 25211,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 55.4,
+        "commits": 5,
+        "rendered": 18318,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=4e3fa871-95c6-4ab0-8a85-393435e3f743",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 53.5,
+        "commits": 7,
+        "rendered": 26205,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 56.5,
+        "commits": 5,
+        "rendered": 19028,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=922b78b4-87a2-4720-b7e3-1c564879b277",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 59.5,
+        "commits": 5,
+        "rendered": 19383,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=d8c4a8f6-6513-408e-b9f6-ccd462e8445c",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 78.6,
+        "commits": 6,
+        "rendered": 23759,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 57.1,
+        "commits": 5,
+        "rendered": 20093,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=ccb01cef-0706-4d78-9fc1-b59b635e2762",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 56.1,
+        "commits": 5,
+        "rendered": 20448,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=dca6d569-a273-423c-85b2-baad941a15ab",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 75.9,
+        "commits": 6,
+        "rendered": 25037,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 63.9,
+        "commits": 5,
+        "rendered": 21158,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 62.3,
+        "commits": 5,
+        "rendered": 21513,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=b1bbb904-afb6-4dfe-80dc-1d66b44ac7b2",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 65.7,
+        "commits": 5,
+        "rendered": 21868,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 65.1,
+        "commits": 5,
+        "rendered": 22223,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 59.7,
+        "commits": 5,
+        "rendered": 22578,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=169cb8a6-085d-479e-8b76-612cd1ca85da",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 64.6,
+        "commits": 5,
+        "rendered": 22933,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=b8740337-ec88-4cfc-8a0d-a4ae2a83d51c",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 105.7,
+        "commits": 8,
+        "rendered": 37427,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      },
+      {
+        "ms": 58.7,
+        "commits": 5,
+        "rendered": 23643,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": [
+          {
+            "m": "GET /api/v1/chat/conversations/adefa43e-5422-43be-8d4b-6144a880095a/messages?limit=50&after_message_id=b3ee8a3b-2b87-433b-bd3a-fc9205cc092e",
+            "dur": null
+          }
+        ]
+      },
+      {
+        "ms": 59.8,
+        "commits": 5,
+        "rendered": 23998,
+        "threadRendered": 0,
+        "longTasks": 0,
+        "requests": []
+      }
+    ]
+  }
+}

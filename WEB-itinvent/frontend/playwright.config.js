@@ -31,13 +31,24 @@ if (LOCAL) {
   process.env.E2E_PASSWORD2 ||= 'e2e-local-user-pass';
   process.env.E2E_USERNAME3 ||= 'e2e_fresh';
   process.env.E2E_PASSWORD3 ||= 'e2e-local-fresh-pass';
+  // Onboarded third account: e2e_fresh stays on the /about gate by design.
+  process.env.E2E_USERNAME4 ||= 'e2e_joiner';
+  process.env.E2E_PASSWORD4 ||= 'e2e-local-joiner-pass';
+  // No admin-area permission: operators carry scan.tasks -> /admin/hub-desktop.
+  process.env.E2E_USERNAME5 ||= 'e2e_viewer';
+  process.env.E2E_PASSWORD5 ||= 'e2e-local-viewer-pass';
   process.env.E2E_SEND ||= '1';
   process.env.E2E_FILES_WORKER ||= '1';
 }
 
 const BACKEND_PORT = process.env.E2E_BACKEND_PORT || '18001';
 const FRONTEND_PORT = process.env.E2E_FRONTEND_PORT || '5174';
-const frontendBuildDir = fileURLToPath(new URL('../../output/e2e-frontend-built', import.meta.url));
+// Parallel gate worktrees share this file: E2E_BUILD_OUTDIR isolates the
+// built bundle per run so one gate's `vite preview` cannot lock another's
+// output directory (default unchanged).
+const frontendBuildDir = process.env.E2E_BUILD_OUTDIR
+  ? process.env.E2E_BUILD_OUTDIR
+  : fileURLToPath(new URL('../../output/e2e-frontend-built', import.meta.url));
 
 const localWebServers = [
   {

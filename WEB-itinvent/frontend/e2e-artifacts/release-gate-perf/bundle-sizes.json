@@ -1,0 +1,94 @@
+{
+  "cand": {
+    "assetsTotalBytes": 41568401.0,
+    "fileCount": 1064,
+    "top": [
+      {
+        "name": "subset-shared.chunk-BMUR75ip.js",
+        "bytes": 1820793
+      },
+      {
+        "name": "subset-shared.chunk-pe0tkLdo.js",
+        "bytes": 1820793
+      },
+      {
+        "name": "elk.bundled-DQXsm6ob.js",
+        "bytes": 1440976
+      },
+      {
+        "name": "pdf.worker.min-B5Yc7dP4.mjs",
+        "bytes": 1327591
+      },
+      {
+        "name": "pdf.worker.min-DcnJS_0D.js",
+        "bytes": 1252176
+      },
+      {
+        "name": "pdf.worker.min-BzxOANr2.js",
+        "bytes": 1252176
+      },
+      {
+        "name": "percentages-BXMCSKIN-DafGIZXI.js",
+        "bytes": 1151186
+      },
+      {
+        "name": "percentages-BXMCSKIN-4YK3nAFy.js",
+        "bytes": 1151186
+      },
+      {
+        "name": "xlsx.min-xB40BCge.js",
+        "bytes": 869846
+      },
+      {
+        "name": "CodeMirrorTextViewer-COoxwf2m.js",
+        "bytes": 775016
+      }
+    ]
+  },
+  "base": {
+    "assetsTotalBytes": 24813316.0,
+    "fileCount": 622,
+    "top": [
+      {
+        "name": "subset-shared.chunk-CbDOOLO4.js",
+        "bytes": 1820793
+      },
+      {
+        "name": "elk.bundled-DQXsm6ob.js",
+        "bytes": 1440976
+      },
+      {
+        "name": "pdf.worker.min-B5Yc7dP4.mjs",
+        "bytes": 1327591
+      },
+      {
+        "name": "pdf.worker.min-DnZhoJzn.js",
+        "bytes": 1252176
+      },
+      {
+        "name": "percentages-BXMCSKIN-aIWeMdAT.js",
+        "bytes": 1151154
+      },
+      {
+        "name": "xlsx.min-xB40BCge.js",
+        "bytes": 869846
+      },
+      {
+        "name": "CodeMirrorTextViewer-B5xAort1.js",
+        "bytes": 775016
+      },
+      {
+        "name": "cynefin-OW5HDTMX-CUd4o4BT.js",
+        "bytes": 687913
+      },
+      {
+        "name": "ChatPageContent-C8sKeWJz.js",
+        "bytes": 684311
+      },
+      {
+        "name": "index-CTxHJCOq.js",
+        "bytes": 646164
+      }
+    ]
+  }
+}

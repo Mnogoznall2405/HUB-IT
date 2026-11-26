@@ -44,4 +44,3 @@ const password = 'AuditC17!pass123';
   fs.writeFileSync(fixtureFile, JSON.stringify(out, null, 2));
   console.log(JSON.stringify({ run, created, d1: out.d1, d2: out.d2, managers, delegatePut, bulkStatus: bulk.status, bulkItems: (bulkBody.items || []).length }));
 })();
-

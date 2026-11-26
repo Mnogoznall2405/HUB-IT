@@ -74,7 +74,8 @@ async function createTask(page, { title, description = '', projectName, validate
   const submit = dialog.getByRole('button', { name: 'Создать задачу' });
   if (validate) {
     await titleInput.fill('ab');
-    await expect(dialog.getByText('Минимум 3 символа')).toBeVisible();
+    // Exact match: a live status span announces "Укажите название (минимум 3 символа)".
+    await expect(dialog.getByText('Минимум 3 символа', { exact: true })).toBeVisible();
     await expect(submit).toBeDisabled();
   }
   await titleInput.fill(title);

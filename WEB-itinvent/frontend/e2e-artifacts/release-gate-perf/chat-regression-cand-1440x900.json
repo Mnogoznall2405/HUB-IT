@@ -1,0 +1,169 @@
+{
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "measuredAt": "2026-11-25T07:27:32.099Z",
+  "scenarios": {
+    "conv_switch": {
+      "ms": {
+        "n": 30,
+        "p50": 750.1,
+        "p95": 1027.1,
+        "min": 705.3,
+        "max": 1032.6
+      },
+      "commits": {
+        "n": 30,
+        "p50": 15,
+        "p95": 18,
+        "min": 15,
+        "max": 19
+      },
+      "longTasks": 1,
+      "timeouts": 0
+    },
+    "history_load": {
+      "ms": {
+        "n": 30,
+        "p50": 717.6,
+        "p95": 971.7,
+        "min": 686.8,
+        "max": 979.1
+      },
+      "commits": {
+        "n": 30,
+        "p50": 15,
+        "p95": 16,
+        "min": 15,
+        "max": 16
+      },
+      "longTasks": 0,
+      "timeouts": 0
+    },
+    "history_1000": {
+      "firstBubbleMs": {
+        "n": 8,
+        "p50": 757.2,
+        "p95": 984.3,
+        "min": 731.5,
+        "max": 984.3
+      },
+      "settledMs": {
+        "n": 8,
+        "p50": 787.7,
+        "p95": 1017.9,
+        "min": 761.7,
+        "max": 1017.9
+      },
+      "commits": {
+        "n": 8,
+        "p50": 17,
+        "p95": 21,
+        "min": 17,
+        "max": 21
+      },
+      "longTasks": 3
+    },
+    "typing_echo_ms": {
+      "n": 30,
+      "p50": 25.6,
+      "p95": 28.6,
+      "min": 18.4,
+      "max": 44.2
+    },
+    "emoji_pinned": {
+      "ms": {
+        "n": 30,
+        "p50": 184.9,
+        "p95": 298.4,
+        "min": 154.5,
+        "max": 373.5
+      },
+      "commits": {
+        "n": 30,
+        "p50": 6,
+        "p95": 11,
+        "min": 6,
+        "max": 17
+      },
+      "threadRendered": {
+        "n": 30,
+        "p50": 0,
+        "p95": 0,
+        "min": 0,
+        "max": 0
+      },
+      "longTasks": 0,
+      "timeouts": 0
+    },
+    "emoji_hover_ms": {
+      "n": 29,
+      "p50": 209.5,
+      "p95": 221.2,
+      "min": 205.4,
+      "max": 239.1,
+      "timeouts": 0,
+      "missedEnter": 1
+    },
+    "tab_to_stickers_ms": {
+      "n": 30,
+      "p50": 151,
+      "p95": 209,
+      "min": 129.7,
+      "max": 360.2
+    },
+    "tab_to_emoji_ms": {
+      "n": 30,
+      "p50": 191.6,
+      "p95": 232.7,
+      "min": 167.4,
+      "max": 290.6
+    },
+    "send_echo_ms": {
+      "n": 30,
+      "p50": 178.7,
+      "p95": 296,
+      "min": 139.2,
+      "max": 318.2,
+      "timeouts": 0
+    },
+    "receive_ms": {
+      "n": 10,
+      "p50": 91.6,
+      "p95": 131.1,
+      "min": 67.9,
+      "max": 131.1,
+      "timeouts": 0
+    },
+    "memory_cycles_mb": {
+      "cyclesPerSeries": 50,
+      "series": [
+        {
+          "before": 34,
+          "after": 34,
+          "delta": 0
+        },
+        {
+          "before": 33,
+          "after": 34,
+          "delta": 1
+        },
+        {
+          "before": 33,
+          "after": 34,
+          "delta": 1
+        }
+      ],
+      "meanDelta": 1
+    },
+    "chat_open_cold_ms": {
+      "n": 5,
+      "p50": 1037,
+      "p95": 1304,
+      "min": 982,
+      "max": 1304,
+      "timeouts": 0
+    }
+  }
+}

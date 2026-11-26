@@ -22,7 +22,7 @@ export default function useChatComposerSelection({
   composerRef,
   composerSelectionRef,
   isMobile,
-  messageText,
+  latestMessageTextRef,
   setMessageText,
 }) {
   const syncComposerSelection = useCallback(() => {
@@ -33,11 +33,17 @@ export default function useChatComposerSelection({
     };
   }, [composerRef, composerSelectionRef]);
 
+  // Текст читается из latestMessageTextRef, а не из замыкания на state:
+  // ref обновляется синхронно в publish (useChatMessageTextState), поэтому
+  // значение всегда свежее, а коллбэк остаётся стабильным между keystroke'ами.
+  // Это критично для keep-alive дока эмодзи: нестабильный onInsertEmoji
+  // ломал memo-цепочку dock → panel → picker и перерендеривал скрытую
+  // панель на каждый ввод/отправку.
   const insertEmojiAtSelection = useCallback((emoji) => {
     const { start, end, currentValue } = resolveComposerSelectionRange({
       composerSelectionRef,
       composerRef,
-      messageText,
+      messageText: latestMessageTextRef?.current ?? composerRef.current?.value ?? '',
     });
     const nextValue = `${currentValue.slice(0, start)}${emoji}${currentValue.slice(end)}`;
     const nextPosition = start + emoji.length;
@@ -49,7 +55,7 @@ export default function useChatComposerSelection({
       composerRef.current?.focus?.();
       composerRef.current?.setSelectionRange?.(nextPosition, nextPosition);
     });
-  }, [composerRef, composerSelectionRef, isMobile, messageText, setMessageText]);
+  }, [composerRef, composerSelectionRef, isMobile, latestMessageTextRef, setMessageText]);
 
   return {
     insertEmojiAtSelection,

@@ -100,6 +100,9 @@ test('history list failure can be retried while the working document remains int
   broken = false; await page.getByRole('button', { name: 'Повторить', exact: true }).click();
   await expect(historyFrame(page).getByRole('button', { name: 'Версия 1 · Анна' })).toBeVisible();
   await historyFrame(page).getByRole('button', { name: 'Вернуться из истории' }).click();
+  // The SDK close event reaches HUB through a postMessage round-trip: wait for the
+  // history frame to detach before asserting on the remaining live editor frame.
+  await expect(page.locator('iframe')).toHaveCount(1);
   await expect(page.locator('iframe')).toHaveAttribute('data-editor-instance', original);
   await expect(live.getByRole('textbox')).toHaveText('Не терять при ошибке');
 });
@@ -190,6 +193,7 @@ test('Escape while loading history in the HUB dialog only closes history and pre
   const instance = await page.locator('iframe').getAttribute('data-editor-instance');
   await live.getByRole('button', { name: 'История из меню редактора' }).click();
   await expect(page.getByRole('button', { name: 'Вернуться к документу' })).toBeFocused();
+  await expect.poll(() => Boolean(release)).toBe(true);
   await page.keyboard.press('Escape');
   release();
   await expect(page.getByRole('dialog')).toHaveCount(1);

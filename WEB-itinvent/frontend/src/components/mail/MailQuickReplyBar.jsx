@@ -38,7 +38,7 @@ export default function MailQuickReplyBar({
         placeholder={placeholder}
       />
       {sending ? (
-        <Typography sx={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>
+        <Typography sx={{ position: 'absolute', width: '1px', height: '1px', overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>
           Отправка
         </Typography>
       ) : null}

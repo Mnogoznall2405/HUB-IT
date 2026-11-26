@@ -19,7 +19,7 @@
    ```sql
    SELECT version_num FROM system.alembic_version;
    ```
-   И head кода: `python -m alembic -c backend/alembic.ini heads` → единственный `20261124_0179`.
+   После consolidation merge со Sticker V2 head кода: `python -m alembic -c backend/alembic.ini heads` → единственный `20261125_0182` (My Files 0178/0179 идут перед sticker chain 0180–0182).
 2. Объём и активность `app.my_files`:
    ```sql
    SELECT pg_size_pretty(pg_total_relation_size('app.my_files'));
@@ -53,7 +53,8 @@ python -m alembic -c backend/alembic.ini upgrade head
 ## Проверка после применения
 
 ```sql
-SELECT version_num FROM system.alembic_version;  -- 20261124_0179
+SELECT version_num FROM system.alembic_version;  -- 20261125_0182 после полного upgrade head
+-- (0179 — ожидаемое промежуточное состояние сразу после My Files миграций)
 
 SELECT c.relname, i.indisvalid, i.indisready
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -75,7 +76,7 @@ ANALYZE app.my_files;
 
 ## План отката
 
-Откат схемы — только вместе с откатом кода на ревизию до PR #68 (код после 0179 пишет `updated_at`; без колонки он упадёт).
+Откат схемы — только вместе с откатом кода на ревизию до PR #68 (код после 0179 пишет `updated_at`; без колонки он упадёт). **В consolidated release важно:** sticker chain 0180–0182 линейно стоит поверх My Files 0178/0179, поэтому `downgrade` до 0178/0177 сначала снимет и sticker-миграции (additive sticker tables/columns). Такой откат допустим только как откат всего consolidated release; точечный откат только My Files с сохранением sticker chain этой линейной цепочкой не поддерживается.
 
 1. Откатить код (штатный откат релиза), остановить процессы с новым кодом.
 2. Убедиться в валидности индексов перед downgrade (INVALID-индекс сломает drop):

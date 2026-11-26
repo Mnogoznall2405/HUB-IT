@@ -163,7 +163,8 @@ for (const desktop of [false, true]) {
 test('equipment card prints one A4 label without clearing an unrelated selection', async ({ page }, testInfo) => {
   const errors = await prepare(page);
   await page.getByRole('table').getByRole('checkbox').nth(2).check();
-  await page.getByRole('button', { name: 'Actions for QR-001', exact: true }).click();
+  // The ⋮ column was removed: a row click opens the actions menu.
+  await page.getByRole('row', { name: /QR-001/ }).click();
   await page.getByRole('menuitem', { name: 'Просмотр', exact: true }).click();
   await page.getByRole('button', { name: 'Создать QR-code', exact: true }).click();
   const qrDialog = page.getByRole('dialog').filter({ hasText: 'QR-код оборудования' });
