@@ -38,6 +38,7 @@ import {
   RECENT_STICKERS_LIMIT,
   writeRecentStickerIds,
 } from '../components/chat/stickerSearchIndex';
+import { getEmojiKeywordIndexVersion } from './chat/emojiKeywordIndex';
 
 const SLICE_PACKS = 'packs';
 const SLICE_FAVORITES = 'favorites';
@@ -450,12 +451,17 @@ export const getStickerScopeDerived = (scopeKey) => {
 
 // Индекс — самая дорогая производная: строится лениво при первом
 // реальном потребителе (поиск во вкладке или подсказки по эмодзи-токену)
-// и переиспользуется, пока не поменялись входные массивы.
+// и переиспользуется, пока не поменялись входные массивы. Вторая ось
+// свежести — версия CLDR keyword-данных: lazy-чанк эмодзи-словаря обычно
+// приезжает позже первой сборки, и индекс перестраивается один раз с
+// полным словарём (стоимость сборки — миллисекунды, см. perf-тест).
 export const getStickerSearchIndex = (scopeKey) => {
   const derived = getStickerScopeDerived(scopeKey);
   if (derived === EMPTY_DERIVED) return [];
-  if (!derived.searchIndex) {
+  const keywordsVersion = getEmojiKeywordIndexVersion();
+  if (!derived.searchIndex || derived.searchIndexKeywordsVersion !== keywordsVersion) {
     derived.searchIndex = buildStickerSearchIndex(derived.stickerSections);
+    derived.searchIndexKeywordsVersion = keywordsVersion;
   }
   return derived.searchIndex;
 };

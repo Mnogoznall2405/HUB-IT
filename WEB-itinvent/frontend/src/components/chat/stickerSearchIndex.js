@@ -3,8 +3,11 @@
 // в памяти за один проход без серверных запросов — как в Telegram Desktop.
 
 import { containsEmoji, splitEmojiText } from '../../lib/chat/emojiImages';
-
-const FE0F = '\uFE0F';
+import {
+  collectEmojiKeywordsInIndex,
+  normalizeEmojiKey,
+  peekEmojiKeywordIndex,
+} from '../../lib/chat/emojiKeywordIndex';
 
 export const RECENT_STICKERS_LIMIT = 20;
 
@@ -320,7 +323,9 @@ const STICKER_EMOJI_KEYWORDS_RAW = {
   '💤': 'сон sleep zzz спать',
 };
 
-const normalizeEmojiValue = (value) => String(value || '').split(FE0F).join('');
+// Единая нормализация с emojiKeywordIndex — обе стороны (эмодзи стикера
+// и поисковый запрос) проходят одно правило срезки FE0F.
+const normalizeEmojiValue = normalizeEmojiKey;
 
 const STICKER_EMOJI_KEYWORDS = new Map(
   Object.entries(STICKER_EMOJI_KEYWORDS_RAW)
@@ -331,11 +336,22 @@ export const normalizeStickerSearchQuery = (value) => (
   String(value || '').trim().toLowerCase()
 );
 
-// Все ключевые слова, относящиеся к эмодзи стикера: подстроки покрывают
-// составные теги вроде «🔥😂» без отдельного разбора.
-const keywordsForEmoji = (emojiNorm) => {
+// Все ключевые слова, относящиеся к эмодзи стикера. База — полный CLDR
+// индекс (lazy-чанк lib/chat/emojiKeywordIndex): точные совпадения по
+// графемам, составные теги вроде «🔥😂» разбираются сегментацией. Поверх
+// него — ручной словарь синонимов с прежней подстроковой семантикой:
+// curated-записи дополняют CLDR (русские разговорные синонимы) и ловят
+// ключи внутри ZWJ-последовательностей, где точного совпадения нет.
+// До загрузки чанка работает только ручной словарь — деградация к
+// прежнему поведению, а не к пустому поиску.
+const keywordsForEmoji = (emojiRaw, emojiNorm) => {
   if (!emojiNorm) return '';
   const collected = [];
+  const cldrIndex = peekEmojiKeywordIndex();
+  if (cldrIndex) {
+    const cldrKeywords = collectEmojiKeywordsInIndex(cldrIndex, emojiRaw);
+    if (cldrKeywords) collected.push(cldrKeywords);
+  }
   STICKER_EMOJI_KEYWORDS.forEach((keywords, emojiKey) => {
     if (emojiNorm.includes(emojiKey)) collected.push(keywords);
   });
@@ -345,8 +361,19 @@ const keywordsForEmoji = (emojiNorm) => {
 /* ─── Индекс по секциям стикеров ─── */
 // Секции — та же модель, что у вкладки: pseudo «Недавние»/«Избранные»,
 // затем наборы. Индекс лишь предвычисляет нормализованные haystack-строки.
-export const buildStickerSearchIndex = (sections) => (
-  (Array.isArray(sections) ? sections : []).map((section) => {
+// Ключевые слова мemoized по строке эмодзи: в реальных наборах десятки
+// стикеров делят один эмодзи-тег, повторный разбор не нужен.
+export const buildStickerSearchIndex = (sections) => {
+  const keywordCache = new Map();
+  const keywordsForSticker = (sticker) => {
+    const raw = String(sticker?.emoji || '');
+    const cached = keywordCache.get(raw);
+    if (cached !== undefined) return cached;
+    const keywords = keywordsForEmoji(raw, normalizeEmojiValue(raw));
+    keywordCache.set(raw, keywords);
+    return keywords;
+  };
+  return (Array.isArray(sections) ? sections : []).map((section) => {
     const kind = section?.recent ? 'recent' : (section?.favorites ? 'favorites' : 'pack');
     return {
       id: String(section?.id || kind),
@@ -360,12 +387,12 @@ export const buildStickerSearchIndex = (sections) => (
         return {
           sticker,
           emojiNorm,
-          keywordNorm: keywordsForEmoji(emojiNorm),
+          keywordNorm: keywordsForSticker(sticker),
         };
       }),
     };
-  })
-);
+  });
+};
 
 // Совпадение по названию/short_name набора показывает набор целиком;
 // иначе группа собирается из точечных попаданий по эмодзи и ключевым словам.
