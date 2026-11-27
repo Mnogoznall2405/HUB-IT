@@ -315,7 +315,10 @@ export default function ChatMediaPreviewDialog({
       <DialogTitle
         data-testid="chat-attachment-preview-topbar"
         sx={{
-          display: previewChromeActive ? 'flex' : 'none',
+          // Кнопка «Закрыть» — единственный постоянный элемент chrome:
+          // не участвует в авто-скрытии, чтобы выход из предпросмотра
+          // был видим всегда, а не только после движения мыши/касания.
+          display: 'flex',
           justifyContent: 'flex-end',
           position: 'absolute',
           top: 0,

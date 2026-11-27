@@ -172,3 +172,71 @@ describe('useChatPreviewController Office preview cancellation', () => {
     });
   });
 });
+
+
+describe('useChatPreviewController file-photo identity in a mixed chat', () => {
+  beforeEach(() => {
+    Object.values(chatAttachmentsAPIMock).forEach((mockFn) => mockFn.mockReset());
+    chatAttachmentsAPIMock.getConversationAttachments = vi.fn().mockResolvedValue({ items: [], has_more: false });
+  });
+
+  const buildMixedChatArgs = () => {
+    const args = createControllerArgs();
+    args.messagesRef.current = [
+      {
+        id: 'msg-media',
+        conversation_id: 'conversation-1',
+        created_at: '2026-01-01T10:00:00.000Z',
+        sender: { full_name: 'Sender' },
+        attachments: [{ id: 'att-media', kind: 'image', file_name: 'regular.png', mime_type: 'image/png' }],
+      },
+      {
+        id: 'msg-file',
+        conversation_id: 'conversation-1',
+        created_at: '2026-01-01T11:00:00.000Z',
+        sender: { full_name: 'Sender' },
+        attachments: [{ id: 'att-filephoto', kind: 'file', file_name: 'photo-as-file.png', mime_type: 'image/png' }],
+      },
+    ];
+    return args;
+  };
+
+  it('clicking the photo-as-file shows exactly it, not the other photo', async () => {
+    const windowOpen = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const args = buildMixedChatArgs();
+    const { result } = renderHook(() => useChatPreviewController(args));
+
+    await act(async () => {
+      result.current.openMediaViewer('msg-file', args.messagesRef.current[1].attachments[0]);
+      await Promise.resolve();
+    });
+
+    const preview = result.current.attachmentPreview;
+    expect(preview).toBeTruthy();
+    // Активный элемент — нажатый файл, а не первое обычное фото галереи.
+    expect(preview.attachment.id).toBe('att-filephoto');
+    expect(preview.attachment.messageId).toBe('msg-file');
+    // Ссылка на оригинал (источник кнопки скачивания) ведёт на нажатый файл.
+    expect(preview.originalUrl).toContain('att-filephoto');
+    expect(preview.originalUrl).not.toContain('att-media');
+    // Маршрут встроенный, без window.open в отдельную вкладку.
+    expect(windowOpen).not.toHaveBeenCalled();
+    windowOpen.mockRestore();
+  });
+
+  it('clicking the regular photo still shows the regular photo', async () => {
+    const args = buildMixedChatArgs();
+    const { result } = renderHook(() => useChatPreviewController(args));
+
+    await act(async () => {
+      result.current.openMediaViewer('msg-media', args.messagesRef.current[0].attachments[0]);
+      await Promise.resolve();
+    });
+
+    const preview = result.current.attachmentPreview;
+    expect(preview).toBeTruthy();
+    expect(preview.attachment.id).toBe('att-media');
+    expect(preview.originalUrl).toContain('att-media');
+    expect(preview.originalUrl).not.toContain('att-filephoto');
+  });
+});

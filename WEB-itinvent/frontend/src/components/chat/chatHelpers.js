@@ -438,6 +438,15 @@ export const isVideoAttachment = (attachment) => {
 export const isAudioAttachment = (attachment) => getAttachmentKind(attachment) === 'audio';
 export const isStickerAttachment = (attachment) => getAttachmentKind(attachment) === 'sticker';
 export const isMediaAttachment = (attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment) || isStickerAttachment(attachment);
+// Фото, отправленное «как файл» (explicit kind=file): тип вложения глобально
+// не переопределяется, но по содержимому оно остаётся изображением.
+// Используется только для маршрутов встроенного предпросмотра/галереи.
+export const isImageLikeFileAttachment = (attachment) => {
+  const mimeType = getAttachmentMimeType(attachment);
+  if (mimeType.startsWith('image/')) return true;
+  const extension = getChatFileExtension(getAttachmentFileName(attachment));
+  return CHAT_IMAGE_ATTACHMENT_EXTENSIONS.has(extension);
+};
 export const isPdfAttachment = (attachment) => getAttachmentMimeType(attachment) === 'application/pdf';
 
 export const buildAttachmentUrl = (messageId, attachmentId, options = {}) => {

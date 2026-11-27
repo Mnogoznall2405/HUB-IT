@@ -19,6 +19,7 @@ import {
   getStatusMeta,
   getTaskAssignee,
   getAttachmentKind,
+  CHAT_IMAGE_ATTACHMENT_EXTENSIONS,
   isImageAttachment,
   isTaskConversation,
   normalizeChatAttachmentUrl,
@@ -1370,7 +1371,15 @@ export function AttachmentCard({
     () => compactUrlList(previewUrl, thumbUrl, openUrl, inlineOriginalUrl, originalUrl, downloadOriginalUrl),
     [downloadOriginalUrl, inlineOriginalUrl, openUrl, originalUrl, previewUrl, thumbUrl],
   );
+  // Фото, отправленное «как файл» (explicit kind=file): тип вложения глобально
+  // не переопределяется, но для встроенного предпросмотра оно остаётся
+  // изображением — иначе onOpenPreview не передаётся и браузер открывает
+  // отдельную вкладку без видимой кнопки закрытия.
+  const filePhotoMime = String(attachment?.mime_type || '').trim().toLowerCase();
+  const filePhotoExt = String(attachment?.file_name || '').trim().toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || '';
+  const imageLikeFileAttachment = filePhotoMime.startsWith('image/') || CHAT_IMAGE_ATTACHMENT_EXTENSIONS.has(filePhotoExt);
   const previewable = isImageAttachment(attachment)
+    || imageLikeFileAttachment
     || resolveAttachmentKind({
       fileName: attachment?.file_name,
       mimeType: attachment?.mime_type,
