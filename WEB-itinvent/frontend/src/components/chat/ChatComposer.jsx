@@ -12,7 +12,12 @@ import useAiAgentAccess from './useAiAgentAccess';
 import { useChatEmojiUi } from './ChatEmojiUiContext';
 import { ChatComposerScheduling, ScheduledMessagesBar } from './ChatScheduledMessages';
 import ChatStickerSuggestions from './ChatStickerSuggestions';
+import ChatEmojiSuggestions from './ChatEmojiSuggestions';
 import { getTrailingEmojiToken } from './stickerSearchIndex';
+import {
+  getComposerEmojiTrigger,
+  prefetchEmojiKeywordIndex,
+} from '../../lib/chat/emojiKeywordIndex';
 import { alpha } from '@mui/material/styles';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
@@ -403,12 +408,20 @@ const ChatComposer = memo(function ChatComposer({
   const [mentionTrigger, setMentionTrigger] = useState(null);
   const mentionTriggerRef = useRef(null);
   const stickerSuggestionsRef = useRef(null);
+  // Автоподсказка эмодзи по `:keyword` (issue #82): триггер считается из
+  // тех же событий textarea, что и упоминания — состояния дизъюнктны
+  // (символ триггера один, `@` и `:` не пересекаются в одной позиции).
+  const [emojiTrigger, setEmojiTrigger] = useState(null);
+  const emojiTriggerRef = useRef(null);
+  const emojiSuggestionsRef = useRef(null);
+  const [emojiListState, setEmojiListState] = useState(null);
   // Эмодзи-токен в конце ввода — триггер полосы подсказок стикеров.
   const stickerEmojiToken = useMemo(() => getTrailingEmojiToken(messageText), [messageText]);
   const [remoteMentionPeople, setRemoteMentionPeople] = useState([]);
   const [mentionLoading, setMentionLoading] = useState(false);
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const mentionListId = useId();
+  const emojiSuggestionListId = useId();
   const composerHintId = useId();
   const selectedFilesTotalLabel = useMemo(() => {
     const finalBytes = Number(selectedFilesSummary?.finalTotalBytes || 0);
@@ -436,6 +449,35 @@ const ChatComposer = memo(function ChatComposer({
       setMentionTrigger(nextTrigger);
       setActiveMentionIndex(0);
     }
+  }, []);
+
+  const updateEmojiTriggerFromTextarea = useCallback((node) => {
+    if (!node) {
+      emojiTriggerRef.current = null;
+      setEmojiTrigger(null);
+      return;
+    }
+    const nextTrigger = getComposerEmojiTrigger(node.value, node.selectionStart);
+    const previousTrigger = emojiTriggerRef.current;
+    const unchanged = Boolean(previousTrigger) === Boolean(nextTrigger)
+      && String(previousTrigger?.query || '') === String(nextTrigger?.query || '')
+      && Number(previousTrigger?.start ?? -1) === Number(nextTrigger?.start ?? -1)
+      && Number(previousTrigger?.end ?? -1) === Number(nextTrigger?.end ?? -1);
+    emojiTriggerRef.current = nextTrigger;
+    if (!unchanged) setEmojiTrigger(nextTrigger);
+  }, []);
+
+  // Оба триггера читают одну и ту же позицию caret — обновляются вместе
+  // на каждом событии textarea, чтобы не расходиться при любом вводе.
+  const updateComposerTriggersFromTextarea = useCallback((node) => {
+    updateMentionTriggerFromTextarea(node);
+    updateEmojiTriggerFromTextarea(node);
+  }, [updateMentionTriggerFromTextarea, updateEmojiTriggerFromTextarea]);
+
+  // Словарь эмодзи — lazy-чанк: греем в idle сразу после монтирования
+  // композера, чтобы первый набранный `:keyword` встречал готовый индекс.
+  useEffect(() => {
+    prefetchEmojiKeywordIndex();
   }, []);
 
   const localMentionPeople = useMemo(
@@ -480,6 +522,8 @@ const ChatComposer = memo(function ChatComposer({
     ? 'Слишком длинное сообщение'
     : mentionOpen
     ? '↑↓ — выбор · Enter — упомянуть · Esc — закрыть'
+    : emojiListState?.visible
+    ? '↑↓ — выбор · Enter — вставить эмодзи · Esc — закрыть'
     : editingMessage ? 'Enter — сохранить · Esc — отменить' : '';
 
   const closeMentions = useCallback(() => {
@@ -489,8 +533,20 @@ const ChatComposer = memo(function ChatComposer({
     setMentionLoading(false);
     setActiveMentionIndex(0);
   }, []);
-  useEffect(() => { closeMentions(); }, [activeConversationId, closeMentions]);
-  useEffect(() => { if (!messageText) closeMentions(); }, [messageText, closeMentions]);
+  const closeEmojiSuggestions = useCallback(() => {
+    emojiTriggerRef.current = null;
+    setEmojiTrigger(null);
+  }, []);
+  useEffect(() => {
+    closeMentions();
+    closeEmojiSuggestions();
+  }, [activeConversationId, closeMentions, closeEmojiSuggestions]);
+  useEffect(() => {
+    if (!messageText) {
+      closeMentions();
+      closeEmojiSuggestions();
+    }
+  }, [messageText, closeMentions, closeEmojiSuggestions]);
 
   // После отправки стикера из подсказок поле чистится только если в нём
   // был один эмодзи-токен — как в Telegram Desktop.
@@ -541,15 +597,46 @@ const ChatComposer = memo(function ChatComposer({
       const node = composerRef?.current;
       node?.focus?.();
       node?.setSelectionRange?.(nextCaret, nextCaret);
-      updateMentionTriggerFromTextarea(node);
+      updateComposerTriggersFromTextarea(node);
     });
-  }, [closeMentions, composerRef, mentionTrigger, messageText, onMessageTextChange, updateMentionTriggerFromTextarea]);
+  }, [closeMentions, composerRef, mentionTrigger, messageText, onMessageTextChange, updateComposerTriggersFromTextarea]);
+
+  // Вставка эмодзи из `:keyword`-подсказки: тот же контур, что у вставки
+  // упоминания — диапазон триггера заменяется эмодзи + trailing-пробелом,
+  // caret встаёт за ним, список закрывается вместе с триггером.
+  const insertEmojiSuggestion = useCallback((entry) => {
+    const trigger = emojiTriggerRef.current || emojiTrigger;
+    const emoji = typeof entry === 'string' ? entry : entry?.emoji;
+    if (!trigger || !emoji) return;
+    const currentValue = String(messageText || '');
+    const insertText = `${emoji} `;
+    const nextValue = `${currentValue.slice(0, trigger.start)}${insertText}${currentValue.slice(trigger.end)}`;
+    const nextCaret = trigger.start + insertText.length;
+    onMessageTextChange?.(nextValue);
+    closeEmojiSuggestions();
+    window.requestAnimationFrame(() => {
+      const node = composerRef?.current;
+      node?.focus?.();
+      node?.setSelectionRange?.(nextCaret, nextCaret);
+      updateComposerTriggersFromTextarea(node);
+    });
+  }, [closeEmojiSuggestions, composerRef, emojiTrigger, messageText, onMessageTextChange, updateComposerTriggersFromTextarea]);
+
+  // Стабильный приёмник aria-состояния списка эмодзи: примитивные поля,
+  // bail-out на неизменных значениях — лишних перерисовок композера нет.
+  const handleEmojiListStateChange = useCallback((next) => {
+    setEmojiListState((current) => {
+      if (!next) return current === null ? current : null;
+      if (current && current.activeIndex === next.activeIndex && current.count === next.count) return current;
+      return next;
+    });
+  }, []);
 
   const handleFocus = useCallback((event) => {
     onComposerFocusChange?.(true);
     onComposerSelectionSync?.(event);
-    updateMentionTriggerFromTextarea(event.currentTarget);
-  }, [onComposerFocusChange, onComposerSelectionSync, updateMentionTriggerFromTextarea]);
+    updateComposerTriggersFromTextarea(event.currentTarget);
+  }, [onComposerFocusChange, onComposerSelectionSync, updateComposerTriggersFromTextarea]);
 
   const handleBlur = useCallback(() => {
     onComposerFocusChange?.(false);
@@ -557,13 +644,13 @@ const ChatComposer = memo(function ChatComposer({
 
   const handleComposerChange = useCallback((event) => {
     onMessageTextChange?.(event.target.value);
-    updateMentionTriggerFromTextarea(event.target);
-  }, [onMessageTextChange, updateMentionTriggerFromTextarea]);
+    updateComposerTriggersFromTextarea(event.target);
+  }, [onMessageTextChange, updateComposerTriggersFromTextarea]);
 
   const handleComposerSelection = useCallback((event) => {
     onComposerSelectionSync?.(event);
-    updateMentionTriggerFromTextarea(event.currentTarget);
-  }, [onComposerSelectionSync, updateMentionTriggerFromTextarea]);
+    updateComposerTriggersFromTextarea(event.currentTarget);
+  }, [onComposerSelectionSync, updateComposerTriggersFromTextarea]);
 
   const handleComposerKeyDown = useCallback((event) => {
     if (event.nativeEvent?.isComposing || event.isComposing || event.keyCode === 229) return;
@@ -590,6 +677,11 @@ const ChatComposer = memo(function ChatComposer({
         return;
       }
     }
+    // Автоподсказка эмодзи — после упоминаний (дизъюнктные триггеры,
+    // порядок только про приоритет чтения), до полосы стикеров: её Enter
+    // всегда означает выбор эмодзи, пока список виден. Esc гасится внутри
+    // (скрывает только список) и не доходит до общей цепочки закрытия.
+    if (emojiSuggestionsRef.current?.handleComposerKey?.(event)) return;
     // Полоса стикеров: Esc гасит только её (до общей цепочки закрытия),
     // стрелки/Enter — только когда выбор уже ушёл на полосу (↑).
     if (stickerSuggestionsRef.current?.handleComposerKey?.(event)) return;
@@ -983,6 +1075,18 @@ const ChatComposer = memo(function ChatComposer({
           </Box>
         ) : null}
 
+        <ChatEmojiSuggestions
+          key={`emoji-suggestions-${activeConversationId || 'no-conversation'}`}
+          ref={emojiSuggestionsRef}
+          theme={theme}
+          ui={ui}
+          compactMobile={compactMobile}
+          emojiTrigger={emojiTrigger}
+          onPickEmoji={insertEmojiSuggestion}
+          listId={emojiSuggestionListId}
+          onStateChange={handleEmojiListStateChange}
+        />
+
         <ChatStickerSuggestions
           key={activeConversationId || 'no-conversation'}
           ref={stickerSuggestionsRef}
@@ -1127,9 +1231,13 @@ const ChatComposer = memo(function ChatComposer({
                     maxRows={compactMobile ? 6 : 12}
                     aria-label="Сообщение"
                     aria-autocomplete="list"
-                    aria-expanded={mentionOpen}
-                    aria-controls={mentionOpen ? mentionListId : undefined}
-                    aria-activedescendant={mentionOpen && mentionOptions.length ? `${mentionListId}-${Math.min(activeMentionIndex, mentionOptions.length - 1)}` : undefined}
+                    aria-expanded={mentionOpen || Boolean(emojiListState?.visible)}
+                    aria-controls={mentionOpen ? mentionListId : emojiListState?.visible ? emojiSuggestionListId : undefined}
+                    aria-activedescendant={mentionOpen && mentionOptions.length
+                      ? `${mentionListId}-${Math.min(activeMentionIndex, mentionOptions.length - 1)}`
+                      : emojiListState?.visible && emojiListState.count > 0
+                        ? `${emojiSuggestionListId}-${Math.min(emojiListState.activeIndex, emojiListState.count - 1)}`
+                        : undefined}
                     aria-describedby={!compactMobile && !voiceRecording && composerHintText ? composerHintId : undefined}
                     enterKeyHint={compactMobile ? 'enter' : 'send'}
                     placeholder={editingMessage ? 'Измените сообщение…' : replyMessage ? 'Ваш ответ…' : isAiConversation ? 'Спросите ассистента…' : 'Напишите сообщение…'}

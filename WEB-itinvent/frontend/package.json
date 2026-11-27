@@ -18,7 +18,8 @@
     "build": "vite build",
     "check:startup-bundle": "node scripts/check-startup-bundle.mjs",
     "generate:icons": "python scripts/generate-pwa-icons.py",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "generate:emoji-keywords": "node scripts/generate-emoji-keywords.mjs"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",
@@ -78,6 +79,7 @@
     "@vitejs/plugin-react": "^5.2.0",
     "autoprefixer": "^10.5.0",
     "emoji-datasource-apple": "16.0.0",
+    "emojibase-data": "16.0.3",
     "eslint": "^9.22.0",
     "eslint-plugin-import": "^2.31.0",
     "eslint-plugin-react-hooks": "^5.2.0",
