@@ -926,8 +926,11 @@ def test_collaboration_migration_is_repeatable_matches_the_model_and_downgrades_
         assert {c["name"] for c in inspector.get_columns("my_file_versions")} == {
             column.name for column in AppMyFileVersion.__table__.columns
         }
+        # ``role`` arrives in 0158 and ``updated_at`` in 0179, outside this migration slice.
         assert {c["name"] for c in inspector.get_columns("my_file_collaborators")} == {
-            column.name for column in AppMyFileCollaborator.__table__.columns if column.name != "role"
+            column.name
+            for column in AppMyFileCollaborator.__table__.columns
+            if column.name not in {"role", "updated_at"}
         }
         role_ns = runpy.run_path(str(MIGRATION.with_name("20261103_0158_my_file_collaborator_role.py")))
         role_ns["upgrade"].__globals__["op"] = Operations(MigrationContext.configure(connection))
@@ -935,7 +938,7 @@ def test_collaboration_migration_is_repeatable_matches_the_model_and_downgrades_
         role_ns["upgrade"]()
         role_ns["upgrade"]()
         assert {c["name"] for c in sa.inspect(connection).get_columns("my_file_collaborators")} == {
-            column.name for column in AppMyFileCollaborator.__table__.columns
+            column.name for column in AppMyFileCollaborator.__table__.columns if column.name != "updated_at"
         }
         folder_ns = runpy.run_path(str(MIGRATION.with_name("20261103_0159_my_file_folder_collaborators.py")))
         folder_ns["upgrade"].__globals__["op"] = Operations(MigrationContext.configure(connection))
@@ -943,7 +946,7 @@ def test_collaboration_migration_is_repeatable_matches_the_model_and_downgrades_
         folder_ns["upgrade"]()
         folder_ns["upgrade"]()
         assert {c["name"] for c in sa.inspect(connection).get_columns("my_file_folder_collaborators")} == {
-            column.name for column in AppMyFileFolderCollaborator.__table__.columns
+            column.name for column in AppMyFileFolderCollaborator.__table__.columns if column.name != "updated_at"
         }
         folder_ns["downgrade"]()
         assert not sa.inspect(connection).has_table("my_file_folder_collaborators")
@@ -1852,8 +1855,9 @@ def test_library_migration_is_repeatable_matches_the_model_and_downgrades_cleanl
         assert {c["name"] for c in inspector.get_columns("my_file_libraries")} == {
             column.name for column in AppMyFileLibrary.__table__.columns
         }
+        # ``updated_at`` is added later by 0179, outside this migration slice.
         assert {c["name"] for c in inspector.get_columns("my_file_library_members")} == {
-            column.name for column in AppMyFileLibraryMember.__table__.columns
+            column.name for column in AppMyFileLibraryMember.__table__.columns if column.name != "updated_at"
         }
         assert "uploaded_by_user_id" in {c["name"] for c in inspector.get_columns("my_files")}
         namespace["downgrade"]()
