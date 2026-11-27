@@ -673,3 +673,143 @@ def test_default_pack_list_respects_env_override(monkeypatch):
     monkeypatch.delenv("CHAT_DEFAULT_STICKER_PACKS")
     names = telegram_sticker_module.default_sticker_pack_short_names()
     assert "peach_goma" in names and "X264WebmPack" in names
+
+
+def _sticker_row(*, sticker_id: str, pack_id: str, sort_order: int) -> ChatSticker:
+    return ChatSticker(
+        id=sticker_id,
+        pack_id=pack_id,
+        telegram_file_id=f"tg-{sticker_id}",
+        telegram_file_unique_id=f"tgu-{sticker_id}",
+        emoji="🙂",
+        format="static",
+        mime_type="image/webp",
+        storage_name=f"{sticker_id}.webp",
+        file_size=7,
+        width=512,
+        height=512,
+        sort_order=sort_order,
+        created_at=telegram_sticker_module.utcnow(),
+    )
+
+
+def test_list_packs_preview_urls_track_pack_directory_changes(monkeypatch, temp_dir: str):
+    """The cached preview snapshot must not go stale: list_packs primes the
+    cache, then a re-import (directory swap with NEW sticker ids) and later
+    external add/remove of preview files must all be reflected in preview_url.
+    Covers both the positive and the negative preview_url case through the
+    real serialization path on a real sqlite chat DB."""
+    import importlib
+
+    chat_db_module = importlib.import_module("backend.chat.db")
+
+    root = Path(temp_dir)
+    storage_root = root / "chat_sticker_packs"
+    db_path = root / "chat.sqlite3"
+    monkeypatch.setattr(chat_db_module.config.chat, "enabled", True, raising=False)
+    monkeypatch.setattr(
+        chat_db_module.config.chat,
+        "database_url",
+        f"sqlite:///{db_path.as_posix()}",
+        raising=False,
+    )
+    chat_db_module.initialize_chat_schema()
+
+    service = TelegramStickerService(storage_root=storage_root, token_getter=lambda: "token")
+    pack_id = "pack-1"
+    pack_dir = storage_root / pack_id
+    pack_dir.mkdir(parents=True)
+    now = telegram_sticker_module.utcnow()
+    (pack_dir / "old-1.webp").write_bytes(b"sticker")
+    (pack_dir / "old-1.preview").write_bytes(b"preview")
+    (pack_dir / "old-2.webp").write_bytes(b"sticker")  # no preview for old-2
+    (pack_dir / _PREVIEW_CACHE_MARKER).write_text("ready", encoding="ascii")
+    with chat_db_module.chat_write_session() as session:
+        session.add(ChatStickerPack(
+            id=pack_id,
+            short_name="frrl52",
+            title="Funny pack",
+            sticker_type="regular",
+            created_at=now,
+            updated_at=now,
+        ))
+        session.add(_sticker_row(sticker_id="old-1", pack_id=pack_id, sort_order=0))
+        session.add(_sticker_row(sticker_id="old-2", pack_id=pack_id, sort_order=1))
+        session.add(ChatUserStickerPack(user_id=7, pack_id=pack_id, added_at=now))
+
+    def preview_state() -> dict[str, object]:
+        payload = service.list_packs(current_user_id=7)
+        return {
+            sticker["id"]: sticker["preview_url"]
+            for pack in payload["items"]
+            for sticker in pack["stickers"]
+        }
+
+    first = preview_state()
+    assert set(first) == {"old-1", "old-2"}
+    assert first["old-1"] == "/api/v1/chat/stickers/old-1/preview"
+    assert first["old-2"] is None  # noqa: E501 — negative case: no preview file, no URL
+
+    # Re-import through the real persist path: the pack directory is swapped
+    # for a staged one whose stickers carry NEW ids, so any cache keyed by the
+    # old directory content would answer false negatives for every new sticker.
+    staged_dir = storage_root / ".import-test"
+    staged_dir.mkdir()
+    (staged_dir / "new-1.webp").write_bytes(b"sticker")
+    (staged_dir / "new-1.preview").write_bytes(b"preview")
+    (staged_dir / "new-2.webp").write_bytes(b"sticker")  # no preview for new-2
+    (staged_dir / _PREVIEW_CACHE_MARKER).write_text("ready", encoding="ascii")
+
+    def staged_payload(sticker_id: str, sort_order: int) -> dict:
+        return {
+            "id": sticker_id,
+            "telegram_file_id": f"tg-{sticker_id}",
+            "telegram_file_unique_id": f"tgu-{sticker_id}",
+            "emoji": "🙂",
+            "format": "static",
+            "mime_type": "image/webp",
+            "storage_name": f"{sticker_id}.webp",
+            "file_size": 7,
+            "width": 512,
+            "height": 512,
+            "sort_order": sort_order,
+        }
+
+    target_pack_id = service._persist_imported_pack(
+        current_user_id=7,
+        pack_id="unused-pack-id",
+        short_name="frrl52",
+        title="Funny pack",
+        sticker_type="regular",
+        stickers=[staged_payload("new-1", 0), staged_payload("new-2", 1)],
+        staged_dir=staged_dir,
+    )
+    assert target_pack_id == pack_id
+
+    second = preview_state()
+    assert set(second) == {"new-1", "new-2"}
+    assert second["new-1"] == "/api/v1/chat/stickers/new-1/preview"
+    assert second["new-2"] is None
+
+    # Self-healing on external changes: a preview appearing later is picked up…
+    (pack_dir / "new-2.preview").write_bytes(b"preview")
+    third = preview_state()
+    assert third["new-2"] == "/api/v1/chat/stickers/new-2/preview"
+
+    # …and a deleted preview stops being advertised (the serving path would
+    # fall back to the original file anyway).
+    (pack_dir / "new-1.preview").unlink()
+    fourth = preview_state()
+    assert fourth["new-1"] is None
+    assert fourth["new-2"] == "/api/v1/chat/stickers/new-2/preview"
+
+    # Flat-list serialization (favorites/recents) follows the same snapshot:
+    # the favorite with a preview file advertises its URL, the one without
+    # stays null.
+    service.add_favorite_sticker(current_user_id=7, sticker_id="new-1")
+    service.add_favorite_sticker(current_user_id=7, sticker_id="new-2")
+    favorites = {
+        item["id"]: item["preview_url"]
+        for item in service.list_favorite_stickers(current_user_id=7)["items"]
+    }
+    assert favorites == {"new-1": None, "new-2": "/api/v1/chat/stickers/new-2/preview"}
