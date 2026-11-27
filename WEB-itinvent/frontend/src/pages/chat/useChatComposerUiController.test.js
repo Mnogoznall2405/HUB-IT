@@ -82,6 +82,24 @@ describe('useChatComposerUiController', () => {
     expect(setEmojiAnchorEl).toHaveBeenCalledWith('emoji-button');
   });
 
+  it('emoji panel open and hover preview do not load the unrelated dialogs bundle', () => {
+    const loadChatDialogsModule = vi.fn();
+    const { result } = renderHook(() => useChatComposerUiController(
+      buildProps({ loadChatDialogsModule }),
+    ));
+
+    act(() => {
+      result.current.handleOpenEmojiPicker({ currentTarget: 'emoji-button' });
+    });
+    expect(loadChatDialogsModule).not.toHaveBeenCalled();
+
+    act(() => {
+      result.current.handleEmojiHoverStart({ currentTarget: 'emoji-button' });
+      vi.advanceTimersByTime(300);
+    });
+    expect(loadChatDialogsModule).not.toHaveBeenCalled();
+  });
+
   it('click while pinned closes the dock instead of reopening', () => {
     const setEmojiAnchorEl = vi.fn();
     const { result } = renderHook(() => useChatComposerUiController(

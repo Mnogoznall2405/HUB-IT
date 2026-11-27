@@ -78,7 +78,6 @@ export default function useChatComposerUiController({
   // Клик по кнопке смайла (desktop): preview → pin, pinned → close,
   // closed → pin. На мобильном клик переключает инлайн-панель.
   const handleOpenEmojiPicker = useCallback((event) => {
-    void loadChatDialogsModule();
     syncComposerSelection();
     clearPreviewTimers();
     if (emojiPickerOpen && (isMobile || emojiPanelMode === 'pinned')) {
@@ -100,7 +99,6 @@ export default function useChatComposerUiController({
     emojiPickerOpen,
     handleCloseEmojiPicker,
     isMobile,
-    loadChatDialogsModule,
     setEmojiAnchorEl,
     setEmojiPanelMode,
     syncComposerSelection,
@@ -119,7 +117,6 @@ export default function useChatComposerUiController({
     const anchorSource = event?.currentTarget || null;
     previewOpenTimerRef.current = window.setTimeout(() => {
       previewOpenTimerRef.current = null;
-      void loadChatDialogsModule();
       syncComposerSelection();
       setEmojiPanelMode?.('popover');
       setEmojiAnchorEl(anchorSource || true);
@@ -127,7 +124,6 @@ export default function useChatComposerUiController({
   }, [
     emojiPickerOpen,
     isMobile,
-    loadChatDialogsModule,
     setEmojiAnchorEl,
     setEmojiPanelMode,
     syncComposerSelection,
