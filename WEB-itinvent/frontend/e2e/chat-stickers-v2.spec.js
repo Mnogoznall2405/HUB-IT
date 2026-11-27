@@ -222,6 +222,82 @@ test('recents: send persists server-side across reload; menu removal works', asy
     .toBe(0);
 });
 
+// ── Недавние: reload до подтверждённого flush не теряет операцию (B-3) ──
+// Дефект из аудита: op-journal жил только в памяти — перезагрузка вкладки
+// до подтверждённого flush теряла bump, и пользователь видел откат recents.
+// Теперь журнал персистентен в scoped localStorage и довозится после
+// восстановления. Детерминизм без тайминговых гонок: PUT заблокирован до
+// перезагрузки (route переживает reload), поэтому на момент reload операция
+// гарантированно существует только в клиентском журнале — независимо от
+// того, успел ли сработать дебаунс.
+test('recents: reload before the confirmed flush still delivers the op', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await apiLogin(page);
+  const convId = await ensureDirectConversation(page, USERNAME2);
+  expect(convId).toBeTruthy();
+  await page.request.put('/api/v1/chat/stickers/recent', { data: { sticker_ids: [], clear: true } });
+
+  let blockPut = true;
+  await page.route('**/api/v1/chat/stickers/recent', async (route) => {
+    if (blockPut && route.request().method() === 'PUT') {
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+
+  await openConversationDirect(page, convId);
+  const dock = await openStickersTab(page);
+
+  const pack = packSection(dock, 'E2E Test Pack');
+  const cell = pack.locator(STICKER_BUTTONS).first();
+  await expect(cell).toBeVisible({ timeout: 20_000 });
+  const stickerId = await stickerIdOf(pack);
+  expect(stickerId).toBeTruthy();
+
+  // bump журналится только после завершения отправки стикера — ждём именно
+  // записи журнала в scoped localStorage, это и есть синхронизация теста.
+  await cell.click();
+  await expect
+    .poll(async () => page.evaluate(() => {
+      for (let index = 0; index < window.localStorage.length; index += 1) {
+        const key = window.localStorage.key(index);
+        if (key && key.startsWith('hubit.chat.recent-sticker-ops.v1:')) return true;
+      }
+      return false;
+    }), { timeout: 10_000 })
+    .toBe(true);
+
+  // Перезагрузка с неподтверждённым журналом. PUT больше не блокируем —
+  // восстановленный журнал должен уйти штатным flush'ем.
+  blockPut = false;
+  await page.reload();
+  await waitChatReady(page);
+
+  // Открытие вкладки стикеров восстанавливает журнал и запускает его flush —
+  // ловим PUT с самой дельта-операцией. waitForRequest ставится ДО открытия
+  // вкладки: ensure срабатывает на видимом монтировании.
+  const putSeen = page.waitForRequest(
+    (r) => r.url().includes('/chat/stickers/recent') && r.method() === 'PUT',
+    { timeout: 20_000 },
+  );
+  const dock2 = await openStickersTab(page);
+  const putRequest = await putSeen;
+  const putBody = putRequest.postDataJSON();
+  expect(
+    (putBody.ops || []).some((op) => op.op === 'bump' && op.sticker_id === stickerId),
+  ).toBe(true);
+
+  // Сервер узнал операцию — отката recents нет: rail показывает стикер
+  // и после подтверждения синка.
+  await expect
+    .poll(async () => ((await apiRecents(page)).items || []).map((i) => i.id), { timeout: 10_000 })
+    .toContain(stickerId);
+  const recentSection = dock2.locator('section[data-sticker-section="recent"]');
+  await expect(recentSection.locator(STICKER_BUTTONS)).toHaveCount(1, { timeout: 15_000 });
+  expect(await stickerIdOf(recentSection)).toBe(stickerId);
+});
+
 // ── Поиск: эмодзи, название набора, пустая выдача, Escape чистит поле ───
 test('sticker search: emoji match, pack-title group, empty state, Escape clears', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
