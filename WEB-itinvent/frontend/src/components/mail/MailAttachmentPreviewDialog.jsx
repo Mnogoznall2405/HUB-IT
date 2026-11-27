@@ -70,6 +70,10 @@ export default function MailAttachmentPreviewDialog({
         kind={attachmentPreview.kind}
         sourceKind={attachmentPreview.sourceKind}
         objectUrl={attachmentPreview.objectUrl}
+        textPreview={attachmentPreview.textContent != null && attachmentPreview.textContent !== '' ? {
+          text: attachmentPreview.textContent,
+          truncated: Boolean(attachmentPreview.textTruncated),
+        } : null}
         excelWorkbook={attachmentPreview.excelWorkbook}
         officeView={attachmentPreview.officeView}
         pageCount={attachmentPreview.pageCount}

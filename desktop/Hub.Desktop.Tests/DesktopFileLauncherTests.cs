@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+﻿﻿﻿using System.ComponentModel;
 using System.Diagnostics;
 using Hub.Desktop.Downloads;
 using Xunit;
@@ -93,6 +93,46 @@ public sealed class DesktopFileLauncherTests
     [InlineData("photo.jpg")]
     [InlineData("scan.png")]
     public void PhotosAreNotSentToThePrintHandler(string fileName)
+    {
+        var started = false;
+        var launcher = new DesktopFileLauncher(
+            _ => true,
+            _ =>
+            {
+                started = true;
+                return null;
+            });
+
+        Assert.Equal(DesktopFileActionResult.Unsupported, launcher.TryPrint(fileName));
+        Assert.False(started);
+    }
+
+    [Theory]
+    [InlineData("notes.txt")]
+    [InlineData("app.log")]
+    [InlineData("readme.md")]
+    [InlineData("config.json")]
+    [InlineData("settings.yaml")]
+    [InlineData("query.sql")]
+    public void TextFilesOpenInTheWindowsEditor(string fileName)
+    {
+        string? launched = null;
+        var launcher = new DesktopFileLauncher(
+            _ => true,
+            startInfo =>
+            {
+                launched = startInfo.FileName;
+                return null;
+            });
+
+        Assert.Equal(DesktopFileActionResult.Succeeded, launcher.TryOpen(fileName));
+        Assert.NotNull(launched);
+    }
+
+    [Theory]
+    [InlineData("notes.txt")]
+    [InlineData("readme.md")]
+    public void TextFilesAreNotSentToThePrintHandler(string fileName)
     {
         var started = false;
         var launcher = new DesktopFileLauncher(

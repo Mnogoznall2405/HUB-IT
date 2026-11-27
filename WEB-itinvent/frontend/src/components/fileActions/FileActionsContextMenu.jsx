@@ -42,11 +42,22 @@ export const DESKTOP_PHOTO_EXTENSIONS = new Set([
   'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp',
 ]);
 
+// Plain-text formats open in the Windows editor (Notepad or the associated
+// viewer) but never print through this channel. The set mirrors the shell
+// allowlist exactly and deliberately excludes script-like extensions
+// (ps1/bat/cmd/sh/js/...): opening those can execute code.
+export const DESKTOP_TEXT_OPEN_EXTENSIONS = new Set([
+  'txt', 'log', 'md', 'markdown', 'json', 'xml',
+  'yaml', 'yml', 'ini', 'cfg', 'conf', 'properties',
+  'diff', 'patch', 'sql', 'toml',
+]);
+
 export function canOpenInDesktopApplication(fileName, { allowPhotos = false } = {}) {
   const normalized = String(fileName || '').trim().toLowerCase();
   const extension = normalized.includes('.') ? normalized.split('.').pop() : '';
   if (!extension) return false;
   if (DESKTOP_APPLICATION_EXTENSIONS.has(extension)) return true;
+  if (DESKTOP_TEXT_OPEN_EXTENSIONS.has(extension)) return true;
   return Boolean(allowPhotos && DESKTOP_PHOTO_EXTENSIONS.has(extension));
 }
 

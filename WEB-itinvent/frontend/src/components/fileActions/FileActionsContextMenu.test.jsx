@@ -18,6 +18,7 @@ vi.mock('../../lib/desktopBridge', () => ({
 
 import FileActionsContextMenu, {
   canOpenInDesktopApplication,
+  canPrintInDesktopApplication,
   getFileActionsAnchorPosition,
   isFileActionsKeyboardShortcut,
 } from './FileActionsContextMenu';
@@ -334,3 +335,23 @@ describe('FileActionsContextMenu', () => {
   });
 });
 
+describe('desktop text-file open policy', () => {
+  it.each(['notes.txt', 'app.log', 'readme.md', 'config.json', 'settings.yaml', 'query.sql'])(
+    'allows opening %s in the Windows application',
+    (fileName) => {
+      expect(canOpenInDesktopApplication(fileName)).toBe(true);
+    },
+  );
+
+  it.each(['script.ps1', 'job.bat', 'tool.cmd', 'run.sh', 'page.js'])(
+    'never opens script-like %s in the Windows application',
+    (fileName) => {
+      expect(canOpenInDesktopApplication(fileName, { allowPhotos: true })).toBe(false);
+    },
+  );
+
+  it('keeps text files out of the print channel', () => {
+    expect(canPrintInDesktopApplication('notes.txt')).toBe(false);
+    expect(canPrintInDesktopApplication('report.docx')).toBe(true);
+  });
+});

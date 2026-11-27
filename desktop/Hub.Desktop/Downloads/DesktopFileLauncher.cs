@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+﻿﻿using System.ComponentModel;
 using System.Collections.Specialized;
 using System.Diagnostics;
 using System.IO;
@@ -34,8 +34,19 @@ public sealed class DesktopFileLauncher
             ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
         ],
         StringComparer.OrdinalIgnoreCase);
+    // Text formats open in the Windows editor (Notepad or the associated
+    // viewer) but never enter the print channel and keep their Mark of the
+    // Web. Script-like extensions (ps1, bat, cmd, sh, js, ...) are
+    // deliberately absent: opening them can execute code.
+    private static readonly HashSet<string> TextOpenExtensions = new(
+        [
+            ".txt", ".log", ".md", ".markdown", ".json", ".xml",
+            ".yaml", ".yml", ".ini", ".cfg", ".conf", ".properties",
+            ".diff", ".patch", ".sql", ".toml",
+        ],
+        StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<string> SupportedOpenExtensions = new(
-        DocumentExtensions.Concat(PhotoExtensions),
+        DocumentExtensions.Concat(PhotoExtensions).Concat(TextOpenExtensions),
         StringComparer.OrdinalIgnoreCase);
     private readonly Func<string, bool> _fileExists;
     private readonly Func<string, bool> _directoryExists;
