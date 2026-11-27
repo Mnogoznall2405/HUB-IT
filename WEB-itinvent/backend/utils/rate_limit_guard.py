@@ -46,6 +46,7 @@ def enforce_rate_limit(
     request: Optional[Request] = None,
     include_retry_after: bool = False,
     allow_internal_bypass: bool = True,
+    share_counter_across_zones: bool = False,
 ) -> None:
     normalized_key = str(key or "").strip().lower()
     if not normalized_key:
@@ -59,7 +60,17 @@ def enforce_rate_limit(
     effective_limit = int(limit)
     if allow_internal_bypass and network_zone == "internal":
         effective_limit *= INTERNAL_RATE_LIMIT_MULTIPLIER
-    storage_key = f"{namespace}:{network_zone}:{normalized_key}"
+    if share_counter_across_zones:
+        # One budget per key regardless of the network zone the request arrived
+        # from. Without this the zone segment in the key silently multiplies the
+        # budget of zone-independent limits (allow_internal_bypass=False) by the
+        # number of zones a client connects through — e.g. office LAN vs VPN.
+        # Meant for per-user/per-token limits with a uniform ceiling; combining
+        # it with allow_internal_bypass=True is coherent (shared bucket, but the
+        # internal ceiling is still multiplied per request) yet unusual.
+        storage_key = f"{namespace}:{normalized_key}"
+    else:
+        storage_key = f"{namespace}:{network_zone}:{normalized_key}"
     window = max(1, int(window_seconds))
     counter = auth_runtime_store_service.increment_counter(
         "rate_limit",

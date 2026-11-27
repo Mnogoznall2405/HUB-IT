@@ -1,11 +1,13 @@
 """Telegram sticker-pack endpoints for Chat."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
 from backend.api.deps import get_current_database_id, require_permission
 from backend.api.v1.chat._shim import chat_api
+from backend.api.v1.chat.sticker_import_rate_limit import enforce_sticker_import_limits
 from backend.chat.schemas import (
     ChatMessageResponse,
     ChatStickerListResponse,
@@ -56,8 +58,19 @@ async def list_chat_sticker_packs(
 @router.post("/sticker-packs/import", response_model=ChatStickerPackListResponse)
 async def import_chat_sticker_pack(
     payload: ChatStickerPackImportRequest,
+    request: Request,
     current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
 ):
+    # Per-user throttle before any work: even a rejected pack name costs a
+    # Telegram getStickerSet call, and an uncached import is the most expensive
+    # fan-out in the chat API. Runs in the threadpool — the counter store does
+    # synchronous DB I/O. The permission dependency above already rejected
+    # write-less users, so their attempts never consume quota.
+    await run_in_threadpool(
+        enforce_sticker_import_limits,
+        request,
+        user_id=int(current_user.id),
+    )
     try:
         return await telegram_sticker_service.import_pack(
             current_user_id=int(current_user.id),
