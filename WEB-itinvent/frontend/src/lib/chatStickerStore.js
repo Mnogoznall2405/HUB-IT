@@ -49,6 +49,155 @@ const SLICE_RECENTS = 'recents';
 // пользователя короче на порядки.
 const FAVORITE_OPLOG_LIMIT = 50;
 
+// Журнал операций «недавних» дедуплицируется по stickerId, но количество
+// distinct id само по себе не ограничено: долгая офлайн-сессия с сотнями
+// разных стикеров раздула бы и память, и запись в localStorage. Лимит с
+// большим запасом к размеру rail (20): вытесняются самые старые операции,
+// чей эффект всё равно перекрыт более поздними.
+const RECENT_OPLOG_LIMIT = 100;
+
+/* ─── Персистентность журнала операций «недавних» ─── */
+// До подтверждённого flush журнал жил только в памяти: перезагрузка вкладки
+// теряла неподтверждённые операции, и rail откатывался к серверному
+// состоянию (стикер отправлен, но из «недавних» пропал). Журнал пишется в
+// localStorage при каждой мутации и восстанавливается при создании scope.
+// Ключ — от scope-ключа store (`userId::dbId`) verbatim: один scope = один
+// журнал, чужой пользователь/БД не подхватит операции другого контекста.
+//
+// Граница жизни журнала — контекст сессии: перезагрузка вкладки его
+// переживает (это и есть цель персистентности), а явный разрыв контекста —
+// нет. Операции журнала — ещё не дошедшие до сервера намерения; при logout,
+// смене аккаунта или смене выбранной БД неотправленное не отправляется:
+// invalidateChatStickerStore выметает журнальные ключи из storage вместе
+// с in-memory состоянием, поэтому повторный вход того же пользователя
+// старые операции не довозит. Офлайн-операции, накопленные до logout,
+// теряются осознанно — это семантика карточки B-3: пользователь разорвал
+// сессию, намерения умирают вместе с контекстом.
+const buildRecentOpsJournalStorageKey = (scopeKey) => (
+  `hubit.chat.recent-sticker-ops.v1:${String(scopeKey || '')}`
+);
+
+// Вытеснение самых старых операций при превышении лимита. Ведущий clear
+// не вытесняется никогда: его потеря воскресила бы очищенный rail целиком
+// (clear по модели журнала может стоять только в позиции 0).
+const capRecentOps = (ops) => {
+  if (ops.length <= RECENT_OPLOG_LIMIT) return ops;
+  const excess = ops.length - RECENT_OPLOG_LIMIT;
+  const capped = [...ops];
+  capped.splice(capped[0]?.type === 'clear' ? 1 : 0, excess);
+  return capped;
+};
+
+// Чтение журнала из storage. Любое повреждение (невалидный JSON, чужая
+// форма, испорченные записи) не должно ронять store: целые записи
+// выживают, битые отбрасываются; если состав изменился — batchId сбрасывается,
+// потому что он описывает целостный пакет (та же семантика ротации, что
+// в памяти). Совсем нечитаемый журнал → пустой старт.
+const readRecentOpsJournal = (scopeKey) => {
+  const empty = { ops: [], batchId: null };
+  if (typeof window === 'undefined') return empty;
+  let parsed;
+  try {
+    const raw = window.localStorage.getItem(buildRecentOpsJournalStorageKey(scopeKey));
+    if (!raw) return empty;
+    parsed = JSON.parse(raw);
+  } catch {
+    return empty;
+  }
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.ops)) return empty;
+  let dropped = false;
+  const ops = [];
+  parsed.ops.forEach((op) => {
+    const type = String(op?.type || '').trim();
+    if (type === 'clear') {
+      ops.push({ type: 'clear' });
+      return;
+    }
+    const stickerId = String(op?.stickerId || '').trim();
+    if ((type === 'bump' || type === 'remove') && stickerId) {
+      ops.push({ type, stickerId });
+      return;
+    }
+    dropped = true;
+  });
+  const cappedOps = capRecentOps(ops);
+  if (cappedOps.length !== ops.length) dropped = true;
+  const batchId = String(parsed.batchId || '').trim();
+  // Серверная валидация — max_length=36; более длинный id всё равно не
+  // прошёл бы запрос, восстанавливать его бессмысленно.
+  const validBatchId = batchId && batchId.length <= 36 ? batchId : null;
+  return { ops: cappedOps, batchId: dropped ? null : validBatchId };
+};
+
+// Запись журнала при каждой мутации. Пустой журнал ключ не оставляет —
+// подтверждённый пакет не воскресает при следующем старте.
+const writeRecentOpsJournal = (scopeKey, meta) => {
+  if (typeof window === 'undefined') return;
+  try {
+    const storageKey = buildRecentOpsJournalStorageKey(scopeKey);
+    if (!meta.recentOps.length) {
+      window.localStorage.removeItem(storageKey);
+      return;
+    }
+    window.localStorage.setItem(storageKey, JSON.stringify({
+      ops: meta.recentOps,
+      batchId: meta.recentOpsBatchId || null,
+    }));
+  } catch {
+    // Нет хранилища (приватный режим, квота) — журнал живёт в памяти
+    // до конца сессии, это ровно pre-fix поведение.
+  }
+};
+
+// Выметание журнальных ключей при разрыве контекста (logout, смена
+// аккаунта/БД — см. invalidateChatStickerStore). Снимаются ВСЕ ключи
+// префикса, а не только активного scope: инвалидация рушит in-memory
+// состояние всех scope разом, и выживший ключ неактивного scope воскресил
+// бы операции, чей контекст уже закрыт. Чужой пользователь пострадать не
+// может при штатных выходах — его журналы уже выметены его собственным
+// logout; ключи чужой аварийно завершённой сессии — тот же класс
+// «осиротевших намерений» (данные низкой ценности: порядок rail стикеров).
+// Тот же префиксный обход, что у sweepLogoutSessionData.
+const sweepRecentOpsJournals = () => {
+  if (typeof window === 'undefined') return;
+  let storage;
+  try {
+    storage = window.localStorage;
+  } catch {
+    return;
+  }
+  const prefix = buildRecentOpsJournalStorageKey('');
+  const keys = [];
+  try {
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (typeof key === 'string' && key.startsWith(prefix)) keys.push(key);
+    }
+  } catch {
+    return;
+  }
+  keys.forEach((key) => {
+    try { storage.removeItem(key); } catch { /* best effort */ }
+  });
+};
+
+// Db-часть scope-ключа (`selected_database` или 'default') — та же формула,
+// что в api/chatStickers. Событие database-changed диспатчится ПОСЛЕ записи
+// в localStorage, поэтому чтение здесь видит уже новый контекст.
+const readSelectedDatabasePart = () => {
+  try {
+    return String(window?.localStorage?.getItem('selected_database') || '').trim() || 'default';
+  } catch {
+    return 'default';
+  }
+};
+
+// Последняя БД, которую store считает текущим контекстом. Нужна, чтобы
+// отличать реальную смену БД от шумного database-changed с тем же id
+// (re-dispatch при открытии карточки в той же базе): повторное событие не
+// должно выметывать журнал непрерванного контекста.
+let lastKnownDatabasePart = readSelectedDatabasePart();
+
 // Подряд идущие «устаревшие» ответы listPacks (эпоха кэша успела
 // инвалидироваться) перезапрашиваются автоматически — видимая вкладка не
 // должна зависать на спиннере. Потолок от бесконечного цикла, если
@@ -71,6 +220,10 @@ const emitChange = () => {
 const getScopeMeta = (scopeKey) => {
   let meta = scopeMetas.get(scopeKey);
   if (!meta) {
+    // Восстановление журнала, пережившего перезагрузку вкладки: операции
+    // и batchId продолжают жизненный цикл как ни в чём не бывало — состав
+    // не изменился, поэтому retry уходит с тем же idempotency key.
+    const restoredJournal = readRecentOpsJournal(scopeKey);
     meta = {
       inFlight: { packs: null, favorites: null, recents: null },
       queue: Promise.resolve(),
@@ -79,13 +232,13 @@ const getScopeMeta = (scopeKey) => {
       // Журнал неподтверждённых операций «недавних»: bump/remove/clear в
       // хронологическом порядке, дедуп по sticker_id. Отправляется дельтой
       // в PUT /chat/stickers/recent — см. секцию «Недавние».
-      recentOps: [],
+      recentOps: restoredJournal.ops,
       // Idempotency key текущего пакета операций. Стабилен между retry
       // одного и того же содержимого журнала (потерянный ответ → повторная
       // отправка ТОГО ЖЕ batchId → сервер отвечает no-op), но ротируется
       // при смене состава журнала: новая операция или подтверждение части
       // пакета делают следующий flush новым пакетом.
-      recentOpsBatchId: null,
+      recentOpsBatchId: restoredJournal.batchId,
       derived: null,
       packsStaleRetries: 0,
     };
@@ -155,18 +308,41 @@ export const subscribeChatStickerStore = (listener) => {
 
 export const getChatStickerStoreEpoch = () => stickerStoreEpoch;
 
-// Полная инвалидация при выходе/смене аккаунта (AuthContext) и в тестах.
-// Рост поколения глушит применение поздних ответов и дренаж очереди
-// избранного прежнего scope.
-export const invalidateChatStickerStore = () => {
+// Сброс in-memory состояния: рост поколения глушит применение поздних
+// ответов и дренаж очереди избранного прежнего scope. Заодно переучитываем
+// текущую БД — следующее database-changed с тем же id не примется за смену
+// контекста (и наоборот: молчаливая запись selected_database без события
+// не рассинхронизирует guard надолго).
+const resetChatStickerStoreState = () => {
   stickerStoreEpoch += 1;
   scopeRecords.clear();
   scopeMetas.clear();
   activeScopeKey = '';
+  lastKnownDatabasePart = readSelectedDatabasePart();
   // Глобальный дебаунс-синк «недавних» гасим тоже: отложенный flush ушедшей
   // сессии не должен сработать под новой (журналы уже стёрты с metas).
   cancelRecentStickersSync();
   emitChange();
+};
+
+// Полная инвалидация при выходе/смене аккаунта (AuthContext) и смене
+// выбранной БД (слушатель database-changed ниже). Разрыв контекста стирает
+// и журналы операций из storage: неотправленные намерения не должны
+// уехать при повторном входе того же пользователя — см. секцию
+// «Персистентность журнала» в шапке файла.
+export const invalidateChatStickerStore = () => {
+  resetChatStickerStoreState();
+  sweepRecentOpsJournals();
+};
+
+// Эмуляция перезагрузки вкладки в тестах: в проде перезагрузка — это гибель
+// модуля (память умирает сама, localStorage и журналы переживают), здесь же
+// модуль живёт между кейсами, поэтому in-memory сброс делается явно.
+// Production-код её не вызывает: реальный разрыв контекста — только через
+// invalidateChatStickerStore, иначе неотправленные операции воскресили бы
+// вопреки семантике карточки.
+export const resetChatStickerStoreForTests = () => {
+  resetChatStickerStoreState();
 };
 
 /* ─── Внутренние коммиты ─── */
@@ -496,6 +672,13 @@ export const ensureChatStickerData = (scope) => {
   void loadStickerPacks(record.key);
   void ensureFavoriteStickers(record.key);
   void ensureRecentStickers(record.key);
+  // Журнал, восстановленный из storage (перезагрузка вкладки до
+  // подтверждённого flush), довозится тем же дебаунс-каналом, что и свежие
+  // операции. Повторное планирование для уже копящегося журнала безвредно:
+  // дебаунс схлопывается, а batchId восстановлен вместе с операциями, поэтому
+  // повторная доставка пакета остаётся для сервера идемпотентным no-op.
+  const meta = getScopeMeta(record.key);
+  if (meta.recentOps.length > 0) scheduleRecentSyncFlush(record.key, record);
 };
 
 /* ─── Мутации наборов ─── */
@@ -612,16 +795,21 @@ export const toggleFavoriteSticker = (scopeKey, sticker) => {
 // Дедуп журнала: операции над одним id схлопываются к последней (порядок
 // хронологический — промежуточные состояния недостижимы), clear стирает
 // журнал целиком — прежние операции полностью перекрываются очисткой.
-const pushRecentJournalOp = (meta, op) => {
+const pushRecentJournalOp = (scopeKey, meta, op) => {
   // Состав журнала меняется → текущий batchId больше не описывает пакет:
   // повтор старого id посчитал бы новые операции уже применёнными.
   meta.recentOpsBatchId = null;
   if (op.type === 'clear') {
     meta.recentOps = [op];
-    return;
+  } else {
+    meta.recentOps = capRecentOps([
+      ...meta.recentOps.filter((item) => item.stickerId !== op.stickerId),
+      op,
+    ]);
   }
-  meta.recentOps = meta.recentOps.filter((item) => item.stickerId !== op.stickerId);
-  meta.recentOps.push(op);
+  // Каждая мутация сразу в storage: перезагрузка вкладки в любой точке
+  // жизненного цикла оставляет журнал целым.
+  writeRecentOpsJournal(scopeKey, meta);
 };
 
 // Идентификатор пакета для серверной дедупликации. randomUUID где
@@ -689,6 +877,10 @@ const applyRecentsSyncPayload = (scopeKey, epochAtStart, payload, confirmedOps =
         // (накопленные за время полёта) уйдут следующим flush'ем уже как
         // новый пакет с новым batchId.
         meta.recentOpsBatchId = null;
+        // Подтверждённые операции стираются и из storage: полностью
+        // дренированный журнал снимает ключ, перезагрузка после этой
+        // точки ничего не довозит — сервер уже применил пакет.
+        writeRecentOpsJournal(scopeKey, meta);
       }
     }
     const payloadIds = (Array.isArray(payload?.items) ? payload.items : [])
@@ -724,7 +916,13 @@ const flushRecentStickerOps = (scopeKey) => {
   if (!record || !meta || meta.recentOps.length === 0) {
     return Promise.resolve({ ok: true });
   }
-  if (!meta.recentOpsBatchId) meta.recentOpsBatchId = newRecentOpsBatchId();
+  if (!meta.recentOpsBatchId) {
+    meta.recentOpsBatchId = newRecentOpsBatchId();
+    // batchId фиксируется в storage ДО ухода запроса: если ответ потерян,
+    // а вкладка перезагружена до retry, восстановленный журнал несёт тот
+    // же id — повторная доставка остаётся для сервера идемпотентным no-op.
+    writeRecentOpsJournal(scopeKey, meta);
+  }
   const batch = [...meta.recentOps];
   const batchId = meta.recentOpsBatchId;
   const baseVersion = Number(record.recents.version) || 0;
@@ -792,7 +990,7 @@ export const rememberRecentSticker = (scopeKey, stickerId) => {
   const record = scopeRecords.get(scopeKey);
   const normalizedStickerId = String(stickerId || '').trim();
   if (!record || !normalizedStickerId) return;
-  pushRecentJournalOp(getScopeMeta(scopeKey), { type: 'bump', stickerId: normalizedStickerId });
+  pushRecentJournalOp(scopeKey, getScopeMeta(scopeKey), { type: 'bump', stickerId: normalizedStickerId });
   commitRecents(scopeKey);
   scheduleRecentSyncFlush(scopeKey, record);
 };
@@ -805,7 +1003,7 @@ export const removeRecentSticker = (scopeKey, stickerId) => {
   const record = scopeRecords.get(scopeKey);
   const normalizedStickerId = String(stickerId || '').trim();
   if (!record || !normalizedStickerId) return Promise.resolve();
-  pushRecentJournalOp(getScopeMeta(scopeKey), { type: 'remove', stickerId: normalizedStickerId });
+  pushRecentJournalOp(scopeKey, getScopeMeta(scopeKey), { type: 'remove', stickerId: normalizedStickerId });
   commitRecents(scopeKey);
   cancelRecentStickersSync(scopeKey);
   return flushRecentStickerOpsSerialized(scopeKey);
@@ -814,7 +1012,7 @@ export const removeRecentSticker = (scopeKey, stickerId) => {
 export const clearRecentStickers = (scopeKey) => {
   const record = scopeRecords.get(scopeKey);
   if (!record) return Promise.resolve();
-  pushRecentJournalOp(getScopeMeta(scopeKey), { type: 'clear' });
+  pushRecentJournalOp(scopeKey, getScopeMeta(scopeKey), { type: 'clear' });
   commitRecents(scopeKey);
   cancelRecentStickersSync(scopeKey);
   return flushRecentStickerOpsSerialized(scopeKey);
@@ -840,5 +1038,20 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     const meta = scopeMetas.get(activeScopeKey);
     if (!record || !meta || meta.recentOps.length === 0) return;
     scheduleRecentSyncFlush(activeScopeKey, record);
+  });
+  // Смена выбранной БД — разрыв контекста наряду с logout: журнал старого
+  // scope не должен ни довозиться, ни воскресать при возврате в него в той
+  // же сессии (in-memory журнал старого scope умер бы лениво и ненадёжно —
+  // поэтому инвалидируем store целиком, а не только ключи storage). Событие
+  // диспатчится после записи selected_database — чтение видит новый
+  // контекст; dispatch с тем же id (re-dispatch без реальной смены) журналы
+  // не трогает, иначе шумное событие убивало бы неотправленные операции
+  // непрерванного контекста. Слушатель живёт на уровне модуля, а модуль
+  // гарантированно вычисляется в каждой сессии — его импортирует корневой
+  // AuthContext.
+  window.addEventListener('database-changed', () => {
+    const nextDatabasePart = readSelectedDatabasePart();
+    if (nextDatabasePart === lastKnownDatabasePart) return;
+    invalidateChatStickerStore();
   });
 }

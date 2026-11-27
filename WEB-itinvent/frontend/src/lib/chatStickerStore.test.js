@@ -21,6 +21,7 @@ import {
   peekStickerScopeRecord,
   rememberRecentSticker,
   removeRecentSticker,
+  resetChatStickerStoreForTests,
   setStickerPackItems,
   subscribeChatStickerStore,
   toggleFavoriteSticker,
@@ -623,5 +624,347 @@ describe('chatStickerStore', () => {
 
     setStickerPackItems(scopeKey(), [packB, packA]);
     expect(getStickerScopeDerived(scopeKey())).not.toBe(derived);
+  });
+
+  /* ─── Персистентность op-журнала «недавних» ─── */
+  // «Перезагрузка» здесь — resetChatStickerStoreForTests(): in-memory
+  // записи умирают, localStorage переживает — ровно как при перезагрузке
+  // вкладки (в проде модуль умирает сам, журналы остаются в storage).
+  // invalidateChatStickerStore() — другое событие: разрыв контекста
+  // (logout/смена аккаунта/БД), он выметает и журналы. Через boundary
+  // (UI/e2e) переход «гибель вкладки между мутацией журнала и
+  // подтверждением flush» не воспроизвести детерминированно.
+  const journalKey = (scopedPart = '42::default') => `hubit.chat.recent-sticker-ops.v1:${scopedPart}`;
+
+  it('persists journaled ops to scoped storage and removes the key after confirmation', async () => {
+    const inFlight = deferred();
+    chatStickersAPI.pushRecentStickers.mockImplementationOnce(() => inFlight.promise);
+    ensureChatStickerData(scope);
+    await flushPromises();
+    expect(window.localStorage.getItem(journalKey())).toBeNull();
+
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    // Мутация сериализуется сразу: операция в storage ещё до всякого flush.
+    const persisted = JSON.parse(window.localStorage.getItem(journalKey()));
+    expect(persisted.ops).toEqual([{ type: 'bump', stickerId: 'sticker-x' }]);
+    expect(persisted.batchId).toBeNull();
+
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    const pending = flush();
+    await flushPromises();
+    // batchId фиксируется в storage до ответа сервера — потерянный ответ
+    // после перезагрузки повторно применить пакет не может.
+    const sentBatchId = chatStickersAPI.pushRecentStickers.mock.calls.at(-1)[0].batchId;
+    expect(JSON.parse(window.localStorage.getItem(journalKey())).batchId).toBe(sentBatchId);
+
+    inFlight.resolve({ items: [stickerX], version: 1 });
+    await expect(pending).resolves.toEqual({ ok: true });
+    // Подтверждённый пакет дренирует журнал — ключ снят, перезагрузка
+    // после этой точки ничего не довозит (сервер уже применил операции).
+    expect(window.localStorage.getItem(journalKey())).toBeNull();
+  });
+
+  it('restores ops that never reached a flush before the reload and delivers them', async () => {
+    chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [{ id: 'sticker-z' }], version: 1 });
+    ensureChatStickerData(scope);
+    await flushPromises();
+
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    rememberRecentSticker(scopeKey(), 'sticker-y');
+    // Вкладка умерла внутри дебаунс-окна — до первого flush, batchId ещё
+    // не существовал. Это основной сценарий дефекта из аудита.
+    resetChatStickerStoreForTests();
+    scheduleRecentStickersSync.mockClear();
+    chatStickersAPI.pushRecentStickers.mockClear();
+
+    ensureChatStickerData(scope);
+    await flushPromises();
+    // Восстановленный журнал сам планирует flush — действия пользователя
+    // не зависят от того, дождался ли он прежний дебаунс.
+    expect(scheduleRecentStickersSync).toHaveBeenCalledWith(
+      { userId: 42, scopeKey: scopeKey() },
+      expect.any(Function),
+    );
+    // Rail не откатывается к серверной базе: операции проигрываются поверх
+    // неё ещё до своего flush — стикеры не пропадают из «недавних».
+    expect(record().recents.ids).toEqual(['sticker-y', 'sticker-x', 'sticker-z']);
+
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({
+      items: [stickerY, stickerX, { id: 'sticker-z' }],
+      version: 2,
+    });
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    await expect(flush()).resolves.toEqual({ ok: true });
+    expect(chatStickersAPI.pushRecentStickers).toHaveBeenLastCalledWith({
+      baseVersion: 1,
+      ops: [
+        { op: 'bump', sticker_id: 'sticker-x' },
+        { op: 'bump', sticker_id: 'sticker-y' },
+      ],
+      batchId: expect.any(String),
+    });
+    expect(window.localStorage.getItem(journalKey())).toBeNull();
+  });
+
+  it('keeps the pre-reload batchId when retrying a lost-response batch after reload', async () => {
+    const stuck = deferred();
+    chatStickersAPI.pushRecentStickers.mockImplementationOnce(() => stuck.promise);
+    chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [], version: 1 });
+    ensureChatStickerData(scope);
+    await flushPromises();
+
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    const pending = flush();
+    await flushPromises();
+    const lostBatchId = chatStickersAPI.pushRecentStickers.mock.calls.at(-1)[0].batchId;
+    // Пакет мог дойти и примениться, но ответ потерян, а вкладка
+    // перезагружена до retry: восстановленный журнал обязан нести ТОТ ЖЕ
+    // batchId — иначе серверная дедупликация не распознает повтор.
+    stuck.reject(new Error('lost response'));
+    await expect(pending).resolves.toMatchObject({ ok: false });
+
+    resetChatStickerStoreForTests();
+    chatStickersAPI.pushRecentStickers.mockClear();
+    scheduleRecentStickersSync.mockClear();
+
+    ensureChatStickerData(scope);
+    await flushPromises();
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [stickerX], version: 1 });
+    const retryFlush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    await expect(retryFlush()).resolves.toEqual({ ok: true });
+    expect(chatStickersAPI.pushRecentStickers).toHaveBeenLastCalledWith({
+      baseVersion: 1,
+      ops: [{ op: 'bump', sticker_id: 'sticker-x' }],
+      batchId: lostBatchId,
+    });
+  });
+
+  it('keeps restored ops isolated per user and database scope', async () => {
+    ensureChatStickerData(scope);
+    await flushPromises();
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    expect(window.localStorage.getItem(journalKey())).toBeTruthy();
+
+    // Перезагрузка вкладки (не разрыв контекста!): журнал переживает её
+    // в storage, но scope-изоляция ключей никуда не девается.
+    resetChatStickerStoreForTests();
+    scheduleRecentStickersSync.mockClear();
+
+    // Другой пользователь: его scope стартует пустым, чужой журнал не
+    // подхватывается и flush не планируется.
+    ensureChatStickerData({ userId: 7 });
+    await flushPromises();
+    expect(scheduleRecentStickersSync).not.toHaveBeenCalled();
+    expect(peekStickerScopeRecord({ userId: 7 }).recents.ids).toEqual([]);
+
+    // Тот же пользователь, но другая выбранная БД — тоже другой scope:
+    // журнал контекста ITINVENT не протекает в контекст MSK-ITINVENT.
+    window.localStorage.setItem('selected_database', 'MSK-ITINVENT');
+    ensureChatStickerData(scope);
+    await flushPromises();
+    expect(scheduleRecentStickersSync).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(journalKey('42::MSK-ITINVENT'))).toBeNull();
+
+    // Возврат в исходный scope: журнал на месте и довозится — изоляция
+    // была разделением ключей, а не удалением данных.
+    window.localStorage.removeItem('selected_database');
+    chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [], version: 1 });
+    ensureChatStickerData(scope);
+    await flushPromises();
+    expect(scheduleRecentStickersSync).toHaveBeenCalled();
+  });
+
+  it('drops the persisted journal on logout-invalidate and does not deliver it after re-login', async () => {
+    ensureChatStickerData(scope);
+    await flushPromises();
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    expect(window.localStorage.getItem(journalKey())).toBeTruthy();
+
+    invalidateChatStickerStore();
+    expect(cancelRecentStickersSync).toHaveBeenCalled();
+    // Отложенный flush ушедшей сессии — мягкий no-op: под новой сессией
+    // операции прежнего in-memory журнала не уезжают.
+    await expect(flush()).resolves.toEqual({ ok: true });
+    expect(chatStickersAPI.pushRecentStickers).not.toHaveBeenCalled();
+
+    // Разрыв контекста стирает журнал и из storage: операции — не дошедшие
+    // до сервера намерения, а при явном logout пользователь разрывает
+    // сессию — неотправленное не отправляется (семантика карточки B-3).
+    expect(window.localStorage.getItem(journalKey())).toBeNull();
+
+    // Повторный вход ТОГО ЖЕ пользователя в тот же scope: журнала нет —
+    // ни восстановления, ни flush, ни сетевой доставки старых операций.
+    scheduleRecentStickersSync.mockClear();
+    chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [], version: 1 });
+    ensureChatStickerData(scope);
+    await flushPromises();
+    expect(scheduleRecentStickersSync).not.toHaveBeenCalled();
+    expect(chatStickersAPI.pushRecentStickers).not.toHaveBeenCalled();
+    // Rail стартует от подтверждённой серверной базы — без проигрыша
+    // неотправленных операций прежней сессии.
+    expect(record().recents.ids).toEqual([]);
+    expect(window.localStorage.getItem(journalKey())).toBeNull();
+  });
+
+  it('sweeps journal keys of every scope on logout-invalidate, not only the active one', async () => {
+    ensureChatStickerData(scope);
+    await flushPromises();
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    // Ключ scope другой БД того же пользователя (накоплен до переключения)
+    // и ключ другого пользователя (аварийно завершённая сессия на общей
+    // машине): in-memory инвалидация рушит все scope разом — выживший ключ
+    // воскресил бы операции уже закрытого контекста.
+    window.localStorage.setItem(journalKey('42::MSK-ITINVENT'), JSON.stringify({
+      ops: [{ type: 'bump', stickerId: 'sticker-m' }],
+      batchId: null,
+    }));
+    window.localStorage.setItem(journalKey('7::default'), JSON.stringify({
+      ops: [{ type: 'bump', stickerId: 'sticker-f' }],
+      batchId: null,
+    }));
+
+    // Посторонний ключ с похожим префиксом выметание не затрагивает —
+    // только журнальное пространство `recent-sticker-ops`.
+    window.localStorage.setItem('hubit.chat.recent-stickers.v2:42:default', JSON.stringify(['sticker-x']));
+
+    invalidateChatStickerStore();
+
+    expect(window.localStorage.getItem(journalKey())).toBeNull();
+    expect(window.localStorage.getItem(journalKey('42::MSK-ITINVENT'))).toBeNull();
+    expect(window.localStorage.getItem(journalKey('7::default'))).toBeNull();
+    expect(window.localStorage.getItem('hubit.chat.recent-stickers.v2:42:default')).toBeTruthy();
+  });
+
+  it('clears the journal on a database switch and does not resurrect it on switch-back', async () => {
+    ensureChatStickerData(scope);
+    await flushPromises();
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    expect(window.localStorage.getItem(journalKey())).toBeTruthy();
+
+    // Смена выбранной БД: запись selected_database + событие — тот же
+    // порядок, что у useDatabaseSelection. Разрыв контекста инвалидирует
+    // store и выметает журнал старого scope.
+    window.localStorage.setItem('selected_database', 'MSK-ITINVENT');
+    window.dispatchEvent(new Event('database-changed'));
+    expect(window.localStorage.getItem(journalKey())).toBeNull();
+    expect(cancelRecentStickersSync).toHaveBeenCalled();
+
+    // Возврат в исходную БД в той же сессии: ни storage-ключ, ни in-memory
+    // журнал старого scope не воскресают — иначе отложенные операции
+    // уехали бы вопреки смене контекста.
+    window.localStorage.removeItem('selected_database');
+    window.dispatchEvent(new Event('database-changed'));
+    scheduleRecentStickersSync.mockClear();
+    chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [], version: 1 });
+    ensureChatStickerData(scope);
+    await flushPromises();
+    expect(scheduleRecentStickersSync).not.toHaveBeenCalled();
+    expect(chatStickersAPI.pushRecentStickers).not.toHaveBeenCalled();
+    // Rail стартует от подтверждённой серверной базы — проигрывать
+    // неотправленные операции покинутого контекста нечего.
+    expect(record().recents.ids).toEqual([]);
+  });
+
+  it('keeps the journal when database-changed re-dispatches the same database', async () => {
+    ensureChatStickerData(scope);
+    await flushPromises();
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    cancelRecentStickersSync.mockClear();
+
+    // Шумной re-dispatch без реальной смены (открытие карточки в той же
+    // базе и т.п.): контекст не прерывался — журнал обязан пережить событие,
+    // иначе неотправленные операции терялись бы на ровном месте.
+    window.dispatchEvent(new Event('database-changed'));
+    expect(cancelRecentStickersSync).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(journalKey())).toBeTruthy();
+
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [stickerX], version: 1 });
+    await expect(flush()).resolves.toEqual({ ok: true });
+    expect(chatStickersAPI.pushRecentStickers).toHaveBeenLastCalledWith({
+      baseVersion: 0,
+      ops: [{ op: 'bump', sticker_id: 'sticker-x' }],
+      batchId: expect.any(String),
+    });
+  });
+
+  it('falls back to an empty journal when the storage payload is corrupted', async () => {
+    window.localStorage.setItem(journalKey(), '{not valid json');
+    ensureChatStickerData(scope);
+    await flushPromises();
+
+    // Битое содержимое не роняет store и не планирует пустой синк.
+    expect(record().recents.ids).toEqual([]);
+    expect(scheduleRecentStickersSync).not.toHaveBeenCalled();
+
+    // Новые операции перезаписывают повреждённый ключ штатным журналом.
+    rememberRecentSticker(scopeKey(), 'sticker-x');
+    expect(JSON.parse(window.localStorage.getItem(journalKey())).ops)
+      .toEqual([{ type: 'bump', stickerId: 'sticker-x' }]);
+  });
+
+  it('salvages valid ops from a partially corrupted journal and resets the batchId', async () => {
+    window.localStorage.setItem(journalKey(), JSON.stringify({
+      ops: [
+        { type: 'bump', stickerId: 'sticker-x' },
+        { type: 'bogus', stickerId: 'sticker-y' },
+        { type: 'remove' },
+        'garbage',
+      ],
+      batchId: 'corrupt-batch',
+    }));
+    chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [], version: 1 });
+    ensureChatStickerData(scope);
+    await flushPromises();
+
+    // Целая запись выживает и проигрывается; битые отброшены. Состав
+    // журнала изменился при чистке — чужой batchId восстанавливать нельзя.
+    expect(record().recents.ids).toEqual(['sticker-x']);
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [stickerX], version: 2 });
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    await expect(flush()).resolves.toEqual({ ok: true });
+    const sent = chatStickersAPI.pushRecentStickers.mock.calls.at(-1)[0];
+    expect(sent.ops).toEqual([{ op: 'bump', sticker_id: 'sticker-x' }]);
+    expect(sent.batchId).toBeTruthy();
+    expect(sent.batchId).not.toBe('corrupt-batch');
+  });
+
+  it('caps the journal at the limit and pins a leading clear on restore', async () => {
+    ensureChatStickerData(scope);
+    await flushPromises();
+
+    // Дедуп по stickerId не ограничивает distinct id: длинная офлайн-серия
+    // обрезается лимитом — самые старые операции вытесняются.
+    for (let index = 1; index <= 105; index += 1) {
+      rememberRecentSticker(scopeKey(), `sticker-${index}`);
+    }
+    const persisted = JSON.parse(window.localStorage.getItem(journalKey()));
+    expect(persisted.ops).toHaveLength(100);
+    expect(persisted.ops.some((op) => op.stickerId === 'sticker-5')).toBe(false);
+    expect(persisted.ops.some((op) => op.stickerId === 'sticker-6')).toBe(true);
+    expect(persisted.ops.at(-1).stickerId).toBe('sticker-105');
+
+    // Ведущий clear не вытесняется никогда: его потеря воскресила бы
+    // очищенный rail целиком. Превышенный журнал из storage урезается
+    // при восстановлении с сохранением clear в голове.
+    resetChatStickerStoreForTests();
+    window.localStorage.setItem(journalKey(), JSON.stringify({
+      ops: [
+        { type: 'clear' },
+        ...Array.from({ length: 105 }, (_, index) => ({ type: 'bump', stickerId: `sticker-${index}` })),
+      ],
+      batchId: null,
+    }));
+    chatStickersAPI.listRecentStickers.mockResolvedValue({ items: [], version: 1 });
+    chatStickersAPI.pushRecentStickers.mockResolvedValue({ items: [], version: 2 });
+    ensureChatStickerData(scope);
+    await flushPromises();
+    const flush = scheduleRecentStickersSync.mock.calls.at(-1)[1];
+    await flush();
+    const sent = chatStickersAPI.pushRecentStickers.mock.calls.at(-1)[0];
+    expect(sent.ops).toHaveLength(100);
+    expect(sent.ops[0]).toEqual({ op: 'clear' });
   });
 });
