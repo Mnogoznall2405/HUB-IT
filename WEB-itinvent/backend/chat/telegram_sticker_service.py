@@ -149,6 +149,9 @@ class TelegramStickerService:
         self._token_getter = token_getter or (lambda: str(os.getenv("TELEGRAM_BOT_TOKEN", "") or "").strip())
         self._import_locks: dict[str, asyncio.Lock] = {}
         self._telegram_fallback_until = 0.0
+        # pack_id -> (pack dir mtime in ns, names of ``*.preview`` files inside).
+        # Validated by the directory mtime on every lookup — see _pack_preview_names.
+        self._pack_preview_snapshot_cache: dict[str, tuple[int, frozenset[str]]] = {}
 
     def _token(self) -> str:
         token = str(self._token_getter() or "").strip()
@@ -197,6 +200,47 @@ class TelegramStickerService:
 
     def _preview_path(self, *, pack_id: str, sticker_id: str) -> Path:
         return self._storage_root / Path(str(pack_id)).name / self._preview_storage_name(sticker_id)
+
+    def _pack_preview_names(self, pack_id: str) -> frozenset[str]:
+        """Names of the ``*.preview`` files present in the pack directory.
+
+        Serializing the picker used to run one ``is_file`` stat per sticker per
+        request (packs × stickers syscalls on every ``list_packs``). A pack
+        directory is immutable between imports — a re-import stages a fresh
+        directory and swaps it in by rename, manual cleanup adds/removes entries
+        — and every such change updates the directory mtime, so the snapshot is
+        cached and validated by a single directory ``stat`` per lookup; a full
+        rescan happens only after the directory actually changed. Callers
+        serialize many stickers of one pack at a time and are expected to
+        memoize the result per request (one directory stat per pack per
+        request, not per sticker). Even a stale snapshot cannot corrupt
+        anything: the serving path re-checks the file and falls back to the
+        original sticker bytes, and clients fall back to ``file_url`` whenever
+        ``preview_url`` is null.
+        """
+        pack_dir = self._storage_root / Path(str(pack_id)).name
+        try:
+            dir_mtime_ns = pack_dir.stat().st_mtime_ns
+        except OSError:
+            return frozenset()
+        cache_key = str(pack_id)
+        cached = self._pack_preview_snapshot_cache.get(cache_key)
+        if cached is not None and cached[0] == dir_mtime_ns:
+            return cached[1]
+        # The stat runs before the scan on purpose: a concurrent mutation
+        # during the scan changes the mtime, so the next lookup detects the
+        # mismatch and rescans — a mis-keyed snapshot can never stick.
+        try:
+            with os.scandir(pack_dir) as entries:
+                names = frozenset(
+                    entry.name
+                    for entry in entries
+                    if entry.name.endswith(".preview")
+                )
+        except OSError:
+            return frozenset()
+        self._pack_preview_snapshot_cache[cache_key] = (dir_mtime_ns, names)
+        return names
 
     def _telegram_fallback_ip(self) -> str:
         value = str(
@@ -291,7 +335,14 @@ class TelegramStickerService:
                         .order_by(ChatSticker.pack_id.asc(), ChatSticker.sort_order.asc())
                     ).scalars()
                 )
+                # One preview snapshot lookup per pack per request — not one
+                # filesystem stat per sticker (see _pack_preview_names).
+                previews_by_pack: dict[str, frozenset[str]] = {}
                 for sticker in stickers:
+                    preview_names = previews_by_pack.get(sticker.pack_id)
+                    if preview_names is None:
+                        preview_names = self._pack_preview_names(sticker.pack_id)
+                        previews_by_pack[sticker.pack_id] = preview_names
                     stickers_by_pack.setdefault(sticker.pack_id, []).append(
                         {
                             "id": sticker.id,
@@ -304,7 +355,7 @@ class TelegramStickerService:
                             "file_url": self._pack_file_url(sticker.id),
                             "preview_url": (
                                 self._pack_preview_url(sticker.id)
-                                if self._preview_path(pack_id=sticker.pack_id, sticker_id=sticker.id).is_file()
+                                if self._preview_storage_name(sticker.id) in preview_names
                                 else None
                             ),
                         }
@@ -399,6 +450,7 @@ class TelegramStickerService:
                 )
             ).scalar_one_or_none()
 
+        preview_names = self._pack_preview_names(pack.id)
         return {
             "id": pack.id,
             "short_name": pack.short_name,
@@ -417,7 +469,7 @@ class TelegramStickerService:
                     "file_url": self._shared_pack_file_url(pack.short_name, sticker.id),
                     "preview_url": (
                         self._shared_pack_preview_url(pack.short_name, sticker.id)
-                        if self._preview_path(pack_id=pack.id, sticker_id=sticker.id).is_file()
+                        if self._preview_storage_name(sticker.id) in preview_names
                         else None
                     ),
                 }
@@ -787,7 +839,13 @@ class TelegramStickerService:
             session.delete(installed)
         return {"ok": True}
 
-    def _serialize_sticker(self, sticker: ChatSticker, pack: ChatStickerPack) -> dict[str, Any]:
+    def _serialize_sticker(
+        self,
+        sticker: ChatSticker,
+        pack: ChatStickerPack,
+        *,
+        preview_names: frozenset[str],
+    ) -> dict[str, Any]:
         """Sticker dict for flat lists (favorites/recents); same shape as pack stickers
         plus ``pack_short_name`` so clients can label the source pack."""
         return {
@@ -802,15 +860,23 @@ class TelegramStickerService:
             "file_url": self._pack_file_url(sticker.id),
             "preview_url": (
                 self._pack_preview_url(sticker.id)
-                if self._preview_path(pack_id=sticker.pack_id, sticker_id=sticker.id).is_file()
+                if self._preview_storage_name(sticker.id) in preview_names
                 else None
             ),
         }
 
     def _serialize_sticker_list(self, rows) -> dict[str, Any]:
-        return {
-            "items": [self._serialize_sticker(sticker, pack) for sticker, pack in rows]
-        }
+        # One preview snapshot lookup per pack per request — not one
+        # filesystem stat per sticker (see _pack_preview_names).
+        previews_by_pack: dict[str, frozenset[str]] = {}
+        items = []
+        for sticker, pack in rows:
+            preview_names = previews_by_pack.get(sticker.pack_id)
+            if preview_names is None:
+                preview_names = self._pack_preview_names(sticker.pack_id)
+                previews_by_pack[sticker.pack_id] = preview_names
+            items.append(self._serialize_sticker(sticker, pack, preview_names=preview_names))
+        return {"items": items}
 
     def list_favorite_stickers(self, *, current_user_id: int) -> dict[str, Any]:
         """Favorites reference the sticker, not pack membership: they survive
@@ -1027,12 +1093,20 @@ class TelegramStickerService:
                     ChatUserRecentStickerState.user_id == int(current_user_id)
                 )
             ).scalar_one_or_none()
+            # One preview snapshot lookup per pack per request — not one
+            # filesystem stat per sticker (see _pack_preview_names).
+            previews_by_pack: dict[str, frozenset[str]] = {}
+            items = []
+            for sticker, pack in rows:
+                if sticker.id not in accessible_ids:
+                    continue
+                preview_names = previews_by_pack.get(sticker.pack_id)
+                if preview_names is None:
+                    preview_names = self._pack_preview_names(sticker.pack_id)
+                    previews_by_pack[sticker.pack_id] = preview_names
+                items.append(self._serialize_sticker(sticker, pack, preview_names=preview_names))
             return {
-                "items": [
-                    self._serialize_sticker(sticker, pack)
-                    for sticker, pack in rows
-                    if sticker.id in accessible_ids
-                ],
+                "items": items,
                 "version": int(version or 0),
             }
 
