@@ -122,6 +122,10 @@ const installMeasure = () => {
   }, true);
 };
 
+// Замер стадий. Issue #89: в sprite-режиме img несёт прозрачный пиксель и
+// complete наступает мгновенно — честная готовность определяется загрузкой и
+// декодированием ЛИСТА атласа, который рисует глиф фоном. Поэтому здесь и ниже
+// в sprite-режиме ждём decode() листа, в PNG-режиме — прежнее поведение.
 const measureStages = (page) => page.evaluate(() => new Promise((resolve) => {
   const t0 = window.__perf.t0 ?? performance.now();
   const marks = {};
@@ -138,6 +142,27 @@ const measureStages = (page) => page.evaluate(() => new Promise((resolve) => {
   // после фикса #88 скрытый keep-alive док имеет visibility:hidden и СОХРАНЯЕТ
   // геометрию — проверки по rect.width/offsetParent ложно считают его видимым.
   const vis = window.__emojiVis;
+  // Issue #89: в sprite-режиме честная готовность — decode ЛИСТА атласа.
+  // done-флаг нужен для стыковки с visibility-гейтом #88: stamp ставится из
+  // poll-кадра, когда лист уже декодирован И кнопка реально видима пользователю
+  // (в keep-alive warm-сценарии скрытый док не должен засчитываться).
+  const sheetUrlOf = (el) => {
+    if (!el) return null;
+    const bg = window.getComputedStyle(el).backgroundImage || '';
+    const match = bg.match(/url\("?([^")]*sheet-[\w.-]+\.png)"?\)/);
+    return match ? match[1] : null;
+  };
+  const sheetDecodes = new Map();
+  const decodeSheet = (url) => {
+    if (!sheetDecodes.has(url)) {
+      const im = new Image();
+      im.src = url;
+      const entry = { done: false, promise: null };
+      entry.promise = im.decode().catch(() => {}).then(() => { entry.done = true; });
+      sheetDecodes.set(url, entry);
+    }
+    return sheetDecodes.get(url).promise;
+  };
   const poll = () => {
     const dock = document.querySelector(dockSel);
     if (dock && vis.userVisible(dock)) stamp('dockVisible');
@@ -145,7 +170,14 @@ const measureStages = (page) => page.evaluate(() => new Promise((resolve) => {
     if (btn) {
       stamp('firstEmojiDom');
       const img = btn.querySelector('img');
-      if (img && img.complete && img.naturalWidth > 0 && vis.userVisible(btn)) stamp('firstEmojiLoaded');
+      const sheetUrl = sheetUrlOf(btn);
+      if (sheetUrl) {
+        decodeSheet(sheetUrl);
+        if (sheetDecodes.get(sheetUrl).done && vis.userVisible(btn)) {
+          stamp('firstEmojiLoaded');
+          marks.firstEmojiSheet = sheetUrl.split('/').pop();
+        }
+      } else if (img && img.complete && img.naturalWidth > 0 && vis.userVisible(btn)) stamp('firstEmojiLoaded');
     }
     const search = document.querySelector(`${dockSel} ${searchSel}`) || document.querySelector(searchSel);
     if (search && !search.disabled && vis.userVisible(search)) stamp('interactive');
@@ -155,9 +187,17 @@ const measureStages = (page) => page.evaluate(() => new Promise((resolve) => {
         const r = i.getBoundingClientRect();
         return r.width > 0 && r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
       });
-      Promise.all(imgs.map((i) => i.decode().catch(() => {}))).then(() => {
+      const sheets = new Set();
+      imgs.forEach((i) => {
+        const url = sheetUrlOf(i.closest('button.epr-emoji') || i);
+        if (url) sheets.add(url);
+      });
+      const sheetWait = Promise.all([...sheets].map((url) => decodeSheet(url)));
+      const imgWait = Promise.all(imgs.map((i) => i.decode().catch(() => {})));
+      Promise.all([sheetWait, imgWait]).then(() => {
         marks.imagesDecoded = performance.now() - t0;
         marks.visibleEmojiImgs = imgs.length;
+        marks.visibleSpriteSheets = sheets.size;
         resolve(marks);
       });
       return;
@@ -185,6 +225,7 @@ const resourceStats = (page) => page.evaluate(() => {
   const chunks = entries.filter((e) => e.initiatorType === 'script' || e.name.includes('/assets/'))
     .filter((e) => /moji|Emoji|chat/i.test(e.name));
   const emojiImgs = entries.filter((e) => e.name.includes('/emoji/apple/'));
+  const spriteSheets = entries.filter((e) => e.name.includes('/emoji-atlas/'));
   const pick = (list, name) => list.find((e) => e.name.includes(name));
   return {
     chunks: chunks.map((e) => ({
@@ -197,6 +238,14 @@ const resourceStats = (page) => page.evaluate(() => {
     emojiImgCount: emojiImgs.length,
     emojiImgBytes: emojiImgs.reduce((s, e) => s + (e.transferSize || e.encodedBodySize || 0), 0),
     emojiImgDecodedBytes: emojiImgs.reduce((s, e) => s + (e.decodedBodySize || 0), 0),
+    spriteSheetCount: spriteSheets.length,
+    spriteSheetBytes: spriteSheets.reduce((s, e) => s + (e.transferSize || e.encodedBodySize || 0), 0),
+    spriteSheetDecodedBytes: spriteSheets.reduce((s, e) => s + (e.decodedBodySize || 0), 0),
+    spriteSheets: spriteSheets.map((e) => ({
+      name: e.name.split('/').pop(),
+      responseEnd: Math.round(e.responseEnd),
+      decodedKB: Math.round((e.decodedBodySize || 0) / 1024),
+    })),
   };
 });
 
@@ -213,7 +262,7 @@ test('deep perf: cold/warm stages, p50/p95 over 20 runs', async ({ browser }) =>
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const page = await ctx.newPage();
     page.on('response', (r) => {
-      if (r.url().includes('/emoji/apple/') && !r.ok()) failures.failedEmojiImgs += 1;
+      if ((r.url().includes('/emoji/apple/') || r.url().includes('/emoji-atlas/')) && !r.ok()) failures.failedEmojiImgs += 1;
     });
     await page.addInitScript(installMeasure);
     await page.addInitScript(installEmojiPanelVisibility);
