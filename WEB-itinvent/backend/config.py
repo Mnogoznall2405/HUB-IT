@@ -174,6 +174,13 @@ class ChatConfig:
     conversation_page_size: int = 50
     message_page_size: int = 100
     task_discussion_enabled: bool = False
+    # Per-user throttling of Telegram sticker-pack imports. One uncached import
+    # fans out into hundreds of Telegram Bot API calls and up to 100 MB of
+    # downloads, so abuse must be bounded per user, not per IP (corporate NAT).
+    sticker_import_limit_per_user: int = 5
+    sticker_import_window_user_sec: int = 60
+    sticker_import_hourly_limit_per_user: int = 20
+    sticker_import_hourly_window_user_sec: int = 3600
 
 
 @dataclass
@@ -470,6 +477,10 @@ class Config:
                 conversation_page_size=int(os.getenv("CHAT_CONVERSATION_PAGE_SIZE", "50")),
                 message_page_size=int(os.getenv("CHAT_MESSAGE_PAGE_SIZE", "100")),
                 task_discussion_enabled=str(os.getenv("TASK_DISCUSSION_CHAT_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},
+                sticker_import_limit_per_user=_positive_int_env("CHAT_STICKER_IMPORT_LIMIT_PER_USER", 5),
+                sticker_import_window_user_sec=_positive_int_env("CHAT_STICKER_IMPORT_WINDOW_USER_SEC", 60),
+                sticker_import_hourly_limit_per_user=_positive_int_env("CHAT_STICKER_IMPORT_HOURLY_LIMIT_PER_USER", 20),
+                sticker_import_hourly_window_user_sec=_positive_int_env("CHAT_STICKER_IMPORT_HOURLY_WINDOW_USER_SEC", 3600),
             ),
             web_push=WebPushConfig(
                 public_key=(str(os.getenv("WEB_PUSH_PUBLIC_KEY", "") or "").strip() or None),
