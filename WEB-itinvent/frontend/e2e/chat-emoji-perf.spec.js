@@ -5,6 +5,7 @@
 // изображений. Результаты — JSON в e2e-artifacts/emoji-picker/perf-deep.json.
 import { test, expect } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { installEmojiPanelVisibility } from './perf/emoji-panel-visibility.js';
 
 /* global window, document, performance, requestAnimationFrame, innerHeight, innerWidth, console, PerformanceObserver, process */
 
@@ -133,17 +134,21 @@ const measureStages = (page) => page.evaluate(() => new Promise((resolve) => {
   const dockSel = '[data-testid="chat-emoji-dock"]';
   const emojiBtnSel = '.EmojiPickerReact button.epr-emoji';
   const searchSel = '.EmojiPickerReact input';
+  // Видимость — только через window.__emojiVis (e2e/perf/emoji-panel-visibility.js):
+  // после фикса #88 скрытый keep-alive док имеет visibility:hidden и СОХРАНЯЕТ
+  // геометрию — проверки по rect.width/offsetParent ложно считают его видимым.
+  const vis = window.__emojiVis;
   const poll = () => {
     const dock = document.querySelector(dockSel);
-    if (dock && dock.getBoundingClientRect().width > 0) stamp('dockVisible');
+    if (dock && vis.userVisible(dock)) stamp('dockVisible');
     const btn = document.querySelector(`${dockSel} ${emojiBtnSel}`) || document.querySelector(emojiBtnSel);
     if (btn) {
       stamp('firstEmojiDom');
       const img = btn.querySelector('img');
-      if (img && img.complete && img.naturalWidth > 0) stamp('firstEmojiLoaded');
+      if (img && img.complete && img.naturalWidth > 0 && vis.userVisible(btn)) stamp('firstEmojiLoaded');
     }
     const search = document.querySelector(`${dockSel} ${searchSel}`) || document.querySelector(searchSel);
-    if (search && search.offsetParent !== null) stamp('interactive');
+    if (search && !search.disabled && vis.userVisible(search)) stamp('interactive');
     if (marks.dockVisible !== undefined && marks.firstEmojiLoaded !== undefined && marks.interactive !== undefined) {
       const scope = document.querySelector(dockSel) || document;
       const imgs = [...scope.querySelectorAll(`${emojiBtnSel} img`)].filter((i) => {
@@ -211,6 +216,7 @@ test('deep perf: cold/warm stages, p50/p95 over 20 runs', async ({ browser }) =>
       if (r.url().includes('/emoji/apple/') && !r.ok()) failures.failedEmojiImgs += 1;
     });
     await page.addInitScript(installMeasure);
+    await page.addInitScript(installEmojiPanelVisibility);
     await apiLogin(page);
     await openChat(page);
     await page.getByTestId('chat-composer-emoji-button').click();
@@ -231,6 +237,7 @@ test('deep perf: cold/warm stages, p50/p95 over 20 runs', async ({ browser }) =>
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
   await page.addInitScript(installMeasure);
+  await page.addInitScript(installEmojiPanelVisibility);
   await apiLogin(page);
   await openChat(page);
   const button = page.getByTestId('chat-composer-emoji-button');
@@ -407,6 +414,7 @@ test('phase2 attribution: rendered components, list churn, layout cost', async (
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
   await page.addInitScript(installMeasure);
+  await page.addInitScript(installEmojiPanelVisibility);
   await apiLogin(page);
   await openChat(page);
   const cdp = await ctx.newCDPSession(page);
@@ -771,9 +779,13 @@ const armActionClick = async (locator) => {
   });
 };
 
-// Первый selectable emoji: кнопка реально видима (не keep-alive display:none),
-// не disabled, а её img complete && naturalWidth>0. decode — отдельная стадия,
+// Первый selectable emoji: кнопка реально видима пользователю, не disabled,
+// а её img complete && naturalWidth>0. decode — отдельная стадия,
 // чтобы не подменять требуемую метрику более строгой.
+// Видимость — только через window.__emojiVis (e2e/perf/emoji-panel-visibility.js):
+// после фикса #88 скрытый keep-alive док имеет visibility:hidden и СОХРАНЯЕТ
+// геометрию — прежняя проверка по одним rect-размерам ложно считала скрытую
+// панель видимой (в warm reopen все стадии «измерялись» бы за ~0 мс).
 const measureEmojiPanelOpen = (page) => page.evaluate(() => new Promise((resolve) => {
   const t0 = window.__perf.actionT0 ?? performance.now();
   const marks = { t0 };
@@ -784,22 +796,16 @@ const measureEmojiPanelOpen = (page) => page.evaluate(() => new Promise((resolve
     marks[key] = performance.now() - t0;
     try { performance.mark(`issue80-${key}`); } catch { /* noop */ }
   };
-  const visible = (element) => {
-    if (!element) return false;
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0
-      && rect.bottom > 0 && rect.top < innerHeight
-      && rect.right > 0 && rect.left < innerWidth;
-  };
+  const vis = window.__emojiVis;
   const deadline = performance.now() + 8000;
   const poll = () => {
     const dock = document.querySelector('[data-testid="chat-emoji-dock"]');
-    if (dock && dock.getBoundingClientRect().width > 0) stamp('dockVisible');
+    if (dock && vis.userVisible(dock)) stamp('dockVisible');
     const button = dock?.querySelector('.EmojiPickerReact button.epr-emoji');
     if (button) {
       stamp('firstEmojiDom');
       const img = button.querySelector('img');
-      if (!button.disabled && visible(button) && img && img.complete && img.naturalWidth > 0) {
+      if (!button.disabled && vis.userVisible(button) && img && img.complete && img.naturalWidth > 0) {
         stamp('firstEmojiSelectable');
         if (selectableAt === null) selectableAt = performance.now();
         if (!decodeRequested) {
@@ -811,7 +817,7 @@ const measureEmojiPanelOpen = (page) => page.evaluate(() => new Promise((resolve
       }
     }
     const search = dock?.querySelector('.EmojiPickerReact input');
-    if (search && visible(search) && !search.disabled) stamp('interactive');
+    if (search && vis.userVisible(search) && !search.disabled) stamp('interactive');
     const decodeDone = marks.firstEmojiDecoded !== undefined
       || (selectableAt !== null && performance.now() - selectableAt > 250);
     if (marks.firstEmojiSelectable !== undefined && marks.interactive !== undefined && decodeDone) {
@@ -1102,6 +1108,7 @@ test('issue80 perf: sticker-v2 cold/warm panel, pack switch, scroll and controls
   for (let i = 0; i < ISSUE80_RUNS; i += 1) {
     const ctx = await browser.newContext({ viewport: ISSUE80_VIEWPORT });
     await ctx.addInitScript(installIssue80Measure);
+    await ctx.addInitScript(installEmojiPanelVisibility);
     const page = await ctx.newPage();
     // Cold cache должен быть честным даже если Chromium разделяет HTTP-cache
     // между incognito-context'ами: на время cold-прогона кэш выключен на
@@ -1158,6 +1165,7 @@ test('issue80 perf: sticker-v2 cold/warm panel, pack switch, scroll and controls
   // ── Warm cache/profile: один контекст, keep-alive и HTTP/API-кэши прогреты.
   const warmCtx = await browser.newContext({ viewport: ISSUE80_VIEWPORT });
   await warmCtx.addInitScript(installIssue80Measure);
+  await warmCtx.addInitScript(installEmojiPanelVisibility);
   const page = await warmCtx.newPage();
   await apiLogin(page);
   if (!conversationId) conversationId = await issue80DirectConversation(page);
@@ -1430,6 +1438,7 @@ test('issue80 perf traces: representative cold open and sticker switch', async (
   mkdirSync(ISSUE80_SHOTS, { recursive: true });
   const ctx = await browser.newContext({ viewport: ISSUE80_VIEWPORT });
   await ctx.addInitScript(installIssue80Measure);
+  await ctx.addInitScript(installEmojiPanelVisibility);
   const page = await ctx.newPage();
   // Representative trace тоже должен быть cold-cache, а не зависеть от того,
   // как Chromium разделяет HTTP-cache между browser context'ами.

@@ -41,6 +41,39 @@ const ChatEmojiDock = memo(function ChatEmojiDock({
   const panelBg = ui.composerBg || ui.panelBg || theme.palette.background.paper;
   const borderColor = ui.borderSoft || theme.palette.divider;
 
+  // Transition-guard при переключении видимости. Внутри пикера у
+  // epr-header/epr-body (0.5s) и поискового input (0.2s) transition:all —
+  // visibility входит в «all». Если переходы активны в момент смены
+  // visibility, браузер стартует visibility-transition: на закрытие элемент
+  // держится видимым до конца перехода (input кликабелен поверх переписки
+  // ещё ~0.2-0.5 с), на открытие computed visibility остаётся hidden до
+  // первого тика перехода — внутренности панели вспыхивали на 1-2 кадра
+  // (~20-40 мс при джанке) позже самого дока (probe #88 v2). Поэтому на
+  // сам коммит переключения переходы в поддереве гасятся полностью, а
+  // guard снимается только после того, как смена visibility разрешена
+  // в стили: обратной анимации возникнуть не может, в устоявшемся состоянии
+  // все анимации пикера нетронуты.
+  const [transitionGuard, setTransitionGuard] = useState(false);
+  const [prevHidden, setPrevHidden] = useState(hidden);
+  if (hidden !== prevHidden) {
+    setPrevHidden(hidden);
+    setTransitionGuard(true);
+  }
+
+  useLayoutEffect(() => {
+    if (!transitionGuard) return undefined;
+    // Принудительное разрешение стилей, пока переходы подавлены: смена
+    // visibility фиксируется без transition у всех элементов поддерева.
+    // Без этого шага снятие guard могло бы слиться с переключением в один
+    // style recalc — и переход всё равно бы стартовал. Зависимость от hidden
+    // обязательна: при быстром close→reopen в один кадр guard остаётся true
+    // и эффект по нему не перезапустился бы — а устаревший rAF снял бы guard
+    // до разрешения стилей повторного открытия.
+    void rootRef.current?.offsetHeight;
+    const raf = requestAnimationFrame(() => setTransitionGuard(false));
+    return () => cancelAnimationFrame(raf);
+  }, [hidden, transitionGuard]);
+
   useLayoutEffect(() => {
     const wrap = rootRef.current?.parentElement;
     if (!wrap) return undefined;
@@ -72,17 +105,55 @@ const ChatEmojiDock = memo(function ChatEmojiDock({
         onClose?.();
       }}
       sx={{
-        // Keep-alive: скрытие стилем, а не размонтированием — повторное
-        // открытие мгновенное и сохраняет скролл/состояние пикера.
-        display: hidden ? 'none' : 'flex',
+        // Keep-alive: скрытие без display:none. display:none обнуляет layout
+        // поддерева — при unhide emoji-picker-react заново прогонял каскад
+        // виртуализации (scroll/IO/замеры размеров, ~2×1000 fibers по замерам
+        // issue #88). visibility:hidden + вывод из flex-потока сохраняют
+        // геометрию и скролл панели: при повторном открытии внутри пикера
+        // не перерендеривается ничего, браузеру остаётся только paint.
+        display: 'flex',
+        visibility: hidden ? 'hidden' : 'visible',
         flexDirection: 'column',
         minHeight: 0,
         flexShrink: 0,
         bgcolor: panelBg,
         borderLeft: `1px solid ${borderColor}`,
+        ...(hidden || transitionGuard
+          ? {
+              // У элементов emoji-picker-react transition:all (поисковый input,
+              // epr-header/epr-body). При скрытии дока их унаследованная
+              // visibility тоже анимировалась: transition к hidden держит
+              // элемент видимым до конца перехода — input оставался
+              // отрисованным и кликабельным поверх переписки на ~0.2-0.5 с
+              // после закрытия (probe #88). Симметрично при открытии переход
+              // держал бы элементы скрытыми до первого тика анимации
+              // (~20-40 мс лага внутренностей панели, probe #88 v2). Поэтому
+              // в скрытом состоянии visibility и переходы гасятся у всего
+              // поддерева, а на сам коммит переключения guard держит переходы
+              // погашенными, пока смена visibility не разрешится в стили.
+              // В устоявшемся открытом состоянии правило не действует —
+              // анимации пикера не тронуты.
+              '& *': {
+                ...(hidden ? { visibility: 'hidden !important' } : {}),
+                transition: 'none !important',
+              },
+            }
+          : {}),
         ...(asColumn
           ? {
               width: DOCK_COLUMN_WIDTH,
+              ...(hidden
+                ? {
+                    // В column-режиме скрытый док выходит из flex-потока
+                    // (переписка занимает всю ширину), но держит тот же
+                    // прямоугольник у правого края — внутренний layout
+                    // панели не меняется.
+                    position: 'absolute',
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                  }
+                : {}),
             }
           : {
               position: 'absolute',
