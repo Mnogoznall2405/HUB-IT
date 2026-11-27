@@ -11,7 +11,7 @@ import ChatEmojiDock, { EMOJI_DOCK_LAYOUT } from './ChatEmojiDock';
 const theme = createTheme();
 const ui = { borderSoft: '#dbe3ec', textSecondary: '#64748b' };
 
-const renderDock = (wrapWidth) => {
+const renderDock = (wrapWidth, dockProps = {}) => {
   const wrap = document.createElement('div');
   Object.defineProperty(wrap, 'clientWidth', { value: wrapWidth, configurable: true });
   document.body.appendChild(wrap);
@@ -24,6 +24,7 @@ const renderDock = (wrapWidth) => {
         onInsertEmoji={vi.fn()}
         onSendSticker={vi.fn()}
         onClose={vi.fn()}
+        {...dockProps}
       />
     </ThemeProvider>,
     { container: wrap },
@@ -54,5 +55,34 @@ describe('ChatEmojiDock layout by container geometry', () => {
     expect(wrapWidth - EMOJI_DOCK_LAYOUT.columnWidth).toBeGreaterThanOrEqual(
       EMOJI_DOCK_LAYOUT.minThreadWidth,
     );
+  });
+
+  // Регрессия issue #88: скрытый keep-alive док обязан сохранять layout
+  // поддерева. display:none обнуляет размеры — при unhide emoji-picker-react
+  // заново прогонял каскад виртуализации (два рендера по ~1000 fibers,
+  // ~20-50 мс до интерактивности). visibility:hidden прячет визуально и
+  // убирает из hit-test/a11y-дерева, но сохраняет геометрию и скролл панели.
+  it('hides with visibility, not display:none — layout is preserved while hidden', () => {
+    renderDock(EMOJI_DOCK_LAYOUT.minWrapWidthForColumn + 120, { hidden: true });
+    const dock = screen.getByTestId('chat-emoji-dock');
+    expect(getComputedStyle(dock).visibility).toBe('hidden');
+    expect(getComputedStyle(dock).display).not.toBe('none');
+  });
+
+  it('stays visible in the flex flow when not hidden', () => {
+    renderDock(EMOJI_DOCK_LAYOUT.minWrapWidthForColumn + 120, { hidden: false });
+    const dock = screen.getByTestId('chat-emoji-dock');
+    expect(getComputedStyle(dock).visibility).toBe('visible');
+    expect(getComputedStyle(dock).position).not.toBe('absolute');
+  });
+
+  it('leaves the flex flow while hidden in column mode so the thread expands', () => {
+    // Скрытая колонка выходит из потока (переписка занимает всю ширину),
+    // но держит тот же прямоугольник у правого края — внутренний layout
+    // панели не меняется между hidden/visible.
+    renderDock(EMOJI_DOCK_LAYOUT.minWrapWidthForColumn + 120, { hidden: true });
+    const dock = screen.getByTestId('chat-emoji-dock');
+    expect(dock).toHaveAttribute('data-layout', 'column');
+    expect(getComputedStyle(dock).position).toBe('absolute');
   });
 });
