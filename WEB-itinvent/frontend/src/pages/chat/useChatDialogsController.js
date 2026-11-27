@@ -6,7 +6,6 @@ export function computeShouldRenderChatDialogs({
   threadMenuAnchor,
   messageMenuAnchor,
   composerMenuAnchor,
-  emojiAnchorEl,
   shareOpen,
   forwardOpen,
   fileDialogOpen,
@@ -22,7 +21,6 @@ export function computeShouldRenderChatDialogs({
     threadMenuAnchor
     || messageMenuAnchor
     || composerMenuAnchor
-    || emojiAnchorEl
     || shareOpen
     || forwardOpen
     || fileDialogOpen
@@ -39,7 +37,6 @@ export default function useChatDialogsController({
   threadMenuAnchor,
   messageMenuAnchor,
   composerMenuAnchor,
-  emojiAnchorEl,
   shareOpen,
   forwardOpen,
   fileDialogOpen,
@@ -57,7 +54,6 @@ export default function useChatDialogsController({
       threadMenuAnchor,
       messageMenuAnchor,
       composerMenuAnchor,
-      emojiAnchorEl,
       shareOpen,
       forwardOpen,
       fileDialogOpen,
@@ -73,7 +69,6 @@ export default function useChatDialogsController({
       attachmentPreview,
       composerMenuAnchor,
       documentPreview,
-      emojiAnchorEl,
       fileDialogOpen,
       forwardOpen,
       infoOpen,

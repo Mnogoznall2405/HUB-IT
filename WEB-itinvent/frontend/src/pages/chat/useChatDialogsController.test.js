@@ -37,6 +37,15 @@ describe('computeShouldRenderChatDialogs', () => {
     })).toBe(true);
   });
 
+  it('does not mount the unrelated dialogs bundle for the emoji/sticker panel', () => {
+    // Панель эмодзи рендерится ChatEmojiDock/Popover/Composer, а не
+    // ChatDialogs. Иначе каждое открытие/закрытие панели монтирует и
+    // размонтирует тяжёлый bundle закрытых диалогов на критическом пути.
+    expect(computeShouldRenderChatDialogs({
+      emojiAnchorEl: {},
+    })).toBe(false);
+  });
+
   it('mounts the dialogs bundle when a structured-send dialog is open', () => {
     expect(computeShouldRenderChatDialogs({
       structuredDialog: 'poll',
