@@ -4,6 +4,7 @@ import chatAttachmentsAPI from '../../api/chatAttachments';
 import { mediaGalleryKey, mergeGalleryItems, toGalleryItem } from '../../components/chat/chatMediaGallery';
 import {
   buildAttachmentUrl,
+  CHAT_IMAGE_ATTACHMENT_EXTENSIONS,
   isMediaAttachment,
   isVideoAttachment,
   normalizeChatAttachmentUrl,
@@ -272,7 +273,15 @@ export default function useChatPreviewController({
 
     const normalizedAttachment = normalizePreviewAttachment(attachment);
     if (!normalizedAttachment) return;
-    if (!isMediaAttachment(normalizedAttachment)) {
+    // Фото, отправленное «как файл» (explicit kind=file): для маршрута
+    // предпросмотра оно остаётся изображением — MIME/расширение важнее
+    // служебного типа. Тип вложения глобально не переопределяется: карточка,
+    // отправка и скачивание работают как раньше, меняется только выбор
+    // встроенного просмотра вместо window.open в отдельную вкладку.
+    const fileMime = String(normalizedAttachment?.mime_type || '').trim().toLowerCase();
+    const fileExtension = String(normalizedAttachment?.file_name || '').trim().toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || '';
+    const imageLikeFile = fileMime.startsWith('image/') || CHAT_IMAGE_ATTACHMENT_EXTENSIONS.has(fileExtension);
+    if (!isMediaAttachment(normalizedAttachment) && !imageLikeFile) {
       if (isChatDocumentPreviewableAttachment(normalizedAttachment)) {
         void openDocumentPreview(normalizedMessageId, attachment);
         return;

@@ -1,11 +1,11 @@
-import { buildAttachmentUrl, isMediaAttachment, normalizeChatAttachmentUrl, pickBlobAttachmentUrl } from './chatHelpers';
+import { buildAttachmentUrl, isImageLikeFileAttachment, isMediaAttachment, normalizeChatAttachmentUrl, pickBlobAttachmentUrl } from './chatHelpers';
 
 export const mediaGalleryKey = (item) => `${item?.messageId || item?.message_id || ''}:${item?.id || ''}`;
 
 export function toGalleryItem(attachment, message = {}) {
   const id = String(attachment?.id || '').trim();
   const messageId = String(message?.id || attachment?.message_id || '').trim();
-  if (!id || !messageId || !isMediaAttachment(attachment)) return null;
+  if (!id || !messageId || (!isMediaAttachment(attachment) && !isImageLikeFileAttachment(attachment))) return null;
   const variants = attachment.variant_urls || {};
   const local = pickBlobAttachmentUrl(attachment.preview_url, attachment.previewUrl, attachment.original_url, attachment.originalUrl, variants.preview, variants.thumb);
   const originalUrl = local || normalizeChatAttachmentUrl(attachment.original_url || attachment.originalUrl)
