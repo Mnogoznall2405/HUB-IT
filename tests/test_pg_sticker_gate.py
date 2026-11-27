@@ -335,11 +335,17 @@ def test_sticker_upgrade_paths_preserve_preexisting_install(tmp_path, start_revi
         engine = sa.create_engine(db_url)
         try:
             with engine.connect() as conn:
-                assert conn.execute(
+                current_head = conn.execute(
                     sa.text("select version_num from system.alembic_version")
-                ).scalar_one() == "20261125_0182"
+                ).scalar_one()
         finally:
             engine.dispose()
+        from alembic.script import ScriptDirectory
+
+        cfg = build_alembic_config(db_url, scope="chat")
+        expected_heads = set(ScriptDirectory.from_config(cfg).get_heads())
+        assert len(expected_heads) == 1, f"alembic graph must have one head, got {expected_heads}"
+        assert current_head in expected_heads
     finally:
         _drop_db(db_name)
 
