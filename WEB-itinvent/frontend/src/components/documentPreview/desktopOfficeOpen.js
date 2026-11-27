@@ -16,8 +16,10 @@ export function getDesktopOfficeOpenLabel(sourceKind) {
 
 export async function openOriginalWithDesktopApplication({
   isDesktop = isNativeShellRuntime,
-  requestOpen = (action) => requestDesktopDownloadedFileAction(action),
+  requestOpen = (action, name, ref) => requestDesktopDownloadedFileAction(action, name, ref),
   onDownload,
+  fileName = '',
+  downloadRef = '',
 } = {}) {
   if (typeof isDesktop === 'function' ? !isDesktop() : !isDesktop) {
     return { accepted: false, status: 'unavailable' };
@@ -25,7 +27,7 @@ export async function openOriginalWithDesktopApplication({
   if (typeof onDownload !== 'function') {
     return { accepted: false, status: 'unavailable' };
   }
-  const result = await requestOpen('open');
+  const result = await requestOpen('open', fileName, downloadRef);
   if (!result?.accepted) {
     return result || { accepted: false, status: 'unavailable' };
   }

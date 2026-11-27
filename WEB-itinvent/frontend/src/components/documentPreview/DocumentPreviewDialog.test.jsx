@@ -159,7 +159,7 @@ describe('DocumentPreviewDialog', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Открыть в приложении' }));
     await waitFor(() => expect(onDownloadOriginal).toHaveBeenCalledTimes(1));
-    expect(desktopMocks.requestOpen).toHaveBeenCalledWith('open');
+    expect(desktopMocks.requestOpen).toHaveBeenCalledWith('open', 'report.pdf', '');
   });
 
   it('labels the Desktop action as Word or Excel for Office files', () => {

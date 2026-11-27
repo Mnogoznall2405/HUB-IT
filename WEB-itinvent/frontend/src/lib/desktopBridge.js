@@ -1198,7 +1198,7 @@ export function requestDesktopOpenDownloadedFile() {
   });
 }
 
-export function requestDesktopDownloadedFileAction(action, fileName = '') {
+export function requestDesktopDownloadedFileAction(action, fileName = '', downloadRef = '') {
   if (!DESKTOP_DOWNLOADED_FILE_ACTIONS.has(action)) {
     return Promise.resolve({ accepted: false, status: 'unsupported' });
   }
@@ -1217,6 +1217,26 @@ export function requestDesktopDownloadedFileAction(action, fileName = '') {
   const normalizedFileName = String(fileName || '').trim();
   const bindFileName = Boolean(
     normalizedFileName && isDesktopCapabilityAvailable('file-actions-v3'),
+  );
+  // file-actions-v4: the shell binds the intent to the unique download
+  // reference (the attachment id inside the download URL), so two different
+  // attachments that share a file name can no longer be confused.
+  let normalizedDownloadRef = String(downloadRef || '').trim();
+  if (normalizedDownloadRef) {
+    // The shell matches the reference against the download URI: keep only the
+    // path portion so absolute URLs and cache-busting queries cannot break
+    // the match.
+    normalizedDownloadRef = normalizedDownloadRef.split('#')[0].split('?')[0];
+    try {
+      if (/^https?:\/\//i.test(normalizedDownloadRef)) {
+        normalizedDownloadRef = new URL(normalizedDownloadRef).pathname;
+      }
+    } catch {
+      normalizedDownloadRef = '';
+    }
+  }
+  const bindDownloadRef = Boolean(
+    normalizedDownloadRef && isDesktopCapabilityAvailable('file-actions-v4'),
   );
 
   return new Promise((resolve) => {
@@ -1237,6 +1257,7 @@ export function requestDesktopDownloadedFileAction(action, fileName = '') {
         type: PREPARE_DOWNLOADED_FILE_MESSAGE_TYPE,
         version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
         action,
+        ...(bindDownloadRef ? { downloadRef: normalizedDownloadRef } : {}),
         ...(bindFileName ? { fileName: normalizedFileName } : {}),
       });
     } catch {

@@ -1325,6 +1325,8 @@ export function FileAttachment({
         open={Boolean(fileActionsAnchorPosition)}
         anchorPosition={fileActionsAnchorPosition}
         fileName={fileName}
+        downloadRef={resolvedDownloadUrl}
+        allowPhotoOpen
         canDownload={Boolean(resolvedDownloadUrl)}
         onClose={() => setFileActionsAnchorPosition(null)}
         onDownload={downloadAttachment}

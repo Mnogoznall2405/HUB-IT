@@ -63,7 +63,7 @@ describe('FileActionsContextMenu', () => {
 
     await waitFor(() => expect(onDownload).toHaveBeenCalledTimes(1));
     expect(onClose).toHaveBeenCalledTimes(1);
-    expect(bridgeMocks.requestAction).toHaveBeenCalledWith('open', 'report.xlsx');
+    expect(bridgeMocks.requestAction).toHaveBeenCalledWith('open', 'report.xlsx', '');
   });
 
   it('keeps the menu open and explains when another open request is busy', async () => {
@@ -137,7 +137,7 @@ describe('FileActionsContextMenu', () => {
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Быстрая печать' }));
     await waitFor(() => expect(onDownload).toHaveBeenCalledTimes(1));
-    expect(bridgeMocks.requestAction).toHaveBeenCalledWith('print', 'report.pdf');
+    expect(bridgeMocks.requestAction).toHaveBeenCalledWith('print', 'report.pdf', '');
   });
 
   it('closes the open flyout when the pointer settles on a plain menu row', async () => {
@@ -254,4 +254,83 @@ describe('FileActionsContextMenu', () => {
     expect(isFileActionsKeyboardShortcut({ key: 'F10', shiftKey: true })).toBe(true);
     expect(isFileActionsKeyboardShortcut({ key: 'F10', shiftKey: false })).toBe(false);
   });
+
+  it('never offers print for photos even when photo opening is allowed', () => {
+    bridgeMocks.native = true;
+    bridgeMocks.capabilities.add('file-actions-v2');
+    bridgeMocks.capabilities.add('file-actions-v4');
+    render(
+      <FileActionsContextMenu
+        open
+        anchorPosition={{ left: 10, top: 10 }}
+        fileName="photo.jpg"
+        allowPhotoOpen
+        onClose={vi.fn()}
+        onDownload={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('menuitem', { name: 'Открыть' })).toBeVisible();
+    expect(screen.queryByRole('menuitem', { name: 'Печать' })).not.toBeInTheDocument();
+  });
+
+  it('hides photo opening without the chat opt-in even on a v4 shell', () => {
+    bridgeMocks.native = true;
+    bridgeMocks.capabilities.add('file-actions-v2');
+    bridgeMocks.capabilities.add('file-actions-v4');
+    render(
+      <FileActionsContextMenu
+        open
+        anchorPosition={{ left: 10, top: 10 }}
+        fileName="photo.jpg"
+        onClose={vi.fn()}
+        onDownload={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('menuitem', { name: 'Открыть' })).not.toBeInTheDocument();
+  });
+
+  it('hides photo opening when the shell lacks file-actions-v4', () => {
+    bridgeMocks.native = true;
+    bridgeMocks.capabilities.add('file-actions-v2');
+    bridgeMocks.capabilities.add('file-actions-v3');
+    render(
+      <FileActionsContextMenu
+        open
+        anchorPosition={{ left: 10, top: 10 }}
+        fileName="photo.jpg"
+        allowPhotoOpen
+        onClose={vi.fn()}
+        onDownload={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('menuitem', { name: 'Открыть' })).not.toBeInTheDocument();
+  });
+
+  it('passes the download reference to the bridge for exact binding', async () => {
+    bridgeMocks.native = true;
+    bridgeMocks.capabilities.add('file-actions-v2');
+    bridgeMocks.capabilities.add('file-actions-v4');
+    render(
+      <FileActionsContextMenu
+        open
+        anchorPosition={{ left: 10, top: 10 }}
+        fileName="report.docx"
+        downloadRef="/api/v1/chat/attachments/some-uuid/download"
+        onClose={vi.fn()}
+        onDownload={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Открыть' }));
+    await waitFor(() => expect(bridgeMocks.requestAction).toHaveBeenCalled());
+    expect(bridgeMocks.requestAction).toHaveBeenCalledWith(
+      'open',
+      'report.docx',
+      '/api/v1/chat/attachments/some-uuid/download',
+    );
+  });
 });
+

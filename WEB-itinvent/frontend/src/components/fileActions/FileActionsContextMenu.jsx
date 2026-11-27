@@ -50,6 +50,15 @@ export function canOpenInDesktopApplication(fileName, { allowPhotos = false } = 
   return Boolean(allowPhotos && DESKTOP_PHOTO_EXTENSIONS.has(extension));
 }
 
+// Printing is a separate capability: the Windows shell prints office
+// documents through their associated application, but photos never enter the
+// print channel even though they can be opened.
+export function canPrintInDesktopApplication(fileName) {
+  const normalized = String(fileName || '').trim().toLowerCase();
+  const extension = normalized.includes('.') ? normalized.split('.').pop() : '';
+  return Boolean(extension && DESKTOP_APPLICATION_EXTENSIONS.has(extension));
+}
+
 export function isFileActionsKeyboardShortcut(event) {
   return event?.key === 'ContextMenu' || (event?.shiftKey && event?.key === 'F10');
 }
@@ -73,6 +82,8 @@ export default function FileActionsContextMenu({
   anchorEl = null,
   anchorPosition = null,
   fileName = '',
+  downloadRef = '',
+  allowPhotoOpen = false,
   canDownload = true,
   busy = false,
   paperSx = null,
@@ -105,14 +116,23 @@ export default function FileActionsContextMenu({
   const submenuCloseTimer = useRef(null);
   const nativeShell = isNativeShellRuntime();
   const nativeFileActions = nativeShell && isDesktopCapabilityAvailable('file-actions-v2');
+  // Photo opening is a chat-only action: other surfaces (mail, tasks, My
+  // Files) keep the office/pdf set they had before. It also requires the v4
+  // shell, which binds intents to the exact download and keeps photos out of
+  // the print channel.
+  const photoOpenAllowed = Boolean(
+    allowPhotoOpen && isDesktopCapabilityAvailable('file-actions-v4'),
+  );
   const canOpenInApplication = Boolean(
     canDownload
     && nativeShell
-    && canOpenInDesktopApplication(fileName, {
-      allowPhotos: isDesktopCapabilityAvailable('file-actions-v3'),
-    }),
+    && canOpenInDesktopApplication(fileName, { allowPhotos: photoOpenAllowed }),
   );
-  const canPrintInApplication = canOpenInApplication && nativeFileActions;
+  const canPrintInApplication = Boolean(
+    canDownload
+    && nativeFileActions
+    && canPrintInDesktopApplication(fileName),
+  );
   const canCopyFile = Boolean(canDownload && nativeFileActions);
 
   useEffect(() => {
@@ -143,7 +163,7 @@ export default function FileActionsContextMenu({
     if (action) {
       setRequestingAction(action);
       setOpenIntentMessage('');
-      const result = await requestDesktopDownloadedFileAction(action, fileName);
+      const result = await requestDesktopDownloadedFileAction(action, fileName, downloadRef);
       setRequestingAction('');
       if (!result.accepted) {
         setOpenIntentMessage(

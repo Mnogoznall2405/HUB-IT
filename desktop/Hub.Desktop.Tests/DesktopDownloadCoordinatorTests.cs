@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+﻿﻿using System.Diagnostics;
 using Hub.Desktop.Downloads;
 using Xunit;
 
@@ -319,6 +319,56 @@ public sealed class DesktopDownloadCoordinatorTests
         var photo = coordinator.BeginDownload("photo.jpg");
         Assert.False(photo.OpenWhenCompleted);
         Assert.Equal(DesktopDownloadedFileAction.None, photo.CompletionAction);
+    }
+
+    [Fact]
+    public void DownloadRefBindsIntentToTheExactDownloadUri()
+    {
+        var coordinator = CreateCoordinator();
+        coordinator.RequestNextDownloadAction(
+            DesktopDownloadedFileAction.Open,
+            "report.docx",
+            "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb");
+
+        // Same file name, different attachment id in the URI: must not match.
+        var wrong = coordinator.BeginDownload(
+            "report.docx",
+            downloadUri: "https://hub.example/api/v1/chat/attachments/cccccccc-9999-8888-7777-dddddddddddd/download");
+        Assert.False(wrong.OpenWhenCompleted);
+
+        var right = coordinator.BeginDownload(
+            "report.docx",
+            downloadUri: "https://hub.example/api/v1/chat/attachments/aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb/download");
+        Assert.True(right.OpenWhenCompleted);
+    }
+
+    [Fact]
+    public void DownloadRefWithoutMatchingUriKeepsIntentPending()
+    {
+        var coordinator = CreateCoordinator();
+        coordinator.RequestNextDownloadAction(
+            DesktopDownloadedFileAction.Open,
+            "report.docx",
+            "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb");
+
+        // A matching file name without the reference in the URI does not consume the intent.
+        var unmatched = coordinator.BeginDownload("report.docx");
+        Assert.False(unmatched.OpenWhenCompleted);
+
+        var matched = coordinator.BeginDownload(
+            "report.docx",
+            downloadUri: "https://hub.example/api/v1/chat/attachments/AAAAAAAA-1111-2222-3333-BBBBBBBBBBBB/download?token=x");
+        Assert.True(matched.OpenWhenCompleted);
+    }
+
+    [Fact]
+    public void ShortDownloadRefFallsBackToFileNameMatching()
+    {
+        var coordinator = CreateCoordinator();
+        coordinator.RequestNextDownloadAction(DesktopDownloadedFileAction.Open, "report.docx", "abc");
+
+        var item = coordinator.BeginDownload("report.docx");
+        Assert.True(item.OpenWhenCompleted);
     }
 
     private static DesktopDownloadCoordinator CreateCoordinator(

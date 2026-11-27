@@ -1,4 +1,4 @@
-﻿using System.IO;
+﻿﻿﻿using System.IO;
 using Microsoft.Web.WebView2.Core;
 using Hub.Desktop.Downloads;
 using Hub.Desktop.Diagnostics;
@@ -723,7 +723,8 @@ public sealed class DesktopBridgeHost : IDisposable
         {
             var eventArgs = new DesktopPrepareDownloadedFileRequestedEventArgs(
                 message.DownloadedFileAction,
-                message.DownloadedFileName);
+                message.DownloadedFileName,
+                message.DownloadedFileDownloadRef);
             PrepareDownloadedFileRequested?.Invoke(this, eventArgs);
             try
             {
@@ -817,11 +818,14 @@ public sealed class DesktopOpenDownloadedFileRequestedEventArgs : EventArgs
 
 public sealed class DesktopPrepareDownloadedFileRequestedEventArgs(
     DesktopDownloadedFileAction action,
-    string? fileName) : EventArgs
+    string? fileName,
+    string? downloadRef) : EventArgs
 {
     public DesktopDownloadedFileAction Action { get; } = action;
 
     public string? FileName { get; } = fileName;
+
+    public string? DownloadRef { get; } = downloadRef;
 
     public bool Accepted { get; set; }
 }

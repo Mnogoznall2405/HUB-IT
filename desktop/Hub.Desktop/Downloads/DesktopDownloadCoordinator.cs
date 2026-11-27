@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+﻿﻿﻿using System.Collections.ObjectModel;
 using System.IO;
 
 namespace Hub.Desktop.Downloads;
@@ -21,6 +21,7 @@ public sealed class DesktopDownloadCoordinator
     private DateTimeOffset? _pendingIntentExpiresAt;
     private DesktopDownloadedFileAction _pendingIntentAction;
     private string? _pendingIntentFileName;
+    private string? _pendingIntentDownloadRef;
     private string? _activeActionDownloadId;
 
     public DesktopDownloadCoordinator()
@@ -46,7 +47,8 @@ public sealed class DesktopDownloadCoordinator
 
     public DesktopOpenIntentRequestResult RequestNextDownloadAction(
         DesktopDownloadedFileAction action,
-        string? expectedFileName = null)
+        string? expectedFileName = null,
+        string? expectedDownloadRef = null)
     {
         if (action == DesktopDownloadedFileAction.None)
         {
@@ -63,6 +65,7 @@ public sealed class DesktopDownloadCoordinator
 
             _pendingIntentAction = action;
             _pendingIntentFileName = NormalizeExpectedFileName(expectedFileName);
+            _pendingIntentDownloadRef = NormalizeExpectedDownloadRef(expectedDownloadRef);
             _pendingIntentExpiresAt = _utcNow().Add(IntentLifetime);
             return DesktopOpenIntentRequestResult.Accepted;
         }
@@ -71,7 +74,8 @@ public sealed class DesktopDownloadCoordinator
     public DesktopDownloadItem BeginDownload(
         string? resultFilePath,
         Action? requestCancel = null,
-        string? sourceWindowLabel = null)
+        string? sourceWindowLabel = null,
+        string? downloadUri = null)
     {
         DesktopDownloadItem item;
         lock (_sync)
@@ -84,12 +88,14 @@ public sealed class DesktopDownloadCoordinator
             if (_pendingIntentExpiresAt is not null
                 && _activeActionDownloadId is null
                 && CanApplyAction(_pendingIntentAction, fileName)
-                && MatchesExpectedFileName(_pendingIntentFileName, fileName))
+                && MatchesExpectedFileName(_pendingIntentFileName, fileName)
+                && MatchesExpectedDownloadRef(_pendingIntentDownloadRef, downloadUri))
             {
                 completionAction = _pendingIntentAction;
                 _pendingIntentExpiresAt = null;
                 _pendingIntentAction = DesktopDownloadedFileAction.None;
                 _pendingIntentFileName = null;
+                _pendingIntentDownloadRef = null;
                 _activeActionDownloadId = itemId;
             }
 
@@ -332,6 +338,7 @@ public sealed class DesktopDownloadCoordinator
             _pendingIntentExpiresAt = null;
             _pendingIntentAction = DesktopDownloadedFileAction.None;
             _pendingIntentFileName = null;
+            _pendingIntentDownloadRef = null;
         }
     }
 
@@ -369,6 +376,28 @@ public sealed class DesktopDownloadCoordinator
         }
 
         return fileName;
+    }
+
+    private static string? NormalizeExpectedDownloadRef(string? downloadRef)
+    {
+        var normalized = (downloadRef ?? string.Empty).Trim().Trim('/').ToLowerInvariant();
+        // Short fragments are not unique enough to bind an intent safely.
+        return normalized.Length >= 8 ? normalized : null;
+    }
+
+    private static bool MatchesExpectedDownloadRef(string? expectedDownloadRef, string? downloadUri)
+    {
+        if (expectedDownloadRef is null)
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(downloadUri))
+        {
+            return false;
+        }
+
+        return downloadUri.IndexOf(expectedDownloadRef, StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static bool MatchesExpectedFileName(string? expectedFileName, string downloadFileName)

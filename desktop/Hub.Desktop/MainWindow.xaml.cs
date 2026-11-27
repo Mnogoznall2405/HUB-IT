@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+﻿﻿﻿using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
@@ -1696,7 +1696,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         object? sender,
         DesktopPrepareDownloadedFileRequestedEventArgs e)
     {
-        e.Accepted = _downloads.RequestNextDownloadAction(e.Action, e.FileName)
+        e.Accepted = _downloads.RequestNextDownloadAction(e.Action, e.FileName, e.DownloadRef)
             == DesktopOpenIntentRequestResult.Accepted;
     }
 
@@ -1825,6 +1825,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         var item = _downloads.BeginDownload(
             operation.ResultFilePath,
             operation.Cancel,
+            downloadUri: operation.Uri,
             sourceWindowLabel: "Основное окно");
         if (item.CompletionAction == DesktopDownloadedFileAction.SaveAs)
         {

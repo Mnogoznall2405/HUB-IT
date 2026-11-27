@@ -82,6 +82,8 @@ export default function DocumentPreviewDialog({
   canDownloadPdf = false,
   originalLabel = 'Оригинал',
   pdfLabel = 'PDF-версия',
+  desktopOpenFileName = '',
+  desktopOpenDownloadRef = '',
 }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
@@ -121,8 +123,10 @@ export default function DocumentPreviewDialog({
     setRequestingDesktopOpen(true);
     setDesktopOpenMessage('');
     const result = await openOriginalWithDesktopApplication({
-      requestOpen: (action) => requestDesktopDownloadedFileAction(action),
+      requestOpen: (action, name, ref) => requestDesktopDownloadedFileAction(action, name, ref),
       onDownload: () => onDownloadOriginal?.(),
+      fileName: desktopOpenFileName || title,
+      downloadRef: desktopOpenDownloadRef,
     });
     setRequestingDesktopOpen(false);
     if (!result.accepted) {
