@@ -20,6 +20,8 @@ import {
   createEmptyAttachmentPreview,
   downloadBlobFile,
 } from '../../components/mail/mailMessageFileActions';
+import { canOpenInDesktopApplication } from '../../components/fileActions/FileActionsContextMenu';
+import { openOriginalWithDesktopApplication } from '../../components/documentPreview/desktopOfficeOpen';
 import { isSendingOptimisticThreadMessage } from './chatThreadMessages';
 
 export function revokeDocumentPreviewObjectUrl(current) {
@@ -93,9 +95,29 @@ export default function useChatPreviewController({
     if (!normalizedMessageId || !attachmentId) return;
 
     const mapped = mapChatAttachmentForPreview(attachment);
-    // Ordinary click always opens the built-in preview, in the browser and in
-    // HUB Desktop alike. Opening the original in the Windows application is a
-    // separate explicit action (attachment context menu / preview toolbar).
+    // Mail parity: inside HUB Desktop an office/pdf attachment opens in the
+    // associated Windows application directly instead of the in-app preview;
+    // the browser always opens the built-in preview. The intent is bound to
+    // the exact download through the canonical attachment URL, so a parallel
+    // or same-named download cannot steal it. Photos are excluded and keep
+    // the embedded preview in both environments.
+    if (canOpenInDesktopApplication(mapped.name)) {
+      const downloadRef = `/chat/messages/${encodeURIComponent(normalizedMessageId)}/attachments/${encodeURIComponent(attachmentId)}/file`;
+      const desktopOpen = await openOriginalWithDesktopApplication({
+        fileName: mapped.name,
+        downloadRef,
+        onDownload: () => {
+          const link = document.createElement('a');
+          link.href = downloadRef;
+          link.download = String(mapped.name || 'attachment.bin');
+          link.rel = 'noreferrer';
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+        },
+      });
+      if (desktopOpen.accepted) return;
+    }
 
     documentPreviewRequestRef.current?.abort();
     const requestController = new AbortController();

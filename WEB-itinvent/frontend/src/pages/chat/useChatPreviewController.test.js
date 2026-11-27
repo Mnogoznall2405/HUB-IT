@@ -11,6 +11,20 @@ vi.mock('../../api/chatAttachments', () => ({
   default: chatAttachmentsAPIMock,
 }));
 
+const desktopOpenMock = vi.hoisted(() => ({
+  openOriginalWithDesktopApplication: vi.fn(),
+  canOpenInDesktopApplication: vi.fn(() => false),
+}));
+
+vi.mock('../../components/documentPreview/desktopOfficeOpen', () => ({
+  openOriginalWithDesktopApplication: desktopOpenMock.openOriginalWithDesktopApplication,
+  getDesktopOfficeOpenLabel: () => 'Открыть в приложении',
+}));
+
+vi.mock('../../components/fileActions/FileActionsContextMenu', () => ({
+  canOpenInDesktopApplication: desktopOpenMock.canOpenInDesktopApplication,
+}));
+
 import useChatPreviewController, { revokeDocumentPreviewObjectUrl } from './useChatPreviewController';
 
 const createControllerArgs = () => ({
@@ -238,5 +252,47 @@ describe('useChatPreviewController file-photo identity in a mixed chat', () => {
     expect(preview.attachment.id).toBe('att-media');
     expect(preview.originalUrl).toContain('att-media');
     expect(preview.originalUrl).not.toContain('att-filephoto');
+  });
+});
+
+
+describe('desktop click behavior (mail parity)', () => {
+  it('opens an office attachment in the Windows application with exact binding', async () => {
+    desktopOpenMock.canOpenInDesktopApplication.mockReturnValue(true);
+    desktopOpenMock.openOriginalWithDesktopApplication.mockResolvedValue({ accepted: true, status: 'accepted' });
+    const clicks = [];
+    const realCreate = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag) => {
+      const el = realCreate(tag);
+      if (tag === 'a') vi.spyOn(el, 'click').mockImplementation(() => clicks.push(el.href));
+      return el;
+    });
+    const { result } = renderHook(() => useChatPreviewController(createControllerArgs()));
+
+    await act(async () => {
+      await result.current.openDocumentPreview('msg-1', { id: 'att-1', file_name: 'report.xlsx' });
+    });
+
+    expect(desktopOpenMock.openOriginalWithDesktopApplication).toHaveBeenCalledTimes(1);
+    const call = desktopOpenMock.openOriginalWithDesktopApplication.mock.calls[0][0];
+    expect(call.fileName).toBe('report.xlsx');
+    expect(call.downloadRef).toBe('/chat/messages/msg-1/attachments/att-1/file');
+    await act(async () => { call.onDownload(); });
+    expect(clicks.some((href) => href.includes('/chat/messages/msg-1/attachments/att-1/file'))).toBe(true);
+    expect(result.current.documentPreview?.open).not.toBe(true);
+    document.createElement.mockRestore();
+  });
+
+  it('keeps the embedded preview when the shell declines the open intent', async () => {
+    desktopOpenMock.canOpenInDesktopApplication.mockReturnValue(true);
+    desktopOpenMock.openOriginalWithDesktopApplication.mockResolvedValue({ accepted: false, status: 'busy' });
+    chatAttachmentsAPIMock.getAttachmentPreview.mockResolvedValue({ kind: 'pdf' });
+    const { result } = renderHook(() => useChatPreviewController(createControllerArgs()));
+
+    await act(async () => {
+      await result.current.openDocumentPreview('msg-1', { id: 'att-1', file_name: 'report.pdf', content_type: 'application/pdf' });
+    });
+
+    expect(result.current.documentPreview?.open).toBe(true);
   });
 });
