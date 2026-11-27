@@ -1,0 +1,19 @@
+{
+  "marks": {
+    "t0": 4650.399999856949,
+    "dockVisible": 118.30000019073486,
+    "firstEmojiDom": 118.40000009536743,
+    "firstEmojiSelectable": 118.40000009536743,
+    "interactive": 118.5,
+    "firstEmojiDecoded": 118.70000004768372
+  },
+  "summary": {
+    "FunctionCall": 63.6,
+    "UpdateLayoutTree": 13.3,
+    "Layout": 6.3,
+    "Paint": 6.3,
+    "PrePaint": 3.8,
+    "HitTest": 1.7,
+    "FireAnimationFrame": 0.5
+  }
+}

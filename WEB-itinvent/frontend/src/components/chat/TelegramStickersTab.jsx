@@ -59,6 +59,10 @@ import {
   writeStickerSuggestionsEnabled,
 } from './stickerSearchIndex';
 import {
+  getEmojiKeywordIndexVersion,
+  subscribeEmojiKeywordIndex,
+} from '../../lib/chat/emojiKeywordIndex';
+import {
   getFileActionsAnchorPosition,
   isFileActionsKeyboardShortcut,
 } from '../fileActions/FileActionsContextMenu';
@@ -222,6 +226,14 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
     [favoriteStickers],
   );
 
+  // Версия CLDR-словаря — триггер перечитывания индекса: lazy-чанк
+  // ключевых слов приезжает позже первой сборки, store перестраивает
+  // индекс с полным словарём (issue #82). Подписка доставляет обновление
+  // без лишнего keystroke пользователя.
+  const emojiKeywordsVersion = useSyncExternalStore(
+    subscribeEmojiKeywordIndex,
+    getEmojiKeywordIndexVersion,
+  );
   // Поиск по уже загруженным секциям: deferred-запрос не блокирует ввод.
   // Индекс строится лениво в store — один раз на смену данных и общий для
   // вкладки и подсказок (раньше каждая поверхность гоняла свою копию по
@@ -229,6 +241,7 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   const [searchQuery, setSearchQuery] = useState(() => persistedStickerSearchQuery);
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const isSearching = Boolean(normalizeStickerSearchQuery(deferredSearchQuery));
+  void emojiKeywordsVersion;
   const stickerSearchIndex = isSearching ? getStickerSearchIndex(scopeKey) : null;
   const searchResults = useMemo(
     () => searchStickerIndex(stickerSearchIndex, deferredSearchQuery),

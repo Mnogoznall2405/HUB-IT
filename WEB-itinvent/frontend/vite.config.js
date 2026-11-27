@@ -45,6 +45,7 @@ const NODE_TEST_FILES = [
   'src/lib/chat/chatThreadRenderWindow.test.js',
   'src/lib/chat/chatThreadScrollModel.test.js',
   'src/lib/chat/emojiImages.test.js',
+  'src/lib/chat/emojiKeywordIndex.test.js',
   'src/lib/desktopQuickRoutes.test.js',
   'src/lib/desktopShellStatus.test.js',
   'src/lib/documentPreviewKind.test.js',

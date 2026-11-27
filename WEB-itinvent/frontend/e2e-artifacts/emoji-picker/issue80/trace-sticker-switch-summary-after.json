@@ -1,0 +1,19 @@
+{
+  "marks": {
+    "t0": 2758.5999999046326,
+    "stickersTabSelected": 42.299999952316284,
+    "stickerScrollVisible": 103.60000014305115,
+    "firstStickerDom": 103.60000014305115,
+    "firstStickerPreview": 171.29999995231628,
+    "readyPreviewCount": 6
+  },
+  "summary": {
+    "FunctionCall": 180.8,
+    "Layout": 33.5,
+    "UpdateLayoutTree": 17.5,
+    "Paint": 16.8,
+    "PrePaint": 10,
+    "HitTest": 5.6,
+    "FireAnimationFrame": 4.7
+  }
+}

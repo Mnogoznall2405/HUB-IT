@@ -1,0 +1,21 @@
+{
+  "marks": {
+    "t0": 1287,
+    "dockVisible": 55.299999952316284,
+    "interactive": 84.29999995231628,
+    "firstEmojiDom": 150.89999985694885,
+    "firstEmojiSelectable": 296.5,
+    "firstEmojiDecoded": 298.09999990463257
+  },
+  "summary": {
+    "FunctionCall": 203.7,
+    "Layout": 32.1,
+    "UpdateLayoutTree": 24.7,
+    "Paint": 17.2,
+    "FireAnimationFrame": 10.3,
+    "PrePaint": 8.8,
+    "HitTest": 1.8,
+    "ParseHTML": 0.3,
+    "V8.GC_MC_CLEAR_FLUSHED_JS_FUNCTIONS": 0
+  }
+}

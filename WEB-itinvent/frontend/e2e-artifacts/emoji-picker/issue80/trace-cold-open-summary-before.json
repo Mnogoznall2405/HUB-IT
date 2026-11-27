@@ -1,0 +1,25 @@
+{
+  "marks": {
+    "t0": 1267,
+    "dockVisible": 80,
+    "interactive": 125.20000004768372,
+    "firstEmojiDom": 186.59999990463257,
+    "firstEmojiSelectable": 353.7000000476837,
+    "firstEmojiDecoded": 355.09999990463257
+  },
+  "summary": {
+    "FunctionCall": 225.8,
+    "Layout": 35.6,
+    "UpdateLayoutTree": 25.7,
+    "Paint": 18.7,
+    "BackgroundJSStreamManager::RunScriptStreamingTask": 11.3,
+    "FireAnimationFrame": 11.2,
+    "v8.parseOnBackground": 11.1,
+    "v8.parseOnBackgroundParsing": 11,
+    "PrePaint": 9.9,
+    "HitTest": 2.3,
+    "BackgroundJSStreamManager::TryStartStreamingTask": 0.5,
+    "ParseHTML": 0.3,
+    "V8.GC_MC_CLEAR_FLUSHED_JS_FUNCTIONS": 0
+  }
+}

@@ -1546,7 +1546,6 @@ export function ChatPageContent({
     threadMenuAnchor,
     messageMenuAnchor,
     composerMenuAnchor,
-    emojiAnchorEl,
     shareOpen,
     forwardOpen,
     fileDialogOpen,

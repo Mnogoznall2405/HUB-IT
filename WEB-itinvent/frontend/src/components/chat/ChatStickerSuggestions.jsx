@@ -24,6 +24,10 @@ import {
   rememberRecentSticker,
   subscribeChatStickerStore,
 } from '../../lib/chatStickerStore';
+import {
+  getEmojiKeywordIndexVersion,
+  subscribeEmojiKeywordIndex,
+} from '../../lib/chat/emojiKeywordIndex';
 import ChatStickerThumbnail from './ChatStickerThumbnail';
 import {
   collectStickerSuggestions,
@@ -85,13 +89,21 @@ const ChatStickerSuggestions = memo(forwardRef(function ChatStickerSuggestions({
     setActiveIndex(-1);
   }, [emojiToken]);
 
+  // Версия CLDR-словаря — второй (после dv) триггер пересчёта: lazy-чанк
+  // ключевых слов приезжает позже первой сборки индекса, и store
+  // перестраивает его с полным словарём (issue #82). Без подписки
+  // обновление доехало бы только со следующим keystroke пользователя.
+  const emojiKeywordsVersion = useSyncExternalStore(
+    subscribeEmojiKeywordIndex,
+    getEmojiKeywordIndexVersion,
+  );
   // Стабильный индекс из store: строится один раз на поколение данных и
   // разделяется с вкладкой. Работа на каждый токен — только дешёвый
   // lookup по готовому индексу. stickerDataVersion — триггер пересчёта
   // при смене данных scope.
   const searchIndex = useMemo(
     () => (emojiToken ? getStickerSearchIndex(scopeKey) : EMPTY_SEARCH_INDEX),
-    [emojiToken, scopeKey, stickerDataVersion],
+    [emojiToken, scopeKey, stickerDataVersion, emojiKeywordsVersion],
   );
   const suggestions = useMemo(
     () => collectStickerSuggestions(searchIndex, emojiToken, SUGGESTION_LIMIT),
