@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -23,7 +23,7 @@
     <SatelliteResourceLanguages>ru;en</SatelliteResourceLanguages>
     <AssemblyName>HUB.Desktop</AssemblyName>
     <RootNamespace>Hub.Desktop</RootNamespace>
-    <Version>0.1.51</Version>
+    <Version>0.1.52</Version>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'PerfBench'">
