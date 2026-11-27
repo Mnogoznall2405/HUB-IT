@@ -5,9 +5,14 @@ import InsertEmoticonRoundedIcon from '@mui/icons-material/InsertEmoticonRounded
 import StickyNote2RoundedIcon from '@mui/icons-material/StickyNote2Rounded';
 import TelegramStickersTab from './TelegramStickersTab';
 import { ChatPerfProbe } from './ChatPerfProbe';
-import { emojiImageUrl } from '../../lib/chat/emojiImages';
+import { ensureEmojiSpriteStyles, getSpriteAwareEmojiUrl } from '../../lib/chat/emojiSpriteAtlas';
 
-const getChatEmojiPickerUrl = (unified) => emojiImageUrl(unified);
+// Issue #89: эмодзи панели рисуются sprite-атласом (листы /emoji-atlas/*.png)
+// вместо ~180 отдельных PNG на холодное открытие. Стили инжектятся при оценке
+// этого lazy-модуля — гарантированно до монтирования picker'а.
+ensureEmojiSpriteStyles();
+
+const getChatEmojiPickerUrl = (unified) => getSpriteAwareEmojiUrl(unified);
 
 const LazyEmojiPicker = lazy(() => import('emoji-picker-react'));
 // memo на lazy-пикере: при ре-рендере панели (переключение вкладок,
@@ -126,6 +131,7 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
     <ChatPerfProbe id="chat-emoji-panel">
     <Box
       data-testid="chat-emoji-panel"
+      className="chat-emoji-sprite-scope"
       data-layout={desktopDocked ? 'desktop-docked' : 'compact'}
       sx={{
         width: '100%',
