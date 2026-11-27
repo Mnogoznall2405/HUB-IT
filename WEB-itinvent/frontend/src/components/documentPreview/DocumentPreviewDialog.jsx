@@ -49,9 +49,13 @@ const OfficeViewFrame = lazy(() => import('./OfficeViewFrame'));
 const CodeMirrorTextViewer = lazy(() => import('./CodeMirrorTextViewer'));
 const MarkdownFileViewer = lazy(() => import('./MarkdownFileViewer'));
 
+// Native text/markdown/csv kinds are intentionally absent here: the mail/chat
+// dialog renders them in its own native viewer branch (CodeMirror/Markdown/CSV
+// table). Routing them into DocumentPreviewDialog used to drop the text payload
+// and showed unsupported instead. MyFiles still renders them through
+// DocumentPreviewDialog directly with an explicit textPreview prop.
 const DOCUMENT_PREVIEW_KINDS = new Set([
   'pdf', 'office_pdf', 'office_excel', 'office_view',
-  'text', 'markdown', 'csv',
 ]);
 
 const surfaceFallback = (
