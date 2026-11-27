@@ -122,9 +122,26 @@ export default function DocumentPreviewDialog({
   const openOriginalInDesktopApplication = useCallback(async () => {
     setRequestingDesktopOpen(true);
     setDesktopOpenMessage('');
+    const normalizedRef = String(desktopOpenDownloadRef || '').trim();
     const result = await openOriginalWithDesktopApplication({
       requestOpen: (action, name, ref) => requestDesktopDownloadedFileAction(action, name, ref),
-      onDownload: () => onDownloadOriginal?.(),
+      onDownload: () => {
+        // Exact binding needs the shell to see the canonical attachment URL
+        // in the download. Blob-based downloads get random object URLs, so
+        // when the caller supplies the path we download it directly with an
+        // anchor, exactly like the chat context menu does.
+        if (normalizedRef.startsWith('/')) {
+          const link = document.createElement('a');
+          link.href = normalizedRef;
+          link.download = String(desktopOpenFileName || title || 'attachment.bin');
+          link.rel = 'noreferrer';
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          return undefined;
+        }
+        return onDownloadOriginal?.();
+      },
       fileName: desktopOpenFileName || title,
       downloadRef: desktopOpenDownloadRef,
     });

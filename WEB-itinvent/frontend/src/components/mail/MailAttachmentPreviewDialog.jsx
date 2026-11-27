@@ -42,6 +42,18 @@ export default function MailAttachmentPreviewDialog({
 }) {
   const theme = useTheme();
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
+  // Chat previews carry the attachment identity in downloadContext; the
+  // canonical download path doubles as the exact binding reference for the
+  // Desktop open action. Mail previews do not have it and keep file-name
+  // binding.
+  const desktopOpenDownloadRef = useMemo(() => {
+    const ctx = attachmentPreview?.downloadContext;
+    const messageId = String(ctx?.messageId || '').trim();
+    const attachmentId = String(ctx?.attachmentId || '').trim();
+    if (!messageId || !attachmentId) return '';
+    return `/chat/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/file`;
+  }, [attachmentPreview?.downloadContext]);
+
   const attachmentVisual = useMemo(
     () => getMailAttachmentVisual({ name: attachmentPreview.filename, content_type: attachmentPreview.contentType }),
     [attachmentPreview.contentType, attachmentPreview.filename],
@@ -66,6 +78,8 @@ export default function MailAttachmentPreviewDialog({
         error={attachmentPreview.error}
         onClose={onClose}
         onDownloadOriginal={onDownload}
+        desktopOpenFileName={attachmentPreview.filename || ''}
+        desktopOpenDownloadRef={desktopOpenDownloadRef}
         onDownloadPdf={onDownloadPreviewPdf}
         canDownloadOriginal={Boolean(attachmentPreview.blob || attachmentPreview.downloadContext)}
         canDownloadPdf={Boolean(attachmentPreview.previewBlob)}

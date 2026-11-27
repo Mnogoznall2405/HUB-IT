@@ -162,6 +162,45 @@ describe('DocumentPreviewDialog', () => {
     expect(desktopMocks.requestOpen).toHaveBeenCalledWith('open', 'report.pdf', '');
   });
 
+  it('downloads through the canonical URL when a download reference is provided', async () => {
+    setMobileMedia(false);
+    desktopMocks.native = true;
+    desktopMocks.requestOpen.mockResolvedValue({ accepted: true, status: 'accepted' });
+    const onDownloadOriginal = vi.fn();
+    const clicks = [];
+    const realCreate = document.createElement.bind(document);
+    vi.spyOn(document, 'createElement').mockImplementation((tag) => {
+      const el = realCreate(tag);
+      if (tag === 'a') {
+        vi.spyOn(el, 'click').mockImplementation(() => clicks.push(el.href));
+      }
+      return el;
+    });
+    render(
+      <ThemeProvider theme={theme}>
+        <DocumentPreviewDialog
+          open
+          title="report.docx"
+          kind="office_view"
+          onClose={vi.fn()}
+          onDownloadOriginal={onDownloadOriginal}
+          desktopOpenDownloadRef="/chat/messages/m1/attachments/a1/file"
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Открыть в приложении' }));
+    await waitFor(() => expect(clicks.length).toBe(1));
+    expect(clicks[0]).toContain('/chat/messages/m1/attachments/a1/file');
+    expect(onDownloadOriginal).not.toHaveBeenCalled();
+    expect(desktopMocks.requestOpen).toHaveBeenCalledWith(
+      'open',
+      'report.docx',
+      '/chat/messages/m1/attachments/a1/file',
+    );
+    document.createElement.mockRestore();
+  });
+
   it('labels the Desktop action as Word or Excel for Office files', () => {
     setMobileMedia(false);
     desktopMocks.native = true;
