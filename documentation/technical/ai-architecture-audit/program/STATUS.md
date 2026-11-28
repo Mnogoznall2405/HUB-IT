@@ -7,7 +7,7 @@
 | Область | Состояние | Доказательство / SHA |
 | --- | --- | --- |
 | Управляющий PR | PR #107, draft, documentation-only | ветка `docs/ai-assistant-a11-a24-roadmap` |
-| A11 Release Candidate | PR #105 обновлён результатами независимого ревью | head `0321938ed88545a4b35745785c6897c6c7f3b74e` |
+| A11 Release Candidate | PR #105 обновлён результатами независимого ревью и curated benchmark pack | head `2d5b37c534b663cc5acd6b89f7d89c372155d205` |
 | A11 verdict | **BLOCKED / NO-GO для production merge** | нет full frozen eval на exact final SHA; нет подтверждённого бюджета; не решены routing/watchdog production flags |
 | A12+ | Не начаты как implementation PR | можно готовить test plans и независимые измерения, но не расширять runtime до closure A11 или отдельного согласованного slice |
 
@@ -32,19 +32,28 @@ Commit `0321938e`:
 - sticker migration test проверяет ancestry, а не pinned head;
 - добавлен `AI_A11_RELEASE_EVIDENCE.md`.
 
+Commit `2d5b37c5`:
+
+- интегрирован curated benchmark pack из PR #74 без raw artifacts/scratch scripts: `a9_real_run.py`, `bench_seed.py`, `bench_corpus_gen.py`, frozen corpus `bench_intel_corpus.json`;
+- `--env` больше не имеет implicit default на соседний checkout; provider/test-contour settings загружаются только из явно указанного файла;
+- добавлен `--seed-only` режим без платных/provider calls;
+- aggregate включает заранее определённые quality rates (`pass_rate_all_scenarios`, `pass_rate_scored_scenarios`);
+- добавлен `A11_BENCHMARK_PACK.md` с hash manifest и ограничениями запуска;
+- локальная seed-only проверка прошла: 205 сценариев, `provider_calls=0`, `env_keys_loaded=0`; `py_compile` PASS.
+
 ## Активные блокеры A11 GO
 
-1. **BENCH-BLOCKER:** frozen dev/holdout benchmark из 205 сценариев не выполнен на exact final SHA `0321938e` или новее. Прежний measurement относится к PR #74 head `93f6a770`, не к PR #105.
+1. **BENCH-BLOCKER:** frozen dev/holdout benchmark из 205 сценариев не выполнен на exact final SHA `2d5b37c5` или новее. Прежний measurement относится к PR #74 head `93f6a770`, не к PR #105.
 2. **BUDGET-BLOCKER:** нет подтверждённого численного бюджета и провайдера для платного LLM benchmark. Нельзя запускать полный платный прогон без этого согласования.
 3. **CONFIG-BLOCKER:** production decision по `AI_JEV_ROUTING`, CHAT/READ/ACT ceilings, `AI_READ_FAST_PATH_ENABLED`, `AI_COMPACT_SPECS_ENABLED`, `AI_RUN_RESULT_REUSE_ENABLED` не зафиксировано. По прежним измерениям fast path разрушал качество и должен оставаться OFF до новых доказательств.
 4. **WATCHDOG-BLOCKER:** automatic recovery crashed running runs существует и покрыт PG-тестами, но не включён штатно в PM2/ecosystem. Требуется доказательство process-level kill-after-claim или осознанное решение владельца.
-5. **EVIDENCE-GAP:** нужно интегрировать обновлённый benchmark harness/corpus из PR #74, сверить corpus version/hash (`a11-v12` в файле против `v13` в отчёте) и сохранить воспроизводимые команды.
+5. **EXTERNAL-CONTOUR-BLOCKER:** external-dependent сценарии (ITINVENT SQL, Exchange, AD, 1C) не имеют approved isolated contour. Они должны быть запущены только в approved isolated contour или честно оставаться BLOCKED; production GO при unresolved critical BLOCKED невозможен.
 
 ## Ближайший разрешённый шаг
 
 1. В PR #107 завести полный program register (этот каталог) и держать его актуальным.
-2. В PR #105 подготовить воспроизводимый benchmark pack без raw artifacts и secrets: harness, corpus, seed, commands, hash manifest.
-3. Сформировать точную смету полного dev+holdout run на exact SHA и передать владельцу на approval бюджета.
+2. Сформировать точную смету полного dev+holdout run на exact SHA `2d5b37c5` и передать владельцу на approval бюджета.
+3. Проверить CI/review state PR #105 после push benchmark pack.
 4. Параллельно, без платных вызовов, выполнить независимые локальные задачи: process-level worker recovery proof, FTS baseline для OSS-01, Promptfoo pilot design для OSS-02.
 
 ## Запрещено сейчас

@@ -81,7 +81,7 @@ pytest -q tests/test_ai_bot_access.py tests/test_ai_manager_observability_redact
 
 ## B-005 — Historical PR #74 full measurement, not valid for PR #105 GO
 
-**SHA:** `93f6a770` (PR #74), corpus reported as v13 sha `0fb9a1033758`; artifact file in tree self-identifies as `a11-v12`, поэтому перед reuse нужно сверить происхождение/hash.
+**SHA:** `93f6a770` (PR #74), corpus hash `0fb9a10337585f13afa0635095a3f20e932f1aa20c2bc245489c42c777658841`. Reconciliation: file metadata still says `a11-v12`, но exact SHA256 совпадает с hash, который отчёт называл v13; файл не редактируется ради metadata version, чтобы не разрушить сравнимость.
 
 **Artifacts in PR #74 only:** `real_run_fin2_dev.json`, `real_run_fin2_holdout.json`, control artifacts. Не переносить raw artifacts wholesale в release PR.
 
@@ -103,7 +103,7 @@ pytest -q tests/test_ai_bot_access.py tests/test_ai_manager_observability_redact
 **Planned immutable configuration draft:**
 
 - exact SHA: final PR #105 head after all code/harness changes;
-- corpus: frozen 205 scenarios, dev=140, holdout=65; exact file/hash to be fixed after corpus version reconciliation;
+- corpus: frozen 205 scenarios, dev=140, holdout=65, sha256 `0fb9a10337585f13afa0635095a3f20e932f1aa20c2bc245489c42c777658841`;
 - split order: holdout first if budget is constrained, then dev; no peeking-driven changes between measurements;
 - `AI_READ_FAST_PATH_ENABLED=0`;
 - `AI_RUN_RESULT_REUSE_ENABLED=0`;
@@ -121,6 +121,26 @@ pytest -q tests/test_ai_bot_access.py tests/test_ai_manager_observability_redact
 - tokens/cost/LLM calls;
 - wall latency distribution;
 - anomalies and blocked/external-system classification.
+
+## B-006a — Benchmark pack local validation, no provider calls
+
+**SHA:** `0321938ed88545a4b35745785c6897c6c7f3b74e` before commit `2d5b37c5`; harness/corpus content corresponds to `2d5b37c5`.
+
+**Commands:**
+
+```powershell
+python documentation\technical\ai-architecture-audit\a9-artifacts\a9_real_run.py `
+  --label seedcheck --seed --seed-only --out .codex_tmp\a11_seedcheck.json
+
+python -m py_compile `
+  documentation\technical\ai-architecture-audit\a9-artifacts\a9_real_run.py `
+  documentation\technical\ai-architecture-audit\a9-artifacts\bench_seed.py `
+  documentation\technical\ai-architecture-audit\a9-artifacts\bench_corpus_gen.py
+```
+
+**Result:** PASS. Manifest reports 205 scenarios, `provider_calls=0`, `env_keys_loaded=0`, corpus sha256 `0fb9a10337585f13afa0635095a3f20e932f1aa20c2bc245489c42c777658841`; py_compile PASS. Validation uses disposable sqlite only and no secrets.
+
+**Limitations:** не LLM measurement; не проверяет external systems.
 
 ## B-007 — PostgreSQL FTS baseline for OSS-01/A14
 
