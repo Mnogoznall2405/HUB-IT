@@ -9,7 +9,7 @@
 | Управляющий PR | PR #107, draft, documentation-only | ветка `docs/ai-assistant-a11-a24-roadmap` |
 | A11 Release Candidate | PR #105 обновлён review fixes, benchmark pack, recovery proof и characterization fix | head `cae317fd` |
 | A11 verdict | **BLOCKED / NO-GO для production merge** | нет full frozen eval на exact final SHA; нет подтверждённого бюджета; не решены routing/watchdog production flags |
-| A14 prototype | Dependent thematic branch `feat/a14-kb-fts-retrieval` pushed, base A11 `cae317fd` | head `d7eb6f8f`; ACL-aware hybrid FTS/pg_trgm prototype, migration reserve `20261129_0187`; не merge-ready до independent review и A11 closure |
+| A14 prototype | Dependent thematic branch `feat/a14-kb-fts-retrieval` pushed, base A11 `cae317fd` | head `530a2463`; hardened ACL-aware hybrid FTS/pg_trgm prototype behind `AI_KB_PG_HYBRID_FTS_ENABLED=0` default; не merge-ready до independent review и A11 closure |
 | A12/A13/A15+ | Implementation PR не начаты | независимый non-paid OSS-01 baseline завершён; остальные этапы только design/eval preparation |
 
 ## Последние подтверждённые проверки A11
@@ -44,18 +44,18 @@ Commit `2d5b37c5`:
 
 ## Независимый A14 prototype — текущее доказательство
 
-Ветка `feat/a14-kb-fts-retrieval`, head `d7eb6f8f`, dependent on A11 `cae317fd`:
+Ветка `feat/a14-kb-fts-retrieval`, head `530a2463`, dependent on A11 `cae317fd`:
 
-- реализован staged PostgreSQL retrieval: strict Russian FTS → bounded OR Russian FTS с token coverage → pg_trgm per-token fallback;
-- ACL перенесён в SQL до `LIMIT`; Python fallback стал fail-closed для omitted `current_user` (только global chunks);
-- template candidates тоже используют PostgreSQL path вместо unconditional Python scan;
-- migration `20261129_0187` добавляет `ix_app_ai_kb_chunks_fts_russian` и `ix_app_ai_kb_chunks_trgm_lower`; зарегистрирована как dependent reserve после `20261128_0186`;
-- `tests/test_ai_kb_retrieval.py` — 25 passed;
-- `tests/test_ai_kb_retrieval_pg.py` — 4 passed на isolated PostgreSQL (morphology, typo, ACL-before-LIMIT, private/department/manager, template);
-- migration rehearsal на isolated PostgreSQL — PASS: fresh/repeat scope=all, scope=app, scope=chat, `0186 -> 0187 -> downgrade 0186 -> re-upgrade`;
-- broad AI suite на ветке — 1023 passed, 27 skipped, 2 failed в sandbox packaging tests (`shared.llm.json_stream` missing in copied artifact). Эти failures находятся вне затронутых retrieval файлов и требуют отдельной characterization, но не должны скрываться.
+- staged PostgreSQL retrieval: strict Russian FTS → exact identifier constraints → bounded Boolean Russian FTS coverage → pg_trgm per-token fallback; Python scanner остаётся fallback и используется для template candidates ради сохранения integer auto-send score contract;
+- ACL перенесён в SQL до `LIMIT` и повторно проверяется перед payload construction; omitted `current_user` fail-closed; department membership вычисляется один раз на retrieval;
+- feature flag `AI_KB_PG_HYBRID_FTS_ENABLED` default `0`: PostgreSQL path dark/off даже на PostgreSQL;
+- migration `20261129_0187` добавляет exact-expression indexes `ix_app_ai_kb_chunks_fts_russian` и `ix_app_ai_kb_chunks_trgm_lower`; rehearsal на final migration content PASS (`a14mig2cea6fdc66`, 14.4s), включая downgrade/re-upgrade;
+- combined focused gate `test_ai_kb_retrieval.py + test_ai_kb_retrieval_pg.py + test_ai_new_tools.py`: **67 passed**;
+- fixed synthetic benchmark на 1007 rows/9 cases/9 repeats: PostgreSQL hybrid Hit@1/Hit@3 **1.0**, zero false-positive negative control, avg **19.679 ms**; Python fallback Hit@1/Hit@3 **0.75**, avg **24.004 ms**;
+- runtime plans используют FTS GIN index для strict (**0.758 ms**) и bounded Boolean coverage (**1.89 ms**); trigram `%>` на tiny table planner всё ещё выбирает seq scan (**49.647 ms**) although forced plan uses trigram GIN (**0.523 ms**); exact identifier lookup также seq scan (**15.82 ms**);
+- stale-index ACL/window и authoritative KB revalidation remain production-GO security blockers; A14 не закрывает ADD-AI-02.
 
-Это prototype evidence, не production GO. Нужны independent review, larger fixed golden corpus, exact inventory controls, EXPLAIN на production-like volume и отдельное решение о stacked/dependent PR после A11.
+Это hardened prototype evidence, не production GO. Нужны post-hardening independent review, larger production-like volume/EXPLAIN evidence, planner strategy для trigram/exact identifiers и отдельное решение о stacked/dependent PR после A11.
 
 ## Активные блокеры A11 GO
 

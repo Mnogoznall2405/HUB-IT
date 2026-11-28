@@ -42,7 +42,7 @@
 | A14-001 | P0 | PG FTS baseline: `'simple'` vs `'russian'`, AND/OR fallback, ACL до LIMIT, pg_trgm | synthetic isolated PG baseline завершён; hybrid Russian FTS + controlled fallback стал leading hypothesis; см. `experiments/FTS_BASELINE_REPORT.md` | DONE as research baseline, не production proof | спроектировать ACL-aware implementation experiment; не merge runtime без differential evidence |
 | A14-002 | P1 | Vector/hybrid pilot FastEmbed+pgvector | только если improved FTS недостаточен | DEFERRED | после implementation-grade A14 FTS evidence |
 | A14-003 | P1 | Hybrid rerank bge-reranker-v2-m3 | только после reproducible retrieval baseline | DEFERRED | после A14-002 |
-| A14-004 | P0 | ACL-aware PostgreSQL FTS retrieval design/prototype | prototype реализован в dependent branch `feat/a14-kb-fts-retrieval` head `d7eb6f8f`; unit/PG/migration gates passed locally | IN_PROGRESS / REVIEW | independent review; larger fixed golden corpus; exact inventory controls; EXPLAIN на production-like volume; не merge до A11 closure/отдельного coordination decision |
+| A14-004 | P0 | ACL-aware PostgreSQL FTS retrieval design/prototype | prototype реализован в dependent branch `feat/a14-kb-fts-retrieval` head `d7eb6f8f`; unit/PG/migration gates passed locally | IN_PROGRESS / REVIEW | post-hardening independent review; production-like volume EXPLAIN; trigram/exact planner strategy; authoritative ACL revalidation; не merge до A11 closure/отдельного coordination decision |
 
 ## A15–A24 — зарегистрированные тематические этапы
 

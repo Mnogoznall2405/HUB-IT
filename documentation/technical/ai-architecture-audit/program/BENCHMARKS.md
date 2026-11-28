@@ -223,14 +223,15 @@ Findings:
 
 **Status:** LOCAL PROTOTYPE GATE PASSED; not production proof.
 
-Branch: `feat/a14-kb-fts-retrieval` head `d7eb6f8f`, dependent on A11 `cae317fd`.
+Branch: `feat/a14-kb-fts-retrieval` head `530a2463`, dependent on A11 `cae317fd`.
 
 Executed local/non-paid checks:
 
-1. `tests/test_ai_kb_retrieval.py` — **25 passed**.
-2. `tests/test_ai_kb_retrieval_pg.py` — **4 passed** on isolated PostgreSQL: Russian morphology, trigram typo fallback, ACL-before-LIMIT, private owner visibility, department/manager visibility, template retrieval.
-3. Migration rehearsal on isolated PostgreSQL — **PASS** for fresh/repeat `scope=all`, `scope=app`, `scope=chat`, and `0186 -> 0187 -> downgrade 0186 -> re-upgrade`.
-4. Broad AI suite — **1023 passed, 27 skipped, 2 failed**. The two failures are sandbox packaging tests complaining that copied release artifacts lack `shared.llm.json_stream`; they are outside the retrieval diff and require separate characterization rather than being hidden or attributed to A14 without evidence.
+1. Combined focused gate `tests/test_ai_kb_retrieval.py tests/test_ai_kb_retrieval_pg.py tests/test_ai_new_tools.py` — **67 passed**.
+2. Migration rehearsal against final migration content on isolated PostgreSQL — **PASS** for fresh/repeat `scope=all`, `scope=app`, `scope=chat`, and `0186 -> 0187 -> downgrade 0186 -> re-upgrade` (`a14mig2cea6fdc66`, 14.4s).
+3. Fixed synthetic implementation benchmark, 1007 rows, 9 predeclared cases, 9 repeats/case — PostgreSQL hybrid **Hit@1/Hit@3 1.0**, zero false-positive negative control, avg **19.679 ms**; Python fallback **Hit@1/Hit@3 0.75**, avg **24.004 ms**.
+4. Runtime plans in `a14_retrieval_bench_result.json` used FTS GIN without sequential scan for strict FTS (**0.758 ms**) and bounded Boolean coverage (**1.89 ms**). Trigram `%>` still chose sequential scan on the tiny table (**49.647 ms**), while forced no-seqscan proof used the trigram GIN in **0.523 ms**; exact identifiers also sequential scanned (**15.82 ms**).
+5. Earlier broad AI suite — **1056 passed, 2 failed**; both failures are the previously documented sandbox packaging issue (`shared.llm.json_stream`) already present outside the retrieval diff.
 
-**Limits:** no larger fixed golden corpus yet; no production-like volume EXPLAIN yet; no exact inventory-number differential campaign yet; independent review still pending. These results only support continued prototype review, not merge/GO.
+**Limits:** small synthetic corpus only; no production-like volume EXPLAIN yet; trigram/exact planner strategy unresolved; stale-index authoritative ACL revalidation remains a production-GO security blocker; post-hardening independent review still pending. These results only support continued prototype review, not merge/GO.
 

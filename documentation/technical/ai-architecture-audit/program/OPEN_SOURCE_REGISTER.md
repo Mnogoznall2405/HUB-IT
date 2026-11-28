@@ -15,7 +15,7 @@
 
 **Upstream:** PostgreSQL documentation FTS и pg_trgm.
 
-**Статус:** BASELINE DONE; dependent implementation PROTOTYPE pushed in `feat/a14-kb-fts-retrieval` head `d7eb6f8f`. Первый независимый non-paid эксперимент завершён на synthetic isolated PostgreSQL; prototype ожидает independent review и не merge-ready.
+**Статус:** BASELINE DONE; dependent implementation PROTOTYPE pushed in `feat/a14-kb-fts-retrieval` head `530a2463`. Hardened local gates and small fixed benchmark passed; post-hardening independent review, production-like planner evidence и authoritative ACL revalidation остаются обязательными; prototype не merge-ready.
 
 **Реальная проблема:** русский поиск KB должен работать по смыслу/словоформам/опечаткам, не только точному совпадению; старая A2 задача не считается закрытой без PG-backed proof. Дополнительно текущий A11 retrieval разделён: Python fallback сканирует все chunks, а существующий PostgreSQL FTS adapter использует `'simple'` и применяет ACL после `LIMIT`.
 
