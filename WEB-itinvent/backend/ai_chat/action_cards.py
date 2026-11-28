@@ -14,7 +14,7 @@ from sqlalchemy import select, update
 
 from backend.ai_chat.artifact_generator import GeneratedFileError, build_generated_uploads, normalize_generated_file_specs
 from backend.appdb.db import app_session
-from backend.appdb.models import AppAiPendingAction, AppMailSendIdempotency
+from backend.appdb.models import AppAiBot, AppAiBotRun, AppAiPendingAction, AppMailSendIdempotency
 from backend.database import queries
 from backend.database.equipment_db import invalidate_equipment_cache
 from backend.services.authorization_service import (
@@ -70,6 +70,18 @@ ACTION_WORKS_TYPES = frozenset(
         ACTION_WORKS_BATTERY,
         ACTION_WORKS_COMPONENT,
         ACTION_WORKS_PC_CLEANING,
+    }
+)
+# Action types whose execution writes into a specific ITINVENT database. They
+# must re-validate the draft database scope at confirm time (A11 §3): the
+# catalog, the user's assignment or the bot multi-db targets may have changed
+# between draft creation and confirm.
+DB_SCOPED_ACTION_TYPES = frozenset(
+    {
+        ACTION_TRANSFER,
+        ACTION_CONSUMABLE_CONSUME,
+        ACTION_CONSUMABLE_QTY,
+        *ACTION_WORKS_TYPES,
     }
 )
 
@@ -1551,7 +1563,7 @@ def build_works_draft(
     )
 
 
-def _execute_works_action(*, action_type: str, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+def _execute_works_action(*, action_type: str, payload: dict[str, Any], database_id: str | None = None, current_user: Any) -> dict[str, Any]:
     _require_permission(current_user, PERM_DATABASE_WRITE)
     from backend.json_db.works import WorksManager
 
@@ -1560,7 +1572,10 @@ def _execute_works_action(*, action_type: str, payload: dict[str, Any], current_
     inv_no = _normalize_text(payload.get("inv_no"))
     common = {
         "inv_no": inv_no or None,
-        "db_name": _normalize_text(payload.get("db_name")) or None,
+        # Canonical scope is the confirm-validated row.database_id passed by
+        # confirm_action; payload["db_name"] is only a legacy fallback for
+        # pre-canonical works cards.
+        "db_name": _normalize_text(database_id) or _normalize_text(payload.get("db_name")) or None,
         "branch": _normalize_text(payload.get("branch")),
         "location": _normalize_text(payload.get("location")),
         "additional_data": {"comment": _normalize_text(payload.get("comment"))} if _normalize_text(payload.get("comment")) else None,
@@ -2270,6 +2285,109 @@ def _execute_network_wol(*, payload: dict[str, Any], current_user: Any) -> dict[
             "broadcast_ip": args.broadcast_ip, "message": "WOL-пакет отправлен"}
 
 
+def _revalidate_action_database_scope(
+    *,
+    session,
+    row: AppAiPendingAction,
+    database_id: str,
+    current_user: Any,
+) -> str | None:
+    """Re-check the draft database scope at confirm time (A11 §3).
+
+    The catalog, the user's database assignment or the bot multi-db targets may
+    have changed between draft creation and confirm. Returns a user-facing
+    error text when the scope is no longer valid, or ``None`` when execution
+    may continue. The check mirrors the draft-time resolution semantics:
+    non-admin and single-db admins may only execute in their current effective
+    database; admin_multi_db bots authorize against their target list.
+    """
+    from backend.ai_chat.tools.context import (
+        AI_TOOL_MULTI_DB_MODE_ADMIN,
+        get_available_database_options,
+        normalize_database_id,
+        normalize_tool_settings,
+        resolve_effective_database_id,
+    )
+
+    normalized_database_id = normalize_database_id(database_id)
+    if normalized_database_id is None:
+        return (
+            f"База данных «{database_id}» недоступна или удалена из каталога. "
+            "Создайте новое действие в актуальной базе."
+        )
+
+    user_id_raw = _user_attr(current_user, "id", None)
+    try:
+        user_id = int(user_id_raw or 0)
+    except (TypeError, ValueError):
+        user_id = 0
+
+    role = _normalize_text(_user_attr(current_user, "role"), "viewer").lower() or "viewer"
+    # Built from the raw attributes on purpose: ``_user_dict()`` drops
+    # ``assigned_database``/``telegram_id``, which the effective-database
+    # resolution depends on.
+    user_payload = {
+        "id": user_id,
+        "role": role,
+        "assigned_database": _user_attr(current_user, "assigned_database", None),
+        "telegram_id": _user_attr(current_user, "telegram_id", None),
+    }
+
+    effective_database_id = resolve_effective_database_id(
+        user_payload=user_payload,
+        explicit_database_id=None,
+    )
+
+    def _scope_mismatch(reason: str) -> str:
+        effective_label = effective_database_id or "не выбрана"
+        return (
+            f"{reason}: действие подготовлено для базы «{normalized_database_id}», "
+            f"текущая effective database — «{effective_label}». "
+            "Создайте новое действие."
+        )
+
+    if role != "admin":
+        if not effective_database_id or normalized_database_id != effective_database_id:
+            return _scope_mismatch("Назначение базы данных пользователя изменилось")
+        return None
+
+    # Admin: restore the bot multi-db authorization context from the original run.
+    run_id = _normalize_text(getattr(row, "run_id", None))
+    run = session.get(AppAiBotRun, run_id) if run_id else None
+    bot = None
+    if run is not None and _normalize_text(getattr(run, "bot_id", None)):
+        bot = session.get(AppAiBot, _normalize_text(run.bot_id))
+
+    if bot is not None:
+        tool_settings = normalize_tool_settings(_json_loads(getattr(bot, "tool_settings_json", "{}"), {}) or {})
+        if tool_settings.get("multi_db_mode") == AI_TOOL_MULTI_DB_MODE_ADMIN:
+            targets = [
+                _normalize_text(item)
+                for item in (tool_settings.get("allowed_databases") or [])
+                if _normalize_text(item)
+            ]
+            if not targets:
+                targets = [
+                    _normalize_text(item.get("id"))
+                    for item in get_available_database_options()
+                    if isinstance(item, dict) and _normalize_text(item.get("id"))
+                ]
+
+            # The fan-out cap is intentionally not applied here: it limits query
+            # fan-out/performance, not the authorization scope of admin_multi_db.
+            if normalized_database_id not in targets:
+                return (
+                    f"База данных «{normalized_database_id}» больше не входит в разрешённые "
+                    "targets этого AI-агента. Создайте новое действие."
+                )
+            return None
+
+    # Single-db bot, deleted/inaccessible bot or missing run: conservative fallback.
+    if not effective_database_id or normalized_database_id != effective_database_id:
+        return _scope_mismatch("Текущая база данных не совпадает с базой действия")
+    return None
+
+
 def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     normalized_action_id = _normalize_text(action_id)
     current_user_id = int(_user_attr(current_user, "id", 0) or 0)
@@ -2318,13 +2436,32 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
         row = session.get(AppAiPendingAction, normalized_action_id)
 
     payload = _json_loads(row.payload_json, {}) or {}
-    database_id = _normalize_text(row.database_id)
-    if (
-        row.action_type in {ACTION_TRANSFER, ACTION_CONSUMABLE_CONSUME, ACTION_CONSUMABLE_QTY}
-        or row.action_type in ACTION_WORKS_TYPES
-    ) and not database_id:
-        error = ValueError("Action database is not resolved")
-        result = {"success": False, "message": str(error)}
+    row_database_id = _normalize_text(row.database_id)
+    database_id = row_database_id
+
+    # Canonical scope is row.database_id. payload["db_name"] is only a legacy
+    # fallback for pre-canonical works cards.
+    if row.action_type in ACTION_WORKS_TYPES:
+        database_id = row_database_id or _normalize_text(payload.get("db_name"))
+
+    # A11 §3: confirm-time database revalidation. This runs after the CAS claim
+    # but before any SQL/JSON side effect; a refusal lands in the controlled
+    # ``failed`` outcome below, never in a partial write.
+    database_scope_error = None
+    if row.action_type in DB_SCOPED_ACTION_TYPES:
+        if not database_id:
+            database_scope_error = "Action database is not resolved"
+        else:
+            with app_session() as scope_session:
+                database_scope_error = _revalidate_action_database_scope(
+                    session=scope_session,
+                    row=row,
+                    database_id=database_id,
+                    current_user=current_user,
+                )
+
+    if database_scope_error:
+        result = {"success": False, "message": database_scope_error}
     else:
         # A1: SQL mutations executed from AI action cards get a scoped driver
         # statement timeout so a hung ITINVENT write cannot block the request.
@@ -2378,6 +2515,7 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
                 result = _execute_works_action(
                     action_type=row.action_type,
                     payload=payload,
+                    database_id=database_id,
                     current_user=current_user,
                 )
             elif row.action_type == ACTION_CHAT_MESSAGE_SEND:

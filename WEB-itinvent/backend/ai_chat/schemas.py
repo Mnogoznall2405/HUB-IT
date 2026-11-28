@@ -40,6 +40,7 @@ class AiBotAdminResponse(AiBotSummaryResponse):
     required_permission: str = "chat.ai.use"
     use_personal_memory: bool = True
     openrouter_configured: bool = False
+    emergency_disabled_at: Optional[str] = None
     updated_at: Optional[str] = None
     latest_run_status: Optional[str] = None
     latest_run_error: Optional[str] = None
@@ -83,6 +84,7 @@ class AiBotUpdateRequest(BaseModel):
     enabled_tools: Optional[list[str]] = None
     tool_settings: Optional[dict[str, Any]] = None
     allow_file_input: Optional[bool] = None
+    emergency_disabled: Optional[bool] = None
     allow_generated_artifacts: Optional[bool] = None
     allow_kb_document_delivery: Optional[bool] = None
     surface: Optional[Literal["corporate", "general", "sandbox"]] = None

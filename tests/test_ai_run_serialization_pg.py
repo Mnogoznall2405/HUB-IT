@@ -154,7 +154,7 @@ def test_pg_unique_index_exists_and_enforces(svc):
                 "VALUES ('r2x', 'agent', 'conv', 2, 'm2', 'running', '{}', '{}', '{}', now(), now())"
             ))
     orig = getattr(err.value, "orig", None)
-    assert getattr(orig, "sqlstate", "") == "23505", err.value
+    assert (getattr(orig, "sqlstate", "") or getattr(orig, "pgcode", "")) == "23505", err.value
     # A running row for a DIFFERENT conversation is unaffected.
     with svc.session() as db:
         db.add(AppAiBotConversation(bot_id="agent", user_id=2, conversation_id="conv2"))

@@ -8,6 +8,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 _ROOT = Path(__file__).resolve().parents[1]
 for _p in (str(_ROOT), str(_ROOT / "WEB-itinvent")):
@@ -168,6 +170,37 @@ def test_me_files_search_uses_own_user_id(monkeypatch):
     result = self_service.MyFilesSearchTool().execute(context=_ctx(), args=self_service.MyFilesSearchArgs(query="отчёт"))
     assert captured == {"user_id": 7, "query": "отчёт"}
     assert result.data["items"][0]["file_id"] == "f1"
+
+
+def test_me_files_search_empty_query_lists_all(monkeypatch):
+    """A11 c3 (doc_10/ctx_08): «выгрузи мои файлы» is a legitimate list-all
+    request, but the schema demanded query min_length=2 — the model could not
+    express 'no filter', the call died in validation and the expected-tool
+    error capped correctness at PARTIAL even though the underlying service
+    accepts an empty query fine."""
+    captured = {}
+    monkeypatch.setattr(
+        my_files_module.my_files_service,
+        "list_files",
+        lambda **kw: captured.update(kw) or {"items": [
+            {"id": "f1", "original_file_name": "a.xlsx", "folder_name": "", "original_size_bytes": 1, "status": "ready"},
+            {"id": "f2", "original_file_name": "b.pdf", "folder_name": "", "original_size_bytes": 2, "status": "ready"},
+        ]},
+    )
+    # omitted query entirely
+    result = self_service.MyFilesSearchTool().execute(context=_ctx(), args=self_service.MyFilesSearchArgs())
+    assert result.ok is True
+    assert captured["query"] == ""
+    assert len(result.data["items"]) == 2
+    # explicit empty string behaves the same
+    captured.clear()
+    result = self_service.MyFilesSearchTool().execute(context=_ctx(), args=self_service.MyFilesSearchArgs(query=""))
+    assert result.ok is True
+    assert captured["query"] == ""
+    # single-char garbage is still rejected by the schema
+    import pydantic
+    with pytest.raises(pydantic.ValidationError):
+        self_service.MyFilesSearchArgs(query="а")
 
 
 def test_me_files_attach_checks_owner_and_size(monkeypatch):

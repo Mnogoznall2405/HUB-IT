@@ -73,7 +73,16 @@ class PeopleSearchArgs(BaseModel):
     query: Optional[str] = Field(default=None, max_length=200, validation_alias=AliasChoices("query", "q"), description="Surname/name, position, phone or e-mail")
     department: Optional[str] = Field(default=None, max_length=200, description="Exact department name to filter by")
     absent_only: bool = Field(default=False, description="Only people who are absent now (vacation, sick leave, trip)")
-    limit: int = Field(default=10, ge=1, le=MAX_PEOPLE)
+    # a11-final: no `le` bound — models routinely pass limit=50/100 for "show
+    # all" requests; a validation error there is pure friction (one wasted
+    # round-trip per run). Accept any positive value and clamp to MAX_PEOPLE
+    # inside execute; offset pagination stays the way to reach the rest.
+    limit: int = Field(default=10, ge=1)
+    # cpx_22: pagination was unreachable — the service supports offset but the
+    # schema forbade it, so "show ALL leaders" hard-failed with validation
+    # errors instead of paging. limit stays small (LLM context economy);
+    # offset makes the rest reachable in follow-up calls.
+    offset: int = Field(default=0, ge=0, description="Skip this many matches for pagination (use with the same query when the user needs rows beyond the limit)")
 
     @field_validator("query", "department", mode="before")
     @classmethod
@@ -96,7 +105,9 @@ class PeopleSearchTool(AiTool):
         "Company phone book (1C ZUP address book): find colleagues by name, position, phone or e-mail and get "
         "position, department, office room, work phones/e-mails and current absence (vacation/sick leave with "
         "return date). Use for 'телефон Петрова', 'кто бухгалтер по зарплате', 'Иванова в отпуске?', "
-        "'кто отсутствует в отделе продаж' (department + absent_only)."
+        "'кто отсутствует в отделе продаж' (department + absent_only). "
+        "ARGUMENT RULE: you MUST always pass the person's name/surname from the user's request in the 'query' "
+        "argument, e.g. {\"query\": \"Петров\"} — never call this tool with empty arguments."
     )
     input_model = PeopleSearchArgs
     stage = "checking_chat"
@@ -105,14 +116,21 @@ class PeopleSearchTool(AiTool):
         from backend.services.address_book_service import address_book_service
 
         if not args.query and not args.department:
-            return AiToolResult(tool_id=self.tool_id, ok=False, error="Укажите имя, должность, телефон или отдел.")
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=False,
+                error="Пустой поиск. Повторите вызов, передав ФИО/телефон/должность в аргументе 'query' (например {\"query\": \"Иванов\"}) или отдел в 'department'.",
+            )
         kwargs: dict[str, Any] = {}
         if args.department:
             kwargs["department"] = args.department
+        if int(args.offset or 0) > 0:
+            kwargs["offset"] = int(args.offset)
+        effective_limit = min(int(args.limit), MAX_PEOPLE)
         try:
             payload = address_book_service.search(
                 args.query or "",
-                _ABSENT_SCAN_LIMIT if args.absent_only else int(args.limit),
+                _ABSENT_SCAN_LIMIT if args.absent_only else effective_limit,
                 **kwargs,
             )
         except Exception as exc:
@@ -122,7 +140,7 @@ class PeopleSearchTool(AiTool):
         if args.absent_only:
             people = [person for person in people if person.get("absence")]
         total = len(people) if args.absent_only else int(payload.get("total") or len(people))
-        people = people[: int(args.limit)]
+        people = people[:effective_limit]
         return AiToolResult(
             tool_id=self.tool_id,
             ok=True,
@@ -136,6 +154,41 @@ class PeopleSearchTool(AiTool):
             },
             sources=[{"system": "1c_zup_address_book"}],
         )
+
+
+# a11-final (act_07): org nodes never carry department heads — the write path strips
+# person fields for non-leader node types by design. The authoritative source for
+# "who heads department X" is the employee directory (1C ZUP positions).
+_HEAD_POSITION_MARKERS = ("руководител", "начальник", "директор", "заведующ")
+
+
+def _resolve_department_head_from_directory(dept_title: str) -> tuple[str | None, str | None]:
+    try:
+        from backend.services.address_book_service import address_book_service
+
+        payload = address_book_service.search("", MAX_PEOPLE, department=dept_title)
+    except Exception:
+        return None, None
+    members = [item for item in list(payload.get("items") or []) if isinstance(item, dict)]
+    leaders = [
+        item
+        for item in members
+        if any(marker in _normalize_text(item.get("position")).casefold() for marker in _HEAD_POSITION_MARKERS)
+    ]
+    if not leaders:
+        return None, None
+
+    def rank(item: dict) -> int:
+        position = _normalize_text(item.get("position")).casefold()
+        # department-level leadership outranks group/team leadership
+        return 0 if "отдел" in position else 1
+
+    leaders.sort(key=rank)
+    head = leaders[0]
+    return (
+        _normalize_text(head.get("full_name") or head.get("display_name")) or None,
+        _normalize_text(head.get("position")) or None,
+    )
 
 
 class DepartmentGetTool(AiTool):
@@ -161,11 +214,16 @@ class DepartmentGetTool(AiTool):
             if not isinstance(item, dict) or item.get("kind") != "node":
                 continue
             node = company_structure_service.get_node(_normalize_text(item.get("node_id"))) or {}
+            head_name = _normalize_text(node.get("person_name")) or None
+            head_position = _normalize_text(node.get("person_position")) or None
+            dept_title = _normalize_text(item.get("title")) or None
+            if not head_name and dept_title:
+                head_name, head_position = _resolve_department_head_from_directory(dept_title)
             departments.append(
                 {
-                    "title": _normalize_text(item.get("title")) or None,
-                    "head_name": _normalize_text(node.get("person_name")) or None,
-                    "head_position": _normalize_text(node.get("person_position")) or None,
+                    "title": dept_title,
+                    "head_name": head_name,
+                    "head_position": head_position,
                     "path": [
                         _normalize_text(part.get("title"))
                         for part in list(item.get("path") or [])

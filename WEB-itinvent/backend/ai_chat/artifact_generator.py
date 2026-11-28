@@ -334,10 +334,16 @@ def _recover_flat_equipment_table(rows: list[object]) -> list[list[str]]:
     headers = cells[:header_count]
     if header_count < 2 or not _looks_like_equipment_headers(headers) or len(cells) % header_count != 0:
         raise GeneratedFileError(
-            "Generated file rows must be a table: use an array of row arrays or row objects, not a flat list.",
+            "Generated file rows must be a table: use an array of row arrays or row objects, not a flat list of cells. "
+            "Valid shapes: rows=[[\"Header1\", \"Header2\"], [\"value1\", \"value2\"]] or "
+            "rows=[{\"Header1\": \"value1\", \"Header2\": \"value2\"}].",
             error_code="invalid_rows_shape",
             field_path="rows",
-            suggested_fix="Pass rows as [[header...], [row...]] or as [{column: value}].",
+            suggested_fix=(
+                "Re-call with rows as an array of row arrays ([[\"Header1\", \"Header2\"], [\"v1\", \"v2\"]]) "
+                "or row objects ([{\"Header1\": \"v1\"}]) — every row its own nested array/object. "
+                "For json/txt/md files you may instead pass the full structure in 'content' and omit rows."
+            ),
         )
     table = [cells[index:index + header_count] for index in range(0, len(cells), header_count)]
     return _ensure_equipment_serial_column(table)
@@ -435,7 +441,21 @@ def _normalize_sheets(sheets: object) -> list[dict[str, Any]]:
 def _normalize_generated_file_spec(item: dict[str, Any], *, index: int) -> GeneratedFileSpec:
     file_format = _normalize_format(item.get("format") or item.get("kind") or "xlsx")
     title = _normalize_text(item.get("title"))
-    rows = _normalize_rows(item.get("rows"), columns=item.get("columns"), field_path="rows")
+    try:
+        rows = _normalize_rows(item.get("rows"), columns=item.get("columns"), field_path="rows")
+    except GeneratedFileError:
+        # A11 c3 (doc_08): for json the presence of 'content' fully determines
+        # the file body — 'rows' never reach the payload even when they are
+        # perfectly valid. Rejecting the whole file because of a malformed
+        # redundant rows field killed direct json exports whose content was
+        # already correct; drop the dead rows instead. Every other format
+        # (including txt/md, and the txt probe used by the format-choice flow
+        # where the final format may still be xlsx/csv) keeps the hard error:
+        # rows genuinely shape those outputs or the user's pending choice.
+        if file_format == "json" and item.get("content") is not None and isinstance(item.get("rows"), list):
+            rows = []
+        else:
+            raise
     sheets = [
         GeneratedSheetSpec(
             title=_normalize_text(sheet.get("title")),

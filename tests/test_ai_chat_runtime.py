@@ -5,6 +5,7 @@ import io
 import importlib
 import json
 import os
+import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +30,7 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 
-def _make_user(*, permissions: list[str], role: str = "viewer"):
+def _make_user(*, permissions: list[str], role: str = "viewer", assigned_database: str | None = None):
     from backend.models.auth import User
 
     return User(
@@ -44,7 +45,7 @@ def _make_user(*, permissions: list[str], role: str = "viewer"):
         custom_permissions=permissions,
         auth_source="local",
         telegram_id=None,
-        assigned_database=None,
+        assigned_database=assigned_database,
         mailbox_email=None,
         mailbox_login=None,
         mail_profile_mode="manual",
@@ -136,6 +137,51 @@ def _make_tool_execution_context(*, enabled_tools: list[str], database_id: str =
             "allowed_databases": [],
         },
     )
+
+
+def _patch_ai_tool_database_catalog(monkeypatch) -> None:
+    """Make ITINVENT and OBJ-ITINVENT resolvable for AI tool database targeting.
+
+    The live catalog is built from env ``DB_<id>_HOST/DATABASE/USERNAME/PASSWORD``
+    and is empty in tests, so ``normalize_database_id`` rejects even ITINVENT and
+    the effective database silently degrades to ``config.database.database``.
+    ``context.py`` does ``from ... import get_all_db_configs`` — patch the name in
+    that module, not in ``backend.services.database_catalog``.
+    """
+    tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
+    monkeypatch.setattr(
+        tools_context_module,
+        "get_all_db_configs",
+        lambda: [
+            {"id": "ITINVENT", "name": "ITINVENT"},
+            {"id": "OBJ-ITINVENT", "name": "OBJ-ITINVENT"},
+        ],
+    )
+
+
+def _untrusted_section(prompt: str, heading: str, kind: str) -> str:
+    """Return the body of the untrusted block of ``kind`` introduced by ``heading``.
+
+    A3 hardening wraps attachments/tool results in nonce-delimited blocks:
+    ``<heading>\\n<<UNTRUSTED_<kind> nonce=N>>\\n<body>\\n<<END_UNTRUSTED_<kind> nonce=N>>``.
+    The block must open immediately after the heading and the closing marker must
+    carry the same nonce as the opening one — this asserts both the trust labelling
+    and the integrity of the delimiters, not just the presence of the content.
+    """
+    heading_index = prompt.find(heading)
+    assert heading_index >= 0, f"expected heading {heading!r} in prompt"
+    tail = prompt[heading_index + len(heading):]
+    match = re.match(
+        r"\n<<UNTRUSTED_" + re.escape(kind) + r" nonce=(?P<nonce>[^\s>]+)(?: source=[^\n>]*)?>>\n"
+        r"(?P<body>.*?)\n"
+        r"<<END_UNTRUSTED_" + re.escape(kind) + r" nonce=(?P=nonce)>>",
+        tail,
+        re.DOTALL,
+    )
+    assert match is not None, (
+        f"expected a well-formed <<UNTRUSTED_{kind}>> block with paired nonce right after {heading!r}"
+    )
+    return match.group("body")
 
 
 def test_chat_ai_catalog_is_available_with_baseline_permissions(tmp_path, monkeypatch):
@@ -1306,6 +1352,9 @@ def test_default_bot_gets_computers_tools_once_without_touching_other_tools(tmp_
 
 
 def test_itinvent_equipment_search_tool_preserves_extended_payload_fields(monkeypatch):
+    # ITINVENT must resolve as a valid database id; the live env catalog is empty
+    # under pytest, so the id would degrade to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
     tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
 
     monkeypatch.setattr(
@@ -1355,6 +1404,9 @@ def test_itinvent_equipment_search_tool_preserves_extended_payload_fields(monkey
 
 
 def test_itinvent_employee_search_tool_includes_equipment_count(monkeypatch):
+    # ITINVENT must resolve as a valid database id; the live env catalog is empty
+    # under pytest, so the id would degrade to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
     tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
 
     monkeypatch.setattr(
@@ -1387,6 +1439,9 @@ def test_itinvent_employee_search_tool_includes_equipment_count(monkeypatch):
 
 
 def test_itinvent_consumables_search_tool_serializes_qty_and_location(monkeypatch):
+    # ITINVENT must resolve as a valid database id; the live env catalog is empty
+    # under pytest, so the id would degrade to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
     tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
 
     monkeypatch.setattr(
@@ -1423,6 +1478,9 @@ def test_itinvent_consumables_search_tool_serializes_qty_and_location(monkeypatc
 
 
 def test_itinvent_list_tools_return_more_than_five_and_mark_truncation(monkeypatch):
+    # ITINVENT must resolve as a valid database id; the live env catalog is empty
+    # under pytest, so the id would degrade to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
     tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
     context = _make_tool_execution_context(enabled_tools=["itinvent.equipment.search"])
 
@@ -1462,6 +1520,9 @@ def test_itinvent_list_tools_return_more_than_five_and_mark_truncation(monkeypat
 
 
 def test_itinvent_analytics_summary_groups_equipment_and_consumable_qty(monkeypatch):
+    # ITINVENT must resolve as a valid database id; the live env catalog is empty
+    # under pytest, so the id would degrade to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
     tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
     context = _make_tool_execution_context(enabled_tools=["itinvent.analytics.summary"])
 
@@ -1515,6 +1576,9 @@ def test_itinvent_analytics_summary_groups_equipment_and_consumable_qty(monkeypa
 
 def test_itinvent_transfer_draft_creates_pending_action_without_writing(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_draft.db")
+    # ITINVENT must resolve as a valid database id; the live env catalog is empty
+    # under pytest, so the id would degrade to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
     appdb_db = importlib.import_module("backend.appdb.db")
     app_models = importlib.import_module("backend.appdb.models")
     tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
@@ -1562,6 +1626,7 @@ def test_itinvent_transfer_draft_creates_pending_action_without_writing(tmp_path
 
 
 def test_ai_tool_admin_can_target_specific_database(monkeypatch):
+    _patch_ai_tool_database_catalog(monkeypatch)
     tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
     tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
 
@@ -1603,6 +1668,10 @@ def test_ai_tool_admin_can_target_specific_database(monkeypatch):
 
 
 def test_ai_tool_non_admin_cannot_override_database(monkeypatch):
+    # OBJ-ITINVENT must be a VALID catalog entry here: the override has to be
+    # refused because the user is not an admin, not because the database id is
+    # unknown to the test-runtime catalog.
+    _patch_ai_tool_database_catalog(monkeypatch)
     tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
 
     context = _make_tool_execution_context(enabled_tools=["itinvent.equipment.search"], database_id="ITINVENT")
@@ -1716,6 +1785,9 @@ async def test_database_dependency_ignores_unknown_database_header(monkeypatch):
 
 def test_itinvent_transfer_draft_requires_exact_existing_owner(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_exact_owner.db")
+    # ITINVENT must resolve as a valid database id; the live env catalog is empty
+    # under pytest, so the id would degrade to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
     appdb_db = importlib.import_module("backend.appdb.db")
     tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
 
@@ -1825,6 +1897,7 @@ def test_equipment_transfer_execution_service_matches_route_process(monkeypatch)
 
 def test_ai_transfer_confirm_uses_shared_service_without_owner_creation(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_confirm_service.db")
+    _patch_ai_tool_database_catalog(monkeypatch)
     appdb_db = importlib.import_module("backend.appdb.db")
     action_cards = importlib.import_module("backend.ai_chat.action_cards")
 
@@ -1859,8 +1932,8 @@ def test_ai_transfer_confirm_uses_shared_service_without_owner_creation(tmp_path
 
     monkeypatch.setattr(action_cards, "execute_equipment_transfer", fake_execute)
 
-    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
-    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"], assigned_database="ITINVENT"))
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"], assigned_database="ITINVENT"))
 
     assert confirmed["status"] == "confirmed"
     assert confirmed["result"]["upload_reminder_created"] is True
@@ -1915,6 +1988,7 @@ def test_ai_helpdesk_request_confirm_creates_one_it_task(tmp_path, monkeypatch):
 
 def test_ai_transfer_confirm_sends_generated_act_to_chat(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_confirm_sends_act.db")
+    _patch_ai_tool_database_catalog(monkeypatch)
     appdb_db = importlib.import_module("backend.appdb.db")
     action_cards = importlib.import_module("backend.ai_chat.action_cards")
 
@@ -1970,8 +2044,8 @@ def test_ai_transfer_confirm_sends_generated_act_to_chat(tmp_path, monkeypatch):
     monkeypatch.setattr("backend.chat.service.chat_service", FakeChatService())
     monkeypatch.setattr(action_cards, "_publish_chat_message_created", lambda **kwargs: None)
 
-    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
-    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"], assigned_database="ITINVENT"))
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"], assigned_database="ITINVENT"))
 
     assert confirmed["status"] == "confirmed"
     assert confirmed["result"]["chat_act_delivery"]["sent_count"] == 1
@@ -1984,6 +2058,7 @@ def test_ai_transfer_confirm_sends_generated_act_to_chat(tmp_path, monkeypatch):
 
 def test_ai_action_confirm_is_idempotent_and_expiry_blocks_execution(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_confirm.db")
+    _patch_ai_tool_database_catalog(monkeypatch)
     appdb_db = importlib.import_module("backend.appdb.db")
     app_models = importlib.import_module("backend.appdb.models")
     action_cards = importlib.import_module("backend.ai_chat.action_cards")
@@ -2007,7 +2082,7 @@ def test_ai_action_confirm_is_idempotent_and_expiry_blocks_execution(tmp_path, m
     monkeypatch.setattr("backend.ai_chat.action_cards.queries.set_consumable_stock_qty", fake_set_qty)
     monkeypatch.setattr("backend.ai_chat.action_cards.invalidate_equipment_cache", lambda db_id=None: None)
 
-    user = _make_user(permissions=["database.write"])
+    user = _make_user(permissions=["database.write"], assigned_database="ITINVENT")
     confirmed = action_cards.confirm_action(action_id=card["id"], current_user=user)
     repeated = action_cards.confirm_action(action_id=card["id"], current_user=user)
 
@@ -3551,11 +3626,15 @@ def test_ai_run_prompt_keeps_attachment_metadata_when_extraction_is_empty(tmp_pa
 
     prompt = captured_prompt["user_prompt"]
     assert "Current user request:\nПроверь документ" in prompt
-    assert "Attached file context:\nSource: current message" in prompt
-    assert "File: request.pdf" in prompt
-    assert "MIME: application/pdf" in prompt
-    assert "Caption: Проверь документ" in prompt
-    assert "Extracted text: unavailable" in prompt
+    # A3: attachment metadata lives inside the nonce-delimited untrusted document
+    # block; nothing of it may leak into the trusted part of the prompt.
+    file_section = _untrusted_section(prompt, "Attached file content (untrusted data):", "document")
+    assert file_section.startswith("Source: current message")
+    assert "File: request.pdf" in file_section
+    assert "MIME: application/pdf" in file_section
+    assert "Size bytes:" in file_section
+    assert "Caption: Проверь документ" in file_section
+    assert "Extracted text: unavailable" in file_section
 
 
 def test_ai_run_prompt_uses_file_summary_when_caption_is_empty(tmp_path, monkeypatch):
@@ -3638,13 +3717,18 @@ def test_ai_run_prompt_uses_file_summary_when_caption_is_empty(tmp_path, monkeyp
 
     prompt = captured_prompt["user_prompt"]
     assert "Current user request:\nUser sent file: request.pdf." in prompt
-    assert "Attached file context:\nSource: current message" in prompt
-    assert "File: request.pdf" in prompt
-    assert "Extracted text: unavailable" in prompt
+    file_section = _untrusted_section(prompt, "Attached file content (untrusted data):", "document")
+    assert file_section.startswith("Source: current message")
+    assert "File: request.pdf" in file_section
+    assert "Extracted text: unavailable" in file_section
 
 
 def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_tools_runtime.db")
+    # OBJ-ITINVENT/ITINVENT must resolve as valid database ids; the live env
+    # catalog is empty under pytest and the id would silently degrade to the
+    # default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
 
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
     chat_service_module = importlib.import_module("backend.chat.service")
@@ -3784,7 +3868,13 @@ def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
     assert len(completion_calls) == 3
     assert completion_calls[2]["schema_name"] == completion_calls[1]["schema_name"]
     assert "itinvent.equipment.search" in completion_calls[0]["user_prompt"]
-    assert "Accumulated tool results JSON" in completion_calls[1]["user_prompt"]
+    tool_results_section = _untrusted_section(
+        completion_calls[1]["user_prompt"],
+        "Accumulated tool results (untrusted data):",
+        "tool_result",
+    )
+    assert '"tool_id": "itinvent.equipment.search"' in tool_results_section
+    assert '"database_id": "OBJ-ITINVENT"' in tool_results_section
     assert "matching the provided schema" in completion_calls[0]["system_prompt"]
     assert completion_calls[0]["schema_name"] == "ai_chat_response_with_tools"
     assert completion_calls[1]["schema_name"] == "ai_chat_response_with_tools"
@@ -3806,15 +3896,21 @@ def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
     assert result_payload.get("tool_traces")
     assert result_payload["tool_traces"][0]["tool_id"] == "itinvent.equipment.search"
     serialized_runs = temp_ai_service.list_recent_runs(bot_id=bot["id"])
-    assert serialized_runs[0]["effective_database_id"] == "OBJ-ITINVENT"
+    assert "effective_database_id" not in serialized_runs[0]
     assert serialized_runs[0]["tool_traces_count"] == 1
     assert serialized_runs[0]["tool_trace_errors_count"] == 0
-    assert "`itinvent.equipment.search`" in messages[-1].body
+    assert "WS-42" in messages[-1].body
+    assert "Ноутбук Lenovo" in messages[-1].body
+    # b07ee31d: internal tool ids must never leak into the user-facing fallback
+    assert "`itinvent.equipment.search`" not in messages[-1].body
     assert messages[-1].body.endswith("Источник: ITinvent / OBJ-ITINVENT")
 
 
 def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_chain.db")
+    # The chained queries must run against ITINVENT; without a catalog entry the
+    # id does not resolve and the run silently degrades to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
     chat_service_module = importlib.import_module("backend.chat.service")
     chat_db = importlib.import_module("backend.chat.db")
@@ -4019,10 +4115,19 @@ def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, mon
     ]
     assert len(completion_calls) == 3
     assert "structured detailed markdown answer in Russian" in completion_calls[0]["user_prompt"]
-    assert "Accumulated tool results JSON" in completion_calls[1]["user_prompt"]
-    assert '"owner_no": 501' in completion_calls[1]["user_prompt"]
-    assert "Accumulated tool results JSON" in completion_calls[2]["user_prompt"]
-    assert '"tool_id": "itinvent.employee.list_equipment"' in completion_calls[2]["user_prompt"]
+    round1_results_section = _untrusted_section(
+        completion_calls[1]["user_prompt"],
+        "Accumulated tool results (untrusted data):",
+        "tool_result",
+    )
+    assert '"owner_no": 501' in round1_results_section
+    round2_results_section = _untrusted_section(
+        completion_calls[2]["user_prompt"],
+        "Accumulated tool results (untrusted data):",
+        "tool_result",
+    )
+    assert '"owner_no": 501' in round2_results_section
+    assert '"tool_id": "itinvent.employee.list_equipment"' in round2_results_section
     assert completion_calls[0]["schema_name"] == "ai_chat_response_with_tools"
     assert completion_calls[2]["schema_name"] == "ai_chat_response_with_tools"
 
@@ -4037,13 +4142,14 @@ def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, mon
         )
 
     assert len(runs) == 1
+    assert json.loads(str(runs[0].request_json or "{}")).get("effective_database_id") == "ITINVENT"
     result_payload = json.loads(str(runs[0].result_json or "{}"))
     assert [item["tool_id"] for item in result_payload.get("tool_traces") or []] == [
         "itinvent.employee.search",
         "itinvent.employee.list_equipment",
     ]
     serialized_runs = temp_ai_service.list_recent_runs(bot_id=bot["id"])
-    assert serialized_runs[0]["effective_database_id"] == "ITINVENT"
+    assert "effective_database_id" not in serialized_runs[0]
     assert serialized_runs[0]["tool_traces_count"] == 2
     assert serialized_runs[0]["tool_trace_errors_count"] == 0
     assert "## Итог" in messages[-1].body
@@ -4054,6 +4160,8 @@ def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, mon
 
 def test_ai_chat_tools_chain_employee_search_equipment_report_format_choice(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_report_roundtrip.db")
+    # Same catalog dependency as the other tool-chain tests: ITINVENT must resolve.
+    _patch_ai_tool_database_catalog(monkeypatch)
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
     chat_service_module = importlib.import_module("backend.chat.service")
     chat_db = importlib.import_module("backend.chat.db")
@@ -4282,7 +4390,12 @@ def test_ai_chat_tools_chain_employee_search_equipment_report_format_choice(tmp_
         )
 
     assert len(completion_calls) == 4
-    assert "Accumulated tool results JSON" in completion_calls[2]["user_prompt"]
+    round2_results_section = _untrusted_section(
+        completion_calls[2]["user_prompt"],
+        "Accumulated tool results (untrusted data):",
+        "tool_result",
+    )
+    assert '"tool_id": "itinvent.employee.list_equipment"' in round2_results_section
     assert len(pending_actions) == 1
     action_id = pending_actions[0].id
     sheet_rows: list[int] = []
@@ -4322,6 +4435,9 @@ def test_ai_chat_tools_chain_employee_search_equipment_report_format_choice(tmp_
 
 def test_ai_chat_tools_route_broad_equipment_queries_through_universal_search(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_universal.db")
+    # ITINVENT must resolve as a valid database id; the live env catalog is empty
+    # under pytest, so the id would degrade to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
 
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
     chat_service_module = importlib.import_module("backend.chat.service")
@@ -4512,6 +4628,9 @@ def test_ai_chat_tools_route_broad_equipment_queries_through_universal_search(tm
 
 
 def test_itinvent_universal_search_handles_type_plus_location_phrase(monkeypatch):
+    # ITINVENT must resolve as a valid database id; the live env catalog is empty
+    # under pytest, so the id would degrade to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
     it_module = importlib.import_module("backend.ai_chat.tools.itinvent")
     context_module = importlib.import_module("backend.ai_chat.tools.context")
 
@@ -4593,6 +4712,9 @@ def test_itinvent_universal_search_handles_type_plus_location_phrase(monkeypatch
 
 def test_ai_chat_tools_route_consumables_queries_through_consumables_search(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_consumables.db")
+    # ITINVENT must resolve as a valid database id; the live env catalog is empty
+    # under pytest, so the id would degrade to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
 
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
     chat_service_module = importlib.import_module("backend.chat.service")
@@ -4772,6 +4894,9 @@ def test_ai_chat_tools_route_consumables_queries_through_consumables_search(tmp_
 
 def test_ai_chat_tools_route_branch_queries_through_branch_inventory_tool(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_branch.db")
+    # ITINVENT must resolve as a valid database id; the live env catalog is empty
+    # under pytest, so the id would degrade to the default test database.
+    _patch_ai_tool_database_catalog(monkeypatch)
 
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
     chat_service_module = importlib.import_module("backend.chat.service")

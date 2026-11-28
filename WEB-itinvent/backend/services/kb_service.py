@@ -26,6 +26,78 @@ from backend.services.department_service import department_service
 KB_ARTICLES_FILE = "kb_articles.json"
 KB_CARDS_FILE = "kb_cards.json"
 
+# A11 c3: query matching used to be a single literal substring check — any
+# multi-word query missed every article unless it was a verbatim phrase
+# («настройка VPN удаленная работа» never matches). Tokenized matching with
+# morphology-lite stemming: ё→е normalization, each query token must appear in
+# the blob allowing up to two trailing characters of inflection
+# («удаленная» → stem «удаленн» ⊂ «удаленной»). Strict AND across tokens keeps
+# precision; single-token queries behave exactly as before.
+_SEARCH_WORD_RE = re.compile(r"[0-9a-zA-Zа-яА-ЯёЁ]+")
+
+
+def _search_normalize(value: object) -> str:
+    return str(value or "").lower().replace("ё", "е")
+
+
+def _search_tokens(query: object) -> list[str]:
+    return [
+        token
+        for token in _SEARCH_WORD_RE.findall(_search_normalize(query))
+        if len(token) > 1 or token.isdigit()
+    ]
+
+
+def _search_token_matches(token: str, blob: str) -> bool:
+    if token in blob:
+        return True
+    if len(token) >= 5 and token[:-1] in blob:
+        return True
+    if len(token) >= 6 and token[:-2] in blob:
+        return True
+    return False
+
+
+def _search_blob_matches(query: object, blob_raw: object) -> bool:
+    tokens = _search_tokens(query)
+    if not tokens:
+        return True
+    blob = _search_normalize(blob_raw)
+    return all(_search_token_matches(token, blob) for token in tokens)
+
+
+def _search_match_count(tokens: list[str], blob: str) -> int:
+    return sum(1 for token in tokens if _search_token_matches(token, blob))
+
+
+def _ranked_filter(rows: list[dict[str, Any]], query: object, blob_of) -> list[dict[str, Any]]:
+    """Two-pass tokenized matching over prebuilt row blobs.
+
+    Pass 1 — strict AND across all query tokens (precision). Pass 2, only when
+    pass 1 is empty — ranked fallback: rows are scored by matched-token count
+    and kept when they cover most of the query (n-1 tokens for up to 3 tokens,
+    n-2 for longer queries, at least 1). Natural-language synonyms and
+    suppletive morphology («сдать» vs «сдайте», «утилизация» absent but
+    «картридж»+«замена» present) must not yield an empty result set: an empty
+    result pushed both users and the AI agent towards "nothing found" when a
+    relevant article existed. Fallback rows are ordered best-match first.
+    """
+    tokens = _search_tokens(query)
+    if not tokens:
+        return list(rows)
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for row in rows:
+        blob = _search_normalize(blob_of(row))
+        scored.append((_search_match_count(tokens, blob), row))
+    total = len(tokens)
+    strict = [row for count, row in scored if count == total]
+    if strict:
+        return strict
+    need = max(1, total - (1 if total <= 3 else 2))
+    fallback = [(count, row) for count, row in scored if count >= need]
+    fallback.sort(key=lambda item: item[0], reverse=True)
+    return [row for _, row in fallback]
+
 # Uploads are buffered in memory before writing: cap the body so one request
 # cannot exhaust process RAM (IIS limits are a net boundary, not a backstop).
 _ATTACHMENT_MAX_BYTES = 64 * 1024 * 1024
@@ -296,20 +368,24 @@ class KnowledgeBaseService:
             row_tags = [str(tag or "").strip().lower() for tag in row.get("tags") or []]
             if tag_filters and not all(tag in row_tags for tag in tag_filters):
                 return False
-            if query:
-                search_blob = " ".join(
+            return True
+
+        prefiltered = [self._normalize_article_row(row) for row in rows if _match(row)]
+        if query:
+            filtered = _ranked_filter(
+                prefiltered,
+                query,
+                lambda row: " ".join(
                     [
                         str(row.get("title") or ""),
                         str(row.get("summary") or ""),
                         " ".join(str(tag or "") for tag in row.get("tags") or []),
                         self._content_to_search_text(row.get("content") or {}),
                     ]
-                ).lower()
-                if query not in search_blob:
-                    return False
-            return True
-
-        filtered = [self._normalize_article_row(row) for row in rows if _match(row)]
+                ),
+            )
+        else:
+            filtered = prefiltered
         if current_user is not None:
             filtered = [row for row in filtered if can_view_kb_item(current_user, row)]
         filtered.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
@@ -980,8 +1056,14 @@ class KnowledgeBaseService:
             row_tags = [str(tag or "").strip().lower() for tag in row.get("tags") or []]
             if tag_filters and not all(tag in row_tags for tag in tag_filters):
                 return False
-            if query:
-                blob = " ".join(
+            return True
+
+        prefiltered = [self._normalize_card_row(row) for row in rows if _match(row)]
+        if query:
+            filtered = _ranked_filter(
+                prefiltered,
+                query,
+                lambda row: " ".join(
                     [
                         str(row.get("title") or ""),
                         str(row.get("summary_short") or ""),
@@ -989,12 +1071,10 @@ class KnowledgeBaseService:
                         " ".join(str(tag or "") for tag in row.get("tags") or []),
                         " ".join(str(step or "") for step in row.get("quick_steps") or []),
                     ]
-                ).lower()
-                if query not in blob:
-                    return False
-            return True
-
-        filtered = [self._normalize_card_row(row) for row in rows if _match(row)]
+                ),
+            )
+        else:
+            filtered = prefiltered
         if current_user is not None:
             filtered = [row for row in filtered if can_view_kb_item(current_user, row)]
         sort_key = str(sort or "updated_desc").strip().lower()

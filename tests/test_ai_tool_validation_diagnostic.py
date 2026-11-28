@@ -236,3 +236,51 @@ def test_has_report_file_intent_does_not_match_task_creation():
     assert _has_report_file_intent("сделай xlsx со списком")
     assert _has_report_file_intent("сформируй отчёт")
     assert _has_report_file_intent("export equipment to excel")
+
+
+def test_report_file_intent_soft_verbs_a11_doc_05_07():
+    """A11 c3 (doc_05/doc_07): «сгенерируй файл…» and «подготовь файл…» used
+    soft verbs missing from the verb list, so the run never even entered the
+    designed format-choice card flow and the model improvised inconsistent
+    plain-text format questions instead."""
+    from backend.ai_chat.service import _has_report_file_intent
+
+    assert _has_report_file_intent("Сгенерируй файл со списком сотрудников")
+    assert _has_report_file_intent("Подготовь файл-инструкцию по подключению")
+    assert _has_report_file_intent("Собери мои задачи в таблицу")
+    # no file noun — still no intent
+    assert not _has_report_file_intent("сгенерируй пароль для пользователя")
+    assert not _has_report_file_intent("подготовь пользователя к увольнению")
+
+
+def test_report_topic_noun_requires_governing_verb():
+    """A11 final (act_07): mentioning a report is not a report-creation request."""
+    from backend.ai_chat.service import _has_report_file_intent
+
+    # letter ABOUT a report — no report intent
+    assert not _has_report_file_intent("подготовь письмо руководителю отдела о готовности отчёта")
+    assert not _has_report_file_intent("напиши письмо об отчёте")
+    assert not _has_report_file_intent("подготовь письмо об отчёте")
+    # pure report creation — report intent
+    assert _has_report_file_intent("создай отчёт по технике")
+    assert _has_report_file_intent("сформируй отчёт")
+    assert _has_report_file_intent("выгрузи отчёт в excel")
+    # report creation AND letter — report intent preserved
+    assert _has_report_file_intent("создай отчёт и подготовь письмо с вложением")
+
+
+def test_detect_requested_report_format_json_txt_md():
+    """A11 c3 (doc_08): the format-choice card itself offers txt/md/json, so
+    explicitly naming them must count as a chosen format. Before the fix only
+    xlsx/pdf/docx/csv were aliases — «создай json-файл» detected no format and
+    the answer got hijacked into the format-choice card."""
+    from backend.ai_chat.service import _detect_requested_report_format
+
+    assert _detect_requested_report_format("Создай json-файл с моими задачами") == "json"
+    assert _detect_requested_report_format("выгрузи в txt") == "txt"
+    assert _detect_requested_report_format("сделай markdown файл") == "md"
+    assert _detect_requested_report_format("нужен md-файл") == "md"
+    # format-free requests still detect nothing (format-choice card flow)
+    assert _detect_requested_report_format("сделай отчёт по задачам") is None
+    # no false positives on embedded substrings
+    assert _detect_requested_report_format("покажи jsonschema поля") is None

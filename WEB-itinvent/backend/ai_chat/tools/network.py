@@ -308,9 +308,9 @@ class NetworkHostPingTool(AiTool):
         "Returns reachable status, response time, packet loss percentage, and resolved IP. "
         "Use count parameter (1–10, default 4) to control number of ping packets. "
         "IMPORTANT: If the user asks to ping a person's computer (e.g. 'пингани комп Кошкиной'), "
-        "first use itinvent.user.computer to find their computer — it returns network_name and ip_address. "
-        "If network_name or ip_address is present in the result, use it directly as the host parameter. "
-        "If neither is available, try itinvent.equipment.online_status with the hostname to get agent data. "
+        "first resolve the computer with itinvent.computers.search (field='user' or field='profiles'); "
+        "the computer card (itinvent.computers.get) exposes the network name and IP. Use the network "
+        "name or IP directly as the host parameter. "
         "Do NOT ping by inventory number — use hostname or IP only."
     )
     input_model = NetworkHostPingArgs
@@ -962,6 +962,12 @@ def _resolve_mac_from_itinvent(identifier: str, context: AiToolExecutionContext)
 
     identifier_stripped = identifier.strip()
     database_id = context.effective_database_id
+    if not database_id:
+        # A11 P0 UNSAFE-2: without a resolved database the queries below hit the
+        # DEFAULT database (get_database_config(None) falls back) — a dangling
+        # assignment / denied explicit id would leak another DB's device data
+        # into the WOL draft preview. Fail closed: no enrichment, no SQL.
+        return None
 
     # Try resolving by hostname first
     result = queries.resolve_pc_context_by_mac_or_hostname(
