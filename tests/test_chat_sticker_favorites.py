@@ -735,4 +735,6 @@ def test_sticker_favorites_revision_is_the_single_head_descendant():
     cfg = _alembic_config("sqlite:///unused.db")
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
-    assert heads == ["20261127_0185"], heads
+    assert len(heads) == 1, heads
+    reachable = {migration.revision for migration in script.iterate_revisions(heads[0], "base")}
+    assert {"20261124_0180", "20261124_0181", "20261125_0182"} <= reachable

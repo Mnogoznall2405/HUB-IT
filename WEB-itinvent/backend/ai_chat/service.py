@@ -5737,6 +5737,8 @@ class AiChatService:
             ).scalar_one_or_none()
             if locked_bot is None or not bool(locked_bot.is_enabled):
                 return None
+            if getattr(locked_bot, "emergency_disabled_at", None) is not None:
+                raise PermissionError("Агент остановлен аварийно. Новые запросы и подтверждения действий заблокированы.")
             require_bot_access(session, locked_bot, current_user_id)
             now = _utc_now()
             existing = None
@@ -10896,7 +10898,9 @@ class AiChatService:
                     "emergency_disabled_at": _iso(getattr(bot, "emergency_disabled_at", None)),
                     "updated_at": _iso(getattr(bot, "updated_at", None)),
                     "latest_run_status": _normalize_text(getattr(latest_run, "status", None)) or None,
-                    "latest_run_error": _normalize_text(getattr(latest_run, "error_text", None)) or None,
+                    # error_text is free-form runtime content and can contain user data;
+                    # manager diagnostics expose the status only, never the raw message.
+                    "latest_run_error": None,
                 }
             )
         return payload

@@ -99,3 +99,22 @@ def test_manager_runs_redact_all_content_fields(env):
     assert items[0]["tool_traces_count"] == 2
     assert items[0]["tool_trace_errors_count"] == 1
     assert items[0]["usage"] == {"input_tokens": 123, "output_tokens": 45}
+
+
+def test_manager_bot_list_does_not_leak_latest_run_error(env):
+    from backend.api.v1 import ai_bots
+
+    app = FastAPI()
+    app.include_router(ai_bots.router, prefix="/api/v1/ai-bots")
+    with TestClient(app) as client:
+        route = "/api/v1/ai-bots"
+        assert client.get(route).status_code == 401
+        app.dependency_overrides[ai_bots.require_agent_manager] = lambda: object()
+        response = client.get(route)
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == 1
+    blob = json.dumps(items, ensure_ascii=False)
+    assert SECRET_ERROR not in blob
+    assert items[0]["latest_run_status"] == "failed"
+    assert items[0]["latest_run_error"] is None

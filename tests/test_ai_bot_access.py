@@ -350,3 +350,29 @@ def test_emergency_does_not_hide_history(database):
     # and status/history reads never go through the write gate.
     result = access.conversation_access('conversation', 2)
     assert 'can_use' in result
+
+
+def test_emergency_blocks_confirm_after_conversation_rebind(database, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from backend.ai_chat import action_cards
+
+    monkeypatch.setattr(action_cards, 'app_session', database)
+    execute = Mock()
+    monkeypatch.setattr(action_cards, '_execute_transfer', execute)
+    with database() as db:
+        db.add(AppAiBotRun(id='run-emergency', bot_id='agent', user_id=2,
+                           conversation_id='conversation', trigger_message_id='message', status='completed'))
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_TRANSFER,
+        conversation_id='conversation', run_id='run-emergency', requester_user_id=2,
+        database_id='test', payload={}, preview={},
+    )
+    with database() as db:
+        mapping = db.scalar(select(AppAiBotConversation).where(
+            AppAiBotConversation.conversation_id == 'conversation'))
+        mapping.bot_id = 'restricted'
+        db.get(AppAiBot, 'agent').emergency_disabled_at = datetime.now(timezone.utc)
+    with pytest.raises(PermissionError, match='аварийно'):
+        action_cards.confirm_action(action_id=card['id'], current_user=SimpleNamespace(id=2))
+    execute.assert_not_called()

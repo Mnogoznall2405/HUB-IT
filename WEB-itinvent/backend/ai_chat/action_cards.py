@@ -2208,7 +2208,7 @@ def _execute_office_task_create(*, payload: dict[str, Any], current_user: Any) -
 
 
 def _execute_office_task_comment(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
-    _require_permission(current_user, PERM_TASKS_READ)
+    _require_permission(current_user, PERM_TASKS_WRITE)
     task_id = _normalize_text(payload.get("task_id"))
     body = _normalize_text(payload.get("body"))
     user_payload = _user_dict(current_user)
@@ -2235,7 +2235,7 @@ def _execute_office_task_comment(*, payload: dict[str, Any], current_user: Any) 
 
 
 def _execute_office_task_status(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
-    _require_permission(current_user, PERM_TASKS_READ)
+    _require_permission(current_user, PERM_TASKS_WRITE)
     task_id = _normalize_text(payload.get("task_id"))
     operation = _normalize_text(payload.get("operation")).lower()
     user_payload = _user_dict(current_user)
@@ -2397,6 +2397,17 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
             raise LookupError("Action was not found")
         if int(row.requester_user_id or 0) != current_user_id:
             raise PermissionError("Only the action initiator can confirm it")
+        # Confirm authorizes a mutation drafted by the run's original bot, not
+        # necessarily by the bot currently bound to the conversation. Re-bind
+        # must never bypass that bot's emergency kill-switch.
+        source_run = session.get(AppAiBotRun, _normalize_text(row.run_id))
+        source_bot = None
+        if source_run is not None and _normalize_text(getattr(source_run, "bot_id", None)):
+            source_bot = session.execute(
+                select(AppAiBot).where(AppAiBot.id == _normalize_text(source_run.bot_id)).with_for_update()
+            ).scalar_one_or_none()
+        if source_run is not None and (source_bot is None or getattr(source_bot, "emergency_disabled_at", None) is not None):
+            raise PermissionError("Агент остановлен аварийно. Новые запросы и подтверждения действий заблокированы.")
         from backend.ai_chat.access import require_conversation_access
         require_conversation_access(row.conversation_id, current_user_id, db=session, lock=True)
         _reconcile_mail_action_results(session, [row])
