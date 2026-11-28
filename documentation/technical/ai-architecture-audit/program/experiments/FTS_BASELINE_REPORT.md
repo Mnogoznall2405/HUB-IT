@@ -15,13 +15,14 @@ Artifacts:
 
 ## Why this baseline exists
 
-The A11 knowledge-base retrieval path does not use PostgreSQL FTS. `backend/ai_chat/retrieval.py` loads all `AppAiKbChunk` rows and scores them in Python. This creates three risks:
+The A11 knowledge-base retrieval path is split. `backend/ai_chat/retrieval.py` is the fallback implementation and loads all `AppAiKbChunk` rows for Python scoring. `backend/ai_chat/retrieval_interface.py` already contains a PostgreSQL FTS adapter, but that adapter uses the `'simple'` configuration, has no Russian morphology or trigram fallback, applies `LIMIT` before ACL filtering in Python, and leaves template-candidate retrieval on the Python fallback. This creates four risks:
 
-1. memory/network cost grows linearly with KB size;
-2. ACL filtering happens after broad row materialization rather than inside the bounded query;
-3. the existing PostgreSQL FTS index is unused.
+1. fallback memory/network cost grows linearly with KB size;
+2. correct ACL-aware ranking cannot be guaranteed because SQL `LIMIT` happens before ACL filtering;
+3. the existing/adapted FTS path uses `'simple'`, which the baseline shows is unsuitable for Russian morphology;
+4. typo tolerance and controlled fallback are absent.
 
-The baseline compares the current scoring shape with candidate PostgreSQL FTS/trigram strategies before any A14 implementation.
+The baseline compares the current Python scoring shape and the existing simple-FTS shape with candidate PostgreSQL FTS/trigram strategies before any A14 implementation.
 
 ## Test corpus and cases
 

@@ -42,7 +42,7 @@
 | A14-001 | P0 | PG FTS baseline: `'simple'` vs `'russian'`, AND/OR fallback, ACL до LIMIT, pg_trgm | synthetic isolated PG baseline завершён; hybrid Russian FTS + controlled fallback стал leading hypothesis; см. `experiments/FTS_BASELINE_REPORT.md` | DONE as research baseline, не production proof | спроектировать ACL-aware implementation experiment; не merge runtime без differential evidence |
 | A14-002 | P1 | Vector/hybrid pilot FastEmbed+pgvector | только если improved FTS недостаточен | DEFERRED | после implementation-grade A14 FTS evidence |
 | A14-003 | P1 | Hybrid rerank bge-reranker-v2-m3 | только после reproducible retrieval baseline | DEFERRED | после A14-002 |
-| A14-004 | P0 | ACL-aware PostgreSQL FTS retrieval design/prototype | B-007 показал, что текущий Python scan всех chunks не масштабируется и не использует индексы; production ACL сложнее synthetic `visibility` | TODO | design first: exact SQL ACL parity, migration/index proof, SQLite fallback, golden differential tests, larger corpus benchmark |
+| A14-004 | P0 | ACL-aware PostgreSQL FTS retrieval design/prototype | B-007 показал, что Python fallback сканирует все chunks, а существующий FTS adapter использует `'simple'` и ACL после `LIMIT`; production ACL сложнее synthetic `visibility` | TODO | design first: exact SQL ACL parity, migration/index proof, SQLite fallback, golden differential tests, larger corpus benchmark |
 
 ## A15–A24 — зарегистрированные тематические этапы
 

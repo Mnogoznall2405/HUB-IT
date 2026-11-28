@@ -108,9 +108,9 @@
 
 ## AF-014 — KB retrieval архитектурно не масштабируется и не использует PostgreSQL FTS
 
-**Факт:** `backend/ai_chat/retrieval.py` загружает все `AppAiKbChunk` rows и выполняет scoring в Python. В PostgreSQL уже есть FTS index с `'simple'` configuration, но runtime retrieval его не использует. Synthetic baseline B-007 показывает: `'simple'` не справляется с русской морфологией (Hit@1 0.30), strict `'russian'` лучше (0.70), trigram token coverage ловит опечатки, а hybrid Russian FTS + controlled fallback достиг 1.00 на маленьком synthetic corpus. Whole-query trigram similarity непригоден (0.20).
+**Факт:** retrieval разделён. Fallback `backend/ai_chat/retrieval.py` загружает все `AppAiKbChunk` rows и выполняет scoring в Python. `backend/ai_chat/retrieval_interface.py` уже содержит PostgreSQL FTS adapter, но он использует `'simple'` configuration, не имеет Russian morphology/trigram fallback, применяет SQL `LIMIT` до ACL filtering в Python, а template candidates всегда остаются на Python fallback. Synthetic baseline B-007 показывает: `'simple'` не справляется с русской морфологией (Hit@1 0.30), strict `'russian'` лучше (0.70), trigram token coverage ловит опечатки, а hybrid Russian FTS + controlled fallback достиг 1.00 на маленьком synthetic corpus. Whole-query trigram similarity непригоден (0.20).
 
-**Влияние:** memory/network cost retrieval растёт линейно с KB; ACL filtering нельзя корректно совместить с SQL `LIMIT`, если retrieval остаётся широким Python scan; typo tolerance и русская морфология слабые. При этом exact inventory-number behavior нельзя регрессировать.
+**Влияние:** fallback memory/network cost растёт линейно с KB; корректный ACL-aware ranking нельзя гарантировать, пока SQL `LIMIT` выполняется до ACL filtering; typo tolerance и русская морфология слабые. При этом exact inventory-number behavior нельзя регрессировать.
 
 **Влияние на A14:** PostgreSQL FTS + pg_trgm является первым кандидатом, потому что использует существующую СУБД и не требует нового service/vector DB. Но semantic synonyms им не решаются полностью. Implementation должен сначала доказать ACL-before-limit, migration/index correctness, SQLite fallback и larger-scale benchmark.
 

@@ -17,7 +17,7 @@
 
 **Статус:** BASELINE DONE; implementation design NOT STARTED. Первый независимый non-paid эксперимент завершён на synthetic isolated PostgreSQL.
 
-**Реальная проблема:** русский поиск KB должен работать по смыслу/словоформам/опечаткам, не только точному совпадению; старая A2 задача не считается закрытой без PG-backed proof. Дополнительно текущий A11 retrieval загружает все chunks в Python и не использует SQL FTS.
+**Реальная проблема:** русский поиск KB должен работать по смыслу/словоформам/опечаткам, не только точному совпадению; старая A2 задача не считается закрытой без PG-backed proof. Дополнительно текущий A11 retrieval разделён: Python fallback сканирует все chunks, а существующий PostgreSQL FTS adapter использует `'simple'` и применяет ACL после `LIMIT`.
 
 **Подтверждённая гипотеза:** `'simple'` FTS недостаточен для русской морфологии. Лучший локальный кандидат — strict Russian FTS с контролируемым fallback: bounded OR Russian FTS и затем pg_trgm per-token coverage для опечаток/словоформ. Это не semantic retrieval и не production proof.
 
