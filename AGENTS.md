@@ -6,7 +6,7 @@ Do not add mandatory Redis, Docker, a message broker or a new service without th
 
 ## Navigation
 
-Read only the code, tests and docs relevant to the request; find the area with `rg`. Where to start per subsystem/task: [REPOSITORY_MAP.md](documentation/technical/REPOSITORY_MAP.md) («Куда смотреть по типу задачи»). Tests: [TESTING.md](documentation/technical/TESTING.md). Domain language: [CONTEXT.md](CONTEXT.md) (do not create a second glossary). Decisions: `docs/adr/`.
+Read only the code, tests and docs relevant to the request; find the area with `rg`. Where to start per subsystem/task: [REPOSITORY_MAP.md](documentation/technical/REPOSITORY_MAP.md) («Куда смотреть по типу задачи»). Tests: [TESTING.md](documentation/technical/TESTING.md). Domain language: [CONTEXT.md](CONTEXT.md) (do not create a second glossary). Decisions: `docs/adr/`. Coordination: [.project/README.md](.project/README.md).
 
 If docs contradict code or production facts, record the contradiction and verify the implementation safely; never silently pick one.
 
@@ -18,6 +18,13 @@ If docs contradict code or production facts, record the contradiction and verify
 - Touch only task-related files; follow neighbouring code style and the `router/handler → service → store` layering. No drive-by refactoring, no "future" dependencies, no unrequested public behaviour changes.
 - The working tree may be dirty: never overwrite others' changes, never use `git reset --hard`/`git checkout --`, no commits or branches unless asked.
 
+### Task intake and integration
+
+- Before implementation: read applicable rules, fetch and verify `origin/main`, read the current Issues/PRs and active assignments, check overlapping paths/contracts and dependencies, register the task with the coordinator, then record base SHA, allowed/forbidden scope, acceptance criteria and planned checks. Do not begin edits while a conflict is unresolved.
+- Use one authorized task branch and separate worktree per implementer. Do not switch, edit or clean another agent's worktree. Use the [coordination guide](.project/README.md) for task registration, sensitive areas, handoff and the integration queue.
+- Review the exact proposed merge result against current `main`, including checks for fixes lost during conflict resolution. Get independent review on the latest material diff. Never use blanket `ours`/`theirs`, force-push `main`, repeat an already integrated merge or start a competing consolidation.
+- Branch, commit, push and PR creation require task authorization. When requested, complete the requested GitHub steps using the CLI or authenticated API with the local credential helper; never print, persist or commit credentials. Merge requires separate owner authorization or an owner-approved merge policy. A merge does not authorize a release.
+
 ## Production safety
 
 Production is read-only by default. Lack of staging never permits testing on production: use a local environment, test DB or isolated harness.
@@ -26,7 +33,7 @@ Without the user's explicit request it is forbidden to:
 
 - change `.env`, IIS, PM2, PostgreSQL config or Windows settings;
 - run DDL/DML/DELETE, migrations, retention or cleanup on production;
-- restart processes, free ports or deploy (including `npm run build`: it writes `dist/`, which IIS serves live);
+- restart processes, free ports or deploy; do not run `npm run build` for verification in a deployment worktree (it writes `dist/`).
 - delete tables, indexes, users, files or data.
 
 An explicit request or earlier consent authorizes the named operation within the agreed environment and scope; ask again only if the goal, scope or risks change. Before a dangerous operation: read-only check of the exact target, then command, expected effect, rollback and post-check.
@@ -54,6 +61,7 @@ Source of truth for legacy ITINVENT and equipment. `pyodbc`: parameterized `?` q
 ### PostgreSQL
 
 - Holds app/chat/scan runtime. Schema changes only via Alembic; no runtime `CREATE TABLE/INDEX` in the request path. Use the existing ORM/SQL abstraction and bound parameters.
+- Reserve new revisions with the coordinator before creating a migration. Validate each affected graph and the final merge result; see the [migration registry](.project/MIGRATION_REGISTRY.md).
 - Production processes never apply migrations: `initialize_app_schema`/`initialize_chat_schema` only compare `system.alembic_version` with head and log `schema_migration_check`. Migrations run by explicit command at release ([runbook](scripts/pm2/README.md#миграции-бд-при-релизе)); a new file in `alembic/versions` changes nothing in production. Test migrations on sqlite/test DB, including upgrade/downgrade.
 - Before migrating, check the actual schema, volume, indexes, FKs, duplicates, orphan rows, locks and free space.
 - Alembic does not read the URL from `.env`: pass it explicitly (`alembic -x url=<url> ...` or `ALEMBIC_DATABASE_URL`).
@@ -85,7 +93,7 @@ Source of truth for legacy ITINVENT and equipment. `pyodbc`: parameterized `?` q
 - **LLM:** all OpenRouter/LLM calls only through `shared/llm/`; no local `OpenAI()` clients; never log confidential prompts/responses without redaction.
 - **Scan / Inventory:** do not mix. Scan = `scan_agent/`, `scan_server/`, schema `scan` (or an explicitly allowed dev fallback); Inventory = `agent.py`, `agent/`, `inventory_server/`. Read [SCAN_ARCHITECTURE.md](documentation/technical/SCAN_ARCHITECTURE.md) before changing Scan routes/proxy.
 - **Agent composition:** Inventory + Scan retains document scanning, self-update and software installation. DLP user monitoring (file egress, browser history/activity, screenshots, Telegram/MAX probes) is excluded from both inventory runtimes and the MSI; legacy flags cannot enable it. Keep server-side DLP data separate from agent-removal work; see `agent/README.md`.
-- **Desktop:** `desktop/` is a thin WPF/WebView2 shell of the portal (the web frontend is shared by browser and Desktop); auth, REST, WebSocket and business logic stay in frontend/backend. Preserve the origin/navigation policy.
+- **Desktop:** `desktop/` hosts the shared portal in WPF/WebView2 and has existing native screens under [ADR-0010](docs/adr/0010-desktop-native-screens.md). Preserve origin/navigation policy and server-side business logic and authorization. The native XAML chat is frozen pending an explicit product decision; chat work goes to the web frontend/WebView2 shell unless explicitly requested otherwise.
 - **Mobile:** the live app is Expo React Native in `mobile-hub/`; never restore the old `mobile-android/` or Capacitor (a native-push API does not imply a Capacitor client).
 - **Auth:** read [AUTH_SECURITY_STACK.md](documentation/technical/AUTH_SECURITY_STACK.md) first. Never change session lifetime, refresh rotation, device trust, WebAuthn origin/RP ID or 2FA policy as a side effect. One client's failure must not weaken server checks for others.
 

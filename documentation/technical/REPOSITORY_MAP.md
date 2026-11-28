@@ -17,7 +17,7 @@
 | Подсистема | Назначение |
 |------------|------------|
 | **WEB-itinvent** | Web UI + FastAPI: оборудование, сети, hub/tasks, почта, чат, tickets, Scan Center. Chat runtime может работать отдельным процессом `itinvent-chat` (`backend/chat_main.py`, порт **8002**) |
-| **desktop** | Windows WPF/WebView2 shell существующего портала HUB; без отдельного backend и бизнес-логики |
+| **desktop** | Windows WPF/WebView2 для портала HUB и существующие нативные экраны; общий backend |
 | **bot** | Telegram-бот: поиск, акты, OCR, экспорты, регистрация работ |
 | **agent** + **agent.py** | Windows inventory-agent (MSI, Scheduled Task) |
 | **scan_agent** | Sidecar: поиск чувствительных документов на ПК |
@@ -68,7 +68,7 @@ Image_scan/
 ├── inventory_server/     # python -m inventory_server
 ├── integrations/
 │   └── 1c/               # Исходники расширений/переходников 1С для HUB-IT
-├── desktop/              # Windows WPF/WebView2 shell существующего web-портала
+├── desktop/              # Windows WPF/WebView2 и нативные экраны
 ├── mobile-hub/           # Expo React Native (Android), см. mobile-hub/README.md
 ├── data/                 # JSON-хранилища (см. data/README.md)
 ├── documentation/        # user-guides + technical
@@ -200,7 +200,7 @@ OpenAPI в dev: `http://localhost:8001/docs`
 | Тесты | `desktop/Hub.Desktop.Tests/` |
 | Запуск и ограничения | `desktop/README.md` |
 
-Desktop — тонкая оболочка web-портала: auth, REST, WebSocket и бизнес-логика остаются в существующих frontend/backend. Release разрешает только `https://hubit.zsgp.ru/`.
+Desktop использует WebView2 для web-портала и содержит нативные экраны по [ADR-0010](../../docs/adr/0010-desktop-native-screens.md). Серверная авторизация и бизнес-логика остаются в общем backend. Политику навигации и ограничения на развитие нативного чата см. в [AGENTS.md](../../AGENTS.md).
 
 ### Windows-агенты
 

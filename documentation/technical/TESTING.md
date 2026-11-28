@@ -1,6 +1,6 @@
 # Тестовая инфраструктура HUB-IT
 
-Справочник по запуску и устройству тестов. Обязательные правила (что и когда проверять, качество тестов) — в [AGENTS.md](../../AGENTS.md).
+Справочник по запуску и устройству тестов. Обязательные правила — в [AGENTS.md](../../AGENTS.md), матрица проверок по риску — в [QUALITY_GATES.md](../../.project/QUALITY_GATES.md).
 
 ## Python / pytest
 
@@ -26,7 +26,7 @@
 
 - `npm run test:unit` — проверенные pure-тесты в Node; `npm run test:ui` — DOM-тесты; `npm run test:run -- <путь>` — узкий запуск по файлам.
 - В `vite.config.js` Node allowlist явный: новые тесты по умолчанию остаются в DOM-проекте; перед переносом в Node проверить всю цепочку импортов.
-- Проверочная сборка — только `npx vite build --outDir <папка вне dist>`: `npm run build` пишет в `dist/`, который раздаёт production IIS.
+- Проверочная сборка — только `npx vite build --outDir <папка вне dist>`. `npm run build` пишет в `dist/`; сайт IIS обслуживает опубликованную копию, которую обновляет штатный publish.
 
 ### Playwright E2E
 
