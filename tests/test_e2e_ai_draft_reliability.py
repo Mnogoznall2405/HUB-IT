@@ -550,8 +550,20 @@ def test_claude_transport_keeps_recipient_arguments_through_http_worker(agent, m
         if kwargs["response_format"]["type"] == "json_schema":
             for item in payload.get("tool_calls", []):
                 item["args"] = {}
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))],
-            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2))
+        content = json.dumps(payload)
+        usage = SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+        if kwargs.get("stream"):
+            return iter([
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content=content))],
+                    usage=None,
+                ),
+                SimpleNamespace(choices=[], usage=usage),
+            ])
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+            usage=usage,
+        )
     client = ai_module.openrouter_client
     monkeypatch.setattr(client, "_build_client", lambda **kwargs: SimpleNamespace(
         chat=SimpleNamespace(completions=SimpleNamespace(create=provider))))
