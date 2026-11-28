@@ -142,9 +142,11 @@ def test_postgres_fts_statement_uses_index_matching_literals():
 
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
 
-    assert "to_tsvector('simple', concat_ws(' ', app.ai_kb_chunks.title, app.ai_kb_chunks.content))" in compiled
-    assert "websearch_to_tsquery('simple', 'vpn access')" in compiled
+    assert "to_tsvector('russian', coalesce(app.ai_kb_chunks.title, '') || ' ' || coalesce(app.ai_kb_chunks.content, ''))" in compiled
+    assert "plainto_tsquery('russian', 'vpn access')" in compiled
     assert "CAST(app.ai_kb_chunks.metadata_json AS JSONB) ->> 'category'" in compiled
+    assert "visibility_scope" in compiled
+    assert "LIMIT 3" in compiled
 
 
 def test_ai_kb_fts_migration_creates_matching_gin_index():
@@ -161,6 +163,54 @@ def test_ai_kb_fts_migration_creates_matching_gin_index():
     assert "to_tsvector('simple', concat_ws(' ', title, content))" in source
     assert 'INDEX_NAME = "ix_app_ai_kb_chunks_fts_simple"' in source
     assert "DROP INDEX IF EXISTS app.{INDEX_NAME}" in source
+
+
+def test_ai_kb_hybrid_search_migration_creates_matching_indexes():
+    migration_path = (
+        WEB_ROOT
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "20261129_0187_ai_kb_hybrid_search_indexes.py"
+    )
+    source = migration_path.read_text(encoding="utf-8")
+
+    assert 'revision = "20261129_0187"' in source
+    assert 'down_revision = "20261128_0186"' in source
+    assert "to_tsvector('russian', coalesce(title, '') || ' ' || coalesce(content, ''))" in source
+    assert "lower(coalesce(title, '') || ' ' || coalesce(content, '')) gin_trgm_ops" in source
+    assert "CREATE EXTENSION IF NOT EXISTS pg_trgm" in source
+    assert "ix_app_ai_kb_chunks_fts_russian" in source
+    assert "ix_app_ai_kb_chunks_trgm_lower" in source
+
+
+def test_postgres_trgm_statement_uses_indexable_operator_shape():
+    from sqlalchemy.dialects import postgresql
+
+    retrieval_interface_module = importlib.import_module("backend.ai_chat.retrieval_interface")
+
+    adapter = retrieval_interface_module.PostgresFtsAiKbRetrievalAdapter(None)
+    statement = adapter._build_postgres_fts_statement(
+        query="падключение wifi",
+        limit=3,
+        current_user={"id": 2, "username": "user", "role": "viewer", "permissions": []},
+        mode="trgm",
+    )
+
+    compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).replace("%%>", "%>")
+
+    assert "lower(coalesce(app.ai_kb_chunks.title, '') || ' ' || coalesce(app.ai_kb_chunks.content, ''))" in compiled
+    assert "%> 'падключение'" in compiled
+    assert "word_similarity('падключение'" in compiled
+    assert "visibility_scope" in compiled
+
+
+def test_kb_chunk_visibility_is_fail_closed_without_user():
+    retrieval_module = importlib.import_module("backend.ai_chat.retrieval")
+
+    assert retrieval_module._metadata_visible_to_user(None, {"visibility_scope": "global"})
+    assert not retrieval_module._metadata_visible_to_user(None, {"visibility_scope": "private"})
+    assert not retrieval_module._metadata_visible_to_user(None, {"visibility_scope": "department"})
 
 
 def test_ai_kb_index_includes_attachment_file_names(monkeypatch, tmp_path):

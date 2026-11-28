@@ -100,6 +100,19 @@ def _load_json_object(raw_value: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _metadata_visible_to_user(current_user: dict[str, Any] | None, metadata: dict[str, Any]) -> bool:
+    """Evaluate KB chunk visibility fail-closed for anonymous/internal callers.
+
+    Production callers pass the authenticated user. If a future call site forgets
+    that argument, only globally visible chunks may be returned; private and
+    department-scoped chunks must not become visible by omission.
+    """
+    if current_user is not None:
+        return can_view_kb_item(current_user, metadata)
+    scope = normalize_visibility_scope((metadata or {}).get("visibility_scope"), default=VISIBILITY_GLOBAL)
+    return scope == VISIBILITY_GLOBAL
+
+
 def _chunk_metadata_payload(
     *,
     article: dict[str, Any],
@@ -338,7 +351,7 @@ class AiKbRetrievalService:
             category = str(metadata.get("category") or "").strip().lower()
             if allowed and category not in allowed:
                 continue
-            if current_user is not None and not can_view_kb_item(current_user, metadata):
+            if not _metadata_visible_to_user(current_user, metadata):
                 continue
             haystack = f"{row.title}\n{row.content}".lower()
             score = 0
@@ -396,7 +409,7 @@ class AiKbRetrievalService:
             category = _normalize_text(metadata.get("category")).lower()
             if allowed and category not in allowed:
                 continue
-            if current_user is not None and not can_view_kb_item(current_user, metadata):
+            if not _metadata_visible_to_user(current_user, metadata):
                 continue
             primary_attachment_id = _normalize_text(metadata.get("primary_attachment_id"))
             if not primary_attachment_id:
