@@ -27,7 +27,7 @@ Before this change:
 4. pg_trgm per-token word-similarity fallback for typos and morphology outliers;
 5. Python scanner only when PostgreSQL/FTS is unavailable, disabled, or errors.
 
-Russian stopwords are removed from fallback coverage by asking PostgreSQL itself which raw tokens produce a non-empty Russian `tsvector`. This avoids counting words such as `что`, `если`, `как`, and `не` in the coverage denominator. Coverage is adaptive: `n-1` meaningful tokens for up to three tokens, `n-2` for longer natural-language queries, always at least one.
+Russian stopwords are removed from fallback coverage by asking PostgreSQL itself which raw tokens produce a non-empty Russian `tsvector`. This avoids counting words such as `что`, `если`, `как`, and `не` in the coverage denominator. Coverage is adaptive: `n-1` meaningful tokens for up to three tokens, `n-2` for longer natural-language queries, always at least one. The coverage constraint is encoded directly as a bounded Boolean `tsquery` over token combinations rather than as repeated per-token `to_tsvector` expressions. With the 12-token cap this is at most 66 combinations; PostgreSQL can use the GIN FTS index for the resulting BitmapOr/BitmapAnd shape, avoiding the multi-hundred-millisecond sequential fallback plan observed in the first implementation prototype.
 
 Exact identifiers are constrained by boundary-aware literal matching. This intentionally prevents fuzzy or prefix cross-matching of nearby inventory numbers such as `88123`, `88124`, and `881234`; a wrong inventory number is safer as a miss than as a confident fuzzy hit.
 
@@ -92,20 +92,22 @@ Plain `CREATE INDEX` blocks writes while allowing reads. Isolated rehearsal is f
 
 Latest focused gates on this branch:
 
-- `tests/test_ai_kb_retrieval.py`: **29 passed**;
+- `tests/test_ai_kb_retrieval.py`: **30 passed**;
 - `tests/test_ai_kb_retrieval_pg.py`: **6 passed** on isolated PostgreSQL, covering Russian morphology, a typo case that cannot match FTS and therefore reaches trigram fallback, natural-language stopword coverage, exact inventory identifiers, ACL-before-LIMIT, private owner visibility, and department/manager visibility;
-- `tests/test_ai_new_tools.py tests/test_ai_kb_retrieval.py tests/test_ai_kb_retrieval_pg.py`: **66 passed**;
-- migration rehearsal on isolated PostgreSQL: fresh/repeat `scope=all`, `scope=app`, `scope=chat`, plus `0186 -> 0187 -> downgrade 0186 -> re-upgrade`: **PASS** (`a14mig878fe15582`, elapsed 14.0s);
-- `EXPLAIN` on isolated PostgreSQL with `enable_seqscan=off` showed bitmap index scans using both test-created expression indexes for the exact runtime document shapes. This is index-capability evidence on a tiny table, not production sizing evidence.
+- combined focused gate `tests/test_ai_kb_retrieval.py tests/test_ai_kb_retrieval_pg.py tests/test_ai_new_tools.py`: **67 passed**;
+- migration rehearsal on isolated PostgreSQL against the final migration content: fresh/repeat `scope=all`, `scope=app`, `scope=chat`, plus `0186 -> 0187 -> downgrade 0186 -> re-upgrade`: **PASS** (`a14mig2cea6fdc66`, elapsed 14.4s);
+- `EXPLAIN` on isolated PostgreSQL with `enable_seqscan=off` showed bitmap index scans using both test-created expression indexes for the exact runtime document shapes. This is index-capability evidence on a tiny table, not production sizing evidence;
+- fixed synthetic implementation benchmark `a14-artifacts/a14_retrieval_bench.py`, 1007 rows, 9 predeclared cases, 9 repeats/case: PostgreSQL hybrid **Hit@1/Hit@3 1.0**, zero false-positive negative control, avg **19.679 ms**, p50 **5.295 ms**, p95 **62.793 ms**; Python fallback **Hit@1/Hit@3 0.75**, zero false-positive negative control, avg **24.004 ms**. Runtime plans in `a14_retrieval_bench_result.json` used the FTS GIN index without sequential scan for strict FTS (**0.758 ms**) and bounded Boolean coverage (**1.89 ms**). The first pilot corpus was rejected because filler rows for «Сетевой диск» also contained the target word «Подключение», making the typo case ambiguous; the corpus was corrected before accepting the final result. This remains small synthetic evidence, not production sizing.
 
 ## Remaining limits and non-goals
 
 - This is not semantic/vector retrieval. Synonym/paraphrase recall remains limited.
 - The staged pipeline stops at the first stage with hits; it does not merge strict and fallback result sets.
 - Retrieval ACL still primarily evaluates indexed metadata. Authoritative KB state can change inside the index freshness window; this pre-existing architecture issue remains a production-GO security blocker and must be closed by authoritative revalidation or an equivalent design before merge/release.
-- `%>` candidate generation uses the database `pg_trgm.word_similarity_threshold` GUC; coverage still enforces the explicit `0.6` threshold. Production GUC evidence is required before enablement.
-- No larger fixed golden corpus has been run against the implementation yet.
-- No production-like volume EXPLAIN or latency benchmark has been run yet.
+- `%>` candidate generation and coverage now use the same database `pg_trgm.word_similarity_threshold` GUC, avoiding the previous hard-coded divergence; production GUC evidence is still required before enablement.
+- On the 1007-row synthetic table the planner chooses a sequential scan for `%>` trigram fallback (**49.647 ms**) even though the same plan with `enable_seqscan=off` uses the trigram GIN index in **0.523 ms**. This is a planner-cost/selectivity risk, not a correctness failure; production-like volume `EXPLAIN (ANALYZE, BUFFERS)` is required before any enablement decision.
+- Exact identifier lookup is boundary-safe but currently uses a sequential scan (**15.82 ms** on the small benchmark table). That may be acceptable at small corpora, but production-like volume evidence is required before enablement.
+- No production-like volume latency benchmark has been run yet.
 - No production deployment, production migration, production data, or paid provider calls were used.
 
 These are prototype gates, not production GO evidence.

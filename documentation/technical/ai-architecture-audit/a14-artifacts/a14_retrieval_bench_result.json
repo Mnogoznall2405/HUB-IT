@@ -1,0 +1,293 @@
+{
+  "schema": "a14benchtestf56c988e05",
+  "rows": 1007,
+  "repeats_per_case": 9,
+  "cases": 9,
+  "postgres_hybrid": {
+    "hit_at_1": 1.0,
+    "hit_at_3": 1.0,
+    "false_positive_cases": 0,
+    "avg_latency_ms": 19.679,
+    "p50_latency_ms": 5.237,
+    "p95_latency_ms": 63.551,
+    "cases": [
+      {
+        "name": "morphology_vpn",
+        "query": "настройки vpn удаленная работа",
+        "expected": "vpn",
+        "top_ids": [
+          "vpn"
+        ],
+        "p50_ms": 4.537
+      },
+      {
+        "name": "natural_stopwords_wifi",
+        "query": "что делать если не работает корпоративный wifi",
+        "expected": "wifi",
+        "top_ids": [
+          "wifi"
+        ],
+        "p50_ms": 8.025
+      },
+      {
+        "name": "typo_wifi",
+        "query": "падключение",
+        "expected": "wifi",
+        "top_ids": [
+          "wifi"
+        ],
+        "p50_ms": 63.312
+      },
+      {
+        "name": "inventory_hyphen",
+        "query": "ИНВ-88123",
+        "expected": "inv-hyphen",
+        "top_ids": [
+          "inv-hyphen"
+        ],
+        "p50_ms": 4.806
+      },
+      {
+        "name": "inventory_numeric",
+        "query": "88123",
+        "expected": "inv-hyphen",
+        "top_ids": [
+          "inv-hyphen"
+        ],
+        "p50_ms": 21.631
+      },
+      {
+        "name": "inventory_underscore",
+        "query": "INV_88124",
+        "expected": "inv-under",
+        "top_ids": [
+          "inv-under"
+        ],
+        "p50_ms": 4.631
+      },
+      {
+        "name": "error_code",
+        "query": "0x80070005",
+        "expected": "error-access",
+        "top_ids": [
+          "error-access"
+        ],
+        "p50_ms": 4.495
+      },
+      {
+        "name": "tag_word",
+        "query": "отпуск",
+        "expected": "forms",
+        "top_ids": [
+          "forms"
+        ],
+        "p50_ms": 3.72
+      },
+      {
+        "name": "negative_control",
+        "query": "zxqwnoitak",
+        "expected": null,
+        "top_ids": [],
+        "p50_ms": 60.619
+      }
+    ]
+  },
+  "python_fallback": {
+    "hit_at_1": 0.75,
+    "hit_at_3": 0.75,
+    "false_positive_cases": 0,
+    "avg_latency_ms": 24.004,
+    "p50_latency_ms": 18.848,
+    "p95_latency_ms": 77.289,
+    "cases": [
+      {
+        "name": "morphology_vpn",
+        "query": "настройки vpn удаленная работа",
+        "expected": "vpn",
+        "top_ids": [
+          "vpn"
+        ],
+        "p50_ms": 21.022
+      },
+      {
+        "name": "natural_stopwords_wifi",
+        "query": "что делать если не работает корпоративный wifi",
+        "expected": "wifi",
+        "top_ids": [
+          "filler-0002",
+          "filler-0012",
+          "filler-0022"
+        ],
+        "p50_ms": 22.169
+      },
+      {
+        "name": "typo_wifi",
+        "query": "падключение",
+        "expected": "wifi",
+        "top_ids": [],
+        "p50_ms": 18.492
+      },
+      {
+        "name": "inventory_hyphen",
+        "query": "ИНВ-88123",
+        "expected": "inv-hyphen",
+        "top_ids": [
+          "inv-hyphen",
+          "inv-long"
+        ],
+        "p50_ms": 19.39
+      },
+      {
+        "name": "inventory_numeric",
+        "query": "88123",
+        "expected": "inv-hyphen",
+        "top_ids": [
+          "inv-hyphen",
+          "inv-long"
+        ],
+        "p50_ms": 18.637
+      },
+      {
+        "name": "inventory_underscore",
+        "query": "INV_88124",
+        "expected": "inv-under",
+        "top_ids": [
+          "inv-under"
+        ],
+        "p50_ms": 18.923
+      },
+      {
+        "name": "error_code",
+        "query": "0x80070005",
+        "expected": "error-access",
+        "top_ids": [
+          "error-access"
+        ],
+        "p50_ms": 18.502
+      },
+      {
+        "name": "tag_word",
+        "query": "отпуск",
+        "expected": "forms",
+        "top_ids": [
+          "forms"
+        ],
+        "p50_ms": 18.469
+      },
+      {
+        "name": "negative_control",
+        "query": "zxqwnoitak",
+        "expected": null,
+        "top_ids": [],
+        "p50_ms": 18.509
+      }
+    ]
+  },
+  "query_plans": [
+    {
+      "mode": "strict",
+      "query": "настройки vpn удаленная работа",
+      "uses_fts_index": true,
+      "uses_trgm_index": false,
+      "has_seq_scan": false,
+      "execution_time_ms": 0.758,
+      "plan_lines": [
+        "Limit  (cost=251.61..251.61 rows=1 width=546) (actual time=0.732..0.733 rows=1 loops=1)",
+        "  Buffers: shared hit=59",
+        "  ->  Sort  (cost=251.61..251.61 rows=1 width=546) (actual time=0.732..0.732 rows=1 loops=1)",
+        "        Sort Key: (ts_rank_cd(to_tsvector('russian'::regconfig, (((title)::text || ' '::text) || content)), '''настройк'' & ''vpn'' & ''удален'' & ''работ'''::tsquery)) DESC, updated_at DESC, chunk_index",
+        "        Sort Method: quicksort  Memory: 25kB",
+        "        Buffers: shared hit=59",
+        "        ->  Bitmap Heap Scan on ai_kb_chunks  (cost=247.03..251.60 rows=1 width=546) (actual time=0.725..0.726 rows=1 loops=1)",
+        "              Recheck Cond: (to_tsvector('russian'::regconfig, (((title)::text || ' '::text) || content)) @@ '''настройк'' & ''vpn'' & ''удален'' & ''работ'''::tsquery)",
+        "              Filter: ((lower(COALESCE(((metadata_json)::jsonb ->> 'visibility_scope'::text), 'global'::text)) <> ALL ('{private,department,department_managers}'::text[])) OR ((lower(COALESCE(((metadata_json)::jsonb ->> 'visibility_scope'::text), 'global'::text)) = 'private'::text) AND ((((metadata_json)::jsonb ->> 'owner_user_id'::text) = '2'::text) OR (lower(COALESCE(((metadata_json)::jsonb ->> 'created_by'::text), ''::text)) = 'bench'::text))))",
+        "              Heap Blocks: exact=1",
+        "              Buffers: shared hit=59",
+        "              ->  Bitmap Index Scan on ix_bench_fts  (cost=0.00..247.03 rows=1 width=0) (actual time=0.591..0.592 rows=1 loops=1)",
+        "                    Index Cond: (to_tsvector('russian'::regconfig, (((title)::text || ' '::text) || content)) @@ '''настройк'' & ''vpn'' & ''удален'' & ''работ'''::tsquery)",
+        "                    Buffers: shared hit=58",
+        "Planning:",
+        "  Buffers: shared hit=1",
+        "Planning Time: 0.168 ms",
+        "Execution Time: 0.758 ms"
+      ]
+    },
+    {
+      "mode": "bounded_or",
+      "query": "что делать если не работает корпоративный wifi",
+      "uses_fts_index": true,
+      "uses_trgm_index": false,
+      "has_seq_scan": false,
+      "execution_time_ms": 1.89,
+      "plan_lines": [
+        "Limit  (cost=290.50..290.50 rows=2 width=546) (actual time=1.864..1.865 rows=1 loops=1)",
+        "  Buffers: shared hit=67",
+        "  ->  Sort  (cost=290.50..290.50 rows=2 width=546) (actual time=1.863..1.864 rows=1 loops=1)",
+        "        Sort Key: (ts_rank_cd(to_tsvector('russian'::regconfig, (((title)::text || ' '::text) || content)), '''дела'' & ''работа'' | ''дела'' & ''корпоративн'' | ''дела'' & ''wifi'' | ''работа'' & ''корпоративн'' | ''работа'' & ''wifi'' | ''корпоративн'' & ''wifi'''::tsquery)) DESC, updated_at DESC, chunk_index",
+        "        Sort Method: quicksort  Memory: 25kB",
+        "        Buffers: shared hit=67",
+        "        ->  Bitmap Heap Scan on ai_kb_chunks  (cost=282.34..290.49 rows=2 width=546) (actual time=1.856..1.858 rows=1 loops=1)",
+        "              Recheck Cond: (to_tsvector('russian'::regconfig, (((title)::text || ' '::text) || content)) @@ '''дела'' & ''работа'' | ''дела'' & ''корпоративн'' | ''дела'' & ''wifi'' | ''работа'' & ''корпоративн'' | ''работа'' & ''wifi'' | ''корпоративн'' & ''wifi'''::tsquery)",
+        "              Filter: ((lower(COALESCE(((metadata_json)::jsonb ->> 'visibility_scope'::text), 'global'::text)) <> ALL ('{private,department,department_managers}'::text[])) OR ((lower(COALESCE(((metadata_json)::jsonb ->> 'visibility_scope'::text), 'global'::text)) = 'private'::text) AND ((((metadata_json)::jsonb ->> 'owner_user_id'::text) = '2'::text) OR (lower(COALESCE(((metadata_json)::jsonb ->> 'created_by'::text), ''::text)) = 'bench'::text))))",
+        "              Heap Blocks: exact=1",
+        "              Buffers: shared hit=67",
+        "              ->  Bitmap Index Scan on ix_bench_fts  (cost=0.00..282.33 rows=2 width=0) (actual time=1.464..1.464 rows=1 loops=1)",
+        "                    Index Cond: (to_tsvector('russian'::regconfig, (((title)::text || ' '::text) || content)) @@ '''дела'' & ''работа'' | ''дела'' & ''корпоративн'' | ''дела'' & ''wifi'' | ''работа'' & ''корпоративн'' | ''работа'' & ''wifi'' | ''корпоративн'' & ''wifi'''::tsquery)",
+        "                    Buffers: shared hit=66",
+        "Planning:",
+        "  Buffers: shared hit=1",
+        "Planning Time: 0.221 ms",
+        "Execution Time: 1.890 ms"
+      ]
+    },
+    {
+      "mode": "trgm",
+      "query": "падключение",
+      "uses_fts_index": false,
+      "uses_trgm_index": false,
+      "has_seq_scan": true,
+      "execution_time_ms": 49.647,
+      "plan_lines": [
+        "Limit  (cost=142.25..142.26 rows=1 width=546) (actual time=49.629..49.629 rows=1 loops=1)",
+        "  Buffers: shared hit=73",
+        "  ->  Sort  (cost=142.25..142.26 rows=1 width=546) (actual time=49.628..49.628 rows=1 loops=1)",
+        "        Sort Key: (word_similarity('падключение'::text, lower((((title)::text || ' '::text) || content)))) DESC, updated_at DESC, chunk_index",
+        "        Sort Method: quicksort  Memory: 25kB",
+        "        Buffers: shared hit=73",
+        "        ->  Seq Scan on ai_kb_chunks  (cost=0.00..142.24 rows=1 width=546) (actual time=0.090..49.623 rows=1 loops=1)",
+        "              Filter: ((lower((((title)::text || ' '::text) || content)) %> 'падключение'::text) AND ((lower(COALESCE(((metadata_json)::jsonb ->> 'visibility_scope'::text), 'global'::text)) <> ALL ('{private,department,department_managers}'::text[])) OR ((lower(COALESCE(((metadata_json)::jsonb ->> 'visibility_scope'::text), 'global'::text)) = 'private'::text) AND ((((metadata_json)::jsonb ->> 'owner_user_id'::text) = '2'::text) OR (lower(COALESCE(((metadata_json)::jsonb ->> 'created_by'::text), ''::text)) = 'bench'::text)))))",
+        "              Rows Removed by Filter: 1006",
+        "              Buffers: shared hit=73",
+        "Planning:",
+        "  Buffers: shared hit=1",
+        "Planning Time: 3.429 ms",
+        "Execution Time: 49.647 ms"
+      ]
+    },
+    {
+      "mode": "exact_identifiers",
+      "query": "ИНВ-88123",
+      "uses_fts_index": false,
+      "uses_trgm_index": false,
+      "has_seq_scan": true,
+      "execution_time_ms": 15.82,
+      "plan_lines": [
+        "Limit  (cost=152.31..152.32 rows=1 width=574) (actual time=15.803..15.804 rows=1 loops=1)",
+        "  Buffers: shared hit=73",
+        "  ->  Sort  (cost=152.31..152.32 rows=1 width=574) (actual time=15.803..15.803 rows=1 loops=1)",
+        "        Sort Key: updated_at DESC, chunk_index",
+        "        Sort Method: quicksort  Memory: 25kB",
+        "        Buffers: shared hit=73",
+        "        ->  Seq Scan on ai_kb_chunks  (cost=0.00..152.30 rows=1 width=574) (actual time=0.056..15.798 rows=1 loops=1)",
+        "              Filter: ((lower((((title)::text || ' '::text) || content)) ~ '(^|[^0-9A-Za-zА-Яа-яЁё_])инв\\-88123([^0-9A-Za-zА-Яа-яЁё_]|$)'::text) AND (lower((((title)::text || ' '::text) || content)) ~ '(^|[^0-9A-Za-zА-Яа-яЁё_])инв\\-88123([^0-9A-Za-zА-Яа-яЁё_]|$)'::text) AND ((lower(COALESCE(((metadata_json)::jsonb ->> 'visibility_scope'::text), 'global'::text)) <> ALL ('{private,department,department_managers}'::text[])) OR ((lower(COALESCE(((metadata_json)::jsonb ->> 'visibility_scope'::text), 'global'::text)) = 'private'::text) AND ((((metadata_json)::jsonb ->> 'owner_user_id'::text) = '2'::text) OR (lower(COALESCE(((metadata_json)::jsonb ->> 'created_by'::text), ''::text)) = 'bench'::text)))))",
+        "              Rows Removed by Filter: 1006",
+        "              Buffers: shared hit=73",
+        "Planning:",
+        "  Buffers: shared hit=1",
+        "Planning Time: 0.852 ms",
+        "Execution Time: 15.820 ms"
+      ]
+    }
+  ],
+  "limits": "small fixed synthetic corpus on isolated local PostgreSQL; not production sizing or semantic retrieval proof"
+}

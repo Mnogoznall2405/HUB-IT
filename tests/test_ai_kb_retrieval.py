@@ -224,6 +224,18 @@ def test_kb_chunk_visibility_is_fail_closed_without_user():
     assert not retrieval_module._metadata_visible_to_user(None, {"visibility_scope": "department"})
 
 
+def test_bounded_or_coverage_is_encoded_as_indexable_tsquery_combinations():
+    retrieval_interface_module = importlib.import_module("backend.ai_chat.retrieval_interface")
+
+    assert retrieval_interface_module._coverage_tsquery_text(["alpha", "beta", "gamma", "wifi"]) == (
+        "(alpha & beta) | (alpha & gamma) | (alpha & wifi) | "
+        "(beta & gamma) | (beta & wifi) | (gamma & wifi)"
+    )
+    assert retrieval_interface_module._coverage_tsquery_text(["alpha", "beta"]) == "(alpha) | (beta)"
+    with pytest.raises(ValueError, match="unsafe FTS token"):
+        retrieval_interface_module._coverage_tsquery_text(["alpha", "beta | wifi"])
+
+
 def test_kb_index_text_includes_tags_for_recall():
     retrieval_module = importlib.import_module("backend.ai_chat.retrieval")
 

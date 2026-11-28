@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
@@ -25,8 +26,8 @@ logger = logging.getLogger(__name__)
 
 _FTS_CONFIG = literal_column("'russian'")
 _MAX_FALLBACK_TOKENS = 12
-_TRIGRAM_SIMILARITY_THRESHOLD = 0.6
 _IDENTIFIER_CANDIDATE_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё]+(?:[-_][0-9A-Za-zА-Яа-яЁё]+)*", flags=re.UNICODE)
+_TSQUERY_TOKEN_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё_]{3,}\Z", flags=re.UNICODE)
 
 
 def _exact_identifier_tokens(query: str) -> list[str]:
@@ -165,18 +166,19 @@ def _meaningful_fts_tokens(session, tokens: list[str]) -> list[str]:
     return [str(item or "").strip() for item in rows if str(item or "").strip()]
 
 
-def _token_coverage_expression(document, tokens: list[str]):
-    coverage = None
-    for token in tokens:
-        token_query = func.plainto_tsquery(_FTS_CONFIG, token)
-        matched = case((document.op("@@")(token_query), 1), else_=0)
-        coverage = matched if coverage is None else coverage + matched
-    return coverage
-
-
 def _needed_coverage(tokens: list[str]) -> int:
     total = len(tokens)
     return max(1, total - (1 if total <= 3 else 2))
+
+
+def _coverage_tsquery_text(tokens: list[str]) -> str:
+    if any(not _TSQUERY_TOKEN_RE.fullmatch(str(token or "")) for token in tokens):
+        raise ValueError("unsafe FTS token")
+    needed = _needed_coverage(tokens)
+    return " | ".join(
+        "(" + " & ".join(combination) + ")"
+        for combination in itertools.combinations(tokens, needed)
+    )
 
 
 def _exact_identifier_clause(tokens: list[str]):
@@ -363,18 +365,12 @@ class PostgresFtsAiKbRetrievalAdapter:
                 .limit(max_items)
             )
         elif mode == "bounded_or":
-            token_queries = [func.plainto_tsquery(_FTS_CONFIG, token) for token in tokens]
-            coverage = _token_coverage_expression(document, tokens)
-            rank_value = None
-            for token_query in token_queries:
-                part = func.ts_rank_cd(document, token_query)
-                rank_value = part if rank_value is None else rank_value + part
-            rank = rank_value.label("rank")
+            ts_query = func.to_tsquery(_FTS_CONFIG, _coverage_tsquery_text(tokens))
+            rank = func.ts_rank_cd(document, ts_query).label("rank")
             statement = (
                 select(AppAiKbChunk, rank)
-                .where(or_(*(document.op("@@")(token_query) for token_query in token_queries)))
-                .where(coverage >= _needed_coverage(tokens))
-                .order_by(coverage.desc(), rank.desc(), AppAiKbChunk.updated_at.desc(), AppAiKbChunk.chunk_index.asc())
+                .where(document.op("@@")(ts_query))
+                .order_by(rank.desc(), AppAiKbChunk.updated_at.desc(), AppAiKbChunk.chunk_index.asc())
                 .limit(max_items)
             )
         elif mode == "trgm":
@@ -384,18 +380,17 @@ class PostgresFtsAiKbRetrievalAdapter:
             coverage = None
             for token in tokens:
                 similarity = func.word_similarity(token, document_lower)
-                match_clauses.append(document_lower.op("%>")(token))
-                covered = case((similarity >= _TRIGRAM_SIMILARITY_THRESHOLD, 1), else_=0)
+                matched = document_lower.op("%>")(token)
+                match_clauses.append(matched)
+                covered = case((matched, 1), else_=0)
                 score = similarity if score is None else score + similarity
                 coverage = covered if coverage is None else coverage + covered
             rank = score.label("rank")
-            statement = (
-                select(AppAiKbChunk, rank)
-                .where(or_(*match_clauses))
-                .where(coverage >= _needed_coverage(tokens))
-                .order_by(coverage.desc(), rank.desc(), AppAiKbChunk.updated_at.desc(), AppAiKbChunk.chunk_index.asc())
-                .limit(max_items)
-            )
+            statement = select(AppAiKbChunk, rank).where(or_(*match_clauses))
+            if len(tokens) > 1:
+                statement = statement.where(coverage >= _needed_coverage(tokens))
+                statement = statement.order_by(coverage.desc())
+            statement = statement.order_by(rank.desc(), AppAiKbChunk.updated_at.desc(), AppAiKbChunk.chunk_index.asc()).limit(max_items)
         else:
             raise ValueError(f"unsupported retrieval mode: {mode}")
         return self._apply_common_filters(
