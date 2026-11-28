@@ -7,7 +7,7 @@
 | Область | Состояние | Доказательство / SHA |
 | --- | --- | --- |
 | Управляющий PR | PR #107, draft, documentation-only | ветка `docs/ai-assistant-a11-a24-roadmap` |
-| A11 Release Candidate | PR #105 обновлён review fixes, curated benchmark pack и process recovery proof | head `fbacbcaa` |
+| A11 Release Candidate | PR #105 обновлён review fixes, benchmark pack, recovery proof и characterization fix | head `cae317fd` |
 | A11 verdict | **BLOCKED / NO-GO для production merge** | нет full frozen eval на exact final SHA; нет подтверждённого бюджета; не решены routing/watchdog production flags |
 | A12+ | Не начаты как implementation PR | можно готовить test plans и независимые измерения, но не расширять runtime до closure A11 или отдельного согласованного slice |
 
@@ -19,7 +19,7 @@
 - Migration rehearsal на изолированном PostgreSQL: **PASS** (`scope=all`, `scope=app`, `scope=chat`, `0185 → 0186 → downgrade 0185 → re-upgrade`).
 - Focused post-review suite: **46 passed**.
 - AI regression suite после исправлений: **302 passed**.
-- Известный characterization test `test_claude_transport_keeps_recipient_arguments_through_http_worker`: **FAIL** из-за mock/transport контура; не считается production proof, но должен быть разобран отдельно.
+- Characterization test `test_claude_transport_keeps_recipient_arguments_through_http_worker`: **PASS** после исправления streaming test double; весь `test_e2e_ai_draft_reliability.py` — **48 passed** на SHA `ff320dbc` (docs commit `cae317fd` не меняет runtime/tests).
 
 ## Исправления, уже включённые в PR #105
 
@@ -43,7 +43,7 @@ Commit `2d5b37c5`:
 
 ## Активные блокеры A11 GO
 
-1. **BENCH-BLOCKER:** frozen dev/holdout benchmark из 205 сценариев не выполнен на exact final SHA `2d5b37c5` или новее. Прежний measurement относится к PR #74 head `93f6a770`, не к PR #105.
+1. **BENCH-BLOCKER:** frozen dev/holdout benchmark из 205 сценариев не выполнен на exact final SHA `cae317fd` или новее. Прежний measurement относится к PR #74 head `93f6a770`, не к PR #105.
 2. **BUDGET-BLOCKER:** нет подтверждённого численного бюджета и провайдера для платного LLM benchmark. Нельзя запускать полный платный прогон без этого согласования.
 3. **CONFIG-BLOCKER:** production decision по `AI_JEV_ROUTING`, CHAT/READ/ACT ceilings, `AI_READ_FAST_PATH_ENABLED`, `AI_COMPACT_SPECS_ENABLED`, `AI_RUN_RESULT_REUSE_ENABLED` не зафиксировано. По прежним измерениям fast path разрушал качество и должен оставаться OFF до новых доказательств.
 4. **WATCHDOG-CONFIG-BLOCKER:** process-level kill-after-claim recovery теперь доказан в isolated PG test, но watchdog всё ещё не включён штатно в PM2/ecosystem; требуется осознанное production configuration решение владельца.

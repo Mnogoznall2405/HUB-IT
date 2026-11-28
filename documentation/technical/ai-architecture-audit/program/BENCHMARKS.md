@@ -150,6 +150,20 @@ python -m py_compile `
 
 **Limitations:** не LLM measurement; не проверяет external systems.
 
+## B-006b — Draft reliability / Claude transport characterization
+
+**SHA:** `ff320dbc` test fix; `cae317fd` documentation-only update.
+
+**Command:**
+
+```powershell
+pytest -q tests/test_e2e_ai_draft_reliability.py
+```
+
+**Result:** 48 passed in 46.99s.
+
+**Finding:** прежний failure был дефектом test double: mock возвращал non-stream response при `stream=True`. Streaming path ожидаемо пытался итерировать объект, fallback потреблял следующие scripted responses и сдвигал очередь. Production transport code не изменялся; это не подтверждённый production defect.
+
 ## B-007 — PostgreSQL FTS baseline for OSS-01/A14
 
 **Status:** TODO, local/non-paid.
