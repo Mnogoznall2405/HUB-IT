@@ -1,0 +1,869 @@
+{
+  "database": "isolated disposable PostgreSQL",
+  "rows": 1012,
+  "target_rows": 12,
+  "cases": 13,
+  "limitations": [
+    "synthetic corpus only; no production data",
+    "current Python scorer approximated outside the application service",
+    "hypothetical SQL retrieval is not yet application implementation",
+    "small corpus; latency is comparative smoke evidence, not production sizing"
+  ],
+  "results": [
+    {
+      "algorithm": "current_python_substring",
+      "hit_at_1": 0.8,
+      "hit_at_3": 0.9,
+      "positive_cases": 10,
+      "negative_cases": 3,
+      "false_positive_cases": 1,
+      "details": [
+        {
+          "id": "exact_vpn",
+          "kind": "exact",
+          "expected": "vpn",
+          "result": [
+            "vpn",
+            "vpn809",
+            "scan"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_vpn",
+          "kind": "morphology",
+          "expected": "vpn",
+          "result": [
+            "vpn809",
+            "vpn",
+            "dns"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_cartridge",
+          "kind": "morphology",
+          "expected": "cartridge",
+          "result": [
+            "cartridge"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_scan",
+          "kind": "morphology",
+          "expected": "scan",
+          "result": [
+            "scan",
+            "dns"
+          ],
+          "ok": true
+        },
+        {
+          "id": "typo_wifi",
+          "kind": "typo",
+          "expected": "wifi",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "exact_error",
+          "kind": "exact",
+          "expected": "vpn809",
+          "result": [
+            "vpn809",
+            "vpn",
+            "filler809"
+          ],
+          "ok": true
+        },
+        {
+          "id": "exact_inventory",
+          "kind": "exact_control",
+          "expected": "inv",
+          "result": [
+            "inv"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_backup",
+          "kind": "morphology",
+          "expected": "backup",
+          "result": [
+            "backup"
+          ],
+          "ok": true
+        },
+        {
+          "id": "exact_dns",
+          "kind": "exact",
+          "expected": "dns",
+          "result": [
+            "dns"
+          ],
+          "ok": true
+        },
+        {
+          "id": "synonym_password",
+          "kind": "semantic_synonym",
+          "expected": "password",
+          "result": [
+            "password"
+          ],
+          "ok": true
+        },
+        {
+          "id": "negative_space",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "negative_alpha",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "acl_private",
+          "kind": "acl_public_user",
+          "expected": null,
+          "result": [
+            "filler997",
+            "filler992",
+            "filler987"
+          ],
+          "ok": false
+        }
+      ],
+      "avg_latency_ms_synthetic_1k_rows": 2.497
+    },
+    {
+      "algorithm": "pg_fts_simple_and",
+      "hit_at_1": 0.3,
+      "hit_at_3": 0.3,
+      "positive_cases": 10,
+      "negative_cases": 3,
+      "false_positive_cases": 0,
+      "details": [
+        {
+          "id": "exact_vpn",
+          "kind": "exact",
+          "expected": "vpn",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "morph_vpn",
+          "kind": "morphology",
+          "expected": "vpn",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "morph_cartridge",
+          "kind": "morphology",
+          "expected": "cartridge",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "morph_scan",
+          "kind": "morphology",
+          "expected": "scan",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "typo_wifi",
+          "kind": "typo",
+          "expected": "wifi",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "exact_error",
+          "kind": "exact",
+          "expected": "vpn809",
+          "result": [
+            "vpn809"
+          ],
+          "ok": true
+        },
+        {
+          "id": "exact_inventory",
+          "kind": "exact_control",
+          "expected": "inv",
+          "result": [
+            "inv"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_backup",
+          "kind": "morphology",
+          "expected": "backup",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "exact_dns",
+          "kind": "exact",
+          "expected": "dns",
+          "result": [
+            "dns"
+          ],
+          "ok": true
+        },
+        {
+          "id": "synonym_password",
+          "kind": "semantic_synonym",
+          "expected": "password",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "negative_space",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "negative_alpha",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "acl_private",
+          "kind": "acl_public_user",
+          "expected": null,
+          "result": [],
+          "ok": true
+        }
+      ],
+      "avg_latency_ms_synthetic_1k_rows": 0.232
+    },
+    {
+      "algorithm": "pg_fts_russian_and",
+      "hit_at_1": 0.7,
+      "hit_at_3": 0.7,
+      "positive_cases": 10,
+      "negative_cases": 3,
+      "false_positive_cases": 0,
+      "details": [
+        {
+          "id": "exact_vpn",
+          "kind": "exact",
+          "expected": "vpn",
+          "result": [
+            "vpn"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_vpn",
+          "kind": "morphology",
+          "expected": "vpn",
+          "result": [
+            "vpn"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_cartridge",
+          "kind": "morphology",
+          "expected": "cartridge",
+          "result": [
+            "cartridge"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_scan",
+          "kind": "morphology",
+          "expected": "scan",
+          "result": [
+            "scan"
+          ],
+          "ok": true
+        },
+        {
+          "id": "typo_wifi",
+          "kind": "typo",
+          "expected": "wifi",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "exact_error",
+          "kind": "exact",
+          "expected": "vpn809",
+          "result": [
+            "vpn809"
+          ],
+          "ok": true
+        },
+        {
+          "id": "exact_inventory",
+          "kind": "exact_control",
+          "expected": "inv",
+          "result": [
+            "inv"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_backup",
+          "kind": "morphology",
+          "expected": "backup",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "exact_dns",
+          "kind": "exact",
+          "expected": "dns",
+          "result": [
+            "dns"
+          ],
+          "ok": true
+        },
+        {
+          "id": "synonym_password",
+          "kind": "semantic_synonym",
+          "expected": "password",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "negative_space",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "negative_alpha",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "acl_private",
+          "kind": "acl_public_user",
+          "expected": null,
+          "result": [],
+          "ok": true
+        }
+      ],
+      "avg_latency_ms_synthetic_1k_rows": 0.284
+    },
+    {
+      "algorithm": "pg_fts_russian_or_ranked",
+      "hit_at_1": 0.9,
+      "hit_at_3": 0.9,
+      "positive_cases": 10,
+      "negative_cases": 3,
+      "false_positive_cases": 1,
+      "details": [
+        {
+          "id": "exact_vpn",
+          "kind": "exact",
+          "expected": "vpn",
+          "result": [
+            "vpn",
+            "dns",
+            "scan"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_vpn",
+          "kind": "morphology",
+          "expected": "vpn",
+          "result": [
+            "vpn",
+            "dns",
+            "scan"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_cartridge",
+          "kind": "morphology",
+          "expected": "cartridge",
+          "result": [
+            "cartridge"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_scan",
+          "kind": "morphology",
+          "expected": "scan",
+          "result": [
+            "scan",
+            "dns",
+            "vpn"
+          ],
+          "ok": true
+        },
+        {
+          "id": "typo_wifi",
+          "kind": "typo",
+          "expected": "wifi",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "exact_error",
+          "kind": "exact",
+          "expected": "vpn809",
+          "result": [
+            "vpn809",
+            "filler1",
+            "filler101"
+          ],
+          "ok": true
+        },
+        {
+          "id": "exact_inventory",
+          "kind": "exact_control",
+          "expected": "inv",
+          "result": [
+            "inv"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_backup",
+          "kind": "morphology",
+          "expected": "backup",
+          "result": [
+            "backup"
+          ],
+          "ok": true
+        },
+        {
+          "id": "exact_dns",
+          "kind": "exact",
+          "expected": "dns",
+          "result": [
+            "dns"
+          ],
+          "ok": true
+        },
+        {
+          "id": "synonym_password",
+          "kind": "semantic_synonym",
+          "expected": "password",
+          "result": [
+            "password"
+          ],
+          "ok": true
+        },
+        {
+          "id": "negative_space",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "negative_alpha",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "acl_private",
+          "kind": "acl_public_user",
+          "expected": null,
+          "result": [
+            "backup",
+            "dns",
+            "filler102"
+          ],
+          "ok": false
+        }
+      ],
+      "avg_latency_ms_synthetic_1k_rows": 3.205
+    },
+    {
+      "algorithm": "pg_trgm_whole_query",
+      "hit_at_1": 0.2,
+      "hit_at_3": 0.2,
+      "positive_cases": 10,
+      "negative_cases": 3,
+      "false_positive_cases": 0,
+      "details": [
+        {
+          "id": "exact_vpn",
+          "kind": "exact",
+          "expected": "vpn",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "morph_vpn",
+          "kind": "morphology",
+          "expected": "vpn",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "morph_cartridge",
+          "kind": "morphology",
+          "expected": "cartridge",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "morph_scan",
+          "kind": "morphology",
+          "expected": "scan",
+          "result": [
+            "scan"
+          ],
+          "ok": true
+        },
+        {
+          "id": "typo_wifi",
+          "kind": "typo",
+          "expected": "wifi",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "exact_error",
+          "kind": "exact",
+          "expected": "vpn809",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "exact_inventory",
+          "kind": "exact_control",
+          "expected": "inv",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "morph_backup",
+          "kind": "morphology",
+          "expected": "backup",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "exact_dns",
+          "kind": "exact",
+          "expected": "dns",
+          "result": [
+            "dns"
+          ],
+          "ok": true
+        },
+        {
+          "id": "synonym_password",
+          "kind": "semantic_synonym",
+          "expected": "password",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "negative_space",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "negative_alpha",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "acl_private",
+          "kind": "acl_public_user",
+          "expected": null,
+          "result": [],
+          "ok": true
+        }
+      ],
+      "avg_latency_ms_synthetic_1k_rows": 1.36
+    },
+    {
+      "algorithm": "pg_trgm_token_coverage",
+      "hit_at_1": 0.9,
+      "hit_at_3": 0.9,
+      "positive_cases": 10,
+      "negative_cases": 3,
+      "false_positive_cases": 0,
+      "details": [
+        {
+          "id": "exact_vpn",
+          "kind": "exact",
+          "expected": "vpn",
+          "result": [
+            "vpn"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_vpn",
+          "kind": "morphology",
+          "expected": "vpn",
+          "result": [
+            "vpn"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_cartridge",
+          "kind": "morphology",
+          "expected": "cartridge",
+          "result": [
+            "cartridge"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_scan",
+          "kind": "morphology",
+          "expected": "scan",
+          "result": [
+            "scan"
+          ],
+          "ok": true
+        },
+        {
+          "id": "typo_wifi",
+          "kind": "typo",
+          "expected": "wifi",
+          "result": [
+            "wifi"
+          ],
+          "ok": true
+        },
+        {
+          "id": "exact_error",
+          "kind": "exact",
+          "expected": "vpn809",
+          "result": [
+            "vpn809"
+          ],
+          "ok": true
+        },
+        {
+          "id": "exact_inventory",
+          "kind": "exact_control",
+          "expected": "inv",
+          "result": [
+            "inv"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_backup",
+          "kind": "morphology",
+          "expected": "backup",
+          "result": [
+            "backup"
+          ],
+          "ok": true
+        },
+        {
+          "id": "exact_dns",
+          "kind": "exact",
+          "expected": "dns",
+          "result": [
+            "dns"
+          ],
+          "ok": true
+        },
+        {
+          "id": "synonym_password",
+          "kind": "semantic_synonym",
+          "expected": "password",
+          "result": [],
+          "ok": false
+        },
+        {
+          "id": "negative_space",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "negative_alpha",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "acl_private",
+          "kind": "acl_public_user",
+          "expected": null,
+          "result": [],
+          "ok": true
+        }
+      ],
+      "avg_latency_ms_synthetic_1k_rows": 3.334
+    },
+    {
+      "algorithm": "pg_hybrid_russian_then_trgm",
+      "hit_at_1": 1.0,
+      "hit_at_3": 1.0,
+      "positive_cases": 10,
+      "negative_cases": 3,
+      "false_positive_cases": 0,
+      "details": [
+        {
+          "id": "exact_vpn",
+          "kind": "exact",
+          "expected": "vpn",
+          "result": [
+            "vpn"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_vpn",
+          "kind": "morphology",
+          "expected": "vpn",
+          "result": [
+            "vpn"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_cartridge",
+          "kind": "morphology",
+          "expected": "cartridge",
+          "result": [
+            "cartridge"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_scan",
+          "kind": "morphology",
+          "expected": "scan",
+          "result": [
+            "scan"
+          ],
+          "ok": true
+        },
+        {
+          "id": "typo_wifi",
+          "kind": "typo",
+          "expected": "wifi",
+          "result": [
+            "wifi"
+          ],
+          "ok": true
+        },
+        {
+          "id": "exact_error",
+          "kind": "exact",
+          "expected": "vpn809",
+          "result": [
+            "vpn809"
+          ],
+          "ok": true
+        },
+        {
+          "id": "exact_inventory",
+          "kind": "exact_control",
+          "expected": "inv",
+          "result": [
+            "inv"
+          ],
+          "ok": true
+        },
+        {
+          "id": "morph_backup",
+          "kind": "morphology",
+          "expected": "backup",
+          "result": [
+            "backup"
+          ],
+          "ok": true
+        },
+        {
+          "id": "exact_dns",
+          "kind": "exact",
+          "expected": "dns",
+          "result": [
+            "dns"
+          ],
+          "ok": true
+        },
+        {
+          "id": "synonym_password",
+          "kind": "semantic_synonym",
+          "expected": "password",
+          "result": [
+            "password"
+          ],
+          "ok": true
+        },
+        {
+          "id": "negative_space",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "negative_alpha",
+          "kind": "negative",
+          "expected": null,
+          "result": [],
+          "ok": true
+        },
+        {
+          "id": "acl_private",
+          "kind": "acl_public_user",
+          "expected": null,
+          "result": [],
+          "ok": true
+        }
+      ],
+      "avg_latency_ms_synthetic_1k_rows": 3.128
+    }
+  ],
+  "plans": {
+    "fts_russian_default": [
+      "Bitmap Heap Scan on bench_kb_chunks",
+      "  Recheck Cond: (to_tsvector('russian'::regconfig, ((COALESCE(title, ''::text) || ' '::text) || COALESCE(content, ''::text))) @@ '''настройк'' & ''vpn'' & ''удален'' & ''работ'''::tsquery)",
+      "  Filter: (visibility = 'public'::text)",
+      "  ->  Bitmap Index Scan on fts_russian_gin",
+      "        Index Cond: (to_tsvector('russian'::regconfig, ((COALESCE(title, ''::text) || ' '::text) || COALESCE(content, ''::text))) @@ '''настройк'' & ''vpn'' & ''удален'' & ''работ'''::tsquery)"
+    ],
+    "trgm_word_default": [
+      "Seq Scan on bench_kb_chunks",
+      "  Filter: ((visibility = 'public'::text) AND (lower(((COALESCE(title, ''::text) || ' '::text) || COALESCE(content, ''::text))) %> 'падключение'::text))"
+    ],
+    "trgm_word_index_capability_forced": [
+      "Bitmap Heap Scan on bench_kb_chunks",
+      "  Recheck Cond: (lower(((COALESCE(title, ''::text) || ' '::text) || COALESCE(content, ''::text))) %> 'падключение'::text)",
+      "  Filter: (visibility = 'public'::text)",
+      "  ->  Bitmap Index Scan on trgm_lower_gin",
+      "        Index Cond: (lower(((COALESCE(title, ''::text) || ' '::text) || COALESCE(content, ''::text))) %> 'падключение'::text)"
+    ]
+  }
+}
