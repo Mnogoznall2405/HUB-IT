@@ -117,7 +117,10 @@ class KbArticlesSearchTool(AiTool):
     description = (
         "Search Hub knowledge base articles by free text and optional category. "
         "Matches article text AND attachment file contents via the full-text index. "
-        "Returns compact article cards (id, title, summary, tags); open the needed one with kb.articles.get."
+        "Returns compact article cards (id, title, summary, tags); open the needed one with kb.articles.get. "
+        "KB = instructions, FAQ, regulations, templates. NOT for corporate announcements/news "
+        "('последние объявления', 'что нового в компании') — those are office.announcements.list. "
+        "NOT for personal files — those are me.files.search."
     )
     input_model = KbArticlesSearchArgs
     stage = "checking_kb"

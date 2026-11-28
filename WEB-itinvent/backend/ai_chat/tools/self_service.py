@@ -533,13 +533,23 @@ class MyMailboxQuotaTool(AiTool):
 
 
 class MyFilesSearchArgs(BaseModel):
-    query: str = Field(..., min_length=2, max_length=200, description="Part of the file or folder name")
+    # A11 c3 (doc_10/ctx_08): an empty query is the legitimate "list all my
+    # files" case ('Покажи мои файлы', 'Выгрузи мои файлы') — the underlying
+    # service already supports it (folder-scoped root listing), only the
+    # schema rejected it and stranded the model with a validation error.
+    # Non-empty queries still require >= 2 chars to avoid noise searches.
+    query: Optional[str] = Field(
+        default=None,
+        min_length=2,
+        max_length=200,
+        description="Part of the file or folder name; omit or pass empty to list all own files",
+    )
     limit: int = Field(default=MAX_MY_FILES, ge=1, le=MAX_MY_FILES)
 
     @field_validator("query", mode="before")
     @classmethod
     def _normalize(cls, value):
-        return _normalize_text(value)
+        return _normalize_text(value) or None
 
 
 class MyFilesAttachArgs(BaseModel):
@@ -555,7 +565,9 @@ class MyFilesSearchTool(AiTool):
     tool_id = SELF_TOOL_FILES_SEARCH
     description = (
         "Search the asking employee's own 'My files' storage by file or folder name. Returns file ids, names, "
-        "folders, sizes and dates; attach one to the answer with me.files.attach."
+        "folders, sizes and dates; attach one to the answer with me.files.attach. "
+        "Omit query (or pass empty) to list the employee's files without a name filter — use that for "
+        "'покажи/выгрузи мои файлы' instead of asking for a search term."
     )
     input_model = MyFilesSearchArgs
     stage = "checking_office"
@@ -564,7 +576,7 @@ class MyFilesSearchTool(AiTool):
         from backend.services.my_files_service import my_files_service
 
         try:
-            payload = my_files_service.list_files(user_id=int(context.user_id), query=args.query)
+            payload = my_files_service.list_files(user_id=int(context.user_id), query=args.query or "")
         except Exception as exc:
             return AiToolResult(tool_id=self.tool_id, ok=False, error=f"«Мои файлы» недоступны: {exc}")
         items = [
@@ -579,11 +591,25 @@ class MyFilesSearchTool(AiTool):
             for item in list(payload.get("items") or [])
             if isinstance(item, dict)
         ]
+        # Without a query the service answers the folder-scoped home view whose
+        # subfolder names are part of a truthful "list my files" answer.
+        folders = [
+            _normalize_text(item.get("name"))
+            for item in list(payload.get("folders") or [])
+            if isinstance(item, dict) and _normalize_text(item.get("name"))
+        ][:MAX_MY_FILES]
         total = len(items)
         return AiToolResult(
             tool_id=self.tool_id,
             ok=True,
-            data={"count": min(total, args.limit), "total": total, "truncated": total > args.limit, "items": items[: args.limit]},
+            data={
+                "count": min(total, args.limit),
+                "total": total,
+                "truncated": total > args.limit,
+                "items": items[: args.limit],
+                "folders": folders,
+                "scope": "search" if _normalize_text(args.query) else "all_own_files",
+            },
         )
 
 

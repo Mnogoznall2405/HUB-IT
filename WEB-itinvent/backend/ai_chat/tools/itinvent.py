@@ -1097,7 +1097,13 @@ class EquipmentListByBranchTool(AiTool):
 
 class EmployeeSearchTool(AiTool):
     tool_id = ITINVENT_TOOL_EMPLOYEE_SEARCH
-    description = "Search ITinvent employees by name or department."
+    description = (
+        "Search ITinvent employees (equipment owners) by name or department. Returns OWNER_NO needed "
+        "for itinvent.employee.list_equipment and transfer operations. Use ONLY when the task is about "
+        "equipment ownership or ITinvent operations. NOT a corporate phonebook: for phone/e-mail/position/"
+        "office/absence of a person use directory.people.search instead — ITinvent knows only equipment "
+        "owners and its contact fields may be outdated."
+    )
     input_model = EmployeeSearchArgs
     stage = "checking_itinvent"
 
@@ -2177,9 +2183,10 @@ class UserByNameArgs(BaseModel):
 class UserByNameTool(AiTool):
     tool_id = ITINVENT_TOOL_USER_BY_NAME
     description = (
-        "Search for a user/employee by name, surname, or login. "
-        "Returns employee details including OWNER_NO, full name, department, email. "
-        "Useful to resolve ambiguous employee names before looking up their equipment."
+        "Resolve an ITinvent equipment owner by name, surname, or login. Returns OWNER_NO, full name, "
+        "department, email — use ONLY as a preliminary step before equipment operations (list_equipment, "
+        "transfer) when you need the owner's OWNER_NO. Do NOT use to find contacts (phone, e-mail, position) "
+        "or to answer 'find employee X' — that is directory.people.search (authoritative corporate phonebook)."
     )
     input_model = UserByNameArgs
     stage = "checking_itinvent"

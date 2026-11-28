@@ -340,9 +340,13 @@ _SCENARIOS = [
      "act", ["office"], []),
     ("подготовь перемещение оборудования", {"g_itinvent": 0.9, "m_mode_act": 0.9},
      "act", ["itinvent"], []),
-    # ambiguous -> undecided keeps recovery path
+    # A11: weak-but-present group signal is rescued top-1 — 'сводка по письмам'
+    # genuinely needs office; stranding it as undecided was the measured D5.1 defect.
     ("составь сводку по письмам", {"g_office": 0.4, "m_mode_chat": 0.4, "m_mode_act": 0.4},
-     None, ["other"], []),
+     "read", ["office", "other"], []),
+    # truly ambiguous (negligible signal everywhere) -> undecided keeps recovery path
+    ("ну посмотри чо там", {"g_office": 0.1, "g_kb": 0.1, "m_mode_chat": 0.3, "m_mode_act": 0.1},
+     None, ["other"], ["office", "kb"]),
 ]
 
 
@@ -634,3 +638,116 @@ def test_chat_mode_blocks_every_tool_call_even_without_specs():
         result, _ = registry.execute_bounded(tool_id=tool_id, raw_args={}, context=ctx)
         assert result.ok is False, tool_id
     assert ctx.mode_denied_calls == 3
+
+
+# ---------- A11 §6: AI_JEV_TOP1_RESCUE feature flag ----------
+
+
+def test_top1_rescue_enabled_by_default(monkeypatch):
+    """Default (flag absent): a weak-but-present argmax signal is rescued —
+    the A11 behavior stays the shipped default."""
+    monkeypatch.delenv("AI_JEV_TOP1_RESCUE", raising=False)
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_office": 0.4, "m_mode_chat": 0.4, "m_mode_act": 0.4}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="составь сводку по письмам",
+        available_groups={"office", "itinvent", "other"},
+    )
+    assert "office" in result
+    assert result.intent_mode == "read"
+
+
+def test_top1_rescue_disabled_restores_undecided(monkeypatch):
+    """AI_JEV_TOP1_RESCUE=0: the same weak signal no longer rescues the
+    group — routing falls back to undecided with only the 'other' safety net
+    (pre-A11 behavior), keeping the request_tool_group recovery path."""
+    monkeypatch.setenv("AI_JEV_TOP1_RESCUE", "0")
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_office": 0.4, "m_mode_chat": 0.4, "m_mode_act": 0.4}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="составь сводку по письмам",
+        available_groups={"office", "itinvent", "other"},
+    )
+    assert "office" not in result
+    assert "other" in result  # safety net survives indecision
+    assert result.intent_mode is None  # undecided, not read
+
+
+def test_top1_rescue_flag_is_read_at_runtime(monkeypatch):
+    """The flag is evaluated per call, not at import: toggling the env var
+    between two routings flips the behavior without any reload."""
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_office": 0.4, "m_mode_chat": 0.4, "m_mode_act": 0.4}))
+    kwargs = dict(
+        trigger_text="составь сводку по письмам",
+        available_groups={"office", "itinvent", "other"},
+    )
+    monkeypatch.setenv("AI_JEV_TOP1_RESCUE", "0")
+    service_module._jev_routing_cache.clear()
+    off_result = service_module._route_tool_groups_jev(**kwargs)
+    monkeypatch.setenv("AI_JEV_TOP1_RESCUE", "1")
+    service_module._jev_routing_cache.clear()
+    on_result = service_module._route_tool_groups_jev(**kwargs)
+    assert "office" not in off_result
+    assert "office" in on_result
+
+
+def test_top1_rescue_off_does_not_block_confident_routing(monkeypatch):
+    """Flag OFF changes only the sub-threshold rescue: a group clearly above
+    the threshold routes exactly as before."""
+    monkeypatch.setenv("AI_JEV_TOP1_RESCUE", "0")
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_office": 0.9, "m_mode_chat": 0.05, "m_mode_act": 0.05}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="покажи мои последние письма",
+        available_groups={"office", "itinvent", "other"},
+    )
+    assert "office" in result
+    assert result.intent_mode == "read"
+
+
+# ---------- A11 c3 (ctx_14): borderline chat vs meaningful group mass ----------
+
+
+def test_borderline_chat_with_strong_group_mass_rescues_group(monkeypatch):
+    """ctx_14 regression: a follow-up ('А гостевой как называется?') scored
+    chat exactly at the 0.5 threshold with kb at 0.49 — a coin flip, not a
+    confident conversation. Meaningful group mass must contradict the chat
+    verdict exactly like a routed group does (A5.1): the run keeps the rescued
+    group under a READ ceiling instead of losing every tool."""
+    monkeypatch.delenv("AI_JEV_TOP1_RESCUE", raising=False)
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_kb": 0.49, "g_chat": 0.26, "g_network": 0.15, "m_mode_chat": 0.5, "m_mode_act": 0.02}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="А гостевой как называется?",
+        available_groups={"kb", "chat", "network", "other"},
+    )
+    assert result.intent_mode == "read"
+    assert "kb" in result
+
+
+def test_confident_chat_with_noise_group_mass_stays_chat(monkeypatch):
+    """Noise-level group probabilities (< rescue floor) must not block a
+    confident CHAT: pure conversation still drops every tool."""
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_itinvent": 0.1, "g_kb": 0.08, "m_mode_chat": 0.9, "m_mode_act": 0.05}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="расскажи анекдот про принтеры",
+        available_groups={"itinvent", "kb", "other"},
+    )
+    assert result == set()
+    assert result.intent_mode == "chat"
+
+
+def test_borderline_chat_rescue_flag_off_keeps_chat(monkeypatch):
+    """AI_JEV_TOP1_RESCUE=0 restores the pre-fix behavior for the same
+    borderline vector — the flag governs both rescue paths."""
+    monkeypatch.setenv("AI_JEV_TOP1_RESCUE", "0")
+    _enable_jev(monkeypatch, lambda **kw: _jev_decision(
+        {"g_kb": 0.49, "m_mode_chat": 0.5, "m_mode_act": 0.02}))
+    result = service_module._route_tool_groups_jev(
+        trigger_text="А гостевой как называется?",
+        available_groups={"kb", "other"},
+    )
+    assert result.intent_mode == "chat"
+    assert "kb" not in result

@@ -1445,6 +1445,12 @@ class AppAiBot(AppBase):
     required_permission: Mapped[str] = mapped_column(String(128), nullable=False, default="chat.ai.use")
     use_personal_memory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    # Emergency kill-switch, separate from regular disable: blocks new requests,
+    # blocks confirmation of previously created actions, stops new execution stages
+    # (re-checked right before mutating operations). Already committed external
+    # actions are not rolled back; history and audit stay intact. The timestamp
+    # is the audit trail of when the mode was engaged.
+    emergency_disabled_at: Mapped["datetime | None"] = mapped_column(DateTime(timezone=True), nullable=True)
     bot_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

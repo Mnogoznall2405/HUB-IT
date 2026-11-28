@@ -461,6 +461,11 @@ class ActsPendingTool(AiTool):
         from backend.services.user_service import user_service
 
         database_id = _normalize_text(context.effective_database_id) or None
+        if not database_id:
+            # A11 P0: db_id=None widens the reminder query to ALL databases —
+            # a dangling assignment / denied explicit id must not broaden
+            # visibility. Fail closed like the other itinvent tools.
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="База ITinvent не определена или недоступна — акты не запрашивались.")
         assignee_user_id = int(context.user_id or 0) if args.mine_only else None
         if args.mine_only and not assignee_user_id:
             return AiToolResult(tool_id=self.tool_id, ok=False, error="Не удалось определить пользователя портала.")

@@ -251,6 +251,14 @@ AI_PERSONAL_MEMORY_ENABLED = str(os.environ.get("AI_PERSONAL_MEMORY_ENABLED", "0
 }
 AI_TOOL_CALL_LIMIT = int(os.environ.get("AI_TOOL_CALL_LIMIT", "3"))
 AI_TOOL_ROUND_LIMIT = int(os.environ.get("AI_TOOL_ROUND_LIMIT", "6"))
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """Runtime boolean env flag — read per use so tests can toggle it."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 # Живой набор ответа (стриминг answer_markdown). Выключатель — AI_STREAM_ANSWER_ENABLED=0.
 AI_STREAM_ANSWER_ENABLED = os.environ.get("AI_STREAM_ANSWER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 AI_PREVIEW_MIN_INTERVAL_SEC = float(os.environ.get("AI_PREVIEW_MIN_INTERVAL_SEC", "0.6"))
@@ -357,7 +365,7 @@ AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "- Exact inventory numbers, serial numbers, hardware serials, MAC addresses, hostnames or domains: "
     "use equipment search first, then equipment card for a single concrete device.\n"
     "- When the user asks about online/offline status of a computer by its hostname (e.g., 'TMN-IT-0009') or network name: "
-    "use itinvent.equipment.online_status with hostname argument, NOT inv_no.\n"
+    "use itinvent.computers.search with the hostname, then itinvent.computers.get for details; never use inv_no for online status.\n"
     "- Employee or department questions: use employee search, then employee equipment list.\n"
     "- For employee equipment comparison with the connected 1C warehouse, resolve the employee with "
     "itinvent.employee.search, then call itinvent.employee.list_equipment with compare_1c=true. "
@@ -381,9 +389,10 @@ AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "- Consume, write off or stock quantity changes: resolve exact consumable first, then use a draft action tool. "
     "Draft action tools only create confirmation cards; they do not modify ITinvent.\n"
     "- Use type/status/branch/location directory tools to clarify canonical labels before asking the user.\n"
-    "- When the user asks 'which computer belongs to [employee]' or 'what device is assigned to [name]': use itinvent.user.computer with the employee name.\n"
-    "- To resolve a person's identity by name, surname, or login before equipment lookup: use itinvent.user.by_name first.\n"
-    "- For questions like 'where does [name] work' or 'find employee [name]': use itinvent.user.by_name.\n"
+    "- When the user asks 'which computer belongs to [employee]' or 'what device is assigned to [name]': use itinvent.employee.search to resolve the owner, then itinvent.employee.list_equipment with the OWNER_NO.\n"
+    "- itinvent.user.by_name / itinvent.employee.search are ONLY for employees as ITinvent equipment owners (OWNER_NO resolution before equipment operations). "
+    "For corporate contacts — phone, e-mail, position, office room, absence — NEVER use them: the authoritative source is the company phonebook (directory.people.search in the directory group). "
+    "ITinvent is not a phonebook: it knows only employees who own equipment, and its contact fields may be outdated.\n"
     "- COMPUTER/OUTLOOK SEARCH: for 'где архив', 'где PST', 'где outlook' followed by an identifier (email-like login such as kozlovskii.me, surname or file name) call itinvent.computers.search with field='outlook'.\n"
     "- Examples: 'где архив kozlovskii.me', 'где PST Иванова', 'где лежит archive.pst', 'outlook на компьютере Петрова'.\n"
     "- PROFILE / WORKSTATION SEARCH: for 'где профиль', 'на каком компьютере сидит', 'за каким ПК' followed by a surname or login call itinvent.computers.search with field='profiles' (profile folders) or field='user' (who is logged in); open one result with itinvent.computers.get for uptime, pending reboot, disks and all PST files.\n"
@@ -399,7 +408,7 @@ AI_FILE_TOOL_ROUTING_GUIDE = (
     "File generation routing:\n"
     "- When the user asks to create/export/send a polished report, inventory report, summary document, PDF or Excel report, prefer ai.files.report.\n"
     "- Use ai.files.create for simpler raw files, one-off text/JSON/CSV exports, or when you already have exact file rows/content.\n"
-    "- If the file needs live ITinvent data, call the needed ITinvent tools first with a high limit (e.g., limit=1000 or omit limit for default 250), then create the file from accumulated tool results.\n"
+    "- If the file needs live ITinvent data, call the needed ITinvent tools first with limit=250 (the maximum) or omit limit, then create the file from accumulated tool results.\n"
     "- For ITinvent equipment exports, always include these columns: \u0418\u043d\u0432. \u043d\u043e\u043c\u0435\u0440, \u0421\u0435\u0440\u0438\u0439\u043d\u044b\u0439 \u043d\u043e\u043c\u0435\u0440, \u0422\u0438\u043f, \u041c\u043e\u0434\u0435\u043b\u044c, \u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a, \u0421\u0442\u0430\u0442\u0443\u0441, \u0424\u0438\u043b\u0438\u0430\u043b, \u041b\u043e\u043a\u0430\u0446\u0438\u044f. Use serial_no from tool results; if empty, use \u2014.\n"
     "- Markdown tables and generated Excel/CSV tables must have the same columns, same order and same rows. Pass rows as arrays of row arrays or row objects; never pass a flat list of cells.\n"
     "- For report tables, use tables[].columns when you need fixed order or translated column labels; keep tables[].rows as row objects or row arrays.\n"
@@ -416,6 +425,10 @@ AI_OFFICE_TOOL_ROUTING_GUIDE = (
     "- Adding an email to the message body preserves the existing channel; it does not switch a Hub chat message to email.\n"
     "- Correct a pending communication draft using its replace_action_id. Do not leave the old draft active.\n"
     "- Mail send/reply requests: create office.action.mail_send_draft or office.action.mail_reply_draft. Never claim mail was sent before confirmation.\n"
+    "- Requests to compose/write a letter (\"составь письмо\", \"напиши письмо\") ARE draft requests: always create office.action.mail_send_draft — never answer with letter text instead of a draft when the tool is available.\n"
+    "- A letter to IT/support without an explicit recipient: use helpdesk.request_draft — it is routed to the configured corporate IT address. Never invent an IT support email address; never guess one.\n"
+    "- Role-based recipients (\"руководителю отдела X\", \"начальнику подразделения\"): resolve the role first via directory.department.get or directory.people.search, then office.mail.contacts.resolve for the resolved person. If resolution is ambiguous or empty, ask a short clarification instead of guessing.\n"
+    "- Task creation without an explicit assignee: do NOT create the draft. Ask one short question who the assignee is and include a quick_replies option like {label: \"Назначить мне\", reply: \"...назначь мне...\"}. Create the task draft only after the assignee is named or confirmed.\n"
     "- Do not include the user's signature in mail body; backend adds the saved mailbox signature automatically during confirmed send.\n"
     "- If the user asks to attach a file from this chat, include chat attachment_refs. If the file must be created first, call ai.files.create/ai.files.report, then pass the returned data.files as generated_file_specs into office.action.mail_send_draft or office.action.mail_reply_draft.\n"
     "- Task questions like find/show/status/comments: use office.tasks.search, then office.tasks.get for one concrete task.\n"
@@ -482,7 +495,10 @@ AI_SELF_TOOL_ROUTING_GUIDE = (
     "me.computer.health (explain pending reboot, long uptime, high RAM, low disk in plain words and what to do); "
     "'когда менять пароль / не пускает в систему' → me.account.status (you cannot unlock or reset passwords); "
     "'почему не уходят письма / ящик переполнен' → me.mailbox.quota; 'найди мой файл / приложи мой отчёт' → me.files.search, "
-    "then me.files.attach (the file is attached right after your answer); 'где моя заявка на ноутбук / когда придёт монитор' → "
+    "then me.files.attach (the file is attached right after your answer). If several files fit the search, do NOT attach an arbitrary one: "
+    "list the matching variants briefly and ask which file to attach. When the employee then answers with an ordinal or a name "
+    "('первый', 'второй', 'акт-сверки'), that answer selects the variant you listed: call me.files.attach for THAT file right away — "
+    "do not search again and do not ask again; 'где моя заявка на ноутбук / когда придёт монитор' → "
     "me.it_requests (1C IT purchase requests where the employee is the initiator). "
     "When the employee reports a problem that the knowledge base and these checks do not solve, or asks to create "
     "a request to IT, call helpdesk.request_draft with a short title you choose yourself and the employee's description; "
@@ -535,6 +551,8 @@ AI_ANSWER_STYLE_GUIDE = (
     "- For analytics, show totals first, then top-N groups in a table.\n"
     "- Always end with a single source line, e.g. 'Источник: ITinvent / <database_id>' or 'Источник: KB / <article_title>'.\n"
     "- If a tool result has truncated=true, explicitly state 'показано N из M' (N returned out of M total).\n"
+    "- When the user asks for ALL items and a page comes back truncated, keep requesting the next pages with offset until you have them all, then synthesize one complete deduplicated answer (table or count) from every page. "
+    "Never paste raw tool fragments or per-page chunks into the answer; never claim the result is truncated after you have already retrieved all pages.\n"
     "- Hide owner email and network fields by default; show them only for an exact single-device card.\n"
     "- Never expose passwords, hashes or raw LDAP payloads.\n"
     "- Do not use phrases like 'сейчас проверю' or 'подождите'. Either return tool_calls now or give the final answer.\n"
@@ -802,6 +820,15 @@ REPORT_FORMAT_ALIASES = {
     "word": "docx",
     "ворд": "docx",
     "csv": "csv",
+    # A11 c3 (doc_08): the format-choice card itself offers txt/md/json
+    # (action_cards.REPORT_FORMAT_CHOICES), so an explicit user request for one
+    # of them must count as a chosen format too — otherwise 'создай json-файл'
+    # was treated as "no format" and the answer got hijacked into the
+    # format-choice card even after a successful direct creation.
+    "txt": "txt",
+    "md": "md",
+    "markdown": "md",
+    "json": "json",
 }
 # Strong file/report intent keywords - reliable on their own (no false positives on tasks/comments).
 FILE_REPORT_INTENT_KEYWORDS = (
@@ -837,6 +864,15 @@ FILE_REPORT_INTENT_SOFT_VERBS = (
     "сделать",
     "построй",
     "построить",
+    # A11 c3 (doc_05/doc_07): «сгенерируй файл» and «подготовь файл-инструкцию»
+    # missed the intent entirely — the user got an inconsistent plain-text
+    # format question instead of the designed format-choice card flow.
+    "сгенерируй",
+    "сгенерировать",
+    "подготовь",
+    "подготовить",
+    "собери",
+    "собрать",
     "make",
     "build",
     "create",
@@ -913,12 +949,23 @@ AD_PASSWORD_INTENT_KEYWORDS = (
 )
 
 
+# a11-final (act_07): «отчёт/report» are topic nouns, not creation markers — a letter
+# ABOUT a report ("подготовь письмо руководителю о готовности отчёта") must not be
+# intercepted by the report-generation flow. They trigger only when a creation verb
+# governs them within a short window and the verb's object is not «письмо».
+_REPORT_TOPIC_NOUNS = ("отчет", "отчёт", "report")
+
+
 def _has_report_file_intent(text: object) -> bool:
     normalized = _normalize_text(text).casefold().replace("ё", "е")
     if not normalized:
         return False
-    # Strong keywords always trigger.
-    if any(keyword.replace("ё", "е") in normalized for keyword in FILE_REPORT_INTENT_KEYWORDS):
+    # Strong keywords always trigger — except topic nouns, which need a governing verb.
+    if any(
+        keyword.replace("ё", "е") in normalized
+        for keyword in FILE_REPORT_INTENT_KEYWORDS
+        if keyword not in _REPORT_TOPIC_NOUNS
+    ):
         return True
     # Soft verb + noun pairing must co-occur (e.g. "создай файл", "сделай таблицу").
     has_soft_verb = any(
@@ -927,8 +974,21 @@ def _has_report_file_intent(text: object) -> bool:
     )
     if not has_soft_verb:
         return False
-    has_soft_noun = any(noun.replace("ё", "е") in normalized for noun in FILE_REPORT_INTENT_SOFT_NOUNS)
-    return has_soft_noun
+    # Non-topic nouns (файл/таблица/документ...) are creation objects by nature.
+    if any(
+        noun.replace("ё", "е") in normalized
+        for noun in FILE_REPORT_INTENT_SOFT_NOUNS
+        if noun not in _REPORT_TOPIC_NOUNS
+    ):
+        return True
+    # Topic nouns: the creation verb must govern the report directly (short window),
+    # and «письмо» between verb and noun means the verb governs the letter instead.
+    for verb in FILE_REPORT_INTENT_SOFT_VERBS:
+        pattern = rf"(?<![\wа-я]){re.escape(verb)}((?:\s+[\wа-я-]+){{0,3}})\s+(?:отчет\w*|report\w*)"
+        for match in re.finditer(pattern, normalized):
+            if "письм" not in match.group(1):
+                return True
+    return False
 
 
 def _has_ad_password_intent(text: object) -> bool:
@@ -990,12 +1050,13 @@ def _keyword_routed_groups(trigger_text: str, *, available_groups: set[str]) -> 
         "мфу",
         "сканер",
         "ибп",
-        "телефон",
         "компьютер",
         "профил",
         "филиал",
         "локаци",
-        "сотрудник",
+        # A11: «телефон» and «сотрудник» removed — they hijacked corporate
+        # phonebook/directory queries into the itinvent group (D3). JEV
+        # disambiguates equipment-vs-people with the group questions.
         # Common ITinvent verbs
         "найди инв",
         "найди серийник",
@@ -1030,6 +1091,7 @@ def _keyword_routed_groups(trigger_text: str, *, available_groups: set[str]) -> 
         "напомнан",
         "анонс",
         "новост",
+        "объявлен",
     )
     if AI_TOOL_GROUP_OFFICE in available_groups:
         for keyword in office_keywords:
@@ -1132,15 +1194,16 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
     AI_TOOL_GROUP_OFFICE: {
         "question": (
             "Нужна ли работа с корпоративной почтой, задачами, проектами, комментариями, "
-            "рабочим днём или анонсами (Office/почта/задачи)?"
+            "рабочим днём, объявлениями или новостями компании (Office/почта/задачи/объявления)?"
         ),
         "true_label": (
             "да — «напиши письмо начальнику»; «покажи мои задачи»; «создай задачу на завтра»; "
-            "«прочитай последние письма»; «что у меня сегодня по работе»"
+            "«прочитай последние письма»; «что у меня сегодня по работе»; «покажи последние объявления»; "
+            "«что нового в компании»; «что объявляли про отпуск»"
         ),
         "false_label": (
             "нет — «найди принтер в ITinvent»; «пингани хост»; «сделай xlsx-файл» без отправки "
-            "по почте; «расскажи анекдот»"
+            "по почте; «расскажи анекдот»; «инструкция по настройке VPN» (это база знаний, не объявления)"
         ),
     },
     AI_TOOL_GROUP_FILES: {
@@ -1212,11 +1275,15 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
         "true_label": (
             "да — «как настроить VPN по инструкции»; «есть ли статья про замену картриджа»; "
             "«найди регламент по закупкам»; «что делать если не работает почта»; "
-            "«скинь бланк заявления на отпуск»; «пришли инструкцию по VPN файлом»"
+            "«скинь бланк заявления на отпуск»; «пришли инструкцию по VPN файлом»; "
+            "операционные вопросы, ответ на которые — регламент/инструкция, даже без слова «статья»: "
+            "«куда сдавать старый картридж»; «что делать с использованной батареей»; "
+            "«как поступить при блокировке учётки»; «как оформить доступ в серверную»"
         ),
         "false_label": (
             "нет — «найди конкретное устройство» (ITinvent); «отправь письмо»; "
-            "«создай задачу»; приветствия и болтовня"
+            "«создай задачу»; приветствия и болтовня; «покажи последние объявления» и «что нового "
+            "в компании» (это office-объявления, не статьи); «новости компании»"
         ),
     },
     AI_TOOL_GROUP_CHAT: {
@@ -1236,30 +1303,34 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
     AI_TOOL_GROUP_SELF: {
         "question": (
             "Спрашивает ли сотрудник о СЕБЕ — своей технике, своём компьютере, своей учётной записи/пароле, "
-            "своей заявке на закупку техники — или хочет создать обращение (заявку) в IT-отдел?"
+            "своих личных файлах в хранилище «Мои файлы», своей заявке на закупку техники — "
+            "или хочет создать обращение (заявку) в IT-отдел?"
         ),
         "true_label": (
             "да — «что за мной числится»; «почему тормозит мой компьютер»; «когда мне менять пароль»; "
             "«не пускает в систему»; «создай заявку в IT, не печатает принтер»; «вызови айтишника»; "
-            "«где моя заявка на ноутбук»"
+            "«где моя заявка на ноутбук»; «найди мой файл»; «покажи мои файлы»; «пришли мне мой документ»; "
+            "поиск файлов даже без слова «мой» — «Мои файлы» единственное файловое хранилище портала: "
+            "«найди файл договор»; «какой размер архива с отчётом»; «прикрепи скан акта»"
         ),
         "false_label": (
             "нет — вопросы о технике или учётке ДРУГОГО сотрудника («что числится за Ивановым»); "
-            "«найди статью»; «напиши письмо»; «привет»"
+            "«найди статью»; «напиши письмо»; «сделай файл-отчёт» (это создание файла, не поиск своих); «привет»"
         ),
     },
     AI_TOOL_GROUP_DIRECTORY: {
         "question": (
-            "Нужен ли справочник сотрудников или оргструктура: телефон, e-mail, должность, кабинет коллеги, "
-            "кто в отпуске/на больничном, кто руководитель подразделения?"
+            "Нужен ли справочник сотрудников или оргструктура: найти человека по имени, телефон, e-mail, "
+            "должность, кабинет коллеги, кто в отпуске/на больничном, кто руководитель подразделения?"
         ),
         "true_label": (
-            "да — «телефон Петрова»; «кто бухгалтер по зарплате»; «Иванова в отпуске?»; "
+            "да — «телефон Петрова»; «найди сотрудника Иванова»; «какой email у Смирновой»; "
+            "«кто бухгалтер по зарплате»; «Иванова в отпуске?»; «в каком кабинете сидит Петров»; "
             "«кто руководитель бухгалтерии»; «кто отсутствует в отделе продаж»"
         ),
         "false_label": (
-            "нет — «что числится за Петровым» (ITinvent); «пароль Петрова» (AD); «напиши Петрову в чате» (chat); "
-            "вопросы о себе (self)"
+            "нет — «что числится за Петровым» (ITinvent); «какое оборудование у Иванова» (ITinvent); "
+            "«пароль Петрова» (AD); «напиши Петрову в чате» (chat); вопросы о себе (self)"
         ),
     },
     AI_TOOL_GROUP_WAREHOUSE: {
@@ -1673,6 +1744,47 @@ def _route_tool_groups_jev(
     # to the group selection under a READ ceiling — same rule as tool-mode.
     act_prob = float(getattr(decision.answers.get("m_mode_act"), "probability", 0.0) or 0.0)
     chat_prob = float(getattr(decision.answers.get("m_mode_chat"), "probability", 0.0) or 0.0)
+    # A11: top-1 rescue. A hard single threshold strands every query whose best
+    # group peaks below it (measured: announcements at 0.32 with threshold 0.5
+    # produced empty routing and blind recovery). When nothing crosses the
+    # threshold and the query is not confidently conversational, rescue the
+    # argmax group if it carries meaningful probability mass — the model can
+    # still decline the tools, but it cannot recover groups it never sees.
+    # AI_JEV_TOP1_RESCUE=0 restores the pre-A11 undecided behavior; the flag
+    # is read at runtime so tests and A/B measurements can toggle it.
+    if (
+        not routed
+        and group_questions
+        and probs
+        and _env_flag("AI_JEV_TOP1_RESCUE", True)
+    ):
+        # A11 c3: deterministic tie-break. max() over a dict resolves equal
+        # probabilities by iteration order, which can depend on how the
+        # answers mapping was built — pinning (probability desc, name asc)
+        # makes the rescue reproducible across runs and interpreters.
+        best_group, best_prob = sorted(
+            probs.items(), key=lambda item: (-item[1], str(item[0]))
+        )[0]
+        # A11 c3 (ctx_14): the rescue must also fire when chat_prob crosses the
+        # threshold. Meaningful group mass (>= the rescue floor) contradicts a
+        # "pure conversation" verdict just like a routed group does (A5.1) —
+        # otherwise a borderline coin-flip chat answer (0.5) with strong
+        # sub-threshold group signal (kb 0.49) stripped ALL tools from a
+        # context-dependent follow-up and the model fabricated an honest-miss.
+        # Noise-level mass (< floor) keeps the confident-chat path intact.
+        # READ is strictly safer than CHAT here: the model may still decline
+        # the tools and answer conversationally, but it cannot recover groups
+        # it never sees.
+        if best_prob >= max(0.2, threshold * 0.5):
+            routed.add(best_group)
+            jev_selected = True
+            logger.info(
+                "ai_jev_routing top1_rescue group=%s prob=%.3f threshold=%.3f run_id=%s",
+                best_group,
+                best_prob,
+                threshold,
+                run_id or "-",
+            )
     if act_prob >= threshold:
         intent_mode = JEV_INTENT_ACT
     elif chat_prob >= threshold and not jev_selected:
@@ -1858,10 +1970,32 @@ def _route_tools_jev(
     return JevRoutingResult(selected, intent_mode=intent_mode)
 
 
+# A11: one-line semantic map of tool groups. Without it the recovery path is
+# blind — the model sees bare group names ('self', 'other') and must guess
+# their contents, which is exactly how 'find my file' ended up requesting the
+# 'files' group (file generation) instead of 'self' (personal storage).
+AI_TOOL_GROUP_SUMMARIES: dict[str, str] = {
+    "itinvent": "ITinvent equipment/owners: devices, cards, OWNER_NO resolution, transfers, acts, branches, computers (profiles/pst/software)",
+    "office": "corporate mail, tasks, projects, workday summary AND company announcements/news",
+    "files": "file GENERATION only: create/report/convert documents (xlsx, csv, pdf, docx) — no search of existing files",
+    "mfu": "printers/MFU as print devices: online status, errors, toner, cartridges, page counters",
+    "network": "ping, DNS, SSL, TCP ports, cabling/switch ports, Wake-on-LAN",
+    "ad": "Active Directory: password status/expiry, account lockout, group membership, logons",
+    "kb": "knowledge base: instructions, FAQ, regulations, templates — NOT company announcements",
+    "chat": "internal Hub chat: find colleagues/dialogs, send chat messages (not e-mail)",
+    "self": "the asking employee's OWN data: my files storage (me.files.search/attach), my equipment, my password, IT support requests",
+    "directory": "corporate phonebook (1C): people search, phone/e-mail/position/office/absence, org structure",
+    "warehouse": "warehouse stock balances and IT purchase requests",
+    "other": "miscellaneous utilities (voice notes etc.)",
+}
+
+
 def _unattached_tool_group_hint(group: str, title: str) -> str:
     """Prompt line for a permitted group that tool routing left out of this step."""
+    summary = AI_TOOL_GROUP_SUMMARIES.get(group, "")
+    contents = f" Group contents: {summary}." if summary else ""
     return (
-        f"{title} tools are not attached to this step (narrowed by tool routing), but this employee may use them. "
+        f"{title} tools are not attached to this step (narrowed by tool routing), but this employee may use them.{contents} "
         f"If they are needed, call {AI_TOOL_REQUEST_GROUP} with group='{group}' first; do not say they are disabled."
     )
 
@@ -2697,6 +2831,76 @@ def _tool_spec_args_signature(input_schema: Any, *, with_descriptions: bool) -> 
     return ", ".join(parts) if parts else "no arguments"
 
 
+def _validation_example_placeholder(prop: dict[str, Any], defs: dict[str, Any], *, field_name: str) -> Any:
+    """One compact example value for a schema property.
+
+    Used only in validation retry hints, so the model sees the shape of a
+    minimal valid call instead of guessing. Priority: schema ``examples`` /
+    ``example`` / ``enum`` / ``default``, then a type-based placeholder; a
+    string field falls back to its own description or name so the placeholder
+    still hints at the expected content.
+    """
+    ref = _normalize_text(prop.get("$ref"))
+    if ref:
+        prop = defs.get(ref.rsplit("/", 1)[-1], {}) if isinstance(defs, dict) else {}
+    examples = prop.get("examples")
+    if isinstance(examples, list) and examples:
+        return examples[0]
+    if "example" in prop:
+        return prop["example"]
+    if isinstance(prop.get("enum"), list) and prop["enum"]:
+        return prop["enum"][0]
+    if prop.get("default") is not None:
+        return prop["default"]
+    variants = prop.get("anyOf") if isinstance(prop.get("anyOf"), list) else []
+    for variant in variants:
+        if isinstance(variant, dict) and _normalize_text(variant.get("type")) != "null":
+            return _validation_example_placeholder(variant, defs, field_name=field_name)
+    kind = _normalize_text(prop.get("type")) or "string"
+    if kind == "string":
+        description = _normalize_text(prop.get("description"))
+        if description:
+            return f"<{description[:50]}>"
+        return f"<{field_name or 'string'}>"
+    if kind in ("integer", "number"):
+        return 1
+    if kind == "boolean":
+        return True
+    if kind == "array":
+        return []
+    if kind == "object":
+        return {}
+    return "<value>"
+
+
+def _validation_args_recovery_hint(
+    input_schema: Any,
+    *,
+    focus_field: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Compact retry hint for a failed validation: one-line args signature plus
+    a minimal example built from required fields (and the offending field).
+
+    Never emits the full JSON schema — the signature reuses the same compact
+    ``name*: type`` notation the prompt's tool listing uses, so the model can
+    map the error onto the spec it already saw.
+    """
+    schema = input_schema if isinstance(input_schema, dict) else {}
+    defs = schema.get("$defs") if isinstance(schema.get("$defs"), dict) else {}
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    required = [name for name in list(schema.get("required") or []) if name in properties]
+    signature = _tool_spec_args_signature(schema, with_descriptions=False)
+    example_fields = list(required)
+    focus_root = _normalize_text(focus_field).split(".")[0] if focus_field else ""
+    if focus_root and focus_root in properties and focus_root not in example_fields:
+        example_fields.append(focus_root)
+    example: dict[str, Any] = {}
+    for name in example_fields[:4]:
+        prop = properties.get(name) if isinstance(properties.get(name), dict) else {}
+        example[name] = _validation_example_placeholder(prop, defs, field_name=name)
+    return signature, example
+
+
 _SPEC_EXAMPLE_LIST_RE = re.compile(
     r"\s+Use for\s+"
     r"(?:['\"\u00ab\u201c][^'\"\u00bb\u201d]*['\"\u00bb\u201d]"
@@ -3445,7 +3649,7 @@ def _fp_render_files(data: dict, args: dict) -> str:
         return "Файлы не найдены."
     lines = [f"Найдено {_fp_plural(len(items), 'файл', 'файла', 'файлов')}: {len(items)}."]
     for item in items[:15]:
-        name = _fp_scalar(item, "original_file_name", "download_file_name", "name", "title")
+        name = _fp_scalar(item, "file_name", "original_file_name", "download_file_name", "name", "title")
         size = item.get("original_size_bytes") or item.get("size_bytes")
         tail = f"{round(int(size) / 1024)} КБ" if isinstance(size, (int, float)) and size else ""
         if name:
@@ -4820,6 +5024,14 @@ class AiChatService:
                 bot.enabled_tools_json = _json_dumps(normalize_enabled_tools(payload.get("enabled_tools")))
             if "tool_settings" in payload and payload.get("tool_settings") is not None:
                 bot.tool_settings_json = _json_dumps(normalize_tool_settings(payload.get("tool_settings")))
+            if "emergency_disabled" in payload and payload.get("emergency_disabled") is not None:
+                # Emergency kill-switch is a separate mode from regular disable:
+                # engaging stamps the audit timestamp, disengaging clears it.
+                if bool(payload.get("emergency_disabled")):
+                    if getattr(bot, "emergency_disabled_at", None) is None:
+                        bot.emergency_disabled_at = _utc_now()
+                else:
+                    bot.emergency_disabled_at = None
             if "allow_file_input" in payload and payload.get("allow_file_input") is not None:
                 bot.allow_file_input = bool(payload.get("allow_file_input"))
             if "allow_generated_artifacts" in payload and payload.get("allow_generated_artifacts") is not None:
@@ -4852,13 +5064,40 @@ class AiChatService:
                     .limit(max(1, min(int(limit or 25), 100)))
                 ).scalars()
             )
-        return [self._serialize_run(item) for item in rows]
+        # Manager observability must not leak other users' content. An explicit
+        # allowlist — not a blacklist — decides what crosses the boundary: free-text
+        # fields (error_text, status_text) can quote user content or recipients, and
+        # request/result payloads carry tool traces with mail bodies and file contents.
+        # Detailed errors stay available in server logs via the correlation id.
+        items = []
+        for item in rows:
+            serialized = self._serialize_run(item)
+            usage = serialized.get("usage") if isinstance(serialized.get("usage"), dict) else {}
+            safe_usage = {key: value for key, value in usage.items() if isinstance(value, (int, float))}
+            items.append({
+                "id": serialized.get("id"),
+                "bot_id": serialized.get("bot_id"),
+                "conversation_id": serialized.get("conversation_id"),
+                "user_id": serialized.get("user_id"),
+                "status": serialized.get("status"),
+                "stage": serialized.get("stage"),
+                "latency_ms": serialized.get("latency_ms"),
+                "tool_traces_count": serialized.get("tool_traces_count", 0),
+                "tool_trace_errors_count": serialized.get("tool_trace_errors_count", 0),
+                "usage": safe_usage,
+                "created_at": serialized.get("created_at"),
+                "started_at": serialized.get("started_at"),
+                "completed_at": serialized.get("completed_at"),
+            })
+        return items
 
     def open_bot_conversation(self, *, bot_id: str, current_user_id: int) -> dict[str, Any]:
         with app_session() as session:
             bot = session.get(AppAiBot, _normalize_text(bot_id))
             if bot is None or not bool(bot.is_enabled):
                 raise LookupError("AI bot not found")
+            if getattr(bot, "emergency_disabled_at", None) is not None:
+                raise PermissionError("Агент остановлен аварийно. Новые запросы и подтверждения действий заблокированы.")
             self._require_bot_access(bot=bot, current_user_id=int(current_user_id), allow_hidden=False)
             mappings = list(session.execute(
                 select(AppAiBotConversation).where(
@@ -5334,6 +5573,13 @@ class AiChatService:
             if normalized_status in {"cancelled", "failed"}:
                 raise AiRunCancelled("AI run was stopped")
             if run is not None:
+                # Emergency kill-switch is re-checked at every cooperative checkpoint,
+                # i.e. right before stage transitions and real publications: a run of an
+                # emergency-disabled bot starts no new execution stage.
+                bot = session.get(AppAiBot, _normalize_text(run.bot_id))
+                if bot is not None and getattr(bot, "emergency_disabled_at", None) is not None:
+                    raise AiRunCancelled("AI run was stopped by emergency disable")
+            if run is not None:
                 if normalized_status in {"queued", "running"}:
                     # A1 heartbeat: every cooperative checkpoint refreshes
                     # updated_at so the watchdog tells live runs apart from
@@ -5402,6 +5648,11 @@ class AiChatService:
         normalized_conversation_id = _normalize_text(conversation_id)
         runtime = self._get_runtime_by_conversation(normalized_conversation_id)
         if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
+            return None
+        if getattr(runtime.bot, "emergency_disabled_at", None) is not None:
+            # Emergency kill-switch: new requests never reach the queue. Unlike regular
+            # disable there is no re-binding to a replacement assistant — emergency
+            # means stop, and the runtime object is a fresh read per enqueue.
             return None
         effective_bot = runtime.bot
         replacement_bot_id: Optional[str] = None
@@ -5567,6 +5818,12 @@ class AiChatService:
                 request_json=_json_dumps(
                     {
                         "effective_database_id": resolved_database_id,
+                        # A11 P0 UNSAFE-1: keep the raw client-requested id.
+                        # When an explicit id fails validation the resolved
+                        # value is None — without the raw marker the execute
+                        # handoff re-resolved None as "absent" and silently
+                        # substituted pinned/default (measured fail-open).
+                        "requested_database_id": _normalize_text(effective_database_id) or None,
                     }
                 ),
                 result_json="{}",
@@ -7594,6 +7851,14 @@ class AiChatService:
                                 "my_files_delivered": my_files_delivered,
                                 "tool_traces": tool_traces,
                                 "routed_groups": list(routed_groups or []),
+                                # A11 §5 loop-guard telemetry: how the run actually behaved.
+                                "loop_guard": (extracted_context or {}).get("_loop_guard") or {
+                                    "stopped": False,
+                                    "rounds_used": 0,
+                                    "duplicate_calls": 0,
+                                    "expansion_calls_used": 0,
+                                    "expansion_budget": 0,
+                                },
                                 # A5 run profile: JEV intent ceiling + calls the
                                 # run-mode check refused at execute time.
                                 "intent_mode": (extracted_context or {}).get("intent_mode"),
@@ -7741,7 +8006,16 @@ class AiChatService:
             user_payload=user_payload,
             effective_database_id=resolve_effective_database_id(
                 user_payload=user_payload,
-                explicit_database_id=_normalize_text(request_payload.get("effective_database_id")) or None,
+                # A11 P0 UNSAFE-1: when the stored resolution is empty but the
+                # client explicitly requested a database, re-validate THAT id —
+                # junk resolves to None (controlled denial in every tool) instead
+                # of the legacy silent fall-through to pinned/default. Runs that
+                # never carried an explicit id keep implicit re-resolution.
+                explicit_database_id=(
+                    _normalize_text(request_payload.get("effective_database_id"))
+                    or _normalize_text(request_payload.get("requested_database_id"))
+                    or None
+                ),
             ),
             # AG-2: a run only sees tools allowed by the employee's portal
             # permissions; AiToolRegistry.execute re-checks per call.
@@ -7813,6 +8087,13 @@ class AiChatService:
             tool_id = _normalize_text(call.get("tool_id"))
             tool = ai_tool_registry.get(tool_id)
             try:
+                # A11 c3 (F-D1): capture the raw model-facing form BEFORE
+                # draft_policy.prepare transforms it. Cross-round dedup checks
+                # raw signatures, so both forms must be recorded or a repeated
+                # identical raw call escapes detection whenever prepare
+                # rewrites tool_id/args.
+                raw_tool_id = tool_id
+                raw_args = call.get("args") or {}
                 tool_id, prepared_args = tool_context.draft_policy.prepare(
                     tool_id, call.get("args") or {}, tool_context.enabled_tools,
                 )
@@ -7876,6 +8157,18 @@ class AiChatService:
                     "diagnostic": diagnostic,
                     "sources": payload.get("sources") or [],
                 }
+                try:
+                    trace["sig_prepared"] = [
+                        _normalize_text(tool_id),
+                        json.dumps(prepared_args or {}, sort_keys=True, ensure_ascii=False, default=str),
+                    ]
+                    if raw_tool_id != tool_id or raw_args != (prepared_args or {}):
+                        trace["sig_raw"] = [
+                            _normalize_text(raw_tool_id),
+                            json.dumps(raw_args or {}, sort_keys=True, ensure_ascii=False, default=str),
+                        ]
+                except Exception:
+                    pass
                 # Surface result cardinality + ACL downgrade flags for
                 # benchmark/audit checks without storing the full payload.
                 if isinstance(payload_data, dict):
@@ -7908,15 +8201,72 @@ class AiChatService:
                     tool_id or "-",
                     error_text,
                 )
-                diagnostic = {
-                    "error_code": "invalid_arguments",
-                    "message": error_text,
-                    "suggested_fix": (
+                # A11 §9/§11: the registry attaches field_path/detail only for
+                # real schema-validation failures (not for unknown/disabled
+                # tools). When they are present the diagnostic must tell the
+                # model exactly WHICH argument is wrong, what shape it expects
+                # and what a minimal valid call looks like — the bare generic
+                # "match the input_schema" advice measurably failed to produce
+                # a corrected re-call in dev runs.
+                field_path = _normalize_text(getattr(exc, "field_path", None)) or None
+                is_schema_error = bool(_normalize_text(getattr(exc, "detail", None)))
+                args_hint: str | None = None
+                example_payload: dict[str, Any] | None = None
+                input_schema: dict[str, Any] | None = None
+                if tool is not None:
+                    try:
+                        input_schema = tool.input_model.model_json_schema()
+                    except Exception:  # noqa: BLE001 — schema introspection must never break error handling
+                        input_schema = None
+                if is_schema_error and isinstance(input_schema, dict):
+                    args_hint, example_payload = _validation_args_recovery_hint(
+                        input_schema, focus_field=field_path,
+                    )
+                    args_hint = args_hint or None
+                    example_payload = example_payload or None
+                if is_schema_error and field_path:
+                    expected_label = ""
+                    focus_root = field_path.split(".")[0]
+                    properties = (input_schema or {}).get("properties") if isinstance(input_schema, dict) else None
+                    focus_prop = properties.get(focus_root) if isinstance(properties, dict) else None
+                    if isinstance(focus_prop, dict):
+                        defs = (input_schema or {}).get("$defs") if isinstance(input_schema, dict) else {}
+                        expected_label = _schema_type_label(focus_prop, defs if isinstance(defs, dict) else {})
+                    if isinstance(properties, dict) and focus_root not in properties:
+                        # extra="forbid" rejection: the argument does not exist on
+                        # this tool at all — "fix" would send the model hunting for
+                        # a type problem that is not there; it must DROP the field
+                        # and pick the right one from args_hint instead.
+                        fix_action = (
+                            f"Remove unknown argument '{field_path}' — the tool has no such parameter; "
+                            "map the value onto the correct one"
+                        )
+                    else:
+                        fix_action = (
+                            f"Fix argument '{field_path}'"
+                            + (f" (expected: {expected_label})" if expected_label else "")
+                        )
+                    suggested_fix = (
+                        fix_action
+                        + " and re-call the tool — args_hint lists all parameters ('*' = required), "
+                        "example shows a minimal valid call. Do not repeat the same invalid args."
+                    )
+                else:
+                    suggested_fix = (
                         "Re-call the same tool with corrected args matching the input_schema. "
                         "Common fixes: ensure required fields are present, types match, and "
                         "string fields stay within length limits."
-                    ),
+                    )
+                diagnostic = {
+                    "error_code": "invalid_arguments",
+                    "message": error_text,
+                    "field_path": field_path,
+                    "suggested_fix": suggested_fix,
                 }
+                if args_hint:
+                    diagnostic["args_hint"] = args_hint
+                if example_payload:
+                    diagnostic["example"] = example_payload
                 payload = {
                     "tool_id": tool_id or "unknown",
                     "ok": False,
@@ -8418,6 +8768,10 @@ class AiChatService:
         report_stage=None,
     ) -> tuple[str, list[dict[str, Any]], dict[str, str] | None, dict[str, Any], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
         run_id = _normalize_text(run_payload.get("id")) or "-"
+        with app_session() as _emergency_session:
+            _fresh_bot = _emergency_session.get(AppAiBot, _normalize_text(getattr(bot, "id", "")))
+            if _fresh_bot is not None and getattr(_fresh_bot, "emergency_disabled_at", None) is not None:
+                raise AiRunCancelled("AI run was stopped by emergency disable")
         runtime = self._get_runtime_by_conversation(run_payload["conversation_id"])
         if runtime is None:
             raise RuntimeError("AI conversation runtime was not found")
@@ -8790,7 +9144,9 @@ class AiChatService:
                         "Never promise to make another live query later unless you return the needed tool_calls now. "
                         "When file tools are available and the user explicitly asks to create/export/send a file, "
                         "call ai.files.report or ai.files.create; do not only describe that a file can be created. "
-                        "If the user asks for a file/report but does not specify xlsx, pdf, docx or csv, gather live data first, "
+                        "If the user named any supported format — xlsx, pdf, docx, csv, txt, md or json — pass it as the file "
+                        "format and create the file in this run. "
+                        "If the user asks for a file/report but does not specify a format, gather live data first, "
                         "then return a short summary and do not call file tools yet; the app will ask the user to choose a format."
                     ),
                     AI_ANSWER_STYLE_GUIDE,
@@ -9290,7 +9646,25 @@ class AiChatService:
         final_usage = usage or {}
         accumulated_tool_results: list[dict[str, Any]] = []
         read_more_calls_used = 0
+        # A11 P6: total expansion-call budget per run. distinct-group expansion
+        # is limited by AI_TOOL_GROUP_EXPANSION_LIMIT, but repeated requests of
+        # already-enabled or invalid groups were free — measured storms of 6+
+        # consecutive request_tool_group calls burning whole rounds. Every meta
+        # call now consumes from a total budget.
+        expansion_calls_used = 0
+        expansion_calls_budget = AI_TOOL_GROUP_EXPANSION_LIMIT + 2
+        executed_call_signatures: set[tuple[str, str]] = set()
         tool_rounds_used = 0
+        # A11 §5 Loop Guard: progress tracking. A round makes progress when it
+        # yields at least one successful non-meta result or a NEW error shape
+        # the model has not seen yet. Two consecutive rounds without progress
+        # mean the loop is burning tokens without moving towards an answer —
+        # stop it honestly instead of hitting the hard round ceiling.
+        loop_guard_enabled = _env_flag("AI_LOOP_GUARD_ENABLED", True)
+        consecutive_no_progress = 0
+        seen_error_signatures: set[tuple[str, str]] = set()
+        duplicate_calls_total = 0
+        loop_guard_stopped = False
         # Per-bot limits from context (with env fallback)
         max_rounds = tool_context.max_tool_rounds if tool_context else AI_TOOL_ROUND_LIMIT
         max_calls_per_round = tool_context.max_tool_calls_per_round if tool_context else AI_TOOL_CALL_LIMIT
@@ -9348,19 +9722,82 @@ class AiChatService:
                 tool_results.append(read_result)
                 round_traces.append(read_trace)
             for expansion_call in expansion_calls:
-                expansion_payload, expansion_trace = _handle_tool_group_expansion(
-                    call=expansion_call,
-                    tool_context=tool_context,
-                    all_tool_specs=all_tool_specs,
-                    tool_specs=tool_specs,
-                    routed_groups=routed_groups,
-                    available_groups=available_tool_groups,
-                    expanded_groups=expanded_groups,
-                    run_id=run_id,
-                )
+                expansion_calls_used += 1
+                if expansion_calls_used > expansion_calls_budget:
+                    # Storm guard: the model keeps requesting groups instead of
+                    # answering. Deny firmly and point it at what it already has.
+                    expansion_payload = {
+                        "tool_id": AI_TOOL_REQUEST_GROUP,
+                        "ok": False,
+                        "error": (
+                            "Запросы групп инструментов на этот запуск исчерпаны. "
+                            "НЕ запрашивай группы повторно — ответь на основе уже подключённых "
+                            "инструментов или честно сообщи, каких данных не хватает."
+                        ),
+                        "code": "expansion_storm_guard",
+                        "data": None,
+                    }
+                    expansion_trace = {
+                        "tool_id": AI_TOOL_REQUEST_GROUP,
+                        "args": expansion_call.get("args") or {},
+                        "state": "denied",
+                        "error": expansion_payload["error"],
+                        "run_id": run_id,
+                    }
+                else:
+                    expansion_payload, expansion_trace = _handle_tool_group_expansion(
+                        call=expansion_call,
+                        tool_context=tool_context,
+                        all_tool_specs=all_tool_specs,
+                        tool_specs=tool_specs,
+                        routed_groups=routed_groups,
+                        available_groups=available_tool_groups,
+                        expanded_groups=expanded_groups,
+                        run_id=run_id,
+                    )
                 tool_results.append(expansion_payload)
                 round_traces.append(expansion_trace)
             tool_started_at = time.perf_counter()
+            # A11 P5/§4: no-progress dedup with mutation-aware invalidation.
+            # Per-effect semantics:
+            #   read     — identical re-search cannot yield new data WHILE the
+            #              underlying state is unchanged; signatures are
+            #              invalidated after any successful state-changing
+            #              execution so read-after-mutation always re-fetches.
+            #   artifact/delivery/action — an identical repeat would double-
+            #              create a file, double-send a message or duplicate a
+            #              draft card: deduped for the whole run.
+            # Error retries pass through (only ok results are recorded);
+            # pagination/arg fixes differ in args and pass through regardless.
+            fresh_calls: list[dict[str, Any]] = []
+            for call in tool_calls:
+                signature = (
+                    _normalize_text(call.get("tool_id")),
+                    json.dumps(call.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str),
+                )
+                if signature in executed_call_signatures:
+                    duplicate_calls_total += 1
+                    tool_results.append({
+                        "tool_id": call.get("tool_id"),
+                        "ok": False,
+                        "error": (
+                            "Этот инструмент уже выполнялся в этом запуске с точно такими же аргументами — "
+                            "повтор не даст новых данных. Используй уже полученный результат, измени стратегию "
+                            "(другие аргументы или другой инструмент) либо честно сообщи об отсутствии данных."
+                        ),
+                        "code": "duplicate_call",
+                        "data": None,
+                    })
+                    round_traces.append({
+                        "tool_id": call.get("tool_id"),
+                        "args": call.get("args") or {},
+                        "state": "duplicate",
+                        "error": "duplicate_call",
+                        "run_id": run_id,
+                    })
+                else:
+                    fresh_calls.append(call)
+            tool_calls = fresh_calls
             if tool_calls:
                 real_results, real_traces = self._execute_tool_calls(
                     tool_calls=tool_calls,
@@ -9370,6 +9807,35 @@ class AiChatService:
                 )
                 tool_results.extend(real_results)
                 round_traces.extend(real_traces)
+                for trace, result in zip(real_traces, real_results):
+                    if not result.get("ok"):
+                        continue
+                    effect = tool_effect(trace.get("tool_id"))
+                    # F-D1: register the canonical prepared signature AND the
+                    # raw model-facing one when prepare transformed the call —
+                    # the duplicate check runs against raw args, so recording
+                    # only the prepared form let transformed calls repeat.
+                    sig_prepared = trace.get("sig_prepared")
+                    if isinstance(sig_prepared, list) and len(sig_prepared) == 2:
+                        executed_call_signatures.add((sig_prepared[0], sig_prepared[1]))
+                    else:
+                        executed_call_signatures.add((
+                            _normalize_text(trace.get("tool_id")),
+                            json.dumps(trace.get("args") or {}, sort_keys=True, ensure_ascii=False, default=str),
+                        ))
+                    sig_raw = trace.get("sig_raw")
+                    if isinstance(sig_raw, list) and len(sig_raw) == 2:
+                        executed_call_signatures.add((sig_raw[0], sig_raw[1]))
+                    if effect in ("artifact", "action", "unknown"):
+                        # State-changing execution: earlier read results may be
+                        # stale now (file appeared in storage, memory written,
+                        # object mutated). Read-after-mutation must re-fetch —
+                        # drop read signatures only; action/delivery signatures
+                        # stay so double-send/double-create protection holds.
+                        executed_call_signatures = {
+                            sig for sig in executed_call_signatures
+                            if tool_effect(sig[0]) != "read"
+                        }
             _log_ai_run_timing(
                 "tools",
                 tool_started_at,
@@ -9380,6 +9846,48 @@ class AiChatService:
             accumulated_tool_results.extend(tool_results)
             tool_traces.extend(round_traces)
             tool_rounds_used += 1
+
+            # A11 §5 Loop Guard: evaluate progress of this round.
+            if loop_guard_enabled:
+                round_progress = False
+                for res in tool_results:
+                    if res.get("ok") and res.get("tool_id") != "ai.request_tool_group":
+                        round_progress = True
+                        break
+                    if res.get("code") == "duplicate_call":
+                        continue
+                    err_sig = (
+                        _normalize_text(res.get("tool_id")),
+                        _normalize_text(str(res.get("error") or ""))[:120],
+                    )
+                    if res.get("error") and err_sig not in seen_error_signatures:
+                        # A genuinely new error shape is fresh information the
+                        # model has not yet had a chance to react to.
+                        seen_error_signatures.add(err_sig)
+                        round_progress = True
+                        break
+                if round_progress:
+                    consecutive_no_progress = 0
+                else:
+                    consecutive_no_progress += 1
+                if consecutive_no_progress >= 2:
+                    loop_guard_stopped = True
+                    logger.info(
+                        "AI loop guard stop: run_id=%s rounds_used=%s — no progress in 2 consecutive rounds",
+                        run_id, tool_rounds_used,
+                    )
+                    accumulated_tool_results.append({
+                        "tool_id": "ai.loop_guard",
+                        "ok": False,
+                        "error": (
+                            "Последние шаги не дали новых данных: дальнейшие попытки с теми же "
+                            "аргументами бесполезны. Не повторяй вызовы — честно сообщи пользователю, "
+                            "что удалось и что не удалось выяснить, и предложи уточнить запрос."
+                        ),
+                        "code": "loop_guard_stop",
+                        "data": None,
+                    })
+                    break
 
             # Auto-pagination: detect truncated results and inject next-page calls
             # if the user's request implies they need complete data (e.g., file export, report)
@@ -9463,6 +9971,8 @@ class AiChatService:
                         "args": dict(trace.get("args") or {}),
                         "message": _normalize_text(diag.get("message")) or _normalize_text(trace.get("error")),
                         "field_path": _normalize_text(diag.get("field_path")) or None,
+                        "args_hint": _normalize_text(diag.get("args_hint")) or None,
+                        "example": diag.get("example") if isinstance(diag.get("example"), dict) else None,
                     })
             if callable(report_stage):
                 report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
@@ -9489,7 +9999,9 @@ class AiChatService:
                         "tool_validation_errors",
                         "Tool validation errors to fix (untrusted data):\n"
                         + untrusted.wrap(UNTRUSTED_TOOL_RESULT, _json_dumps(round_validation_errors))
-                        + "\nIf you re-call the same tool, fix the arguments per the diagnostics. "
+                        + "\nIf you re-call the same tool, fix the arguments per the diagnostics: "
+                        "args_hint lists the tool's parameters ('*' = required) with types and "
+                        "example shows a minimal valid call shape. "
                         "Do not repeat the exact same invalid args."
                         if round_validation_errors
                         else "",
@@ -9498,8 +10010,8 @@ class AiChatService:
                         "answer_instructions",
                         "If the available tool results are enough, return the final user-facing answer in Russian markdown. "
                         "If another enabled tool is still required, return tool_calls for the next step instead of a placeholder. "
-                        "If the user asked for a file and explicitly specified xlsx/pdf/docx/csv, return an ai.files.report or ai.files.create tool_call when available. "
-                        "If the user did not specify xlsx/pdf/docx/csv, summarize the collected data and wait for the app's format choice card. "
+                        "If the user asked for a file and explicitly specified a format (xlsx/pdf/docx/csv/txt/md/json), return an ai.files.report or ai.files.create tool_call when available. "
+                        "If the user did not specify a format, summarize the collected data and wait for the app's format choice card. "
                         "When you use live ITinvent data in the final answer, cite the source as 'Источник: ITinvent / <database_id>'. "
                         "Keep the answer structured: short summary first, then sections or a table, then the source line. "
                         "Do not re-call tools for data already present in the running summary above. "
@@ -9763,6 +10275,11 @@ class AiChatService:
             and file_tools_available
             and accumulated_tool_results
             and not file_format_choice_created
+            # A11 c3 (doc_08): never hijack a run whose file tools already
+            # produced real files — discarding generated_file_specs here threw
+            # away the model's finished work and replaced it with a generic
+            # card rebuilt from raw tool rows.
+            and not generated_file_specs
         ):
             report_choice_payload = _build_report_choice_payload(
                 trigger_text=trigger_text_for_routing,
@@ -9832,6 +10349,19 @@ class AiChatService:
         )
         memory_command = re.match(r"^\s*(?:запомни|забудь|удали\s+из\s+памяти)", policy.trigger_text, re.I)
         memory_claim = re.search(r"запомнил|(?:памят|предпочтени).{0,60}(?:сохран|обновлен|удален|записан)", answer_markdown, re.I)
+        # A11 c3 (mem_08): the claim guard exists to catch hallucinated memory
+        # WRITES — but a recall question ("Что ты знаешь о моих предпочтениях?")
+        # legitimately produces an answer referencing stored preferences
+        # ("сохранено: …"), and overriding it with "Память не изменена" destroys
+        # a correct recall. Interrogative triggers are never write requests, so
+        # the claim guard must not apply to them.
+        _trigger_stripped = (policy.trigger_text or "").strip()
+        memory_recall_question = bool(
+            _trigger_stripped.endswith("?")
+            or re.match(r"^\s*(?:что|како[йяе]|как\b|расскажи|покажи|напомни|перечисли|вспомни)", _trigger_stripped, re.I)
+        )
+        if memory_recall_question and not memory_command:
+            memory_claim = None
         if (not tool_traces and (memory_command or memory_claim)
                 and not (extracted_context.get("memory_status") == "applied" and extracted_context.get("memory_changed"))):
             answer_markdown = ("Память не изменена." if extracted_context.get("memory_status") == "applied"
@@ -9854,6 +10384,14 @@ class AiChatService:
             extracted_context["fast_path_hit"] = True
         if llm_call_records:
             final_usage["llm_calls"] = llm_call_records
+        if isinstance(extracted_context, dict):
+            extracted_context["_loop_guard"] = {
+                "stopped": bool(loop_guard_stopped),
+                "rounds_used": int(tool_rounds_used),
+                "duplicate_calls": int(duplicate_calls_total),
+                "expansion_calls_used": int(expansion_calls_used),
+                "expansion_budget": int(expansion_calls_budget),
+            }
         return answer_markdown, artifacts, kb_attachment_send, final_usage, extracted_context, tool_traces, generated_file_specs, sorted(routed_groups)
 
     def _build_conversation_context(
@@ -10350,6 +10888,7 @@ class AiChatService:
                     "use_personal_memory": bool(getattr(bot, "use_personal_memory", True)),
                     "bot_user_id": int(getattr(bot, "bot_user_id", 0) or 0) or None,
                     "openrouter_configured": bool(payload["configured"]),
+                    "emergency_disabled_at": _iso(getattr(bot, "emergency_disabled_at", None)),
                     "updated_at": _iso(getattr(bot, "updated_at", None)),
                     "latest_run_status": _normalize_text(getattr(latest_run, "status", None)) or None,
                     "latest_run_error": _normalize_text(getattr(latest_run, "error_text", None)) or None,

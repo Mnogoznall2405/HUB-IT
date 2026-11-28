@@ -138,6 +138,22 @@ def _build_engine(database_url: str):
     if database_url.startswith("sqlite"):
         engine_kwargs["connect_args"] = {"check_same_thread": False}
         engine = create_engine(database_url, **engine_kwargs)
+
+        @event.listens_for(engine, "connect")
+        def _register_unicode_lower(dbapi_connection, _connection_record):
+            # SQLite's built-in lower() is ASCII-only, while PostgreSQL LOWER is
+            # Unicode-aware. Without the override every case-insensitive Cyrillic
+            # predicate (user search, directories) silently matches nothing on the
+            # sqlite runtime — same parity fix hub_service applies to its raw
+            # sqlite connections. The execution_options() copy below shares this
+            # pool, so one registration covers every ORM session.
+            dbapi_connection.create_function(
+                "lower",
+                1,
+                lambda value: str(value).lower() if value is not None else None,
+                deterministic=True,
+            )
+
         attach_slow_sql_logging(engine, source="app")
         return engine.execution_options(
             schema_translate_map={
