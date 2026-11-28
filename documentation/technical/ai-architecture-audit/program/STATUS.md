@@ -7,7 +7,7 @@
 | Область | Состояние | Доказательство / SHA |
 | --- | --- | --- |
 | Управляющий PR | PR #107, draft, documentation-only | ветка `docs/ai-assistant-a11-a24-roadmap` |
-| A11 Release Candidate | PR #105 обновлён результатами независимого ревью и curated benchmark pack | head `2d5b37c534b663cc5acd6b89f7d89c372155d205` |
+| A11 Release Candidate | PR #105 обновлён review fixes, curated benchmark pack и process recovery proof | head `fbacbcaa` |
 | A11 verdict | **BLOCKED / NO-GO для production merge** | нет full frozen eval на exact final SHA; нет подтверждённого бюджета; не решены routing/watchdog production flags |
 | A12+ | Не начаты как implementation PR | можно готовить test plans и независимые измерения, но не расширять runtime до closure A11 или отдельного согласованного slice |
 
@@ -15,7 +15,7 @@
 
 Проверялся candidate head после исправлений `0321938e`:
 
-- PostgreSQL serialization gate на изолированном PostgreSQL 17.6: **22 passed**.
+- PostgreSQL serialization gate на изолированном PostgreSQL 17.6: **23 passed** на SHA `fbacbcaa`, включая cross-process kill-after-claim recovery proof.
 - Migration rehearsal на изолированном PostgreSQL: **PASS** (`scope=all`, `scope=app`, `scope=chat`, `0185 → 0186 → downgrade 0185 → re-upgrade`).
 - Focused post-review suite: **46 passed**.
 - AI regression suite после исправлений: **302 passed**.
@@ -46,7 +46,7 @@ Commit `2d5b37c5`:
 1. **BENCH-BLOCKER:** frozen dev/holdout benchmark из 205 сценариев не выполнен на exact final SHA `2d5b37c5` или новее. Прежний measurement относится к PR #74 head `93f6a770`, не к PR #105.
 2. **BUDGET-BLOCKER:** нет подтверждённого численного бюджета и провайдера для платного LLM benchmark. Нельзя запускать полный платный прогон без этого согласования.
 3. **CONFIG-BLOCKER:** production decision по `AI_JEV_ROUTING`, CHAT/READ/ACT ceilings, `AI_READ_FAST_PATH_ENABLED`, `AI_COMPACT_SPECS_ENABLED`, `AI_RUN_RESULT_REUSE_ENABLED` не зафиксировано. По прежним измерениям fast path разрушал качество и должен оставаться OFF до новых доказательств.
-4. **WATCHDOG-BLOCKER:** automatic recovery crashed running runs существует и покрыт PG-тестами, но не включён штатно в PM2/ecosystem. Требуется доказательство process-level kill-after-claim или осознанное решение владельца.
+4. **WATCHDOG-CONFIG-BLOCKER:** process-level kill-after-claim recovery теперь доказан в isolated PG test, но watchdog всё ещё не включён штатно в PM2/ecosystem; требуется осознанное production configuration решение владельца.
 5. **EXTERNAL-CONTOUR-BLOCKER:** external-dependent сценарии (ITINVENT SQL, Exchange, AD, 1C) не имеют approved isolated contour. Они должны быть запущены только в approved isolated contour или честно оставаться BLOCKED; production GO при unresolved critical BLOCKED невозможен.
 
 ## Ближайший разрешённый шаг

@@ -30,7 +30,7 @@ Partial run, mock run, ad-hoc synthetic run и smoke run не являются p
 pytest -q tests/test_ai_run_serialization_pg.py
 ```
 
-**Result:** 22 passed in ~20s.
+**Result:** 23 passed in 20.38s на SHA `fbacbcaa`, включая cross-process kill-after-claim proof.
 
 **Limitations:** не доказывает process-level kill/restart recovery и production configuration watchdog.
 
@@ -160,15 +160,17 @@ python -m py_compile `
 
 ## B-008 — Process-level worker recovery proof
 
-**Status:** TODO, local/non-paid.
+**Status:** DONE for crash-recovery proof; production watchdog configuration remains an owner decision.
 
-**Planned scenario:**
+**Executed scenario:**
 
-1. start two independent worker processes against disposable PG;
-2. enqueue several runs in one conversation and in different conversations;
-3. kill one worker after claim commit but before completion;
-4. verify no duplicate running rows, no lost FIFO, watchdog CAS marks stale run failed, next queued run starts only after recovery;
-5. repeat with watchdog disabled to characterize behavior honestly.
+1. child Python process used the production PostgreSQL claim implementation against disposable PG;
+2. it committed `r1` as running while `r2` remained queued in the same conversation;
+3. parent killed the child after claim commit but before completion;
+4. direct verification showed `r1=running`, `r2=queued`, and no new claim could overtake the orphaned running row;
+5. after simulated staleness, the real `reap_stale_runs` CAS marked only `r1` failed and `_claim_next_queued_run` released `r2`.
+
+**Result:** PASS in `tests/test_ai_run_serialization_pg.py::test_pg_process_killed_after_claim_recovers_fifo_slot`; full file 23 passed. Limitation: minimal schema/test harness, not the full LLM worker loop.
 
 ## B-009 — Promptfoo pilot / OSS-02
 
