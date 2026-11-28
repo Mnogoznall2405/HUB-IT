@@ -114,4 +114,4 @@
 
 **Влияние на A14:** PostgreSQL FTS + pg_trgm является первым кандидатом, потому что использует существующую СУБД и не требует нового service/vector DB. Но semantic synonyms им не решаются полностью. Implementation должен сначала доказать ACL-before-limit, migration/index correctness, SQLite fallback и larger-scale benchmark.
 
-**Статус:** OPEN / leading design hypothesis for A14. Evidence only; no runtime implementation approved by this finding.
+**Статус:** IN PROGRESS / dependent prototype exists. Ветка `feat/a14-kb-fts-retrieval` head `d7eb6f8f` реализует Russian FTS + controlled fallback, SQL ACL before `LIMIT`, immutable index expressions и PG/migration tests. Это prototype evidence only: merge/production запрещены до independent review, larger golden corpus, EXPLAIN на production-like volume и coordination после A11.

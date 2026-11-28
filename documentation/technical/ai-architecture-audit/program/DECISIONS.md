@@ -100,4 +100,4 @@
 
 **Ограничение:** это не production GO и не разрешение на runtime merge. Обязательны exact SQL ACL parity before `LIMIT`, migration/index proof, SQLite fallback, larger synthetic corpus, fixed golden-set differential tests и independent review.
 
-**Статус:** CONDITIONAL / design-only.
+**Статус:** CONDITIONAL / dependent prototype implemented, review required before any merge decision.

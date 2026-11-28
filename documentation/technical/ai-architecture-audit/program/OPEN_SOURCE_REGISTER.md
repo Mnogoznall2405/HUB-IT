@@ -15,7 +15,7 @@
 
 **Upstream:** PostgreSQL documentation FTS и pg_trgm.
 
-**Статус:** BASELINE DONE; implementation design NOT STARTED. Первый независимый non-paid эксперимент завершён на synthetic isolated PostgreSQL.
+**Статус:** BASELINE DONE; dependent implementation PROTOTYPE pushed in `feat/a14-kb-fts-retrieval` head `d7eb6f8f`. Первый независимый non-paid эксперимент завершён на synthetic isolated PostgreSQL; prototype ожидает independent review и не merge-ready.
 
 **Реальная проблема:** русский поиск KB должен работать по смыслу/словоформам/опечаткам, не только точному совпадению; старая A2 задача не считается закрытой без PG-backed proof. Дополнительно текущий A11 retrieval разделён: Python fallback сканирует все chunks, а существующий PostgreSQL FTS adapter использует `'simple'` и применяет ACL после `LIMIT`.
 
@@ -29,7 +29,7 @@
 
 **Rollback:** retrieval feature flag/default-off config; не использовать новый индекс/конфигурацию; revert migration/config, если изменение войдёт в схему.
 
-**Решение:** CONDITIONAL GO for design/prototype only: PostgreSQL FTS + pg_trgm остаётся первым кандидатом A14 без новых сервисов. Перед implementation merge требуются ACL-before-limit SQL review, migration proof, SQLite fallback, larger synthetic corpus, fixed golden-set differential tests и independent review. No production decision.
+**Решение:** CONDITIONAL GO for dependent prototype only: PostgreSQL FTS + pg_trgm остаётся первым кандидатом A14 без новых сервисов. Prototype подтверждает implementability, но перед merge требуются independent review, larger synthetic/fixed golden corpus, exact inventory controls, EXPLAIN на production-like volume, broad regression characterization и coordination после A11. No production decision.
 
 ## OSS-02 — Promptfoo / A23
 

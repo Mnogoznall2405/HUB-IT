@@ -9,7 +9,8 @@
 | Управляющий PR | PR #107, draft, documentation-only | ветка `docs/ai-assistant-a11-a24-roadmap` |
 | A11 Release Candidate | PR #105 обновлён review fixes, benchmark pack, recovery proof и characterization fix | head `cae317fd` |
 | A11 verdict | **BLOCKED / NO-GO для production merge** | нет full frozen eval на exact final SHA; нет подтверждённого бюджета; не решены routing/watchdog production flags |
-| A12+ | Implementation PR не начаты; независимый non-paid OSS-01 baseline завершён | FTS baseline report в `experiments/FTS_BASELINE_REPORT.md`; runtime не изменён |
+| A14 prototype | Dependent thematic branch `feat/a14-kb-fts-retrieval` pushed, base A11 `cae317fd` | head `d7eb6f8f`; ACL-aware hybrid FTS/pg_trgm prototype, migration reserve `20261129_0187`; не merge-ready до independent review и A11 closure |
+| A12/A13/A15+ | Implementation PR не начаты | независимый non-paid OSS-01 baseline завершён; остальные этапы только design/eval preparation |
 
 ## Последние подтверждённые проверки A11
 
@@ -40,6 +41,21 @@ Commit `2d5b37c5`:
 - aggregate включает заранее определённые quality rates (`pass_rate_all_scenarios`, `pass_rate_scored_scenarios`);
 - добавлен `A11_BENCHMARK_PACK.md` с hash manifest и ограничениями запуска;
 - локальная seed-only проверка прошла: 205 сценариев, `provider_calls=0`, `env_keys_loaded=0`; `py_compile` PASS.
+
+## Независимый A14 prototype — текущее доказательство
+
+Ветка `feat/a14-kb-fts-retrieval`, head `d7eb6f8f`, dependent on A11 `cae317fd`:
+
+- реализован staged PostgreSQL retrieval: strict Russian FTS → bounded OR Russian FTS с token coverage → pg_trgm per-token fallback;
+- ACL перенесён в SQL до `LIMIT`; Python fallback стал fail-closed для omitted `current_user` (только global chunks);
+- template candidates тоже используют PostgreSQL path вместо unconditional Python scan;
+- migration `20261129_0187` добавляет `ix_app_ai_kb_chunks_fts_russian` и `ix_app_ai_kb_chunks_trgm_lower`; зарегистрирована как dependent reserve после `20261128_0186`;
+- `tests/test_ai_kb_retrieval.py` — 25 passed;
+- `tests/test_ai_kb_retrieval_pg.py` — 4 passed на isolated PostgreSQL (morphology, typo, ACL-before-LIMIT, private/department/manager, template);
+- migration rehearsal на isolated PostgreSQL — PASS: fresh/repeat scope=all, scope=app, scope=chat, `0186 -> 0187 -> downgrade 0186 -> re-upgrade`;
+- broad AI suite на ветке — 1023 passed, 27 skipped, 2 failed в sandbox packaging tests (`shared.llm.json_stream` missing in copied artifact). Эти failures находятся вне затронутых retrieval файлов и требуют отдельной characterization, но не должны скрываться.
+
+Это prototype evidence, не production GO. Нужны independent review, larger fixed golden corpus, exact inventory controls, EXPLAIN на production-like volume и отдельное решение о stacked/dependent PR после A11.
 
 ## Активные блокеры A11 GO
 

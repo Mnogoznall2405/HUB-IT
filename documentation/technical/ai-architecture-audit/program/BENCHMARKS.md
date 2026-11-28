@@ -219,3 +219,18 @@ Findings:
 
 **Planned evidence:** version/license/telemetry review, local provider adapter, synthetic-only prompts, deterministic CI subset, separate nightly/live budgeted config. Promptfoo does not replace pytest or the frozen A11 corpus.
 
+## B-010 — A14 retrieval prototype correctness/migration gate
+
+**Status:** LOCAL PROTOTYPE GATE PASSED; not production proof.
+
+Branch: `feat/a14-kb-fts-retrieval` head `d7eb6f8f`, dependent on A11 `cae317fd`.
+
+Executed local/non-paid checks:
+
+1. `tests/test_ai_kb_retrieval.py` — **25 passed**.
+2. `tests/test_ai_kb_retrieval_pg.py` — **4 passed** on isolated PostgreSQL: Russian morphology, trigram typo fallback, ACL-before-LIMIT, private owner visibility, department/manager visibility, template retrieval.
+3. Migration rehearsal on isolated PostgreSQL — **PASS** for fresh/repeat `scope=all`, `scope=app`, `scope=chat`, and `0186 -> 0187 -> downgrade 0186 -> re-upgrade`.
+4. Broad AI suite — **1023 passed, 27 skipped, 2 failed**. The two failures are sandbox packaging tests complaining that copied release artifacts lack `shared.llm.json_stream`; they are outside the retrieval diff and require separate characterization rather than being hidden or attributed to A14 without evidence.
+
+**Limits:** no larger fixed golden corpus yet; no production-like volume EXPLAIN yet; no exact inventory-number differential campaign yet; independent review still pending. These results only support continued prototype review, not merge/GO.
+
