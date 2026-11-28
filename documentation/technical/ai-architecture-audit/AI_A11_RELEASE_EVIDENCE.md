@@ -7,14 +7,15 @@
 - PR: #105 `fix/a11-release-candidate`.
 - Исходный проверенный head до локальных исправлений ревью: `455c160b717b0c33ea69ae3adc99a41757efabf4`.
 - База: `origin/main` `59954cec0d070a8afb09659d85ef76f493367648`.
-- Локальные исправления ревью ещё должны быть закоммичены отдельным commit перед повторным финальным сравнением.
+- Текущий head после review fixes, benchmark pack и process recovery proof: `fbacbcaa`.
 
 ## Проверенные результаты
 
 ### PASS
 
 1. Изолированный PostgreSQL 17.6 на `127.0.0.1:55432`, тестовые БД `a11test`/`a11_test`:
-   - `pytest -q tests/test_ai_run_serialization_pg.py` — **22 passed**.
+   - `pytest -q tests/test_ai_run_serialization_pg.py` — **23 passed** на SHA `fbacbcaa`, включая cross-process kill-after-claim recovery proof.
+5. Curated benchmark pack интегрирован без raw artifacts/scratch scripts; seed-only validation PASS: 205 scenarios, `provider_calls=0`, `env_keys_loaded=0`; `py_compile` PASS. Подробности и hashes — `A11_BENCHMARK_PACK.md`.
 2. AI regression suite на исходном head `455c160b` — **300 passed**:
    - argument recovery, database fail-closed, loop guard, manager redaction, access, runtime, generated files, JEV modes, mail recipients, stage2 tools, task draft resolution, validation diagnostics.
 3. Migration rehearsal helper `.codex_tmp/verify_a11_migration_gate.py` после исправления завышенного ожидания по chat-schema:
@@ -46,8 +47,9 @@
 Независимые агентские ревью не заменяют human review, но дали проверяемые findings:
 
 - Runtime-дельта PR #74 практически полностью перенесена в PR #105; raw benchmark artifacts переносить не нужно.
-- Ценное не перенесено: обновлённый harness/corpus и финальный evidence report. Их следует интегрировать отдельно, после сверки версии corpus (`v12` в файле против `v13` в отчёте).
+- Benchmark harness/corpus интегрирован curated pack; corpus hash reconciled: metadata остаётся `a11-v12`, но SHA256 совпадает с hash, который отчёт называл v13.
 - Критических P0 не найдено.
+- Process-level kill-after-claim recovery доказан в isolated PG; остаётся только production watchdog configuration decision.
 - Остаются архитектурные/эксплуатационные вопросы: JEV routing и, соответственно, CHAT/READ/ACT ceilings по умолчанию выключены; watchdog recovery не включён в PM2 config; voice runtime содержит pre-existing unconditional `create_all` вне зоны A11.
 
 ## Блокеры GO
