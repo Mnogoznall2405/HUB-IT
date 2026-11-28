@@ -112,6 +112,14 @@ pytest -q tests/test_ai_bot_access.py tests/test_ai_manager_observability_redact
 - sequential execution if provider throttling/balance causes parallel 402s;
 - resume allowed only with hash-verified checkpoints and immutable config.
 
+**Pre-measurement resource envelope for budget approval:**
+
+Исторический fast-path-ON full corpus дал 423 main LLM calls + 223 JEV calls, 1,742,511 main input tokens, 84,465 main output tokens и 1,155,256 JEV tokens. Это нижняя/историческая точка, не final config.
+
+Fast-path-OFF control subset (31 scenarios) экстраполируется на 205 сценариев примерно как 648 main LLM calls, 238 JEV calls, 2.86M main input tokens, 133K main output tokens и 1.35M JEV tokens. С safety factor 1.25 рекомендуемый approval envelope: **не более 810 main LLM calls, 300 JEV calls, 5.3M input-equivalent tokens и 170K output tokens** на один полный dev+holdout pass. Input-equivalent conservatively считает все JEV tokens как input, потому что artifact не разделяет их input/output.
+
+Exact dollar budget нельзя честно посчитать без approved provider/model price card. Формула: `(approved_input_price_per_mtok × input-equivalent tokens / 1M) + (approved_output_price_per_mtok × output tokens / 1M)`. Harness уже записывает token usage; если provider не возвращает cost, отсутствие cost должно быть явно отражено в artifact.
+
 **Minimum report outputs:**
 
 - scenario-level result rows;
