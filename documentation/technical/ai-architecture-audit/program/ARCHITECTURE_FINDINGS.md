@@ -68,13 +68,13 @@
 
 **Остаток:** нужна полная matrix draft permission → confirm permission → object-level permission для всех mutating action types.
 
-## AF-009 — Worker recovery реализован, но не доказан как production behavior
+## AF-009 — Worker recovery реализован; эксплуатационная конфигурация всё ещё owner decision
 
-**Факт:** watchdog и CAS recovery существуют, PG tests проходят. Но `AI_RUN_WATCHDOG_ENABLED` не включён по умолчанию/в ecosystem, а process-level kill-after-claim proof отсутствует.
+**Факт:** watchdog и CAS recovery существуют. Cross-process kill-after-claim proof на isolated PostgreSQL подтверждает, что orphaned `running` row не отпускает FIFO slot сам по себе, а настоящий `reap_stale_runs` помечает только этот run failed и освобождает следующий queued run.
 
-**Влияние:** crashed worker может оставить running row, блокирующий conversation до ручного retry/stale path.
+**Влияние:** correctness recovery mechanism доказан на minimal PG harness. Оставшийся риск не architectural correctness, а production configuration: `AI_RUN_WATCHDOG_ENABLED` и heartbeat/watchdog intervals не утверждены для PM2/production.
 
-**Статус:** OPEN; требуется isolated process test и отдельное эксплуатационное решение.
+**Статус:** mechanism CLOSED for current proof; production watchdog configuration OPEN as owner decision.
 
 ## AF-010 — Voice runtime DDL не является A11 defect, но нарушает общий PostgreSQL invariant
 
@@ -105,3 +105,13 @@
 **Влияние:** расследование «что ассистент сделал от имени пользователя» затруднено.
 
 **Статус:** OPEN / backlog. Не добавлять новую инфраструктуру без отдельного доказательства потребности; минимум — retention/query contract для existing rows.
+
+## AF-014 — KB retrieval архитектурно не масштабируется и не использует PostgreSQL FTS
+
+**Факт:** `backend/ai_chat/retrieval.py` загружает все `AppAiKbChunk` rows и выполняет scoring в Python. В PostgreSQL уже есть FTS index с `'simple'` configuration, но runtime retrieval его не использует. Synthetic baseline B-007 показывает: `'simple'` не справляется с русской морфологией (Hit@1 0.30), strict `'russian'` лучше (0.70), trigram token coverage ловит опечатки, а hybrid Russian FTS + controlled fallback достиг 1.00 на маленьком synthetic corpus. Whole-query trigram similarity непригоден (0.20).
+
+**Влияние:** memory/network cost retrieval растёт линейно с KB; ACL filtering нельзя корректно совместить с SQL `LIMIT`, если retrieval остаётся широким Python scan; typo tolerance и русская морфология слабые. При этом exact inventory-number behavior нельзя регрессировать.
+
+**Влияние на A14:** PostgreSQL FTS + pg_trgm является первым кандидатом, потому что использует существующую СУБД и не требует нового service/vector DB. Но semantic synonyms им не решаются полностью. Implementation должен сначала доказать ACL-before-limit, migration/index correctness, SQLite fallback и larger-scale benchmark.
+
+**Статус:** OPEN / leading design hypothesis for A14. Evidence only; no runtime implementation approved by this finding.

@@ -9,7 +9,7 @@
 | Управляющий PR | PR #107, draft, documentation-only | ветка `docs/ai-assistant-a11-a24-roadmap` |
 | A11 Release Candidate | PR #105 обновлён review fixes, benchmark pack, recovery proof и characterization fix | head `cae317fd` |
 | A11 verdict | **BLOCKED / NO-GO для production merge** | нет full frozen eval на exact final SHA; нет подтверждённого бюджета; не решены routing/watchdog production flags |
-| A12+ | Не начаты как implementation PR | можно готовить test plans и независимые измерения, но не расширять runtime до closure A11 или отдельного согласованного slice |
+| A12+ | Implementation PR не начаты; независимый non-paid OSS-01 baseline завершён | FTS baseline report в `experiments/FTS_BASELINE_REPORT.md`; runtime не изменён |
 
 ## Последние подтверждённые проверки A11
 
@@ -51,10 +51,11 @@ Commit `2d5b37c5`:
 
 ## Ближайший разрешённый шаг
 
-1. В PR #107 завести полный program register (этот каталог) и держать его актуальным.
-2. Сформировать точную смету полного dev+holdout run на exact SHA `2d5b37c5` и передать владельцу на approval бюджета.
-3. Проверить CI/review state PR #105 после push benchmark pack.
-4. Параллельно, без платных вызовов, выполнить независимые локальные задачи: process-level worker recovery proof, FTS baseline для OSS-01, Promptfoo pilot design для OSS-02.
+1. В PR #107 поддерживать полный program register (этот каталог) актуальным.
+2. Сформировать/подтвердить точную денежную смету полного dev+holdout run на exact SHA `cae317fd` и передать владельцу на approval бюджета; token envelope уже зафиксирован, но exact dollar cost требует approved provider/model price card.
+3. Проверить CI/review state PR #105 после последних push.
+4. Параллельно, без платных вызовов, продолжать независимые локальные задачи: ACL-aware A14 FTS design/prototype и Promptfoo pilot design для OSS-02.
+5. Для A14 не изменять runtime до design review: сначала exact SQL ACL parity, migration/index proof, SQLite fallback, golden differential tests и larger synthetic corpus benchmark.
 
 ## Запрещено сейчас
 

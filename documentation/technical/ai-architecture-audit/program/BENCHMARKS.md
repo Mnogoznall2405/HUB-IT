@@ -166,19 +166,38 @@ pytest -q tests/test_e2e_ai_draft_reliability.py
 
 ## B-007 — PostgreSQL FTS baseline for OSS-01/A14
 
-**Status:** TODO, local/non-paid.
+**Status:** DONE as local/synthetic decision evidence; not production proof and not implementation approval.
 
-**Planned comparisons on isolated PG:**
+Artifacts:
 
-1. current `'simple'` FTS path;
-2. corrected `'russian'` configuration;
-3. strict AND vs bounded OR fallback;
-4. pg_trgm similarity for typos;
-5. exact inventory-number queries as regression control;
-6. ACL filtering before LIMIT;
-7. EXPLAIN evidence for index use.
+- report: `experiments/FTS_BASELINE_REPORT.md`
+- harness: `experiments/fts_baseline.py`
+- raw result: `experiments/fts_baseline_result.json`
 
-**Metrics:** Hit@1/Hit@3, false hits on negative queries, latency distribution, index scan vs seq scan, row counts. No production data.
+Executed comparisons on disposable isolated PostgreSQL with 1012 synthetic rows (1000 filler + 12 target rows), 13 Russian test cases and zero LLM/provider calls:
+
+| Algorithm | Hit@1 | Hit@3 | False-positive cases | Avg latency |
+|---|---:|---:|---:|---:|
+| current Python substring approximation | 0.80 | 0.90 | 1 | 2.497 ms |
+| PG FTS `simple`, strict AND | 0.30 | 0.30 | 0 | 0.232 ms |
+| PG FTS `russian`, strict AND | 0.70 | 0.70 | 0 | 0.284 ms |
+| PG FTS `russian`, bounded OR ranked | 0.90 | 0.90 | 1 | 3.205 ms |
+| pg_trgm whole-query similarity | 0.20 | 0.20 | 0 | 1.360 ms |
+| pg_trgm token coverage | 0.90 | 0.90 | 0 | 3.334 ms |
+| hybrid strict Russian FTS → bounded OR → trigram token coverage | **1.00** | **1.00** | **0** | 3.128 ms |
+
+Findings:
+
+1. `simple` FTS is unsuitable as the primary Russian retrieval configuration.
+2. strict Russian AND is fast and precise but misses valid inflection/intent variants.
+3. unguarded OR improves recall but can introduce false positives.
+4. whole-query trigram similarity is the wrong shape for long natural-language queries.
+5. per-token trigram coverage catches the typo case and avoids the tested false-positive cases, but does not solve semantic synonyms.
+6. the hybrid candidate performed best on this small synthetic corpus and is the leading A14 design hypothesis.
+7. ACL was only simplified in the harness; production implementation must encode/enforce the real KB ACL before `LIMIT`.
+8. FTS Russian used a GIN bitmap index scan by default. Trigram index usage requires the commutator/indexable shape `document %> token`; on the tiny 1k table PostgreSQL still preferred seq scan unless forced, which is expected planner behavior and not by itself a defect.
+
+**Limits:** synthetic small corpus only; latency is comparative smoke evidence; perfect hybrid result must not be represented as production 95% quality. Next evidence: real ACL-aware SQL predicates, migration/index design, SQLite fallback, larger corpus and fixed golden-set differential tests.
 
 ## B-008 — Process-level worker recovery proof
 
@@ -199,3 +218,4 @@ pytest -q tests/test_e2e_ai_draft_reliability.py
 **Status:** TODO design before implementation.
 
 **Planned evidence:** version/license/telemetry review, local provider adapter, synthetic-only prompts, deterministic CI subset, separate nightly/live budgeted config. Promptfoo does not replace pytest or the frozen A11 corpus.
+

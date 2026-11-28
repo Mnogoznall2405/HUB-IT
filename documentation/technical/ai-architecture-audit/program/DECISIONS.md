@@ -91,3 +91,13 @@
 **Решение:** перед full benchmark фиксируются exact SHA, corpus/seed hash, provider/model, temperature, flags, concurrency, лимит стоимости и команды. После начала измерения критерии не меняются; partial/mock не считается production readiness.
 
 **Статус:** ACTIVE.
+
+## D-013 — PostgreSQL FTS + pg_trgm является первым кандидатом A14 retrieval design
+
+**Решение:** для A14 сначала проектируется ACL-aware PostgreSQL FTS/pg_trgm retrieval prototype, а не новый vector service/vector database. Semantic/vector pilot допустим только после implementation-grade evidence, что безопасный improved FTS недостаточен.
+
+**Основание:** B-007 synthetic baseline: `'simple'` FTS непригоден для русской морфологии; strict `'russian'` быстрый и точный, но неполный; whole-query trigram непригоден; hybrid Russian FTS + controlled fallback дал лучший Hit@1/Hit@3 на synthetic corpus. PostgreSQL уже является существующей инфраструктурой, поэтому это минимальный архитектурный шаг.
+
+**Ограничение:** это не production GO и не разрешение на runtime merge. Обязательны exact SQL ACL parity before `LIMIT`, migration/index proof, SQLite fallback, larger synthetic corpus, fixed golden-set differential tests и independent review.
+
+**Статус:** CONDITIONAL / design-only.

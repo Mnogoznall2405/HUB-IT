@@ -15,21 +15,21 @@
 
 **Upstream:** PostgreSQL documentation FTS и pg_trgm.
 
-**Статус:** PLANNED, первый независимый non-paid эксперимент.
+**Статус:** BASELINE DONE; implementation design NOT STARTED. Первый независимый non-paid эксперимент завершён на synthetic isolated PostgreSQL.
 
-**Реальная проблема:** русский поиск KB должен работать по смыслу/словоформам/опечаткам, не только точному совпадению; старая A2 задача не считается закрытой без PG-backed proof.
+**Реальная проблема:** русский поиск KB должен работать по смыслу/словоформам/опечаткам, не только точному совпадению; старая A2 задача не считается закрытой без PG-backed proof. Дополнительно текущий A11 retrieval загружает все chunks в Python и не использует SQL FTS.
 
-**Текущая гипотеза:** current `'simple'` FTS может недоиспользовать русскую морфологию; query/index expression, AND fallback, ACL order и index usage требуют проверки.
+**Подтверждённая гипотеза:** `'simple'` FTS недостаточен для русской морфологии. Лучший локальный кандидат — strict Russian FTS с контролируемым fallback: bounded OR Russian FTS и затем pg_trgm per-token coverage для опечаток/словоформ. Это не semantic retrieval и не production proof.
 
-**Интеграционные точки:** `WEB-itinvent/backend/services/kb_service.py`, retrieval/search SQL, существующие индексы/миграции PostgreSQL.
+**Интеграционные точки:** `WEB-itinvent/backend/ai_chat/retrieval.py`, `WEB-itinvent/backend/services/kb_service.py`, retrieval/search SQL, существующие индексы/миграции PostgreSQL.
 
-**Benchmark:** `B-007` в `BENCHMARKS.md`; isolated PG only, EXPLAIN, Hit@1/Hit@3, false hits, exact inventory control.
+**Benchmark:** `B-007` в `BENCHMARKS.md`; report/harness/raw JSON в `experiments/`. Результат synthetic 1k rows: hybrid Hit@1/Hit@3 = 1.0/1.0, 0 false-positive cases; current substring approximation 0.8/0.9, 1 false-positive/ACL-control case. Latency — только comparative smoke evidence.
 
-**Риски:** регрессия exact matches, неправильный index expression, ACL после limit, рост cost запросов, неправильная обработка дефисов/составных терминов.
+**Риски:** регрессия exact matches, неправильный index expression/operator orientation, ACL после limit, рост cost запросов, неправильная обработка дефисов/составных терминов, broad OR false positives, SQLite fallback divergence.
 
-**Rollback:** не использовать новый индекс/конфигурацию; feature flag или revert migration/config, если изменение войдёт в схему.
+**Rollback:** retrieval feature flag/default-off config; не использовать новый индекс/конфигурацию; revert migration/config, если изменение войдёт в схему.
 
-**Решение:** NO DECISION до baseline.
+**Решение:** CONDITIONAL GO for design/prototype only: PostgreSQL FTS + pg_trgm остаётся первым кандидатом A14 без новых сервисов. Перед implementation merge требуются ACL-before-limit SQL review, migration proof, SQLite fallback, larger synthetic corpus, fixed golden-set differential tests и independent review. No production decision.
 
 ## OSS-02 — Promptfoo / A23
 
