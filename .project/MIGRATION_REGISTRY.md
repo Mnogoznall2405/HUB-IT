@@ -22,3 +22,11 @@
 - База проверки: `59954cec`; действующая цепочка app/chat заканчивается на `20261127_0185` (#103).
 - Резерв: `20261128_0186` после `20261127_0185`, nullable-колонка `app.ai_bots.emergency_disabled_at`, без заполнения существующих строк. Для chat-only это проходная ревизия без изменения схемы.
 - Исторические `0183` и `0185` не переписываются. Проверка на изолированном PostgreSQL и отдельное разрешение на production-миграцию обязательны.
+
+## A14 dependent prototype — KB hybrid search
+
+- Task ID: A14-004; контур: ветка `feat/a14-kb-fts-retrieval`, зависимая от A11 candidate `cae317fd`.
+- Резерв: `20261129_0187` после `20261128_0186`; PostgreSQL-only expression indexes `app.ai_kb_chunks` для Russian FTS и pg_trgm. Для chat-only это проходная ревизия без изменения схемы; SQLite no-op.
+- Rollback: `downgrade` к `20261128_0186` удаляет только два новых индекса и не трогает данные/существующий simple FTS index.
+- Изолированная PG-проверка: fresh/repeat `scope=all`, `scope=app`, `scope=chat`, `0186 -> 0187 -> downgrade 0186 -> re-upgrade` — PASS. Production-миграция не выполнялась и требует отдельного разрешения.
+- Ветка зависит от A11 schema reserve и не должна рассматриваться как параллельный independent schema PR до closure/merge A11.
