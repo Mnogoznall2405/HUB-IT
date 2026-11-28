@@ -172,6 +172,33 @@ def _resolve_single_project(query: str) -> dict[str, Any]:
     return matches[0]
 
 
+def _default_task_project() -> dict[str, Any] | None:
+    """Project pre-selected when the user does not name one.
+
+    Parity with the task-create UI (useTaskCreateForm.js ``defaultCreateProject``):
+    the general project when it exists, otherwise the first active project.
+    The chosen project is shown on the confirmation card, so the user can
+    correct it before anything is created — exactly like in the web form.
+    """
+    try:
+        projects = [
+            row for row in hub_service.list_task_projects(include_inactive=False)
+            if isinstance(row, dict)
+        ]
+    except Exception:
+        return None
+    if not projects:
+        return None
+    for row in projects:
+        if (
+            _normalize_text(row.get("id")) == "general-tasks"
+            or _normalize_text(row.get("code")).upper() == "GENERAL"
+            or _normalize_text(row.get("name")).lower() == "общие задачи"
+        ):
+            return row
+    return projects[0]
+
+
 class MailSearchArgs(BaseModel):
     q: str = Field(default="", max_length=500)
     mailbox_id: Optional[str] = Field(default=None, max_length=128)
@@ -488,7 +515,11 @@ class TasksSearchTool(AiTool):
     tool_id = OFFICE_TOOL_TASKS_SEARCH
     description = (
         "Search Hub tasks visible to the current user by text, status, role, assignee and due state. "
-        "Statuses: new, in_progress, review, done; status 'open' means all except done; empty status means any."
+        "Statuses: new, in_progress, review, done; status 'open' means all except done; empty status means any. "
+        "IMPORTANT argument rules: when the user says 'активные/открытые/текущие/невыполненные задачи' you MUST "
+        "pass status='open' — otherwise completed tasks are returned too. When the user says 'мои задачи' keep "
+        "scope='my' (default); scope='all' requires elevated rights and may be downgraded server-side. "
+        "Use due_state='overdue' for 'просроченные', 'today' for 'на сегодня'."
     )
     input_model = TasksSearchArgs
     stage = "checking_office"
@@ -693,6 +724,13 @@ class TaskCreateDraftTool(AiTool):
             project = _resolve_single_project(args.project_query)
             payload["project_id"] = _normalize_text(project.get("id"))
             payload["project_name"] = _normalize_text(project.get("name"))
+        if not payload.get("project_id"):
+            # UI parity: the web form pre-selects the general project instead of
+            # blocking task creation; the draft card shows the project for review.
+            default_project = _default_task_project()
+            if default_project:
+                payload["project_id"] = _normalize_text(default_project.get("id"))
+                payload["project_name"] = _normalize_text(default_project.get("name"))
         if not payload.get("assignee_user_id"):
             raise ValueError("assignee_user_id or exact assignee_query is required")
         if not payload.get("controller_user_id"):
@@ -821,7 +859,12 @@ class TasksProjectsTool(AiTool):
 
 class AnnouncementsListTool(AiTool):
     tool_id = OFFICE_TOOL_ANNOUNCEMENTS_LIST
-    description = "List Hub announcements visible to the current user, with optional search query and filters."
+    description = (
+        "List Hub announcements (объявления/новости компании) visible to the current user, with optional "
+        "search query and filters. This is the ONLY authoritative source for corporate announcements/news: "
+        "use it for 'покажи объявления', 'что нового в компании', 'что объявляли про X'. Do NOT search "
+        "kb.articles for announcements — KB holds instructions/regulations, not company news."
+    )
     input_model = AnnouncementsListArgs
     stage = "checking_office"
 

@@ -214,12 +214,13 @@ def test_api_manager_scope_and_bounded_directory(database):
 def test_api_balance_routes_are_for_ai_managers_only(database, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from backend.ai_chat.balance import ai_balance_service
+    from backend.ai_chat import balance
     from backend.api.v1.ai_bots import router
     from backend.api.deps import get_current_active_user
     from backend.models.auth import User
-    monkeypatch.setattr(ai_balance_service, '_credits_provider', lambda: {'data': {'total_credits': 5, 'total_usage': 4}})
-    monkeypatch.setattr(ai_balance_service, '_notify_managers', lambda **kwargs: True)
+    monkeypatch.setattr(balance, 'app_session', database)
+    monkeypatch.setattr(balance.ai_balance_service, '_credits_provider', lambda: {'data': {'total_credits': 5, 'total_usage': 4}})
+    monkeypatch.setattr(balance.ai_balance_service, '_notify_managers', lambda **kwargs: True)
     app = FastAPI()
     app.include_router(router, prefix='/bots')
     app.dependency_overrides[get_current_active_user] = lambda: User(id=2, username='viewer')
@@ -297,3 +298,81 @@ def test_open_agent_returns_forbidden_when_access_is_denied(database, monkeypatc
     app.dependency_overrides[get_current_active_user] = lambda: User(id=2, username='viewer')
     with TestClient(app) as client:
         assert client.post('/chat/ai/bots/code/open').status_code == 403
+
+
+# --- Emergency kill-switch: a separate mode from regular disable ---
+
+def _set_emergency(database, bot_id, when):
+    with database() as db:
+        bot = db.get(AppAiBot, bot_id)
+        bot.emergency_disabled_at = when
+        db.flush()
+
+
+def test_emergency_blocks_write_access_and_confirm_entry(database):
+    from datetime import datetime, timezone
+    # Baseline: owner has write access (prebuilt 'conversation' -> user 2, bot 'agent').
+    access.require_conversation_access('conversation', 2)
+    _set_emergency(database, 'agent', datetime.now(timezone.utc))
+    with pytest.raises(PermissionError, match='аварийно'):
+        access.require_conversation_access('conversation', 2)
+
+
+def test_emergency_is_distinct_from_regular_disable(database):
+    from datetime import datetime, timezone
+    with database() as db:
+        bot = db.get(AppAiBot, 'agent')
+        bot.is_enabled = False
+        bot.emergency_disabled_at = None
+        db.flush()
+    # Regular disable, unchanged behaviour: the owner keeps full access (AI8),
+    # including confirmation of previously created actions.
+    access.require_conversation_access('conversation', 2)
+    # Engaging emergency on the same disabled bot blocks even the owner.
+    _set_emergency(database, 'agent', datetime.now(timezone.utc))
+    with pytest.raises(PermissionError, match='аварийно'):
+        access.require_conversation_access('conversation', 2)
+
+
+def test_emergency_clear_restores_access(database):
+    from datetime import datetime, timezone
+    _set_emergency(database, 'agent', datetime.now(timezone.utc))
+    with pytest.raises(PermissionError):
+        access.require_conversation_access('conversation', 2)
+    _set_emergency(database, 'agent', None)
+    access.require_conversation_access('conversation', 2)
+
+
+def test_emergency_does_not_hide_history(database):
+    from datetime import datetime, timezone
+    _set_emergency(database, 'agent', datetime.now(timezone.utc))
+    # Read-only access path stays available: conversation_access is a read probe,
+    # and status/history reads never go through the write gate.
+    result = access.conversation_access('conversation', 2)
+    assert 'can_use' in result
+
+
+def test_emergency_blocks_confirm_after_conversation_rebind(database, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from backend.ai_chat import action_cards
+
+    monkeypatch.setattr(action_cards, 'app_session', database)
+    execute = Mock()
+    monkeypatch.setattr(action_cards, '_execute_transfer', execute)
+    with database() as db:
+        db.add(AppAiBotRun(id='run-emergency', bot_id='agent', user_id=2,
+                           conversation_id='conversation', trigger_message_id='message', status='completed'))
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_TRANSFER,
+        conversation_id='conversation', run_id='run-emergency', requester_user_id=2,
+        database_id='test', payload={}, preview={},
+    )
+    with database() as db:
+        mapping = db.scalar(select(AppAiBotConversation).where(
+            AppAiBotConversation.conversation_id == 'conversation'))
+        mapping.bot_id = 'restricted'
+        db.get(AppAiBot, 'agent').emergency_disabled_at = datetime.now(timezone.utc)
+    with pytest.raises(PermissionError, match='аварийно'):
+        action_cards.confirm_action(action_id=card['id'], current_user=SimpleNamespace(id=2))
+    execute.assert_not_called()

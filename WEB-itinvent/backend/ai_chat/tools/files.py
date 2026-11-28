@@ -180,9 +180,14 @@ class FilesCreateTool(AiTool):
     description = (
         "Create generated chat attachments requested by the user. Supports xlsx, csv, docx, pdf, txt, md and json. "
         "Omit format when the user did not choose one; HUB will show a format-choice card before creating the file. "
+        "When the user explicitly named a format (including json/txt/md), pass it in 'format' and create the file "
+        "in the same run — do not wait for the format-choice card. "
         "Use after gathering any required live ITinvent data or attachment context. "
-        "Rows must be an array of row arrays or row objects, never a flat list of cells. "
+        "Rows must be an array of row arrays or row objects, never a flat list of cells: "
+        "rows=[[\"Header1\", \"Header2\"], [\"v1\", \"v2\"]] or rows=[{\"Header1\": \"v1\"}]. "
         "Optional columns fixes order/labels for row objects. "
+        "For json files prefer 'content' with the native structure (array of objects, nested data); "
+        "for json/txt/md 'content' fully defines the file body and rows are used only when content is empty. "
         "For inventory tables, keep the same columns and order shown to the user; include Serial number for equipment."
     )
     input_model = FilesCreateArgs
@@ -217,7 +222,12 @@ class FilesCreateTool(AiTool):
                     }
                 )
         except GeneratedFileError as exc:
-            return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc), data={"diagnostic": exc.to_payload()})
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=False,
+                error=str(exc),
+                data={"diagnostic": _generated_file_error_diagnostic(exc, source_files)},
+            )
         return AiToolResult(
             tool_id=self.tool_id,
             ok=True,
@@ -236,6 +246,44 @@ class FilesCreateTool(AiTool):
                 ],
             },
         )
+
+
+def _generated_file_error_diagnostic(exc: "GeneratedFileError", source_files: list[dict[str, Any]]) -> dict[str, Any]:
+    """A11 c3 (doc_08): runtime rows-shape errors must be as actionable as the
+    schema-validation path (args_hint + example). The bare 'not a flat list'
+    message measurably produced a second wrong-shape retry in real runs, so the
+    diagnostic carries a minimal valid call shape for the format the model
+    actually targeted."""
+    payload = dict(exc.to_payload())
+    if _normalize_text(payload.get("error_code")) in {"invalid_rows_shape", "mixed_rows_shape"}:
+        formats = {
+            _normalize_format(item.get("format"))
+            for item in list(source_files or [])
+            if isinstance(item, dict) and _normalize_text(item.get("format"))
+        }
+        if formats == {"json"}:
+            payload["example"] = {
+                "files": [
+                    {
+                        "format": "json",
+                        "file_name": "data.json",
+                        "title": "Data",
+                        "content": [{"name": "example", "status": "new"}],
+                    }
+                ]
+            }
+        else:
+            payload["example"] = {
+                "files": [
+                    {
+                        "format": sorted(formats)[0] if formats else "xlsx",
+                        "file_name": "data",
+                        "title": "Data",
+                        "rows": [["Header1", "Header2"], ["value1", "value2"]],
+                    }
+                ]
+            }
+    return payload
 
 
 def _rows_from_report_table(table: ReportTableArgs) -> list[list[str]]:
@@ -470,7 +518,12 @@ class FilesReportTool(AiTool):
         try:
             specs = normalize_generated_file_specs([_report_file_spec_v2(args)])
         except GeneratedFileError as exc:
-            return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc), data={"diagnostic": exc.to_payload()})
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=False,
+                error=str(exc),
+                data={"diagnostic": _generated_file_error_diagnostic(exc, [{"format": args.format}])},
+            )
         return AiToolResult(
             tool_id=self.tool_id,
             ok=True,

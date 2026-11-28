@@ -734,8 +734,10 @@ def test_recents_sync_state_migration_upgrade_and_downgrade(tmp_path):
     engine.dispose()
 
 
-def test_sticker_favorites_revision_is_the_single_head_descendant():
+def test_sticker_revisions_are_reachable_from_the_single_head():
     cfg = _alembic_config("sqlite:///unused.db")
     script = ScriptDirectory.from_config(cfg)
     heads = script.get_heads()
-    assert heads == ["20261125_0182"], heads
+    assert len(heads) == 1, heads
+    reachable = {migration.revision for migration in script.iterate_revisions(heads[0], "base")}
+    assert {"20261124_0180", "20261124_0181", "20261125_0182"} <= reachable

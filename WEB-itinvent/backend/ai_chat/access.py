@@ -65,6 +65,11 @@ def require_conversation_access(conversation_id: str, user_id: int, *, db=None, 
             return
         if mapping.user_id != int(user_id):
             raise PermissionError('AI conversation is unavailable')
+        if bot is not None and getattr(bot, 'emergency_disabled_at', None) is not None:
+            # Emergency kill-switch: no new requests, no confirmations, no new
+            # execution stages. History stays readable; already committed external
+            # actions are never rolled back implicitly.
+            raise PermissionError('Агент остановлен аварийно. Новые запросы и подтверждения действий заблокированы.')
         if bot is None or not bot.is_enabled:
             # R31: OpenCode (surface=sandbox) is never taken over by another agent -
             # once it is disabled the conversation is read-only.
