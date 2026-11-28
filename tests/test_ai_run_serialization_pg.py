@@ -13,6 +13,8 @@ unique-index backstop, and the enqueue-side monotone sequence minted under the
 mapping row lock.
 """
 import os
+import subprocess
+import sys
 import threading
 import time
 import conftest  # noqa: F401  (import order: sys.path bootstrap)
@@ -23,7 +25,7 @@ import pytest
 from sqlalchemy import create_engine, select, text, update
 from sqlalchemy.orm import Session
 
-from backend.appdb.models import AppUser, AppAiBot, AppAiBotConversation, AppAiBotRun
+from backend.appdb.models import AppUser, AppAiBot, AppAiBotConversation, AppAiBotRun, AppGlobalSetting
 from backend.ai_chat import access as access_module
 from backend.ai_chat import service as service_module
 
@@ -45,7 +47,7 @@ pytestmark = pytest.mark.skipif(
 
 PG_URL = _test_database_url()
 PG_SCHEMA = _test_schema()
-A4_TABLES = ["ai_bot_runs", "ai_bot_conversations", "ai_bots", "users"]
+A4_TABLES = ["ai_bot_runs", "ai_bot_conversations", "ai_bots", "users", "app_settings"]
 
 
 @pytest.fixture(scope="module")
@@ -68,6 +70,7 @@ def pg_engine():
             AppAiBotConversation.__table__,
             AppAiBot.__table__,
             AppUser.__table__,
+            AppGlobalSetting.__table__,
         ],
     )
     yield engine
@@ -359,6 +362,117 @@ def test_pg_orphaned_running_recovered_by_watchdog_cas(svc):
         )
         assert int(changed.rowcount or 0) == 1
     assert _claim(svc) == "r2"
+
+
+def test_pg_process_killed_after_claim_recovers_fifo_slot(svc, tmp_path):
+    """Cross-process kill-after-claim proof.
+
+    A child Python process uses the production PostgreSQL claim implementation,
+    commits status='running', and is then killed before completion. The orphaned
+    row must block the per-conversation FIFO slot until the real watchdog CAS
+    marks it failed; only then may the next queued run be claimed.
+    """
+    _seed(svc)
+    _add_run(svc, "r1", seq=1)
+    _add_run(svc, "r2", seq=2)
+    marker = tmp_path / "claimed.txt"
+    child_script = tmp_path / "claim_child.py"
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    web_root = os.path.join(repo_root, "WEB-itinvent")
+    child_script.write_text(
+        """
+import sys
+import time
+from contextlib import contextmanager
+from pathlib import Path
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+web_root, pg_url, schema, marker = sys.argv[1:5]
+sys.path.insert(0, web_root)
+
+from backend.ai_chat import service as service_module  # noqa: E402
+
+engine = create_engine(pg_url, pool_pre_ping=True).execution_options(
+    schema_translate_map={"app": schema, "system": schema, "chat": schema}
+)
+
+@contextmanager
+def session(*_args, **_kwargs):
+    db = Session(engine, expire_on_commit=False)
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+service_module.app_session = session
+svc = service_module.AiChatService()
+svc.session = session
+svc.engine = engine
+with session() as db:
+    run = svc._claim_next_queued_run(db)
+    if run is None:
+        raise RuntimeError("child claim returned no run")
+    run_id = run.id
+# The marker is written only after commit, so the parent may kill the process
+# knowing that status='running' is visible to other transactions.
+Path(marker).write_text(run_id, encoding="utf-8")
+time.sleep(120)
+""".lstrip(),
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    env.setdefault("APP_ENV", "development")
+    env.setdefault("JWT_SECRET_KEY", "x" * 32)
+    proc = subprocess.Popen(
+        [sys.executable, str(child_script), web_root, PG_URL, PG_SCHEMA, str(marker)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not marker.exists():
+            if proc.poll() is not None:
+                out, err = proc.communicate(timeout=5)
+                raise AssertionError(f"claim child exited early rc={proc.returncode}\nstdout={out}\nstderr={err}")
+            time.sleep(0.1)
+        assert marker.exists(), "claim child did not commit a running claim within 30s"
+        assert marker.read_text(encoding="utf-8") == "r1"
+
+        proc.kill()
+        proc.wait(timeout=10)
+        with svc.session() as db:
+            statuses = dict(db.execute(select(AppAiBotRun.id, AppAiBotRun.status)).all())
+        assert statuses == {"r1": "running", "r2": "queued"}
+        assert _claim(svc) is None, "the orphaned running row must keep the FIFO slot closed"
+
+        # Simulate elapsed time instead of sleeping for the production-scale
+        # watchdog minimum; the kill/commit ordering above is the part under test.
+        stale_time = datetime.now(timezone.utc) - timedelta(seconds=120)
+        with svc.session() as db:
+            db.execute(
+                update(AppAiBotRun)
+                .where(AppAiBotRun.id == "r1")
+                .values(updated_at=stale_time)
+            )
+        svc.worker_heartbeat()  # a surviving worker/watchdog process performs recovery
+        result = svc.reap_stale_runs(stale_after_sec=60)
+        assert result["reaped_run_ids"] == ["r1"]
+        with svc.session() as db:
+            statuses = dict(db.execute(select(AppAiBotRun.id, AppAiBotRun.status)).all())
+        assert statuses == {"r1": "failed", "r2": "queued"}
+        assert _claim(svc) == "r2"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
 
 
 def test_pg_late_update_cannot_resurrect_finished_run(svc):
