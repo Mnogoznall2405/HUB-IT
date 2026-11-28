@@ -7,7 +7,7 @@
 - PR: #105 `fix/a11-release-candidate`.
 - Исходный проверенный head до локальных исправлений ревью: `455c160b717b0c33ea69ae3adc99a41757efabf4`.
 - База: `origin/main` `59954cec0d070a8afb09659d85ef76f493367648`.
-- Текущий head после review fixes, benchmark pack и process recovery proof: `fbacbcaa`.
+- Текущий head после review fixes, benchmark pack, process recovery proof и characterization fix: `ff320dbc`.
 
 ## Проверенные результаты
 
@@ -30,9 +30,9 @@
    - `test_ai_database_failclosed.py` 25;
    - sticker ancestry structural test 1.
 
-### FAIL / characterization
+### Characterization resolved
 
-1. `tests/test_e2e_ai_draft_reliability.py::test_claude_transport_keeps_recipient_arguments_through_http_worker` — FAIL: 0 confirmation cards. Лог показывает mock/transport failure (`types.SimpleNamespace object is not iterable`, затем `pop from empty list`) и validation failure до создания карточки. Это воспроизводит ранее документированный pre-existing mock/transport дефект; не используется как доказательство production-ошибки без отдельного анализа.
+1. `tests/test_e2e_ai_draft_reliability.py::test_claude_transport_keeps_recipient_arguments_through_http_worker` ранее падал из-за формы test double: mock возвращал non-stream response даже при `stream=True`. Streaming client ожидаемо пытался итерировать объект, fallback потреблял дополнительные scripted responses и сдвигал очередь сценариев. В commit `ff320dbc` mock исправлен на stream chunks; focused test PASS, весь файл **48 passed**. Production transport code не изменялся.
 
 ## Исправления, внесённые по независимому ревью
 
