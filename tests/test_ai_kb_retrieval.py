@@ -85,6 +85,7 @@ def test_postgres_fts_adapter_uses_postgres_path(monkeypatch):
 
     fallback = _Fallback()
     adapter = retrieval_interface_module.PostgresFtsAiKbRetrievalAdapter(fallback)
+    monkeypatch.setenv("AI_KB_PG_HYBRID_FTS_ENABLED", "1")
     monkeypatch.setattr(adapter, "_is_postgres_available", lambda: True)
     monkeypatch.setattr(adapter, "_retrieve_postgres_fts", lambda **kwargs: [{"article_id": "fts"}])
 
@@ -109,6 +110,7 @@ def test_postgres_fts_adapter_falls_back_on_error(monkeypatch):
             return {"backend": "python"}
 
     adapter = retrieval_interface_module.PostgresFtsAiKbRetrievalAdapter(_Fallback())
+    monkeypatch.setenv("AI_KB_PG_HYBRID_FTS_ENABLED", "1")
     monkeypatch.setattr(adapter, "_is_postgres_available", lambda: True)
 
     def _raise(**kwargs):
@@ -138,11 +140,20 @@ def test_postgres_fts_statement_uses_index_matching_literals():
             return {"backend": "python"}
 
     adapter = retrieval_interface_module.PostgresFtsAiKbRetrievalAdapter(_Fallback())
-    statement = adapter._build_postgres_fts_statement(query="vpn access", allowed_scope=["network"], limit=3)
+    statement = adapter._build_postgres_fts_statement(
+        query="vpn access",
+        allowed_scope=["network"],
+        limit=3,
+        current_user={"id": 2, "username": "user", "role": "viewer", "permissions": []},
+    )
+
+    runtime_compiled = str(statement.compile(dialect=postgresql.dialect()))
+    assert "app.ai_kb_chunks.title || ' ' || app.ai_kb_chunks.content" in runtime_compiled
+    assert "coalesce(app.ai_kb_chunks.title" not in runtime_compiled
 
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
 
-    assert "to_tsvector('russian', coalesce(app.ai_kb_chunks.title, '') || ' ' || coalesce(app.ai_kb_chunks.content, ''))" in compiled
+    assert "to_tsvector('russian', app.ai_kb_chunks.title || ' ' || app.ai_kb_chunks.content)" in compiled
     assert "plainto_tsquery('russian', 'vpn access')" in compiled
     assert "CAST(app.ai_kb_chunks.metadata_json AS JSONB) ->> 'category'" in compiled
     assert "visibility_scope" in compiled
@@ -177,8 +188,8 @@ def test_ai_kb_hybrid_search_migration_creates_matching_indexes():
 
     assert 'revision = "20261129_0187"' in source
     assert 'down_revision = "20261128_0186"' in source
-    assert "to_tsvector('russian', coalesce(title, '') || ' ' || coalesce(content, ''))" in source
-    assert "lower(coalesce(title, '') || ' ' || coalesce(content, '')) gin_trgm_ops" in source
+    assert "to_tsvector('russian', title || ' ' || content)" in source
+    assert "lower(title || ' ' || content) gin_trgm_ops" in source
     assert "CREATE EXTENSION IF NOT EXISTS pg_trgm" in source
     assert "ix_app_ai_kb_chunks_fts_russian" in source
     assert "ix_app_ai_kb_chunks_trgm_lower" in source
@@ -199,7 +210,7 @@ def test_postgres_trgm_statement_uses_indexable_operator_shape():
 
     compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).replace("%%>", "%>")
 
-    assert "lower(coalesce(app.ai_kb_chunks.title, '') || ' ' || coalesce(app.ai_kb_chunks.content, ''))" in compiled
+    assert "lower(app.ai_kb_chunks.title || ' ' || app.ai_kb_chunks.content)" in compiled
     assert "%> 'падключение'" in compiled
     assert "word_similarity('падключение'" in compiled
     assert "visibility_scope" in compiled
@@ -208,9 +219,67 @@ def test_postgres_trgm_statement_uses_indexable_operator_shape():
 def test_kb_chunk_visibility_is_fail_closed_without_user():
     retrieval_module = importlib.import_module("backend.ai_chat.retrieval")
 
-    assert retrieval_module._metadata_visible_to_user(None, {"visibility_scope": "global"})
+    assert not retrieval_module._metadata_visible_to_user(None, {"visibility_scope": "global"})
     assert not retrieval_module._metadata_visible_to_user(None, {"visibility_scope": "private"})
     assert not retrieval_module._metadata_visible_to_user(None, {"visibility_scope": "department"})
+
+
+def test_kb_index_text_includes_tags_for_recall():
+    retrieval_module = importlib.import_module("backend.ai_chat.retrieval")
+
+    text = retrieval_module._article_to_text({
+        "title": "Кадровые документы",
+        "summary": "Формы заявлений",
+        "tags": ["отпуск", "кадры"],
+        "content": {"overview": "Порядок оформления"},
+    })
+
+    assert "отпуск" in text
+    assert "кадры" in text
+
+
+def test_postgres_hybrid_retrieval_has_explicit_rollback_flag(monkeypatch):
+    retrieval_interface_module = importlib.import_module("backend.ai_chat.retrieval_interface")
+
+    class _Fallback:
+        def retrieve(self, **kwargs):
+            return [{"article_id": "python-fallback"}]
+
+    adapter = retrieval_interface_module.PostgresFtsAiKbRetrievalAdapter(_Fallback())
+    monkeypatch.setenv("AI_KB_PG_HYBRID_FTS_ENABLED", "0")
+    monkeypatch.setattr(adapter, "_is_postgres_available", lambda: True)
+    monkeypatch.setattr(
+        adapter,
+        "_retrieve_postgres_fts",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("PostgreSQL path must stay disabled")),
+    )
+
+    rows = adapter.retrieve(
+        query="vpn",
+        current_user={"id": 2, "username": "user", "role": "viewer", "permissions": []},
+    )
+
+    assert rows == [{"article_id": "python-fallback"}]
+
+
+def test_postgres_adapter_keeps_template_scoring_on_python_contract():
+    retrieval_interface_module = importlib.import_module("backend.ai_chat.retrieval_interface")
+    calls = []
+
+    class _Fallback:
+        def retrieve_template_candidates(self, **kwargs):
+            calls.append(kwargs)
+            return [{"score": 17, "article_id": "template-1"}]
+
+    adapter = retrieval_interface_module.PostgresFtsAiKbRetrievalAdapter(_Fallback())
+    rows = adapter.retrieve_template_candidates(
+        query="шаблон vpn",
+        limit=3,
+        current_user={"id": 2, "username": "user", "role": "viewer", "permissions": []},
+    )
+
+    assert rows == [{"score": 17, "article_id": "template-1"}]
+    assert calls and calls[0]["limit"] == 3
 
 
 def test_ai_kb_index_includes_attachment_file_names(monkeypatch, tmp_path):
@@ -398,7 +467,10 @@ def test_sync_index_collects_all_pages_and_keeps_501st(kb_sync_env, monkeypatch)
 
     assert offsets == [0, 500]
     assert len(_doc_ids(kb_sync_env)) == 501
-    found = service.retrieve(query="уникальныйпятисотыйтайтл")
+    found = service.retrieve(
+        query="уникальныйпятисотыйтайтл",
+        current_user={"id": 2, "username": "user", "role": "viewer", "permissions": []},
+    )
     assert [row["article_id"] for row in found] == ["a-500"]
 
 
@@ -581,4 +653,38 @@ def test_sync_index_reindexes_changed_article(kb_sync_env, monkeypatch):
         assert doc.title == "Второе"
     chunks = _chunks_for(kb_sync_env, "chg-1")
     assert chunks and any("Второе" in row.content for row in chunks)
-    assert service.retrieve(query="второе")
+    assert service.retrieve(
+        query="второе",
+        current_user={"id": 2, "username": "user", "role": "viewer", "permissions": []},
+    )
+
+
+def test_sync_index_reindexes_tag_and_acl_metadata_changes(kb_sync_env, monkeypatch):
+    module = kb_sync_env.module
+    rows = [_kb_article("meta-1", title="Инструкция")]
+    _stub_kb(monkeypatch, module, lambda **kw: _paged(rows)(**kw))
+
+    service = module.AiKbRetrievalService()
+    service.sync_index()
+    from sqlalchemy import select
+
+    with kb_sync_env.session_ctx() as session:
+        hash_before = session.scalars(select(kb_sync_env.models.AppAiKbDocument)).one().content_hash
+
+    changed = dict(rows[0])
+    changed["tags"] = ["отпуск"]
+    changed["visibility_scope"] = "private"
+    changed["owner_user_id"] = 99
+    changed["created_by"] = "owner"
+    rows[0] = changed
+    service.sync_index()
+
+    chunks = _chunks_for(kb_sync_env, "meta-1")
+    assert chunks and any("отпуск" in row.content for row in chunks)
+    metadata = module._load_json_object(chunks[0].metadata_json)
+    assert metadata["visibility_scope"] == "private"
+    assert metadata["owner_user_id"] == 99
+    assert metadata["created_by"] == "owner"
+    with kb_sync_env.session_ctx() as session:
+        doc = session.scalars(select(kb_sync_env.models.AppAiKbDocument)).one()
+        assert doc.content_hash != hash_before

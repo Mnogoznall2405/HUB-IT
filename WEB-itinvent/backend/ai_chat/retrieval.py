@@ -46,8 +46,8 @@ def _normalize_tags(value: Any) -> list[str]:
     return [str(item or "").strip() for item in value if str(item or "").strip()]
 
 
-# v2: attachment file names are part of the indexed text.
-_KB_INDEX_LAYOUT_VERSION = 2
+# v3: tags are part of the indexed text so PostgreSQL FTS keeps tag-only recall.
+_KB_INDEX_LAYOUT_VERSION = 3
 
 
 def _article_to_text(article: dict[str, Any]) -> str:
@@ -55,6 +55,7 @@ def _article_to_text(article: dict[str, Any]) -> str:
     lines = [
         _normalize_text(article.get("title")),
         _normalize_text(article.get("summary")),
+        " ".join(_normalize_tags(article.get("tags"))),
         _normalize_text(content.get("overview")),
         _normalize_text(content.get("symptoms")),
         _normalize_text(content.get("escalation")),
@@ -101,16 +102,10 @@ def _load_json_object(raw_value: Any) -> dict[str, Any]:
 
 
 def _metadata_visible_to_user(current_user: dict[str, Any] | None, metadata: dict[str, Any]) -> bool:
-    """Evaluate KB chunk visibility fail-closed for anonymous/internal callers.
-
-    Production callers pass the authenticated user. If a future call site forgets
-    that argument, only globally visible chunks may be returned; private and
-    department-scoped chunks must not become visible by omission.
-    """
-    if current_user is not None:
-        return can_view_kb_item(current_user, metadata)
-    scope = normalize_visibility_scope((metadata or {}).get("visibility_scope"), default=VISIBILITY_GLOBAL)
-    return scope == VISIBILITY_GLOBAL
+    """Evaluate KB chunk visibility fail-closed for anonymous/internal callers."""
+    if current_user is None:
+        return False
+    return can_view_kb_item(current_user, metadata)
 
 
 def _chunk_metadata_payload(
@@ -200,9 +195,13 @@ class AiKbRetrievalService:
                         "updated_at": article.get("updated_at"),
                         "title": article.get("title"),
                         "summary": article.get("summary"),
+                        "category": article.get("category"),
+                        "tags": list(article.get("tags") or []),
                         "article_type": article.get("article_type"),
                         "department_id": article.get("department_id"),
                         "visibility_scope": article.get("visibility_scope"),
+                        "owner_user_id": article.get("owner_user_id"),
+                        "created_by": article.get("created_by"),
                         "primary_attachment_id": _normalize_text((primary_attachment or {}).get("id")),
                         "content": article.get("content"),
                         "attachments": [

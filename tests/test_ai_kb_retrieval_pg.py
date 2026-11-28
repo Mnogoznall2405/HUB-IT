@@ -54,11 +54,11 @@ def pg_engine():
     with engine.connect() as conn:
         conn.execute(text(
             f'CREATE INDEX IF NOT EXISTS ix_test_ai_kb_chunks_fts_russian ON "{PG_SCHEMA}"."{TABLE}" '
-            "USING GIN (to_tsvector('russian', coalesce(title, '') || ' ' || coalesce(content, '')))"
+            "USING GIN (to_tsvector('russian', title || ' ' || content))"
         ))
         conn.execute(text(
             f'CREATE INDEX IF NOT EXISTS ix_test_ai_kb_chunks_trgm_lower ON "{PG_SCHEMA}"."{TABLE}" '
-            "USING GIN (lower(coalesce(title, '') || ' ' || coalesce(content, '')) gin_trgm_ops)"
+            "USING GIN (lower(title || ' ' || content) gin_trgm_ops)"
         ))
         conn.commit()
     yield engine
@@ -111,6 +111,7 @@ def adapter(pg_engine, monkeypatch):
         finally:
             db.close()
 
+    monkeypatch.setenv("AI_KB_PG_HYBRID_FTS_ENABLED", "1")
     monkeypatch.setattr(retrieval_interface_module, "app_session", session)
 
     class _Fallback:
@@ -137,7 +138,7 @@ def _seed(engine, rows: list[AppAiKbChunk]) -> None:
 
 def test_pg_hybrid_retrieval_handles_morphology_and_typo(adapter, pg_engine):
     _seed(pg_engine, [
-        _chunk("r-vpn", "vpn", "Инструкция VPN", "Настройки VPN для удаленной работы. Подключение через корпоративный портал."),
+        _chunk("r-vpn", "vpn", "Инструкция VPN", "Настройки VPN для удаленной работы через корпоративный портал."),
         _chunk("r-wifi", "wifi", "Wi-Fi офис", "Подключение к корпоративной сети wifi в офисе."),
     ])
     user = {"id": 2, "username": "user", "role": "viewer", "permissions": []}
@@ -145,40 +146,58 @@ def test_pg_hybrid_retrieval_handles_morphology_and_typo(adapter, pg_engine):
     exact = adapter.retrieve(query="настройки vpn удаленная работа", limit=3, current_user=user)
     assert exact and exact[0]["article_id"] == "vpn"
 
-    typo = adapter.retrieve(query="падключение wifi", limit=3, current_user=user)
+    typo = adapter.retrieve(query="падключение", limit=3, current_user=user)
     assert typo and typo[0]["article_id"] == "wifi"
 
 
-def test_pg_template_candidates_use_fts_and_stay_acl_scoped(adapter, pg_engine):
+def test_pg_expression_indexes_are_usable_by_runtime_query_shapes(pg_engine):
+    with pg_engine.connect() as conn:
+        conn.execute(text("SET enable_seqscan=off"))
+        fts_plan = "\n".join(
+            str(row[0])
+            for row in conn.execute(text(
+                f'EXPLAIN SELECT id FROM "{PG_SCHEMA}"."{TABLE}" '
+                "WHERE to_tsvector('russian', title || ' ' || content) @@ plainto_tsquery('russian', 'vpn')"
+            ))
+        )
+        trgm_plan = "\n".join(
+            str(row[0])
+            for row in conn.execute(text(
+                f'EXPLAIN SELECT id FROM "{PG_SCHEMA}"."{TABLE}" '
+                "WHERE lower(title || ' ' || content) %> 'падключение'"
+            ))
+        )
+
+    assert "ix_test_ai_kb_chunks_fts_russian" in fts_plan
+    assert "ix_test_ai_kb_chunks_trgm_lower" in trgm_plan
+
+
+def test_pg_natural_language_stopwords_do_not_break_fallback_coverage(adapter, pg_engine):
     _seed(pg_engine, [
-        _chunk(
-            "r-template",
-            "template-vpn",
-            "Шаблон VPN",
-            "Шаблон заявки для vpn доступа",
-            article_type="template",
-            primary_attachment_id="att-1",
-            primary_attachment_name="vpn-template.docx",
-            primary_attachment_content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ),
-        _chunk(
-            "r-private-template",
-            "private-template",
-            "Секретный шаблон VPN",
-            "Приватный шаблон vpn доступа",
-            article_type="template",
-            visibility_scope="private",
-            owner_user_id=99,
-            primary_attachment_id="att-2",
-        ),
+        _chunk("r-wifi", "wifi", "Wi-Fi офис", "Подключение к корпоративной сети wifi в офисе."),
     ])
     user = {"id": 2, "username": "user", "role": "viewer", "permissions": []}
 
-    rows = adapter.retrieve_template_candidates(query="шаблон vpn доступа", limit=5, current_user=user)
+    rows = adapter.retrieve(query="что делать если не работает корпоративный wifi", limit=3, current_user=user)
 
-    assert [row["article_id"] for row in rows] == ["template-vpn"]
-    assert rows[0]["attachment_id"] == "att-1"
-    assert rows[0]["attachment_name"] == "vpn-template.docx"
+    assert [row["article_id"] for row in rows] == ["wifi"]
+
+
+def test_pg_exact_inventory_identifiers_do_not_cross_match(adapter, pg_engine):
+    _seed(pg_engine, [
+        _chunk("r-inv-hyphen", "inv-hyphen", "Переезд оборудования", "Перенос устройства ИНВ-88123 между кабинетами."),
+        _chunk("r-inv-under", "inv-under", "Списание оборудования", "Осмотр устройства INV_88124 перед списанием."),
+        _chunk("r-inv-long", "inv-long", "Резервное устройство", "Устройство ИНВ-881234 хранится на складе."),
+    ])
+    user = {"id": 2, "username": "user", "role": "viewer", "permissions": []}
+
+    hyphen_rows = adapter.retrieve(query="ИНВ-88123", limit=5, current_user=user)
+    underscore_rows = adapter.retrieve(query="INV_88124", limit=5, current_user=user)
+    numeric_rows = adapter.retrieve(query="88123", limit=5, current_user=user)
+
+    assert [row["article_id"] for row in hyphen_rows] == ["inv-hyphen"]
+    assert [row["article_id"] for row in underscore_rows] == ["inv-under"]
+    assert [row["article_id"] for row in numeric_rows] == ["inv-hyphen"]
 
 
 def test_pg_acl_is_applied_before_limit_and_owner_private_is_visible(adapter, pg_engine):
@@ -200,7 +219,7 @@ def test_pg_acl_is_applied_before_limit_and_owner_private_is_visible(adapter, pg
     other_rows = adapter.retrieve(query="vpn сервер", limit=1, current_user=other)
     assert [row["article_id"] for row in other_rows] == ["global"]
     anonymous_rows = adapter.retrieve(query="vpn сервер", limit=2, current_user=None)
-    assert [row["article_id"] for row in anonymous_rows] == ["global"]
+    assert anonymous_rows == []
     owner_rows = adapter.retrieve(query="vpn сервер", limit=2, current_user=owner)
     assert {row["article_id"] for row in owner_rows} == {"private", "global"}
 

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from typing import Any, Protocol
 
-from sqlalchemy import and_, case, cast, func, literal_column, or_, select, true
+from sqlalchemy import and_, case, cast, false, func, literal_column, or_, select, true
 from sqlalchemy.dialects.postgresql import JSONB
 
 from backend.ai_chat.retrieval import AiKbRetrievalService, _metadata_visible_to_user, _tokenize
@@ -24,6 +26,24 @@ logger = logging.getLogger(__name__)
 _FTS_CONFIG = literal_column("'russian'")
 _MAX_FALLBACK_TOKENS = 12
 _TRIGRAM_SIMILARITY_THRESHOLD = 0.6
+_IDENTIFIER_CANDIDATE_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё]+(?:[-_][0-9A-Za-zА-Яа-яЁё]+)*", flags=re.UNICODE)
+
+
+def _exact_identifier_tokens(query: str) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for match in _IDENTIFIER_CANDIDATE_RE.findall(str(query or "")):
+        token = str(match or "").strip().lower()
+        digit_count = sum(1 for char in token if char.isdigit())
+        if digit_count < 4 or token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+    return tokens[:4]
+
+
+def _pg_hybrid_retrieval_enabled() -> bool:
+    return str(os.getenv("AI_KB_PG_HYBRID_FTS_ENABLED", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _normalize_text(value: object) -> str:
@@ -45,7 +65,7 @@ def _normalize_tags(value: Any) -> list[str]:
 
 
 def _document_text():
-    return func.coalesce(AppAiKbChunk.title, "") + literal_column("' '") + func.coalesce(AppAiKbChunk.content, "")
+    return AppAiKbChunk.title + literal_column("' '") + AppAiKbChunk.content
 
 
 def _document_tsvector():
@@ -67,15 +87,35 @@ def _user_int(value: Any) -> int:
         return 0
 
 
-def _kb_acl_clause(current_user: dict[str, Any] | None):
-    scope = func.lower(func.coalesce(_metadata_text("visibility_scope"), VISIBILITY_GLOBAL))
-    valid_scopes = (VISIBILITY_PRIVATE, VISIBILITY_DEPARTMENT, VISIBILITY_DEPARTMENT_MANAGERS)
-    globally_visible = ~scope.in_(valid_scopes)
+def _department_acl_ids(current_user: dict[str, Any] | None) -> tuple[list[str], list[str]]:
+    if current_user is None or user_can_manage_kb_all(current_user):
+        return [], []
+    member_department_ids = sorted(
+        department_service.get_user_department_ids(
+            current_user,
+            roles=[DEPARTMENT_MEMBER_ROLE, DEPARTMENT_MANAGER_ROLE],
+        )
+    )
+    manager_department_ids = sorted(
+        department_service.get_user_department_ids(current_user, roles=[DEPARTMENT_MANAGER_ROLE])
+    )
+    return member_department_ids, manager_department_ids
+
+
+def _kb_acl_clause(
+    current_user: dict[str, Any] | None,
+    *,
+    member_department_ids: list[str] | None = None,
+    manager_department_ids: list[str] | None = None,
+):
     if current_user is None:
-        return globally_visible
+        return false()
     if user_can_manage_kb_all(current_user):
         return true()
 
+    scope = func.lower(func.coalesce(_metadata_text("visibility_scope"), VISIBILITY_GLOBAL))
+    valid_scopes = (VISIBILITY_PRIVATE, VISIBILITY_DEPARTMENT, VISIBILITY_DEPARTMENT_MANAGERS)
+    globally_visible = ~scope.in_(valid_scopes)
     clauses = [globally_visible]
     owner_clauses = []
     uid = _user_int(current_user.get("id"))
@@ -88,24 +128,41 @@ def _kb_acl_clause(current_user: dict[str, Any] | None):
         clauses.append(and_(scope == VISIBILITY_PRIVATE, or_(*owner_clauses)))
 
     department_id = _metadata_text("department_id")
-    member_department_ids = sorted(
-        department_service.get_user_department_ids(
-            current_user,
-            roles=[DEPARTMENT_MEMBER_ROLE, DEPARTMENT_MANAGER_ROLE],
-        )
-    )
-    manager_department_ids = sorted(
-        department_service.get_user_department_ids(current_user, roles=[DEPARTMENT_MANAGER_ROLE])
-    )
-    if member_department_ids:
-        clauses.append(and_(scope == VISIBILITY_DEPARTMENT, department_id.in_(member_department_ids)))
-    if manager_department_ids:
-        clauses.append(and_(scope == VISIBILITY_DEPARTMENT_MANAGERS, department_id.in_(manager_department_ids)))
+    member_ids = list(member_department_ids or [])
+    manager_ids = list(manager_department_ids or [])
+    if member_ids:
+        clauses.append(and_(scope == VISIBILITY_DEPARTMENT, department_id.in_(member_ids)))
+    if manager_ids:
+        clauses.append(and_(scope == VISIBILITY_DEPARTMENT_MANAGERS, department_id.in_(manager_ids)))
     return or_(*clauses)
 
 
 def _fallback_tokens(query: str) -> list[str]:
-    return _tokenize(query)[:_MAX_FALLBACK_TOKENS]
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for token in _tokenize(query):
+        if token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+        if len(tokens) >= _MAX_FALLBACK_TOKENS:
+            break
+    return tokens
+
+
+def _meaningful_fts_tokens(session, tokens: list[str]) -> list[str]:
+    if not tokens:
+        return []
+    rows = session.connection().exec_driver_sql(
+        """
+        SELECT token
+        FROM unnest(%s::text[]) WITH ORDINALITY AS items(token, item_order)
+        WHERE to_tsvector('russian', token) <> ''::tsvector
+        ORDER BY item_order
+        """,
+        (list(tokens),),
+    ).scalars().all()
+    return [str(item or "").strip() for item in rows if str(item or "").strip()]
 
 
 def _token_coverage_expression(document, tokens: list[str]):
@@ -118,7 +175,20 @@ def _token_coverage_expression(document, tokens: list[str]):
 
 
 def _needed_coverage(tokens: list[str]) -> int:
-    return max(1, len(tokens) - 1)
+    total = len(tokens)
+    return max(1, total - (1 if total <= 3 else 2))
+
+
+def _exact_identifier_clause(tokens: list[str]):
+    document_lower = func.lower(_document_text())
+    boundary = "0-9A-Za-zА-Яа-яЁё_"
+    clauses = [
+        document_lower.op("~")(f"(^|[^{boundary}]){re.escape(token)}([^{boundary}]|$)")
+        for token in tokens
+    ]
+    if not clauses:
+        return true()
+    return and_(*clauses)
 
 
 class AiKbRetrievalBackend(Protocol):
@@ -158,7 +228,7 @@ class PostgresFtsAiKbRetrievalAdapter:
             return False
 
     def retrieve(self, *, query: str, allowed_scope: list[str] | None = None, limit: int = 5, current_user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        if not self._is_postgres_available():
+        if not _pg_hybrid_retrieval_enabled() or not self._is_postgres_available():
             return self._fallback.retrieve(query=query, allowed_scope=allowed_scope, limit=limit, current_user=current_user)
         try:
             return self._retrieve_postgres_fts(query=query, allowed_scope=allowed_scope, limit=limit, current_user=current_user)
@@ -173,18 +243,29 @@ class PostgresFtsAiKbRetrievalAdapter:
         allowed_scope: list[str] | None = None,
         limit: int = 5,
         current_user: dict[str, Any] | None = None,
-        template_only: bool = False,
     ) -> list[dict[str, Any]]:
+        normalized_query = _normalize_text(query)
+        raw_tokens = _fallback_tokens(normalized_query)
+        if not normalized_query or not raw_tokens or current_user is None:
+            return []
+        member_department_ids, manager_department_ids = _department_acl_ids(current_user)
+        exact_identifier_tokens = _exact_identifier_tokens(normalized_query)
         rows = []
         with app_session() as session:
-            for mode in ("strict", "bounded_or", "trgm"):
+            tokens = _meaningful_fts_tokens(session, raw_tokens)
+            if not tokens:
+                return []
+            for mode in ("strict", "exact_identifiers", "bounded_or", "trgm"):
                 statement = self._build_postgres_fts_statement(
-                    query=query,
+                    query=normalized_query,
                     allowed_scope=allowed_scope,
                     limit=limit,
                     current_user=current_user,
                     mode=mode,
-                    template_only=template_only,
+                    tokens=tokens,
+                    member_department_ids=member_department_ids,
+                    manager_department_ids=manager_department_ids,
+                    exact_identifier_tokens=exact_identifier_tokens,
                 )
                 if statement is None:
                     continue
@@ -219,7 +300,9 @@ class PostgresFtsAiKbRetrievalAdapter:
         *,
         allowed_scope: list[str] | None,
         current_user: dict[str, Any] | None,
-        template_only: bool = False,
+        member_department_ids: list[str] | None = None,
+        manager_department_ids: list[str] | None = None,
+        exact_identifier_tokens: list[str] | None = None,
     ):
         allowed = [
             _normalize_text(item).lower()
@@ -229,10 +312,15 @@ class PostgresFtsAiKbRetrievalAdapter:
         if allowed:
             category = func.lower(_metadata_text("category"))
             statement = statement.where(category.in_(allowed))
-        if template_only:
-            statement = statement.where(func.lower(_metadata_text("article_type")) == "template")
-            statement = statement.where(func.coalesce(_metadata_text("primary_attachment_id"), "") != "")
-        return statement.where(_kb_acl_clause(current_user))
+        if exact_identifier_tokens:
+            statement = statement.where(_exact_identifier_clause(exact_identifier_tokens))
+        return statement.where(
+            _kb_acl_clause(
+                current_user,
+                member_department_ids=member_department_ids,
+                manager_department_ids=manager_department_ids,
+            )
+        )
 
     def _build_postgres_fts_statement(
         self,
@@ -242,16 +330,30 @@ class PostgresFtsAiKbRetrievalAdapter:
         limit: int = 5,
         current_user: dict[str, Any] | None = None,
         mode: str = "strict",
-        template_only: bool = False,
+        tokens: list[str] | None = None,
+        member_department_ids: list[str] | None = None,
+        manager_department_ids: list[str] | None = None,
+        exact_identifier_tokens: list[str] | None = None,
     ):
         normalized_query = _normalize_text(query)
-        tokens = _fallback_tokens(normalized_query)
+        tokens = list(tokens if tokens is not None else _fallback_tokens(normalized_query))
         if not normalized_query or not tokens:
             return None
         max_items = max(1, int(limit or 5))
+        exact_tokens = list(exact_identifier_tokens if exact_identifier_tokens is not None else _exact_identifier_tokens(normalized_query))
         document = _document_tsvector()
 
-        if mode == "strict":
+        if mode == "exact_identifiers":
+            if not exact_tokens:
+                return None
+            rank = literal_column("100.0").label("rank")
+            statement = (
+                select(AppAiKbChunk, rank)
+                .where(_exact_identifier_clause(exact_tokens))
+                .order_by(AppAiKbChunk.updated_at.desc(), AppAiKbChunk.chunk_index.asc())
+                .limit(max_items)
+            )
+        elif mode == "strict":
             ts_query = func.plainto_tsquery(_FTS_CONFIG, normalized_query)
             rank = func.ts_rank_cd(document, ts_query).label("rank")
             statement = (
@@ -261,13 +363,16 @@ class PostgresFtsAiKbRetrievalAdapter:
                 .limit(max_items)
             )
         elif mode == "bounded_or":
-            or_query = " | ".join(tokens)
-            ts_query = func.to_tsquery(_FTS_CONFIG, or_query)
+            token_queries = [func.plainto_tsquery(_FTS_CONFIG, token) for token in tokens]
             coverage = _token_coverage_expression(document, tokens)
-            rank = func.ts_rank_cd(document, ts_query).label("rank")
+            rank_value = None
+            for token_query in token_queries:
+                part = func.ts_rank_cd(document, token_query)
+                rank_value = part if rank_value is None else rank_value + part
+            rank = rank_value.label("rank")
             statement = (
                 select(AppAiKbChunk, rank)
-                .where(document.op("@@")(ts_query))
+                .where(or_(*(document.op("@@")(token_query) for token_query in token_queries)))
                 .where(coverage >= _needed_coverage(tokens))
                 .order_by(coverage.desc(), rank.desc(), AppAiKbChunk.updated_at.desc(), AppAiKbChunk.chunk_index.asc())
                 .limit(max_items)
@@ -297,7 +402,9 @@ class PostgresFtsAiKbRetrievalAdapter:
             statement,
             allowed_scope=allowed_scope,
             current_user=current_user,
-            template_only=template_only,
+            member_department_ids=member_department_ids,
+            manager_department_ids=manager_department_ids,
+            exact_identifier_tokens=exact_tokens,
         )
 
     def retrieve_template_candidates(
@@ -308,45 +415,6 @@ class PostgresFtsAiKbRetrievalAdapter:
         limit: int = 5,
         current_user: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        max_items = max(1, int(limit or 5))
-        if self._is_postgres_available():
-            try:
-                rows = self._retrieve_postgres_fts(
-                    query=query,
-                    allowed_scope=allowed_scope,
-                    limit=max_items * 3,
-                    current_user=current_user,
-                    template_only=True,
-                )
-                best_by_article: dict[str, dict[str, Any]] = {}
-                for item in rows:
-                    article_id = _normalize_text(item.get("article_id"))
-                    if not article_id:
-                        continue
-                    score = float(item.get("score") or 0.0)
-                    current = best_by_article.get(article_id)
-                    if current is not None and float(current.get("score") or 0.0) >= score:
-                        continue
-                    best_by_article[article_id] = {
-                        "score": score,
-                        "article_id": article_id,
-                        "title": _normalize_text(item.get("title")),
-                        "category": _normalize_text(item.get("category")),
-                        "summary": _normalize_text(item.get("summary")),
-                        "tags": _normalize_tags(item.get("tags")),
-                        "content_preview": _normalize_text(item.get("content")),
-                        "attachment_id": _normalize_text(item.get("primary_attachment_id")),
-                        "attachment_name": _normalize_text(item.get("primary_attachment_name")),
-                        "attachment_content_type": _normalize_text(item.get("primary_attachment_content_type")),
-                    }
-                ranked = sorted(
-                    best_by_article.values(),
-                    key=lambda item: (float(item.get("score") or 0.0), item.get("title") or ""),
-                    reverse=True,
-                )
-                return ranked[:max_items]
-            except Exception:
-                logger.exception("AI KB Postgres template retrieval failed; falling back to Python scorer")
         return self._fallback.retrieve_template_candidates(
             query=query,
             allowed_scope=allowed_scope,
@@ -356,7 +424,7 @@ class PostgresFtsAiKbRetrievalAdapter:
 
     def get_metrics(self) -> dict[str, Any]:
         payload = dict(self._fallback.get_metrics())
-        payload["backend"] = "postgres_hybrid_fts" if self._is_postgres_available() else "python"
+        payload["backend"] = "postgres_hybrid_fts" if _pg_hybrid_retrieval_enabled() and self._is_postgres_available() else "python"
         return payload
 
 

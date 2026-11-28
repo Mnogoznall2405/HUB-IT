@@ -28,5 +28,6 @@
 - Task ID: A14-004; контур: ветка `feat/a14-kb-fts-retrieval`, зависимая от A11 candidate `cae317fd`.
 - Резерв: `20261129_0187` после `20261128_0186`; PostgreSQL-only expression indexes `app.ai_kb_chunks` для Russian FTS и pg_trgm. Для chat-only это проходная ревизия без изменения схемы; SQLite no-op.
 - Rollback: `downgrade` к `20261128_0186` удаляет только два новых индекса и не трогает данные/существующий simple FTS index.
-- Изолированная PG-проверка: fresh/repeat `scope=all`, `scope=app`, `scope=chat`, `0186 -> 0187 -> downgrade 0186 -> re-upgrade` — PASS. Production-миграция не выполнялась и требует отдельного разрешения.
+- Изолированная PG-проверка: fresh/repeat `scope=all`, `scope=app`, `scope=chat`, `0186 -> 0187 -> downgrade 0186 -> re-upgrade` — PASS (`a14mig878fe15582`, 14.0s). Repeat-путь также проверяет, что существующие индексы имеют ожидаемое определение, а не только имя.
+- Обычный `CREATE INDEX` разрешает reads, но блокирует writes на время build. Время/lock waits/table/index size/free space для production-like объёма не измерены; production-миграция не выполнялась и требует отдельного owner-approved runbook/maintenance decision.
 - Ветка зависит от A11 schema reserve и не должна рассматриваться как параллельный independent schema PR до closure/merge A11.
